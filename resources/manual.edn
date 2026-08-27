@@ -109,5 +109,13 @@
     :summary "Append a note to the run's journal. The durable record a later run reads back."}
    {:name samizdat.store.journal/artifacts
     :summary "Every artifact this run banked, across all branches."}
+   {:name samizdat.store.journal/branch-turns
+    :summary "One branch's turns as light rows — tool, args, category, result — the query to reach for when a failure report names a branch and you want its whole trajectory, not one turn."}
+   {:name samizdat.store.journal/gate-tally
+    :summary "Fired / met / met-late / unmet per gate for a run — whether the steering is being obeyed, per steer."}
+   {:name samizdat.agent.telemetry/failure-exemplars
+    :summary "The concrete failures behind the rates over any set of turn rows — parse errors, provider failures, tool failures, each with the turn and branch to fetch."}
+   {:name samizdat.session/render
+    :summary "The live session tally since a named mark — what changed while your last adjustment was in force."}
    {:name samizdat.events/subscribe
     :summary "A channel of every event published from now on, for watching a run without polling."}]}]

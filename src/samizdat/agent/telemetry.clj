@@ -11,10 +11,57 @@
   Pure over already-extracted facts + journal rows, so it is testable without a
   run. The supervisor is a general reasoning agent; this only gives it eyes."
   (:require [clojure.string :as str]
+            [samizdat.agent.gates :as gates]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]))
 
 (defn- s [x] (when x (str/lower-case (str (if (keyword? x) (name x) x)))))
+
+(defn failure-exemplars
+  "The concrete failures behind the rates, newest last, each carrying its
+  journal row id so `fetch_turn` can pull the full record.
+
+  A rate tells the supervisor something is wrong; the exemplar tells it
+  WHAT. The live session that motivated this (2026-08-27) found a parser
+  bug and a context-overflow retry loop by reading the actual failing rows
+  — the parse error's own complaint, the provider's own words — none of
+  which the digest carried. The supervisor's job is exactly that
+  read-the-failure-then-fix-the-cause loop, so the digest now leads with
+  the failures. Three kinds, because their fixes live in different places:
+  a call that did not parse is a format/prompt problem, a provider failure
+  is an endpoint problem, a tool failure is the work itself going wrong.
+
+  Returns DATA — {:parse :provider :tool}, each {:count n :lines s} or
+  absent — and the run-health template owns the words around it, so the
+  section headings the supervisor reads are prompts/ prose like everything
+  else it reads. Pure over the rows; caps are gates.edn :supervisor-digest
+  policy."
+  [rows {:keys [per-kind chars]}]
+  (let [snip (fn [x] (let [t (str/replace (str x) #"\s+" " ")]
+                       (if (> (count t) chars)
+                         (str (subs t 0 chars) "…")
+                         t)))
+        line (fn [r note]
+               (str "- turn " (:turn r) " (" (:branch_id r) ", row " (:id r)
+                    (when-let [t (:tool_name r)] (str ", " t)) "): "
+                    (snip note)))
+        kind (fn [lines]
+               (when (seq lines)
+                 {:count (count lines)
+                  :lines (str/join "\n" (take-last per-kind lines))}))
+        parse (for [r rows :when (= "__parse_error__" (:tool_name r))]
+                (line r (or (not-empty (str (:parse_error r))) (:result r))))
+        provider (for [r rows :when (= "__provider_error__" (:tool_name r))]
+                   (line r (:result r)))
+        tool (for [r rows
+                   :when (and (= "failure" (str (:category r)))
+                              (not (str/starts-with? (str (:tool_name r)) "__")))]
+               (line r (:result r)))
+        m (cond-> {}
+            (kind parse) (assoc :parse (kind parse))
+            (kind provider) (assoc :provider (kind provider))
+            (kind tool) (assoc :tool (kind tool)))]
+    (not-empty m)))
 
 (defn branch-health
   "Per-branch health from journal turn rows: turns taken, how many were
@@ -103,5 +150,8 @@
                             (for [[b h] health]
                               (str "- " b ": " (:turns h) " turns, "
                                    (:mechanics h) " thrash, shipped=" (:shipped? h))))
+      :failures (failure-exemplars rows (gates/threshold :supervisor-digest))
       :signals (when (seq sigs)
                  (str/join "\n" (map #(str "- " %) sigs)))})))
+;; NOTE: run-health.md destructures :failures itself ({{failures.parse.count}}
+;; etc.) — the map is the seam, the words are the template's.

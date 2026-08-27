@@ -693,6 +693,32 @@
                                :tool-name "fetch_turn" :args {:id "t999"}})]
         (is (= :mechanics (:category r)) "same for a turn that is not there")))))
 
+(deftest fetch-turn-reads-another-branch-by-name
+  ;; The run-health digest hands the supervisor "turn 3 (T0, ...)"; without
+  ;; the :branch arg the reader could not open the very record the report
+  ;; names — a digest pointing at turns its reader cannot reach.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          sup (state/new-branch {:id "S0" :problem "p"})]
+      (runs/open-branch! c rid {:branch-id "S0"})
+      (runs/open-branch! c rid {:branch-id "T0"})
+      (journal/record-turn! c rid {:branch-id "T0" :turn 3 :tool-name "shell"
+                                   :args "{\"command\": \"make\"}"
+                                   :result "make: no rule to make target"
+                                   :category "failure"})
+      (testing "an explicit branch opens the named record"
+        (let [r (tools/run-tool {:branch sup :conn c :run-id rid
+                                 :tool-name "fetch_turn"
+                                 :args {:turn 3 :branch "T0"}})]
+          (is (= :neutral (:category r)))
+          (is (str/includes? (str (:result r)) "make: no rule"))
+          (is (str/includes? (str (:result r)) "[T0]")
+              "labelled, so the reader knows whose turn it is looking at")))
+      (testing "the default stays own-branch"
+        (let [r (tools/run-tool {:branch sup :conn c :run-id rid
+                                 :tool-name "fetch_turn" :args {:turn 3}})]
+          (is (= :mechanics (:category r)) "S0 has no turn 3 of its own"))))))
+
 ;; --- the ship gate's test rung: done is not terminal until tests pass --------
 
 (deftest done-is-a-hard-gate-on-a-green-test-run

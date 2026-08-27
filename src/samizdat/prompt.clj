@@ -49,6 +49,7 @@
    "experiment-tool"
    "explore-cap"
    "failure-log"
+   "fetch-turn-miss"
    "file-thrash"
    "file-tool"
    "fork-thesis"

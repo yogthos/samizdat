@@ -1,0 +1,1 @@
+{% if cross %}No turn {{turn}} on branch {{branch}}.{% else %}No turn {{turn}} on this branch. The digest lists your own turns as t1, t2, …; pass `branch` to read a specific turn of another branch — for example one a failure report names.{% endif %}

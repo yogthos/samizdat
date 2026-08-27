@@ -537,10 +537,7 @@
    #{
     " Ids come from the settled-state block: `a#12` for"
     " it inherited. A run cannot reach another run's"
-    " not readable here — what crossed from them is in"
-    " on this branch. The digest lists"
     " something this run established, `s#7` for something"
-    " your own turns as t1, t2, …; a sibling's turns are"
     "CONFIRMED (inherited from the seed run)"
     }
    "src/samizdat/agent/tools/lsp.clj"

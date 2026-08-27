@@ -6,6 +6,7 @@
   (:require
             [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
             [samizdat.llm.message :as message]))
 
@@ -77,16 +78,30 @@
     (base/malformed branch m)
     (let [raw (str/trim (str (base/arg ctx :turn)))
           n (parse-long (str/replace raw #"^t" ""))
+          ;; An explicit :branch reads ANOTHER branch's turn — the diagnosis
+          ;; affordance the run-health digest's failure exemplars point at:
+          ;; the supervisor is handed "turn 3 (T0, ...)" and has to be able
+          ;; to open it, or the digest points at records its reader cannot
+          ;; reach. Deliberate and auditable (the fetch is itself a journalled
+          ;; turn); the DEFAULT stays own-branch, so sibling isolation — what
+          ;; crosses between peers is the settled-state block — still holds
+          ;; unless a branch asks for a specific other turn by name.
+          bid (or (some-> (base/arg ctx :branch) str str/trim not-empty)
+                  (:id branch))
           t (when (and conn run-id n)
-              (journal/branch-turn conn run-id (:id branch) n))]
+              (journal/branch-turn conn run-id bid n))]
       (if-not t
-        ;; :mechanics for the same reason as fetch_artifact's miss.
-        (base/malformed branch (str "No turn " raw " on this branch. The digest lists"
-                          " your own turns as t1, t2, …; a sibling's turns are"
-                          " not readable here — what crossed from them is in"
-                          " the settled-state block."))
+        ;; :mechanics for the same reason as fetch_artifact's miss. The words
+        ;; are prompts/fetch-turn-miss.md — the prose ratchet's rule.
+        (base/malformed branch
+                        (prompt/render "fetch-turn-miss"
+                                       {:turn raw
+                                        :branch bid
+                                        :cross (not= bid (:id branch))}))
         (base/ok branch
-            (str "t" (:turn t) " " (:tool_name t)
+            (str "t" (:turn t)
+                 (when (not= bid (:id branch)) (str " [" bid "]"))
+                 " " (:tool_name t)
                  " → " (or (:category t) "neutral")
                  (when (seq (str (:args t))) (str "\n\nARGUMENTS\n" (:args t)))
                  ;; Reasoning is stripped: it is 96% of stored assistant text
