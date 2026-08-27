@@ -177,6 +177,40 @@
 (def ^:private opener-re #"```tool-call\s*\r?\n|<tool-call>\s*")
 (def ^:private closer-re #"```|</tool[-_]calls?>")
 
+(def ^:private closer-tokens
+  ["```" "</tool-call>" "</tool_call>" "</tool-calls>" "</tool_calls>"])
+
+(defn- closer-token-at
+  "The closer token starting at index i and ending by `bound`, or nil."
+  [^String s i bound]
+  (some (fn [^String t]
+          (let [e (+ i (count t))]
+            (when (and (<= e bound) (= t (subs s i e)))
+              t)))
+        closer-tokens))
+
+(defn- string-aware-closer
+  "Index of the first closer OUTSIDE a JSON string literal in s[from..to),
+  or nil.
+
+  Same state machine as close-unbalanced, for the same reason: a ``` inside
+  a content string is text, not structure. The mdlite dogfood run
+  (karamazov-hpv) made this concrete — the file being written was a MARKDOWN
+  CONVERTER, its code contained literal ``` in its own fence handling, and
+  the raw closer scan cut six valid calls mid-string, each reported back as
+  a parse error the model had not made. Any task whose files mention code
+  fences (markdown tooling, docs, READMEs) produces this shape."
+  [^String s from to]
+  (loop [i from, in-string? false, escaped? false]
+    (when (< i to)
+      (let [ch (.charAt s i)]
+        (cond
+          escaped? (recur (inc i) in-string? false)
+          (= \\ ch) (recur (inc i) in-string? true)
+          (= \" ch) (recur (inc i) (not in-string?) false)
+          (and (not in-string?) (closer-token-at s i to)) i
+          :else (recur (inc i) in-string? false))))))
+
 (defn extract-fences
   "Every tool-call fence body in the response, in order.
 
@@ -203,8 +237,16 @@
            :let [next-open (if (< (inc i) (count opens))
                              (first (nth opens (inc i)))
                              n)
-                 m (re-matcher closer-re (subs s body-start next-open))
-                 closer (when (.find m) (+ body-start (.start m)))]
+                 ;; String-aware first: a closer inside a JSON string literal
+                 ;; is content (karamazov-hpv). The raw scan stays as the
+                 ;; fallback for a body whose string never closes — an
+                 ;; unterminated string ahead of a real closer is the
+                 ;; truncation shape, and it must keep earning its parse
+                 ;; error rather than quietly becoming a no-call.
+                 closer (or (string-aware-closer s body-start next-open)
+                            (let [m (re-matcher closer-re
+                                                (subs s body-start next-open))]
+                              (when (.find m) (+ body-start (.start m)))))]
            :when closer]
        (str/trim (subs s body-start closer))))))
 

@@ -38,6 +38,40 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest a-fence-marker-inside-a-json-string-is-content-not-a-closer
+  ;; Qwen baseline run b8a2b72c (karamazov-hpv): the mdlite task builds a
+  ;; MARKDOWN CONVERTER, so the file being written contains literal ``` —
+  ;; (not= l "```") in its code-block handling — and the closer scan took the
+  ;; first ``` after the opener, cutting the call mid-string. 6 of that run's
+  ;; 8 parse errors were this shape, each at a quarter of the token cap: the
+  ;; JSON was valid and the harness cut it. The closer scan must be
+  ;; string-aware, same state machine as close-unbalanced.
+  (let [resp (str "```tool-call\n"
+                  "{\"name\": \"write_file\", \"args\": {\"path\": \"a.clj\","
+                  " \"content\": \"(= l \\\"```\\\")\\n\"}}\n"
+                  "```")
+        p (fence/parse-tool-call resp {})]
+    (is (= "write_file" (:name p)))
+    (is (str/includes? (str (get-in p [:args :content])) "```")
+        "the backticks arrive as file content"))
+  (testing "an XML closer inside a string is content too"
+    (let [p (fence/parse-tool-call
+             (str "```tool-call\n"
+                  "{\"name\": \"write_file\", \"args\": {\"path\": \"a.md\","
+                  " \"content\": \"about </tool-call> tags\"}}\n"
+                  "```")
+             {})]
+      (is (= "write_file" (:name p)))))
+  (testing "an unterminated string ahead of a raw closer still earns its
+            parse error — the raw-closer fallback keeps the truncation shape
+            reported rather than silently becoming a no-call"
+    (let [p (fence/parse-tool-call
+             (str "```tool-call\n"
+                  "{\"name\": \"write_file\", \"args\": {\"content\": \"half a file\n"
+                  "```")
+             {})]
+      (is (= "__parse_error__" (:name p))))))
+
 (deftest prefill-plus-think-plus-real-call-parses
   ;; The live self-building run (2026-08-21) thrashed on this: after a parse
   ;; error the loop prefills "```tool-call\n" to force a bare call, but GLM is
