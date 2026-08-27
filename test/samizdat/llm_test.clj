@@ -72,6 +72,36 @@
                   " \"args\": {\"content\": \"half\n```") {})]
       (is (= "__parse_error__" (:name p))))))
 
+(deftest an-xml-call-inside-a-fence-is-the-call-it-unmistakably-is
+  ;; Live on arm-1 (run e0c7662f, turns 7-8): after a parse error the
+  ;; recovery PREFILLS "```tool-call\n", and the model — following the
+  ;; multi-line guidance — wrote its XML call inside that forced-open fence.
+  ;; The fence outranks the XML rung, so the body was read as broken JSON
+  ;; and the recovery looped on its own advice. A fence body that is not
+  ;; JSON but carries a complete <invoke> is unmistakable in intent — the
+  ;; same reasoning that accepts mixed fence wrappers.
+  (let [resp (str "```tool-call\n"
+                  "Prose first, because the fence was prefilled.\n"
+                  "<invoke name=\"write_file\">\n"
+                  "<parameter name=\"path\">a.clj</parameter>\n"
+                  "<parameter name=\"content\">(ns a)\n(defn f [x]\n  (str \"hi \" x))\n</parameter>\n"
+                  "</invoke>\n"
+                  "```")
+        p (fence/parse-tool-call resp {})]
+    (is (= "write_file" (:name p)))
+    (is (str/includes? (str (get-in p [:args :content])) "(defn f [x]")
+        "raw newlines and quotes arrive unescaped, as the XML form promises")
+    (is (:xml-call? p)))
+  (testing "a fence body that is neither JSON nor an invoke still earns its
+            parse error"
+    (let [p (fence/parse-tool-call "```tool-call\njust prose\n```" {})]
+      (is (= "__parse_error__" (:name p)))))
+  (testing "a well-formed JSON fence is untouched by the new rung"
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\": \"eval\", \"args\": {\"code\": \"(+ 1 2)\"}}\n```" {})]
+      (is (= "eval" (:name p)))
+      (is (not (:xml-call? p))))))
+
 (deftest a-context-overflow-is-recognized-from-the-body
   ;; karamazov-d41: a 500 wearing this message is deterministic — the same
   ;; oversized prompt fails identically every time — so post-once classifies

@@ -586,15 +586,25 @@
           ;; The guidance the model reads is prompts/ data (parse-error-causes,
           ;; parse-error-repaired), like every other word it sees — the
           ;; prose-backlog ratchet in base-test is what moved it out of here.
+          ;; A fence body that is not JSON but carries a complete <invoke> is
+          ;; the call it unmistakably is — the same reasoning that accepts
+          ;; mixed fence wrappers. Live on arm-1 (run e0c7662f): after a
+          ;; parse error the recovery PREFILLS the fence open, and a model
+          ;; following the multi-line guidance writes its XML call inside
+          ;; it; reading that as broken JSON looped the recovery on its own
+          ;; advice. Tried only where the JSON path has already failed, so a
+          ;; well-formed JSON fence never reaches it.
+          (let [fail (fn [msg]
+                       (if-let [x (xml-call body)]
+                         (merge base (assoc x :xml-call? true))
+                         (parse-error msg base)))]
           (if-not needed-repair?
-            (parse-error
-             (prompt/render "parse-error-causes" {:error (:error first-try)})
-             base)
+            (fail
+             (prompt/render "parse-error-causes" {:error (:error first-try)}))
             (let [second-try (read-json repaired)]
               (if-not (:ok second-try)
-                (parse-error
-                 (prompt/render "parse-error-repaired" {:error (:error first-try)})
-                 base)
+                (fail
+                 (prompt/render "parse-error-repaired" {:error (:error first-try)}))
                 (let [parsed (:value second-try)]
                   (if (and (map? parsed)
                            (string? (:name parsed))
@@ -603,7 +613,7 @@
                            {:name (:name parsed)
                             :args (let [a (:args parsed)] (if (map? a) a {}))})
                     (parse-error "tool-call body must be a JSON object with a non-empty `name` string"
-                                 base))))))))))))
+                                 base)))))))))))))
 
 (defn signals
   "The mechanics signals from one parse, for the capability tier.
