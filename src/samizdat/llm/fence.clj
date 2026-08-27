@@ -36,7 +36,8 @@
   tune a guard that fires on the same thing the signal measures, so these may
   adjust repair budgets and may never relax a verification gate."
   (:require [clojure.data.json :as json]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [samizdat.prompt :as prompt]))
 
 ;; Any opener paired with any closer.
 ;;
@@ -158,12 +159,78 @@
             :else
             (do (.append sb ch) (recur (inc i) in-string? false))))))))
 
-(defn repair-json
-  "One repair pass over a tool-call body: control characters inside strings,
-  then unbalanced closers. Order matters — the brace scan has to see the
-  string boundaries the control-char pass leaves intact."
+(defn strip-trailing-commas
+  "Remove commas that sit directly before a `}` or `]`, outside strings —
+  `{\"a\": 1,}` is how a model writes an object it assembled incrementally,
+  and RFC 8259 refuses it. Interior ones too, not only at the end (dirge
+  scavenge.rs, karamazov-avk): a trailing comma mid-body survives any
+  repair that only looks at the input's tail. Same state machine as every
+  scanner in this namespace; a comma inside a string is text and is kept."
   [^String input]
-  (close-unbalanced (repair-control-chars input)))
+  (let [n (count input)
+        sb (StringBuilder.)]
+    (loop [i 0, in-string? false, escaped? false]
+      (if (>= i n)
+        (.toString sb)
+        (let [ch (.charAt input i)]
+          (cond
+            escaped? (do (.append sb ch) (recur (inc i) in-string? false))
+            (= \\ ch) (do (.append sb ch) (recur (inc i) in-string? true))
+            (= \" ch) (do (.append sb ch) (recur (inc i) (not in-string?) false))
+            (and (not in-string?) (= \, ch))
+            ;; Look past whitespace: a comma whose next significant character
+            ;; closes a container is dropped; any other comma is kept.
+            (let [j (loop [j (inc i)]
+                      (if (and (< j n) (Character/isWhitespace (.charAt input j)))
+                        (recur (inc j))
+                        j))]
+              (if (and (< j n) (or (= \} (.charAt input j)) (= \] (.charAt input j))))
+                (recur (inc i) false false)
+                (do (.append sb ch) (recur (inc i) false false))))
+            :else (do (.append sb ch) (recur (inc i) in-string? false))))))))
+
+(defn fill-dangling-key
+  "Complete a body that stops right after `\"key\":` with a `null`, so the
+  closers can then be appended and the call parses (dirge truncation.rs,
+  karamazov-avk). The filled call carries a null argument, which the tool's
+  own missing-argument check then names precisely — a far better error than
+  a parse failure, because it tells the model WHICH argument it lost rather
+  than that its punctuation is broken.
+
+  Only at the very end of the body, and only OUTSIDE a string — a body that
+  stops inside a string is the truncation shape, and close-unbalanced's
+  refusal to touch it is load-bearing (half a file written as a success
+  costs the work). Nothing is invented: null is the one value that says
+  'absent'."
+  [^String input]
+  (let [n (count input)
+        end-state (loop [i 0, in-string? false, escaped? false]
+                    (if (>= i n)
+                      in-string?
+                      (let [ch (.charAt input i)]
+                        (cond
+                          escaped? (recur (inc i) in-string? false)
+                          (= \\ ch) (recur (inc i) in-string? true)
+                          (= \" ch) (recur (inc i) (not in-string?) false)
+                          :else (recur (inc i) in-string? false)))))]
+    (if (and (not end-state)
+             (re-find #"\"[^\"]*\"\s*:\s*\z" input))
+      (str input " null")
+      input)))
+
+(defn repair-json
+  "One repair pass over a tool-call body, cheapest and safest first: control
+  characters inside strings, trailing commas, a dangling key at the end,
+  then unbalanced closers. Order matters — every later scan has to see the
+  string boundaries the control-char pass leaves intact, and the closers
+  must be appended after the dangling key is filled or they would close an
+  object mid-entry."
+  [^String input]
+  (-> input
+      repair-control-chars
+      strip-trailing-commas
+      fill-dangling-key
+      close-unbalanced))
 
 (defn- parse-error [msg extra]
   (merge {:name "__parse_error__" :args {} :parse-error msg} extra))
@@ -485,23 +552,17 @@
           ;; One repair pass. If the repair changed nothing there is no point
           ;; re-parsing, and the error message should name the causes the
           ;; repair does not cover.
+          ;; The guidance the model reads is prompts/ data (parse-error-causes,
+          ;; parse-error-repaired), like every other word it sees — the
+          ;; prose-backlog ratchet in base-test is what moved it out of here.
           (if-not needed-repair?
             (parse-error
-             (str (:error first-try)
-                  ". Common causes: (a) a raw newline inside a string value — use \\n,"
-                  " (b) an unescaped quote inside a string — use \\\","
-                  " (c) an unescaped backslash — use \\\\,"
-                  " (d) a missing closing brace — count the `{` and `}`,"
-                  " the outer object needs one of its own after `args` closes.")
+             (prompt/render "parse-error-causes" {:error (:error first-try)})
              base)
             (let [second-try (read-json repaired)]
               (if-not (:ok second-try)
                 (parse-error
-                 (str (:error first-try)
-                      ". The harness auto-repaired what it could (control"
-                      " characters inside strings, missing closers) and the"
-                      " result still did not parse — escape \\n, \\r, \\t,"
-                      " \\\\ and \\\" inside string values, and check the braces.")
+                 (prompt/render "parse-error-repaired" {:error (:error first-try)})
                  base)
                 (let [parsed (:value second-try)]
                   (if (and (map? parsed)

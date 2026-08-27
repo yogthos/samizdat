@@ -643,13 +643,6 @@
     }
    "src/samizdat/llm/fence.clj"
    #{
-    " (b) an unescaped quote inside a string — use \\\","
-    " (d) a missing closing brace — count the `{` and `}`,"
-    " \\\\ and \\\" inside string values, and check the braces."
-    " characters inside strings, missing closers) and the"
-    " result still did not parse — escape \\n, \\r, \\t,"
-    " the outer object needs one of its own after `args` closes."
-    ". The harness auto-repaired what it could (control"
     "tool-call `name` must not be empty"
     "tool-call body must be a JSON object with a non-empty `name` string"
     "tool-call body must be a JSON object, not an array or scalar"

@@ -38,6 +38,40 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest the-repair-ladder-handles-commas-and-dangling-keys
+  ;; karamazov-avk, dirge's remaining rungs, each validated by the caller's
+  ;; re-parse. Nothing here invents content: a filled key is null, which the
+  ;; tool's missing-argument check then names precisely.
+  (testing "a trailing comma before a closer is dropped, interior ones too"
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\": \"task\", \"args\": {\"op\": \"list\",}}\n```" {})]
+      (is (= "task" (:name p)))
+      (is (:auto-repaired? p)))
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\": \"t\", \"args\": {\"a\": [1, 2,], \"b\": 3,}}\n```" {})]
+      (is (= "t" (:name p)))
+      (is (= [1 2] (get-in p [:args :a])))))
+  (testing "a comma inside a string is text and is kept"
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\": \"t\", \"args\": {\"s\": \",}\"}}\n```" {})]
+      (is (= ",}" (get-in p [:args :s])))
+      (is (not (:auto-repaired? p)))))
+  (testing "a body stopping after a key is filled with null and closed —
+            the tool's own missing-argument complaint then names the loss"
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\": \"task\", \"args\": {\"op\":\n```" {})]
+      (is (= "task" (:name p)))
+      (is (contains? (:args p) :op))
+      (is (nil? (get-in p [:args :op])))
+      (is (:auto-repaired? p))))
+  (testing "a body stopping INSIDE a string stays a parse error — closing it
+            would ship half a file as a success, the guard close-unbalanced's
+            docstring calls load-bearing"
+    (let [p (fence/parse-tool-call
+             (str "```tool-call\n{\"name\": \"write_file\","
+                  " \"args\": {\"content\": \"half\n```") {})]
+      (is (= "__parse_error__" (:name p))))))
+
 (deftest a-context-overflow-is-recognized-from-the-body
   ;; karamazov-d41: a 500 wearing this message is deterministic — the same
   ;; oversized prompt fails identically every time — so post-once classifies

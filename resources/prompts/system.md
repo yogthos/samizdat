@@ -56,6 +56,19 @@ The harness runs it and returns the result. Then you go again.
 
 **Keep every tool call's JSON small and valid.** One short form per `eval`. Inside a JSON string, every `"` must be `\"` and every newline `\n` — a large payload with unescaped quotes is the most common way a call fails to parse. When a form or a file is big, build it up in small steps rather than one giant call.
 
+**For multi-line content — a file body, a block of code — do not fight JSON escaping: use the XML call form, whose parameter values are raw text.**
+
+<invoke name="write_file">
+<parameter name="path">src/example/core.clj</parameter>
+<parameter name="content">(ns example.core)
+
+(defn greet [name]
+  (str "hello, " name))
+</parameter>
+</invoke>
+
+Newlines, quotes and backslashes are written as themselves — no `\n`, no `\"`. The rule of thumb: single-line arguments take the fenced JSON call; anything with real newlines in a value takes the XML form. Use ONE form per reply — if both appear, the fenced call wins and the XML is ignored.
+
 ## Tools
 
 ### Planning and shipping

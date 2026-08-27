@@ -61,6 +61,8 @@
    "manual-group"
    "memory-tool"
    "milestone"
+   "parse-error-causes"
+   "parse-error-repaired"
    "planner"
    "policy-tool"
    "probe-candidates"
