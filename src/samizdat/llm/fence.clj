@@ -450,6 +450,28 @@
          :args (reduce (fn [acc [_ k v]] (assoc acc (keyword k) (xml-value v)))
                        {} (re-seq parameter-re (or body "")))}))))
 
+;; Qwen's chat template wraps its native calls in <tool_call> tags around
+;; plain JSON. Under a prefilled fence the model emits prose then its native
+;; wrapper (arm-1, run e0c7662f: eight straight reviewer turns), and the
+;; fence's closer scan consumes the CLOSING tag as the fence closer — so the
+;; body carries an unclosed opener, which is why the pattern accepts
+;; end-of-input as the terminator.
+(def ^:private tagged-call-re
+  #"(?s)<tool[-_]call>\s*(.*?)\s*(?:</tool[-_]calls?>|\z)")
+
+(defn- tagged-call
+  "The last <tool_call>-tagged JSON object in `s`, as {:name :args}, or nil.
+  The same validation a fence body gets — it must parse and carry a name —
+  so tags wrapping prose stay a non-call rather than becoming one."
+  [s]
+  (when-let [m (last (re-seq tagged-call-re (or s "")))]
+    (let [{:keys [ok value]} (read-json (repair-control-chars
+                                         (str/trim (str (second m)))))]
+      (when (and ok (map? value) (string? (:name value))
+                 (not (str/blank? (:name value))))
+        {:name (:name value)
+         :args (let [a (:args value)] (if (map? a) a {}))}))))
+
 (defn reattach
   "The complete assistant turn, given what the request was prefilled with.
 
@@ -543,8 +565,10 @@
     ;; reason :unfenced? is — a run where the model never once used the
     ;; documented format is a fact about the arm, not a detail.
     (if (empty? bodies)
-      (when-let [x (xml-call response)]
-        (assoc x :fences 0 :xml-call? true))
+      (or (when-let [x (xml-call response)]
+            (assoc x :fences 0 :xml-call? true))
+          (when-let [x (tagged-call response)]
+            (assoc x :fences 0 :tagged-call? true)))
       (when (seq bodies)
       (let [body (peek bodies)
             n (count fenced)
@@ -595,8 +619,11 @@
           ;; advice. Tried only where the JSON path has already failed, so a
           ;; well-formed JSON fence never reaches it.
           (let [fail (fn [msg]
-                       (if-let [x (xml-call body)]
-                         (merge base (assoc x :xml-call? true))
+                       (if-let [x (or (some-> (tagged-call body)
+                                              (assoc :tagged-call? true))
+                                      (some-> (xml-call body)
+                                              (assoc :xml-call? true)))]
+                         (merge base x)
                          (parse-error msg base)))]
           (if-not needed-repair?
             (fail

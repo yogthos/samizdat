@@ -72,6 +72,34 @@
                   " \"args\": {\"content\": \"half\n```") {})]
       (is (= "__parse_error__" (:name p))))))
 
+(deftest a-native-tool-call-tag-is-the-call-it-unmistakably-is
+  ;; Live on arm-1 (run e0c7662f, R0 turns 9-16): Qwen's own chat template
+  ;; emits <tool_call>{json}</tool_call>, and under a prefilled fence the
+  ;; model wrapped PERFECTLY VALID JSON in its native tags, with prose
+  ;; before it. Eight straight reviewer turns were scolded for a call each
+  ;; had made correctly in the format the model was trained on.
+  (testing "inside a fence, prose then tagged JSON"
+    (let [p (fence/parse-tool-call
+             (str "```tool-call\n"
+                  "I will output only the call now.\n\n"
+                  "<tool_call>\n"
+                  "{\"name\": \"task\", \"args\": {\"action\": \"claim\", \"id\": \"sz-9\"}}\n"
+                  "</tool_call>\n```")
+             {})]
+      (is (= "task" (:name p)))
+      (is (= "claim" (get-in p [:args :action])))))
+  (testing "bare in the response, no fence at all"
+    (let [p (fence/parse-tool-call
+             (str "Claiming the task.\n<tool_call>\n"
+                  "{\"name\": \"read_file\", \"args\": {\"path\": \"a.clj\"}}\n"
+                  "</tool_call>")
+             {})]
+      (is (= "read_file" (:name p)))))
+  (testing "tags wrapping garbage stay a non-call"
+    (is (= "__parse_error__"
+           (:name (fence/parse-tool-call
+                   "```tool-call\n<tool_call>\nnot json\n</tool_call>\n```" {}))))))
+
 (deftest an-xml-call-inside-a-fence-is-the-call-it-unmistakably-is
   ;; Live on arm-1 (run e0c7662f, turns 7-8): after a parse error the
   ;; recovery PREFILLS "```tool-call\n", and the model — following the
