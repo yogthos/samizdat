@@ -347,10 +347,18 @@
                          {:branch-id (:id branch) :turn turn
                           :tool-name "__provider_error__" :result error
                           :category "neutral"})
-   (state/add-message branch "user"
-                      (str "[harness] The provider call failed: " error
-                           " Try again.")
-                      {:turn turn})))
+   (if (= :context-overflow reason)
+     ;; The prompt outgrew the window. 'Try again' is exactly wrong here —
+     ;; the failure is upstream of the model seeing anything, the next
+     ;; assemble would be just as oversized, and APPENDING a message grows
+     ;; the very thing that overflowed. Squeeze the branch's compaction
+     ;; budget instead (karamazov-d41): the next render fits, and the model
+     ;; continues none the wiser, which is how compaction always works.
+     (state/squeeze-context branch)
+     (state/add-message branch "user"
+                        (str "[harness] The provider call failed: " error
+                             " Try again.")
+                        {:turn turn}))))
 
 (defn absorb-response
   "Fold the model's response into the branch.

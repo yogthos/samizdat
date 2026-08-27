@@ -176,6 +176,18 @@
  ;; place by being placeholders and nothing else.
  "(?i)none\\.?|n/?a\\.?|\\[.*\\]"
 
+ :context-overflow
+ ;; How providers word a context-window overflow (karamazov-d41). A 500
+ ;; carrying one of these is DETERMINISTIC — the same oversized prompt fails
+ ;; the same way every time — so it must never be retried on backoff (the
+ ;; Qwen baseline burned 3 attempts x up to 32s per turn against llama-server's
+ ;; wall) and instead triggers the context squeeze (gates.edn
+ ;; :context-squeeze). A regex PATTERN STRING matched against the raw
+ ;; response body; it has to track how endpoints actually word it:
+ ;; llama.cpp says 'Context size has been exceeded', OpenAI-compatible
+ ;; servers say 'maximum context length' / 'context_length_exceeded'.
+ "(?i)context (size|length|window)|context_length_exceeded|maximum context"
+
  :shell-refusal
  ;; How the shell policy phrases a refusal. Read to turn a refused command
  ;; into a durable project fact, which is worth more than it looks: it saves

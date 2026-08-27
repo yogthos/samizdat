@@ -585,6 +585,19 @@
   (cond-> (update branch :artifacts conj artifact)
     (:tier artifact) (update :tiers-seen (fnil conj #{}) (:tier artifact))))
 
+(defn squeeze-context
+  "Tighten this branch's compaction budget one notch (karamazov-d41).
+
+  Set by the loop when the provider says the prompt outgrew its context
+  window. The squeeze level scales the gates.edn :context-budget compaction
+  numbers down (infer/render applies gates.edn :context-squeeze), so the
+  NEXT assemble fits where this one did not — recovery is harness-side and
+  invisible to the model, exactly like compaction always is. Never unwound:
+  a branch that hit the wall once will grow back into it, and the level is
+  the durable record that it did."
+  [branch]
+  (update branch :context-squeeze (fnil inc 0)))
+
 (defn add-turn
   "Record one turn on the branch. `entry` carries :turn, :tool, :category, and
   for a failure the :error it produced — the last so `repeating-failure?` can

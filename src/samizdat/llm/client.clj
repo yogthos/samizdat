@@ -41,8 +41,10 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [jolt.http-client :as http]
+            [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.message :as message]
+            [samizdat.util :as util]
             [samizdat.session :as session]))
 
 (def default-max-retries 2)
@@ -92,6 +94,25 @@
                       parse-long)]
     (when-let [s (or secs reset)]
       (* 1000 (max 0 s)))))
+
+(def ^:private context-overflow-re
+  ;; wordlists.edn :context-overflow — how endpoints word a window overflow.
+  ;; Data, because the wording is theirs to change and the supervisor's to
+  ;; track (karamazov-d41).
+  (util/generation-cache lexicon/gen
+                         #(re-pattern (lexicon/wordlist :context-overflow))))
+
+(defn context-overflow?
+  "Whether this response body says the prompt outgrew the context window.
+
+  A 500 wearing this message is DETERMINISTIC — the same oversized prompt
+  fails identically every time — so retrying it on backoff burns wall-clock
+  to learn nothing. Observed live on the Qwen baseline (run b8a2b72c,
+  llama-server -c 32768): a branch past the wall re-sent the same prompt
+  three times with up to 32s of backoff per turn (karamazov-d41). Matched on
+  the RAW body so an undecodable error page still classifies."
+  [raw-body]
+  (boolean (re-find (context-overflow-re) (str raw-body))))
 
 (defn classify
   "Decide what to do about a non-2xx response.
@@ -171,13 +192,19 @@
            :error (str (adapter/display-name adapter)
                        " reply had no completion in it: "
                        (subs (str (:body resp)) 0 (min 300 (count (str (:body resp))))))}))
-      {:outcome (classify adapter status decoded)
-       :headers (:headers resp)
-       :error (str (adapter/display-name adapter) " error " status
-                   (when-let [m (adapter/error-message adapter decoded)] (str " — " m))
-                   (when-not decoded
-                     (str " — " (subs (str (:body resp))
-                                      0 (min 300 (count (str (:body resp))))))))})))
+      ;; A context overflow outranks the status-code ladder: it is the one
+      ;; 5xx that is deterministic, and the reason travels from where it is
+      ;; detected so the loop can respond by compacting rather than retrying
+      ;; (karamazov-d41).
+      (let [overflow? (context-overflow? (:body resp))]
+        (cond-> {:outcome (if overflow? :fatal (classify adapter status decoded))
+                 :headers (:headers resp)
+                 :error (str (adapter/display-name adapter) " error " status
+                             (when-let [m (adapter/error-message adapter decoded)] (str " — " m))
+                             (when-not decoded
+                               (str " — " (subs (str (:body resp))
+                                                0 (min 300 (count (str (:body resp))))))))}
+          overflow? (assoc :reason :context-overflow))))))
 
 ;; --- the public surface -----------------------------------------------------
 

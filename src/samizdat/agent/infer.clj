@@ -76,6 +76,10 @@
   {:id (:id branch)
    :messages (vec (:messages branch))
    :turns (vec (:turns branch))
+   ;; The overflow squeeze level (state/squeeze-context) rides the tape so
+   ;; render can scale the compaction budget without reaching back into the
+   ;; branch (karamazov-d41).
+   :squeeze (:context-squeeze branch)
    :prefill (:prefill branch)
    :force-tool (:force-tool branch)})
 
@@ -91,6 +95,24 @@
       (assoc :messages (:messages tape))
       (dissoc :prefill :force-tool)))
 
+(defn squeezed-budget
+  "The compaction budget after this tape's overflow squeeze (karamazov-d41).
+
+  A branch that overflowed the provider's window carries a squeeze level
+  (state/squeeze-context); each level scales :keep-pairs and
+  :compaction-chars down by the policy's :factor, floored at the minimums so
+  a squeezed branch still sees its current exchange. Level 0 (or nil) is the
+  budget untouched."
+  [{:keys [keep-pairs compaction-chars]} squeeze
+   {:keys [factor min-keep-pairs min-compaction-chars]}]
+  (let [scale (if (pos? (or squeeze 0))
+                (Math/pow (double factor) (double squeeze))
+                1.0)]
+    {:keep-pairs (max (long min-keep-pairs)
+                      (long (* keep-pairs scale)))
+     :threshold-chars (max (long min-compaction-chars)
+                           (long (* compaction-chars scale)))}))
+
 (defn render
   "The tape as it goes to the wire: older turns compacted, recent ones
   verbatim. The tape's own array is untouched, so the journal and a resume
@@ -100,10 +122,11 @@
   llm.message is pure message shaping and stays that way, so the numbers that
   decide how much history survives are supplied by the caller that knows about
   policy. gates.edn :context-budget owns them."
-  [{:keys [messages turns]}]
-  (let [{:keys [keep-pairs compaction-chars]} (gates/threshold :context-budget)]
-    (message/compact messages turns {:keep-pairs keep-pairs
-                                     :threshold-chars compaction-chars})))
+  [{:keys [messages turns squeeze]}]
+  (message/compact messages turns
+                   (squeezed-budget (gates/threshold :context-budget)
+                                    squeeze
+                                    (gates/threshold :context-squeeze))))
 
 ;; --- the effect seam --------------------------------------------------------
 

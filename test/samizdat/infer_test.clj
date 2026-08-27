@@ -10,7 +10,9 @@
   what a turn would do without running one."
   (:require [clojure.test :refer [deftest is testing]]
             [samizdat.agent.infer :as infer]
+            [samizdat.agent.loop :as aloop]
             [samizdat.agent.state :as state]
+            [samizdat.store.journal :as journal]
             [samizdat.tape :as tape]))
 
 (defn- fenced
@@ -44,8 +46,10 @@
                  :prefill "```tool-call\n"
                  :force-tool {:name "done"})
         t (infer/of-branch b)]
-    (is (= #{:id :messages :turns :prefill :force-tool} (set (keys t)))
-        "nothing else about a branch can change what the model is sent")
+    (is (= #{:id :messages :turns :prefill :force-tool :squeeze} (set (keys t)))
+        "nothing else about a branch can change what the model is sent —
+         :squeeze is on the list because the overflow squeeze legitimately
+         changes how much history the wire sees (karamazov-d41)")
     (is (= "B1" (:id t)))
     (is (= "```tool-call\n" (:prefill t)))))
 
@@ -177,3 +181,46 @@
         _ (infer/ab (fn [_] (replying "ok" seen)) base-tape [:a])]
     (is (= 2 (count (:messages (first @seen))))
         "no probe turn is invented when the caller did not ask for one")))
+
+;; --- the context squeeze (karamazov-d41) ------------------------------------
+
+(deftest the-overflow-squeeze-scales-the-compaction-budget
+  (let [budget {:keep-pairs 10 :compaction-chars 50000}
+        policy {:factor 0.5 :min-keep-pairs 1 :min-compaction-chars 5000}]
+    (testing "no squeeze, no change"
+      (is (= {:keep-pairs 10 :threshold-chars 50000}
+             (infer/squeezed-budget budget nil policy)))
+      (is (= {:keep-pairs 10 :threshold-chars 50000}
+             (infer/squeezed-budget budget 0 policy))))
+    (testing "each level halves"
+      (is (= {:keep-pairs 5 :threshold-chars 25000}
+             (infer/squeezed-budget budget 1 policy)))
+      (is (= {:keep-pairs 2 :threshold-chars 12500}
+             (infer/squeezed-budget budget 2 policy))))
+    (testing "the floors hold no matter how deep the squeeze"
+      (is (= {:keep-pairs 1 :threshold-chars 5000}
+             (infer/squeezed-budget budget 9 policy))
+          "a squeezed branch still sees its current exchange"))))
+
+(deftest the-squeeze-rides-the-tape
+  (let [b (-> (state/new-branch {:id "B1" :problem "p"})
+              state/squeeze-context
+              state/squeeze-context)]
+    (is (= 2 (:context-squeeze b)))
+    (is (= 2 (:squeeze (infer/of-branch b))))))
+
+(deftest a-context-overflow-squeezes-instead-of-asking-for-a-retry
+  (with-redefs [journal/record-turn! (fn [& _] nil)]
+    (let [b (state/new-branch {:id "B1" :problem "p"})
+          n (count (:messages b))]
+      (testing "overflow: squeeze, and DO NOT append — a message grows the
+                very thing that overflowed, and the model never saw the
+                failure anyway"
+        (let [b' (aloop/provider-error-step {} b 3 "context exceeded"
+                                            :context-overflow)]
+          (is (= 1 (:context-squeeze b')))
+          (is (= n (count (:messages b'))))))
+      (testing "any other provider failure keeps the try-again message"
+        (let [b' (aloop/provider-error-step {} b 3 "boom" :call-failed)]
+          (is (nil? (:context-squeeze b')))
+          (is (= (inc n) (count (:messages b')))))))))

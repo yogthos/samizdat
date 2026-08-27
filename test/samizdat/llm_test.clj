@@ -38,6 +38,21 @@
 
 (defn- fenced [body] (str "prose before\n```tool-call\n" body "\n```\nprose after"))
 
+(deftest a-context-overflow-is-recognized-from-the-body
+  ;; karamazov-d41: a 500 wearing this message is deterministic — the same
+  ;; oversized prompt fails identically every time — so post-once classifies
+  ;; it :fatal with :reason :context-overflow instead of walking the backoff
+  ;; ladder. The wording is wordlists.edn data, because it is the endpoints'
+  ;; to change.
+  (is (client/context-overflow?
+       "{\"error\":{\"message\":\"Context size has been exceeded.\"}}")
+      "llama-server's wording")
+  (is (client/context-overflow?
+       "This model's maximum context length is 32768 tokens"))
+  (is (client/context-overflow? "code: context_length_exceeded"))
+  (is (not (client/context-overflow? "internal server error")))
+  (is (not (client/context-overflow? nil))))
+
 (deftest a-fence-marker-inside-a-json-string-is-content-not-a-closer
   ;; Qwen baseline run b8a2b72c (karamazov-hpv): the mdlite task builds a
   ;; MARKDOWN CONVERTER, so the file being written contains literal ``` —

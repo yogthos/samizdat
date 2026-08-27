@@ -939,6 +939,20 @@
         Not capability-tunable: these are what the supervisor SEES, and a run
         in trouble is the last one that should be shown less of it."}
 
+ :context-squeeze
+ {:value {:factor 0.5 :min-keep-pairs 1 :min-compaction-chars 5000}
+  :kind :threshold :capability-tunable? true
+  :doc "How hard a context-overflow squeezes a branch's compaction budget
+        (karamazov-d41). When the provider reports the prompt outgrew its
+        window — a DETERMINISTIC failure the retry ladder must not touch —
+        the loop bumps the branch's squeeze level instead of appending a
+        retry message, and render scales :context-budget's :keep-pairs and
+        :compaction-chars by :factor per level, floored at the minimums so
+        a squeezed branch still sees its current exchange. Observed live on
+        the Qwen baseline against llama-server -c 32768: the GLM-sized
+        budget assembled ~33k-token prompts and the branch re-sent them on
+        backoff, burning wall-clock against a wall."}
+
  :context-budget
  {:value {:tool-result-chars   4000
           :file-read-chars     60000
