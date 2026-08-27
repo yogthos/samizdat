@@ -37,6 +37,7 @@
   which is what keeps the originals in the window and the repeat withheld
   until the branch actually changes course."
   (:require [clojure.data.json :as json]
+            [clojure.set :as set]
             [clojure.string :as str]
             [clojure.walk :as walk]))
 
@@ -89,15 +90,16 @@
   the world, so a repeated read-like call after it may legitimately answer
   differently — clearing keeps a check-fix-check cycle out of the window.
   Mutators still count amongst themselves: three identical edits IS a storm."
-  [window {:keys [sig mutating? timeout?]} {:keys [window-size]}]
+  [window {:keys [sig mutating? timeout? failed? error]} {:keys [window-size]}]
   ;; No default sizes or thresholds anywhere in this namespace: the numbers
   ;; are policy, and the ONLY place they live is gates.edn (storm-policy
   ;; assembles them). A missing policy key is a caller bug, not a case to
   ;; paper over with a literal src/ would then own.
   (let [w (if mutating? (filterv :mutating? window) (vec window))
-        w (conj w {:sig sig
-                   :mutating? (boolean mutating?)
-                   :timeout? (boolean timeout?)})]
+        w (conj w (cond-> {:sig sig
+                           :mutating? (boolean mutating?)
+                           :timeout? (boolean timeout?)}
+                    failed? (assoc :failed? true :error (str error))))]
     (vec (take-last window-size w))))
 
 (defn mark-timeout
@@ -180,6 +182,44 @@
                  (verify-call? tool-name args (ctx-verify-cmd ctx))))
        (oscillating? (:storm-window branch) (signature tool-name args) policy)))
 
+(defn last-failure-of
+  "The most recent window entry for this signature that failed, or nil — the
+  seam retry-carrying-diagnosis reads (karamazov-g86, after J-Space's rule
+  that a retry must inherit the diagnosis, never go in blank)."
+  [window sig]
+  (->> (rseq (vec window))
+       (filter #(and (= sig (:sig %)) (:failed? %)))
+       first))
+
+;; --- the file-touch streak (karamazov-g86, dirge context_depth.rs) ----------
+
+(defn touched-paths
+  "The file paths one call names, as a set of strings — the :path/:file/:paths
+  arguments, both key spellings. Empty when the call touches no file."
+  [args]
+  (let [args (if (map? args) args {})
+        one (fn [k] (or (get args k) (get args (name k))))
+        ps (concat (some-> (one :path) vector)
+                   (some-> (one :file) vector)
+                   (let [v (one :paths)] (if (coll? v) v (some-> v vector))))]
+    (into #{} (comp (map str) (remove str/blank?)) ps)))
+
+(defn note-file-touch
+  "One dispatched call's effect on the same-file streak: consecutive
+  file-touching calls whose path sets overlap. The tracked set NARROWS to the
+  intersection, so divergent touches eventually break the streak on their
+  own; a call touching no file resets it. Counts calls, not turns — several
+  edits to one file in one turn advance it by several, which is the thrash
+  being watched for."
+  [{:keys [streak files] :or {streak 0 files #{}}} paths]
+  (cond
+    (empty? paths) {:streak 0 :files #{}}
+    (empty? files) {:streak 1 :files paths}
+    :else (let [common (set/intersection files paths)]
+            (if (seq common)
+              {:streak (inc streak) :files common}
+              {:streak 1 :files paths}))))
+
 (defn window-from-turns
   "Rebuild the window from journal turn rows on resume, so a resumed branch
   keeps its protection — unlike repeating-failure?, which resume.clj documents
@@ -193,7 +233,7 @@
   over-counting a repeat after resume errs toward protection."
   [rows policy]
   (reduce
-   (fn [w {:keys [tool_name args result]}]
+   (fn [w {:keys [tool_name args category result]}]
      (let [parsed (when (tracked? policy tool_name)
                     (try (json/read-str (str args) :key-fn keyword)
                          (catch Throwable _ nil)))]
@@ -202,8 +242,17 @@
                     (verify-call? tool_name parsed (:verify-cmd policy))))
          w
          (let [sig (signature tool_name parsed)
-               w (note-call w {:sig sig
-                               :mutating? (mutating? policy tool_name)}
+               failed? (= "failure" (str category))
+               digest-chars (:error-digest-chars policy)
+               w (note-call w (cond-> {:sig sig
+                                       :mutating? (mutating? policy tool_name)}
+                                failed?
+                                (assoc :failed? true
+                                       :error (let [s (str result)]
+                                                (if (and digest-chars
+                                                         (> (count s) digest-chars))
+                                                  (subs s 0 digest-chars)
+                                                  s))))
                             policy)]
            (if (str/includes? (str result) "[timed out after")
              (mark-timeout w sig)

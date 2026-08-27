@@ -101,6 +101,18 @@ withheld: repeated reads are the studying gate's business, and storm blocking
 a `done` that last-call is forcing would be one guard punishing what another
 demands — a conflict dirge documents hitting three times.
 
+Three guards ride the same machinery (karamazov-g86): the **file-touch
+streak** (`storm/note-file-touch`) counts consecutive calls whose path sets
+overlap, narrowing to the intersection, and the `:file-thrash` gate reminds a
+branch grinding one file what the task asked for — settled by rule, met when
+the streak actually broke. **Retry-diagnosis** quotes the previous failure
+back when the same call fails *differently* (the case `repeating-failure?`
+cannot see — it needs the identical error): a retry inherits the diagnosis,
+never goes in blank. And the **completeness rung** in `:ship-gates` refuses a
+`done` whose answer says, in one first-person sentence with a work verb and
+no second-person address, that work remains — the silent-exhaustion tell; its
+wordlists (`:completeness-*`) carry dirge's warning against widening them.
+
 ### The winner rubric
 
 `:finished-key` is a vector of EDN forms compiled at load into a ranking tuple,

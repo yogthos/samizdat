@@ -198,4 +198,34 @@
  ;; if the refusal text is reworded and this is not, the fact silently stops
  ;; being recorded and nothing fails.
  "(?i)needs approval|not on the allow list"
+
+ ;; --- the completeness rung (karamazov-g86, dirge completeness_gate.rs) ----
+ ;; A `done` whose answer says, in the model's own first-person voice, that
+ ;; work remains — the most ordinary way for an autonomous run to end badly,
+ ;; and the one shape with no backstop: it edits real files, runs real
+ ;; checks, claims nothing false, and stops halfway. The rung fires only when
+ ;; ONE SENTENCE holds all three: a first-person forward marker, a work verb,
+ ;; and no second-person address (advice to the reader is not a plan to
+ ;; continue). dirge's warning travels with the lists: do NOT widen the
+ ;; patterns to catch more — the conjunction IS the control, and widening any
+ ;; one list turns honest summaries into blocked ships.
+
+ :completeness-forward
+ ;; First-person forward markers: the model announcing ITS OWN next step.
+ #{"i will" "i'll" "i still" "i haven't" "i have not" "i need to"
+   "i plan to" "i intend to" "next i" "then i" "i am going to"
+   "i'm going to"}
+
+ :completeness-work-verbs
+ ;; The verbs that make a forward-marked sentence a plan to keep working
+ ;; rather than a remark. Deliberately concrete engineering verbs only.
+ #{"implement" "add" "write" "fix" "finish" "complete" "wire" "test"
+   "verify" "refactor" "handle" "integrate" "extend" "hook" "migrate"
+   "polish" "clean"}
+
+ :completeness-second-person
+ ;; Second-person address: the sentence is advice to the reader, not the
+ ;; model's own plan, and advising follow-ups is a legitimate way to end.
+ #{"you " "your " "you'll" "you can" "you should" "you may" "you might"
+   "let me know"}
 }

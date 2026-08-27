@@ -481,22 +481,37 @@
   changes course. Tracked dispatched calls reset the strikes; exempt calls
   leave them alone — a read between two withheld attempts is still the same
   storm."
-  [branch {:keys [tool sig result refused? verify?]} policy]
+  [branch {:keys [tool sig paths result refused? verify?]} policy]
   (let [tracked? (and (storm/tracked? policy tool)
                       ;; A verify call is invisible to the guard end to end:
                       ;; never counted, never withheld (see storm/verify-call?).
                       (not verify?))
         storm-refused? (contains? #{:storm :storm-oscillation}
                                   (:refusal-rule result))
+        failed? (= :failure (:category result))
+        digest-chars (:error-digest-chars policy)
         line (str "withheld repeat: " sig)]
     (cond-> branch
       (and tracked? (not refused?))
       (-> (update :storm-window storm/note-call
                   {:sig sig
                    :mutating? (storm/mutating? policy tool)
-                   :timeout? (boolean (:timeout? result))}
+                   :timeout? (boolean (:timeout? result))
+                   :failed? failed?
+                   ;; The digest a deliberate retry inherits (retry-diagnosis)
+                   :error (when failed?
+                            (let [s (str (:result result))]
+                              (if (and digest-chars (> (count s) digest-chars))
+                                (subs s 0 digest-chars)
+                                s)))}
                   policy)
           (assoc :storm-strikes 0))
+
+      ;; The same-file streak counts every dispatched call, exempt tools
+      ;; included — re-reading and re-editing one file are the same thrash.
+      ;; A refused call touched nothing and leaves the streak alone.
+      (not refused?)
+      (update :file-touch storm/note-file-touch paths)
 
       storm-refused?
       (update :storm-strikes (fnil inc 0))
@@ -510,6 +525,11 @@
   branch bookkeeping the outcome demands. Returns {:branch :result :tool}."
   [ctx branch turn parsed]
   (let [tool (:name parsed)
+        sig (storm/signature tool (:args parsed))
+        ;; Read BEFORE this call is noted: has this exact call failed before?
+        ;; If it fails again — even differently — the retry inherits the
+        ;; previous diagnosis below (J-Space's rule: never a blank retry).
+        prev-fail (storm/last-failure-of (:storm-window branch) sig)
         ;; Phase policy is consulted before dispatch: a refused call never
         ;; reaches a tool, and the refusal is journalled like any other turn
         ;; (vf-b25, vf-eaw). One place owns the refusals — tools/phase-refusal.
@@ -542,7 +562,8 @@
                                                   (:category result))
                                              (str (:result result)))})
                    (note-storm {:tool tool
-                                :sig (storm/signature tool (:args parsed))
+                                :sig sig
+                                :paths (storm/touched-paths (:args parsed))
                                 :result result
                                 :refused? (some? refusal)
                                 :verify? (storm/verify-call?
@@ -560,6 +581,23 @@
                                " the call, or change technique — a"
                                " different tool, a smaller claim, or a"
                                " different encoding of the same one."))
+                 result)
+        ;; The same call failing DIFFERENTLY is the case repeating-failure?
+        ;; cannot see (it needs the identical error), and a blank retry is
+        ;; the loop J-Space names: the retry must inherit the diagnosis
+        ;; (karamazov-g86). Both failures are put side by side; two
+        ;; different failures from one call usually mean the call itself is
+        ;; wrong.
+        result (if (and prev-fail
+                        (= :failure (:category result))
+                        (not= (str (:error prev-fail))
+                              (subs (str (:result result))
+                                    0 (min (count (str (:result result)))
+                                           (count (str (:error prev-fail)))))))
+                 (update result :result
+                         #(str % "\n\n"
+                               (prompt/render "retry-diagnosis"
+                                              {:previous (:error prev-fail)})))
                  result)
          branch (if-let [a (:artifact result)]
                    (state/add-artifact branch (assoc a :turn turn))

@@ -335,6 +335,27 @@
  {:value 2 :kind :re-fire-guard :capability-tunable? true
   :doc "How often the :storm gate may force a give_up on one branch."}
 
+ :storm-error-digest-chars
+ {:value 160 :kind :threshold :capability-tunable? true
+  :doc "How much of a failed call's error text the storm window remembers per
+        entry, quoted back when the same call is retried (retry-diagnosis).
+        A digest, not the whole error: the window lives on the branch and
+        rides every checkpoint."}
+
+ :file-thrash-threshold
+ {:value 8 :kind :threshold :capability-tunable? true
+  :doc "Consecutive file-touching calls whose path sets overlap before the
+        file-thrash gate reminds the branch what it set out to do (dirge
+        context_depth.rs, its recommended value). Counts calls, not turns;
+        the tracked set narrows to the intersection so divergent touches
+        break the streak on their own; a no-file call resets it."}
+
+ :max-file-thrash-nudges
+ {:value 1 :kind :re-fire-guard :capability-tunable? true
+  :doc "How often the file-thrash gate may fire on one branch. One-shot per
+        run by default: it is a reminder, and a reminder repeated is a nag
+        the settle table will record being ignored."}
+
  :timeout-failure-weight
  {:value 2 :kind :threshold :capability-tunable? true
   :doc "What a timed-out call adds to consecutive-failures, where an ordinary
@@ -1312,7 +1333,20 @@
                 (not (engages-problem? problem answer)))
      :message-form (str "This answer shares no substantive term with the problem"
                         " statement. Whatever it establishes, it is not an answer to"
-                        " the question that was asked.")}]
+                        " the question that was asked.")}
+    ;; karamazov-g86, dirge completeness_gate.rs: the silent-exhaustion tell.
+    ;; One sentence in the model's own voice planning more work means the run
+    ;; is stopping halfway and saying so. The detection conjunction and its
+    ;; do-not-widen warning live with the wordlists
+    ;; (:completeness-* in wordlists.edn); this rung is just the decision.
+    {:name :completeness
+     :when (unfinished-claim? answer)
+     :message-form (str "One sentence of this answer says, in your own voice,"
+                        " that work remains — a first-person plan to do more"
+                        " is not a result. Either do that work now and finish"
+                        " again, or restate the answer as what IS done and put"
+                        " what is left on the board (the task tool), so the"
+                        " record is honest either way.")}]
    :kind :threshold :capability-tunable? false
    :doc "The lexical ship rungs (drg-4026 #44) — adding a rung is a data
          edit; the evidence computation stays in ship.clj."}
@@ -1697,6 +1731,25 @@
                              " — do not retry these:\n"
                              (str/join "\n" (map #(str "- " %) earlier)))))
    :prediction "the branch retracts, decomposes, or changes technique"
+   :window 3}
+
+  {:gate :file-thrash
+   :priority 9.5
+   :budget :max-file-thrash-nudges
+   :doc "The same-file streak (karamazov-g86, dirge context_depth.rs):
+         consecutive calls all touching the same file(s) is grinding, not
+         iterating — the branch has narrowed to one spot and lost the task.
+         Between prologue-cap and progress-stalled: sharper than the generic
+         stall (it names the files), broader than the build-phase prologue.
+         Settles by rule, not by tool: met when the streak actually broke."
+   :when (>= (get-in branch [:file-touch :streak] 0)
+             (threshold :file-thrash-threshold))
+   :message-form (str (prompt "file-thrash")
+                      (when-let [fs (seq (get-in branch [:file-touch :files]))]
+                        (str "\n\nThe files in the streak: "
+                             (str/join ", " (sort fs)))))
+   :prediction "the branch touches a different file, steps back to a no-file
+                action, or closes the task"
    :window 3}
 
   {:gate :progress-stalled

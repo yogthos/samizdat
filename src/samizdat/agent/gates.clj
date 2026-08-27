@@ -101,6 +101,7 @@
    :min-cycles (threshold :storm-min-cycles)
    :strikes-to-force (threshold :storm-strikes-to-force)
    :verify-exempt? (boolean (threshold :storm-verify-exempt))
+   :error-digest-chars (threshold :storm-error-digest-chars)
    :exempt-tools (or (tool-vocab :storm-exempt) #{})
    :mutating-tools (or (tool-vocab :storm-mutating) #{})})
 

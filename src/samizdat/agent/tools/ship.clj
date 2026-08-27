@@ -58,6 +58,40 @@
   (util/generation-cache lexicon/gen
                          #(re-pattern (lexicon/wordlist :tool-version))))
 
+;; The completeness rung's three lists (karamazov-g86), wordlists.edn data
+;; like every vocabulary above.
+(def ^:private completeness-forward
+  (util/generation-cache lexicon/gen #(lexicon/wordlist :completeness-forward)))
+(def ^:private completeness-work-verbs
+  (util/generation-cache lexicon/gen #(lexicon/wordlist :completeness-work-verbs)))
+(def ^:private completeness-second-person
+  (util/generation-cache lexicon/gen
+                         #(lexicon/wordlist :completeness-second-person)))
+
+(defn unfinished-claim?
+  "Whether the answer says, in the model's own first-person voice, that work
+  remains (dirge completeness_gate.rs, karamazov-g86). Fires only when ONE
+  SENTENCE holds all three: a first-person forward marker, a concrete work
+  verb (exact token, so 'latest' cannot read as 'test'), and no
+  second-person address — advice to the reader is a legitimate ending, a
+  plan to keep working is not. The conjunction IS the control: a run that
+  edits real files, verifies, claims nothing false, and stops halfway is the
+  most ordinary bad ending an autonomous run has, and this is its one
+  lexical tell. The lists are wordlists.edn data; dirge's warning against
+  widening them travels with the lists."
+  [answer]
+  (let [fwd (completeness-forward)
+        verbs (completeness-work-verbs)
+        second-p (completeness-second-person)]
+    (boolean
+     (some (fn [sentence]
+             (let [s (str " " (str/lower-case (str/trim sentence)) " ")
+                   tokens (set (re-seq #"[a-z']+" s))]
+               (and (some #(str/includes? s %) fwd)
+                    (some tokens verbs)
+                    (not-any? #(str/includes? s %) second-p))))
+           (str/split (str answer) #"[.!?\n]+")))))
+
 (defn answer-tokens
   "Substantive tokens from a proposed answer: numbers and words that are not
   stopwords. Numbers matter most — an answer naming a size, a bound, or a

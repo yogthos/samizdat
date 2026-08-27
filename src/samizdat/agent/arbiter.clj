@@ -174,7 +174,7 @@
   :settle-called vocabulary. Kept beside the `case` below and asserted
   against it by the coherence test, so a gate that falls out of both is
   caught at test time rather than by settling :unmet forever."
-  #{:stuck :prologue-cap :progress-stalled :human-directive})
+  #{:stuck :prologue-cap :progress-stalled :file-thrash :human-directive})
 
 (defn settle
   "Decide whether an open prediction came true, given what the branch did.
@@ -248,6 +248,13 @@
                          (some (set tools-called) (gates/tool-vocab :verification))
                          (zero? (or (:consecutive-mechanics-failures branch-after) 0))))
         (:prologue-cap :progress-stalled) (progressed? branch-before branch-after)
+        ;; Met when the streak actually broke: the branch touched a different
+        ;; file, a no-file call intervened, or the task closed. Reading the
+        ;; streak itself is the only settle that cannot be gamed by naming a
+        ;; tool — the nudge asks for divergence, and divergence is what the
+        ;; counter measures (karamazov-g86).
+        :file-thrash (< (get-in branch-after [:file-touch :streak] 0)
+                        (gates/threshold :file-thrash-threshold))
         :human-directive true
         (tools-met? gate))
       (if late? :met-late :met)
