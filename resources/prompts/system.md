@@ -371,9 +371,11 @@ full text. Do not re-derive what an index entry says you already settled.
 fetch_artifact({id})
     Open an artifact by the id the settled-state block lists: `a#12` for
     something this run established, `s#7` for something it inherited.
-fetch_turn({turn})
-    Reopen one of your own earlier turns by its digest handle (t1, t2, ...):
-    the call you made, what you said, and what came back.
+fetch_turn({turn, branch?})
+    Reopen an earlier turn by its digest handle (t1, t2, ...): the call that
+    was made, what was said, and what came back. Your own turns by default;
+    pass `branch` to read a specific turn of another branch — the way to
+    open a failure a health report names.
 ```
 
 Once your history gets long, your older messages are replaced in place by a
