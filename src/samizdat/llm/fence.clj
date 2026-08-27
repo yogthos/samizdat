@@ -218,19 +218,50 @@
       (str input " null")
       input)))
 
-(defn repair-json
-  "One repair pass over a tool-call body, cheapest and safest first: control
-  characters inside strings, trailing commas, a dangling key at the end,
-  then unbalanced closers. Order matters — every later scan has to see the
-  string boundaries the control-char pass leaves intact, and the closers
-  must be appended after the dangling key is filled or they would close an
-  object mid-entry."
+(defn default-repair
+  "The built-in repair ladder, cheapest and safest first: control characters
+  inside strings, trailing commas, a dangling key at the end, then
+  unbalanced closers. Order matters — every later scan has to see the string
+  boundaries the control-char pass leaves intact, and the closers must be
+  appended after the dangling key is filled or they would close an object
+  mid-entry.
+
+  This is the FALLBACK composition. The rungs are mechanism — lego blocks —
+  but which rungs run, and in what order, is a composition, and composition
+  is the workflow layer's business: resources/manifests/repair.edn wires the
+  same rungs as cells, the system installs it below, and a project can
+  reorder, drop, or add a rung at runtime through the ordinary manifest
+  mutation path. This chain exists so a bare REPL, a unit test, or a broken
+  repair manifest still parses calls."
   [^String input]
   (-> input
       repair-control-chars
       strip-trailing-commas
       fill-dangling-key
       close-unbalanced))
+
+(def ^:private installed-repair (atom nil))
+
+(defn install-repair!
+  "Install the workflow-layer repair composition — a fn from body to
+  repaired body, typically one that runs the project's `repair` manifest.
+  nil uninstalls. The seam is an install point rather than a require because
+  fence sits below the workflow layer in the require graph and must not
+  reach up into it."
+  [f]
+  (reset! installed-repair f))
+
+(defn repair-json
+  "One repair pass over a tool-call body: the installed composition when a
+  system has installed one, else the built-in default. FAIL-OPEN, and that
+  is load-bearing: a repair manifest the agent broke mid-edit must degrade
+  to the default chain, never take parsing down with it — the mutation
+  protocol validates saves, but the seam does not get to assume it."
+  [^String input]
+  (if-let [f @installed-repair]
+    (let [out (try (f input) (catch Throwable _ nil))]
+      (if (string? out) out (default-repair input)))
+    (default-repair input)))
 
 (defn- parse-error [msg extra]
   (merge {:name "__parse_error__" :args {} :parse-error msg} extra))

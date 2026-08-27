@@ -41,7 +41,10 @@
             [samizdat.lexicon :as lexicon]
             [samizdat.config :as config]
             [samizdat.llm.client :as llm-client]
+            [samizdat.llm.fence :as fence]
             [samizdat.llm.registry :as registry]
+            [samizdat.manifests :as manifests]
+            [mycelium.core :as myc]
             [samizdat.session :as session]
             [samizdat.lsp.client :as lsp-client]
             [samizdat.store.db :as db]
@@ -139,6 +142,17 @@
          ;; (a bare REPL, a unit test) the same reads fall back to the
          ;; templates, which is what the harness did before the store existed.
          _ (bind-project! c)
+         ;; The repair ladder is a COMPOSITION, so the workflow layer owns it:
+         ;; the `repair` manifest wires the fence's rung fns as cells, and
+         ;; this install is how the fence — which sits below the workflow
+         ;; layer and cannot require it — runs the project's version. Resolved
+         ;; per call through compiled-manifest, so a manifest or cell edit
+         ;; takes effect on the very next malformed call; fence's repair-json
+         ;; fails open to its built-in chain if the manifest is broken.
+         _ (fence/install-repair!
+            (fn [body]
+              (:body (myc/run-compiled (manifests/compiled-manifest "repair")
+                                       {} {:body body}))))
          server (adapter/run-server handler {:port (get-in cfg [:http :port])})]
      (reset! system {:config cfg :conn c :server server})
      (log/info "samizdat up on port" (get-in cfg [:http :port])
@@ -178,6 +192,10 @@
                                  (log/warn "run" rid "did not stop within 15s;"
                                            "closing the system under it")))))]
                        ["http server" #(adapter/stop-server (:server s))]
+                       ;; Uninstall so a bare REPL after stop! parses with the
+                       ;; built-in chain instead of resolving manifests against
+                       ;; an unbound store.
+                       ["repair seam" #(fence/install-repair! nil)]
                        ["lsp clients" #(lsp-client/shutdown-all!)]
                        ;; Unbind BEFORE the connection closes: a userspace read
                        ;; against a closed handle would throw where the same

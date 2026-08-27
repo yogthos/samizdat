@@ -50,7 +50,8 @@
   binary (same reasoning as cells/shipped-cells and prompt/shipped-prompts).
   Pinned against the directory by workflow-test."
   ["loop" "beam" "critic" "orchestrator" "probe" "review" "reviewer"
-   "supervisor" "worker" "team" "board" "board-bt" "feature" "decompose"])
+   "supervisor" "worker" "team" "board" "board-bt" "feature" "decompose"
+   "repair"])
 
 (defn manifest-resource
   "The factory resource path a manifest name seeds from, e.g. \"loop\" ->

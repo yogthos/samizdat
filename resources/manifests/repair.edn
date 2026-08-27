@@ -1,0 +1,25 @@
+;; The tool-call repair ladder, as a composition (karamazov-avk follow-up).
+;;
+;; A malformed tool-call body flows through these rungs in order; the caller
+;; (fence/repair-json, via the seam the system installs at startup) re-parses
+;; the result and repairs are only ever accepted when the re-parse succeeds.
+;; The rungs are core scanners in samizdat.llm.fence; the cells are thin
+;; wrappers in resources/cells/repair.clj; THIS file is the decision — which
+;; rungs, in what order. Drop, reorder, or add a rung through the ordinary
+;; manifest mutation path and the next malformed call takes the new ladder.
+;;
+;; Order is load-bearing: control-chars first so every later string-aware
+;; scan sees intact string boundaries, closers last so they land after the
+;; dangling key is filled. If you add a rung, say here what it fixes and why
+;; its position is right — the next editor gets the reasoning, not just the
+;; wiring.
+{:description "The tool-call repair ladder: escape control characters inside strings, drop trailing commas, fill a dangling key with null, append missing closers. Edited like any manifest; the next malformed call takes the new ladder. Repairs must only make a parse possible - a rung that could fabricate content does not belong on it."
+ :cells {:start    :repair/control-chars
+         :commas   :repair/trailing-commas
+         :dangling :repair/dangling-key
+         :closers  :repair/close-unbalanced}
+
+ :edges {:start    :commas
+         :commas   :dangling
+         :dangling :closers
+         :closers  :end}}
