@@ -1,0 +1,58 @@
+;; The BOARD loop, behavior-tree shape (karamazov-fut; Kelley arXiv 2404.07439
+;; Appendix A.2, the implicit sequence). Same cells and same collaboration
+;; contract as board.edn — one owner per task, a critic on every diff — with
+;; one structural difference: position is RE-DERIVED from current state every
+;; tick by :board/sense, instead of latched in the edges.
+;;
+;; board.edn:            work -> review -> next -> work   (the machine
+;;                       remembers where it is)
+;; this manifest:        every action returns to :sense, which asks, in
+;;                       reverse order: unreviewed change? review it. revise
+;;                       verdict or fresh claim? work it. board refused a
+;;                       claim? finish. workable task? claim it. else finish.
+;;
+;; In a static world the two are identical (Kelley's observation); the
+;; difference appears when the world shifts under the loop — a stale claim
+;; released, a task closed by someone else, a crash resumed — where the plain
+;; machine continues from where it THINKS it is and this one continues from
+;; where the board actually stands. What it structurally prevents is the
+;; latched-position loop: an action whose precondition stopped holding cannot
+;; keep firing on the strength of a counter.
+;;
+;; The review-before-done ordering lives in :board/sense's cond, which is why
+;; the work->review invariant is expressed there rather than as an edge here:
+;; enforcement moved from structure to data, and the sense cell's docstring
+;; carries the argument. Select with config :run :loop "board-bt", or as the
+;; feature loop's implement stage with :run :board-manifest "board-bt".
+{:description "The board loop in behavior-tree shape: same owned tasks and per-diff review as board, but the loop's position is re-derived from the board's actual state every tick instead of remembered by the machine. An A/B variant for the loop-guard epic — prefer board until it has been measured against it."
+ :cells {:start  :board/plan
+         :sense  :board/sense
+         :next   :board/next
+         :work   :board/work
+         :review :board/review
+         :finish :board/finish}
+
+ :edges {:start  :sense
+         :sense  {:review-due :review
+                  :work-due   :work
+                  :claim-due  :next
+                  :done       :finish}
+         :next   :sense
+         :work   :sense
+         :review :sense
+         :finish :end}
+
+ :dispatches {:sense [[:review-due (fn [d] (= :review-due (:board/sense d)))]
+                      [:work-due   (fn [d] (= :work-due (:board/sense d)))]
+                      [:claim-due  (fn [d] (= :claim-due (:board/sense d)))]
+                      [:done       (fn [d] true)]]}
+
+ :invariants
+ [{:type :must-follow :if :work :then :sense :enforced true
+   :protects "Every piece of work returns to the sense node, whose ordering
+              (review-due before any new claim) is what guarantees no change
+              reaches the board as done without a critic reading it."}
+
+  {:type :must-precede :cell :next :before :work :enforced true
+   :protects "Work is only ever done under a claimed task, so every change has
+              an owner on the board."}]}

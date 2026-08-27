@@ -93,6 +93,7 @@
    "task-none"
    "task-reflection"
    "task-reflection-input"
+   "trajectory-judge"
    "task-required"
    "team-worker"
    "turn-deadline"

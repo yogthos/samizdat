@@ -103,6 +103,26 @@ producing a split both ignored.
 Nested rounds are additive: tasks closed in round *n* stay closed, so a revise
 round works what is left rather than the feature again.
 
+### The behavior-tree variant (`board-bt.edn`)
+
+Same cells, same contract, one structural difference: every action returns to
+a `:board/sense` node that re-derives the loop's position from the blackboard
+and the tasks table each tick, querying preconditions in reverse — unjudged
+outcome → review; revise verdict or fresh claim → work; refused claim → done;
+workable task → claim (Kelley arXiv 2404.07439 Appendix A.2, the implicit
+sequence). In a static world the two manifests are identical; the difference
+appears when the world shifts under the loop (a stale claim released, a task
+closed elsewhere, a crash resumed), where the plain machine continues from
+where it *thinks* it is and this one from where the board actually stands.
+The review-before-done ordering that board.edn enforces as an edge lives here
+in `:board/sense`'s cond order — enforcement moved from structure to data —
+and the root done-check deliberately sits *below* review, because "nothing
+closes unreviewed" outranks reactivity. Selected per-run with
+`:run :loop "board-bt"` or, as the feature loop's implement stage, with
+`:run :board-manifest "board-bt"` (`HARNESS_BOARD_MANIFEST`). An A/B variant
+for the loop-guard epic (karamazov-fut): prefer `board` until it has been
+measured against it.
+
 ## Policy (gates.edn)
 
 | key | what it bounds |

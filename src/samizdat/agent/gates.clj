@@ -104,6 +104,14 @@
    :exempt-tools (or (tool-vocab :storm-exempt) #{})
    :mutating-tools (or (tool-vocab :storm-mutating) #{})})
 
+(defn trajectory-policy
+  "The trajectory-scoring policy (gates.edn :trajectory-score): repeats,
+  stride, criteria, and the not-yet-consulted :abandon-below threshold.
+  See samizdat.agent.trajectory for why the threshold ships before anything
+  reads it."
+  []
+  (threshold :trajectory-score))
+
 (defn- prompt [name]
   (sp/prompt name))
 

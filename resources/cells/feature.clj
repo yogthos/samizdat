@@ -159,7 +159,12 @@
               ctx (if-let [budget (:feature/turn-budget data)]
                     (assoc ctx :max-turns budget)
                     ctx)
-              out (myc/run-compiled (wf/compiled-manifest "board") ctx
+              ;; Which board manifest implements the round is config, so the
+              ;; BT variant (board-bt) can be A/B'd against the plain board
+              ;; without touching this cell (karamazov-fut).
+              board-manifest (or (get-in ctx [:config :run :board-manifest])
+                                 "board")
+              out (myc/run-compiled (wf/compiled-manifest board-manifest) ctx
                                     {:branch branch :turn 1
                                      :board/nested? true
                                      ;; round-scoped branch ids, and the

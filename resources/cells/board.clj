@@ -219,6 +219,14 @@
                :board/attempts 0
                ;; the previous task's review has nothing to say about this one
                :board/findings nil
+               ;; The previous task's outcome and verdict are cleared with it.
+               ;; The plain manifest never reads them again (its edges carry
+               ;; the position), but the BT variant's :board/sense re-derives
+               ;; position from these keys every tick, and a stale outcome
+               ;; would read as work awaiting review (karamazov-fut).
+               :board/outcome nil
+               :board/decision nil
+               :board/answer nil
                ;; The baseline for THIS task, taken now: the review reads the
                ;; diff its owner produced, not the run's accumulated one.
                :board/baseline (gitdiff/baseline root)
@@ -286,6 +294,10 @@
              :board/branch-id bid
              :board/task (if switched? (:id held) task)
              :board/outcome (:verdict out)
+             ;; A fresh outcome is unjudged by definition; clearing the last
+             ;; review's verdict here is what lets :board/sense (the BT
+             ;; variant) read outcome-with-no-decision as review-due.
+             :board/decision nil
              :board/answer (get-in out [:branch :final-answer])
              :branch (:branch out)))))
 
@@ -372,6 +384,44 @@
                              pass? (conj {:task task :answer answer}))
              :board/left (cond-> (or (:board/left data) [])
                            (= :give-up decision) (conj {:task task :answer answer}))))))
+
+(cell/defcell :board/sense
+  {:doc "The BT variant's one decision point (karamazov-fut, Kelley arXiv
+        2404.07439 Appendix A.2, the implicit sequence): re-derive the board
+        loop's position from the blackboard and the tasks table EVERY tick,
+        instead of latching it in the state machine's edges. Preconditions
+        are queried in reverse — the most downstream applicable action wins —
+        so an action whose precondition stopped holding stops firing, and
+        'keep doing step A because a counter says so' is structurally
+        impossible.
+
+        The order IS the policy:
+          1. an outcome with no verdict  -> review   (unjudged work exists)
+          2. a revise verdict            -> work     (same owner, findings)
+          3. a fresh unworked claim      -> work
+          4. the board refused a claim   -> finish   (:board/next said :empty)
+          5. a workable task exists      -> claim
+          6. otherwise                   -> finish
+
+        The root postcondition (board clear) deliberately sits BELOW review:
+        checking done-ness first would finish the round past the final task's
+        unreviewed diff, and 'nothing reaches done without a critic reading
+        that change' outranks reactivity. Reading order 1 depends on
+        :board/next and :board/work clearing the previous task's outcome and
+        decision — the blackboard hygiene those cells now do for this cell."
+   :effects [:db]
+   :requires [:conn :run-id]}
+  (fn [{:keys [conn run-id]} data]
+    (let [outcome (:board/outcome data)
+          decision (:board/decision data)
+          state (cond
+                  (and outcome (nil? decision)) :review-due
+                  (= :revise decision) :work-due
+                  (and (= :task (:board/verdict data)) (nil? outcome)) :work-due
+                  (= :empty (:board/verdict data)) :done
+                  (seq (workable conn run-id)) :claim-due
+                  :else :done)]
+      (assoc data :board/sense state))))
 
 (cell/defcell :board/finish
   {:doc "End on what the board says: every task closed is a completed run whose

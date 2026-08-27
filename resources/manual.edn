@@ -94,6 +94,12 @@
     :summary "Whether the next call with this signature would be withheld as a repeat, judged against a branch's storm window."}
    {:name samizdat.agent.storm/oscillating?
     :summary "Whether a call would extend an A-B-A-B alternation between two calls — the loop shape no failure-keyed guard can see."}
+   {:name samizdat.agent.tournament/run
+    :summary "Rank N candidates by pairwise comparison at linear cost: a ring pass that cancels positional bias, then everyone against the top-k pivots. The comparator is yours to inject — an LLM judge, a test result, anything returning p(a beats b)."}
+   {:name samizdat.agent.trajectory/score-run
+    :summary "Score a branch's trajectory from the journal on the A-T letter scale, steps-so-far only — the offline validation entry point. Run it over a completed and an exhausted run and compare curves before wiring anything to the number."}
+   {:name samizdat.agent.gates/trajectory-policy
+    :summary "The trajectory-scoring policy from gates.edn: repeats, stride, criteria, and the not-yet-consulted abandon threshold."}
    {:name samizdat.prompt/render
     :summary "Render a prompt resource through selmer. Every harness message the model sees comes through here."}]}
 

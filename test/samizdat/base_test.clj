@@ -200,6 +200,23 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/agent/tournament.clj"
+   {:threshold {1103515245 "The LCG multiplier — a PRNG's algorithm constants,
+                            like a hash function's primes. Retuning them at
+                            runtime cannot express a different policy, only a
+                            broken shuffle; what IS policy (the seed, the
+                            pivot count) the caller injects."
+                12345 "The LCG increment, same reasoning."
+                2147483648 "The LCG modulus (2^31), same reasoning."}}
+
+   "src/samizdat/agent/trajectory.clj"
+   {:threshold {19 "The span of the A-T letter scale: T minus A. Arithmetic of
+                    the alphabet, not a tunable — the scale's GRANULARITY as a
+                    choice lives in the criteria and prompt wording
+                    (gates.edn :trajectory-score), and changing this number
+                    without changing the prompt's 'A to T' would misgrade
+                    every reply."}}
+
    "src/samizdat/llm/client.clj"
    {:threshold {:all "HTTP status classes (200/299/500) and the retry ladder's
                       wall-clock bounds, which RFC-005 fixes deliberately: the

@@ -345,6 +345,35 @@
         (:stuck, :safe-state) read the counter unchanged and so trip sooner
         on expensive loops."}
 
+ :trajectory-score
+ {:value
+  {:repeats 4
+   :stride 5
+   :abandon-below 0.05
+   :criteria
+   ["concrete-output: look only at files written or edited and commands run.
+     HIGH: new or corrected code landing on disk that serves the goal. LOW:
+     steps that read, list, or plan without producing anything on disk.
+     Ignore the agent's own narration."
+    "verification-signal: look only at test and verify command results. HIGH:
+     the suite or a focused test moving from red toward green. LOW: repeated
+     red with the same error, or no verification at all. Ignore claims of
+     success not backed by an actual run."
+    "convergence: look at the sequence of recent steps. HIGH: each step
+     builds on the previous step's result. LOW: repeats of the same call,
+     alternation between two calls, or unconnected jumps. Ignore verbosity."]}
+  :kind :threshold :capability-tunable? true
+  :doc "Continuous trajectory scoring (karamazov-fut, llm-as-a-verifier's
+        ProgressTracker): every :stride-th step judged on steps-so-far,
+        :repeats letter-scale asks averaged, criteria per the verifier
+        TEMPLATE rules (2-4 narrow ones beating one broad one; each says
+        where to look, what is HIGH, what is LOW, what to ignore).
+        :abandon-below is the eventual flat-low-curve decision threshold —
+        shipped as data from day one, CONSULTED BY NOTHING until the signal
+        is validated on baseline runs (samizdat.agent.trajectory/score-run):
+        a completed and an exhausted run must actually separate before any
+        gate or cull reads the number."}
+
  :max-branch-theses
  {:value 4 :kind :cost-ceiling :capability-tunable? false
   :doc "Most theses one branch_theses call may propose. A cost ceiling:

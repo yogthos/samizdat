@@ -192,6 +192,11 @@
                   ;; pin its own via .samizdat/config.edn, and the agent can add
                   ;; or tune manifests at runtime with the `manifest` tool.
                   :loop       (env "HARNESS_LOOP")
+                  ;; Which board manifest the feature loop's implement stage
+                  ;; runs. nil means "board"; "board-bt" is the behavior-tree
+                  ;; variant being A/B'd (karamazov-fut). Per-project via
+                  ;; .samizdat/config.edn like :loop.
+                  :board-manifest (env "HARNESS_BOARD_MANIFEST")
                   ;; The ship gate's test rung, ON by default. `done` is a hard
                   ;; gate on a green test (b1a4b88) — but verify-on? needs a
                   ;; :verify-cmd or this flag, and neither had a default, so the
