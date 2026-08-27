@@ -266,6 +266,85 @@
         cull: this rung spends a hard-capped abort and, in a non-advisory
         mode, rebuilds an engine process."}
 
+ ;; --- the storm guard (karamazov-ekk, after dirge storm.rs) ---------------
+ ;; Detection is samizdat.agent.storm (pure fns over a per-branch window of
+ ;; (tool, canonical-args) signatures); the withhold itself is the phases.edn
+ ;; :storm / :storm-oscillation refusal rules; the words are
+ ;; resources/prompts/storm*.md. Everything tunable is HERE, because dirge
+ ;; hardcodes its 6/3 window and cannot tune it at runtime — we can.
+
+ :storm-enabled
+ {:value true :kind :threshold :capability-tunable? true
+  :doc "Whether the storm guard withholds calls at all. The off switch is
+        policy, not a rebuild: a project whose workflow legitimately repeats
+        identical calls (polling a build, say) can turn the guard off or
+        widen the threshold instead of fighting it."}
+
+ :storm-window-size
+ {:value 6 :kind :threshold :capability-tunable? true
+  :doc "How many recent dispatched calls the storm window remembers per
+        branch. Exempt (read-only) tools never enter; a mutating call clears
+        the non-mutating entries, so a check-fix-check cycle does not
+        accumulate."}
+
+ :storm-threshold
+ {:value 3 :kind :threshold :capability-tunable? true
+  :doc "The Nth identical (tool, canonical-args) call is withheld: at 3 the
+        first two run — one call plus one honest retry — and the third is
+        refused with the reflect-then-pivot prompt. Must be at least 2. The
+        guard withholds rather than warns: the begin-reframe experience is
+        that gates which merely suggest went 0-for-4, and dirge found the
+        bare don't-repeat-yourself nudge reinforces the failing chain of
+        thought (degeneration-of-thought), which is why the message demands
+        named assumptions and fundamentally different alternatives instead."}
+
+ :storm-timeout-floor
+ {:value 2 :kind :threshold :capability-tunable? true
+  :doc "The effective threshold for a signature that has TIMED OUT: a hung
+        call burned its whole time budget, so it does not get the full retry
+        allowance — the second identical copy is withheld, not the third."}
+
+ :storm-verify-exempt
+ {:value true :kind :threshold :capability-tunable? true
+  :doc "Whether a shell call running the project's :run :verify-cmd is
+        invisible to the storm guard. The verify loop IS repetition — red,
+        edit, rerun the identical suite command — and the best run of the
+        GLM campaign (4e785664) contained exactly one identical repeat: its
+        verify command. Blocking the third suite run would punish TDD
+        itself. Rerunning a red suite with NO edit between stays the
+        failure-keyed guards' business: repeating-failure? sees the
+        identical error, the stuck gate sees the streak."}
+
+ :storm-min-cycles
+ {:value 2 :kind :threshold :capability-tunable? true
+  :doc "Full A-B-A-B cycles between exactly two signatures before the call
+        that would extend the alternation is withheld. Exactly two distinct
+        signatures, deliberately: near-alternation among three or more calls
+        is divergence, and counting it manufactures phantom oscillation."}
+
+ :storm-strikes-to-force
+ {:value 3 :kind :threshold :capability-tunable? true
+  :doc "Consecutive storm-withheld calls before the :storm gate forces an
+        honest give_up. Withholding blocks the repeat; this rung answers the
+        model that keeps asking for it anyway — the run is spending turns
+        re-requesting a result it already has, and an honest give_up hands
+        the task back where a silent grind hands back nothing. Any
+        dispatched (non-withheld) tracked call resets the count."}
+
+ :max-storm-forces
+ {:value 2 :kind :re-fire-guard :capability-tunable? true
+  :doc "How often the :storm gate may force a give_up on one branch."}
+
+ :timeout-failure-weight
+ {:value 2 :kind :threshold :capability-tunable? true
+  :doc "What a timed-out call adds to consecutive-failures, where an ordinary
+        failure adds 1. A timeout is the most expensive failure there is —
+        it burned a whole time budget — and counting it like a millisecond
+        error made a branch stuck retrying a hang the weakest possible
+        signal, one cheap-looking failure per 120s. The streak gates
+        (:stuck, :safe-state) read the counter unchanged and so trip sooner
+        on expensive loops."}
+
  :max-branch-theses
  {:value 4 :kind :cost-ceiling :capability-tunable? false
   :doc "Most theses one branch_theses call may propose. A cost ceiling:
@@ -1219,12 +1298,28 @@
   :shipping #{"write_file" "edit_file" "shell" "reload_cells" "manifest"
               "done" "give_up" "thesis" "branch_theses"}
   :file-write #{"write_file" "edit_file"}
+  ;; The storm guard's tool classification (karamazov-ekk). :storm-exempt is
+  ;; the read-only surface — repeated identical reads are over-studying's
+  ;; business, not a storm — plus done/give_up, whose repetition belongs to
+  ;; the done-blocked and last-call rungs: storm withholding a done that
+  ;; last-call is simultaneously forcing would be one guard punishing what
+  ;; another demands (dirge hit that conflict three separate times).
+  ;; :storm-mutating tools clear the window's non-mutating entries when they
+  ;; fire, and still count amongst themselves. Everything in neither set is
+  ;; counted normally.
+  :storm-exempt #{"read_file" "grep" "doc" "manual" "introspect" "cells"
+                  "recall" "fetch_artifact" "fetch_turn" "branch_theses"
+                  "lsp" "skill" "policy" "complete" "done" "give_up"}
+  :storm-mutating #{"write_file" "edit_file" "shell" "eval" "reload_cells"
+                    "cell" "prompt" "manifest" "experiment" "remember"
+                    "forget"}
   :settle-called
   {:milestone        #{"done"}
    :branch-out       #{"branch_theses"}
    :repopulate       #{"branch_theses"}
    :emergency-review #{"done" "thesis"}
    :stuck            #{"thesis"}
+   :storm            #{"done" "give_up"}
    :safe-state       #{"thesis" "done" "give_up"}
    :done-blocked     #{"done" "give_up"}
    :turn-budget      #{"done" "give_up"}
@@ -1318,6 +1413,28 @@
    :message-file "last-call"
    :message-suffix "\n\nYou are at turn {{turn-count}} of {{max-turns}} — your last turns. Ship your best partial now with done."
    :prediction "the branch ships"
+   :window 2}
+
+  {:gate :storm
+   :priority 2.7
+   :budget :max-storm-forces
+   :tool "give_up"
+   :doc "The storm guard's escalation rung (karamazov-ekk). The withhold in
+         phases.edn blocks each identical repeat as it is attempted; this
+         rung answers the model that keeps attempting it anyway — several
+         consecutive calls withheld means the branch is spending its turns
+         re-asking for a result it already has, and forcing an honest
+         give_up (a give_up-tool prefill, not prose) hands the task back
+         with an account of what was tried, where a silent grind hands back
+         nothing. Same forced-tool mechanism as last-call, for the same
+         karamazov-pab reason."
+   :when (and (state/active? branch)
+              (>= (or (:storm-strikes branch) 0)
+                  (threshold :storm-strikes-to-force)))
+   :message-file "storm-force"
+   :prediction "the branch abandons the repeated call honestly — give_up with
+                an account of what was tried, or a genuinely different
+                approach"
    :window 2}
 
   {:gate :wind-down

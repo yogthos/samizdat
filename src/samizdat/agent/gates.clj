@@ -84,6 +84,26 @@
   [k]
   (get-in (config) [:tool-vocab k]))
 
+(defn storm-policy
+  "The storm guard's policy, assembled from the thresholds and vocabularies
+  above (karamazov-ekk). One map so the detector (samizdat.agent.storm, pure)
+  and its consumers — the phases.edn refusal rules, tool-step's window
+  bookkeeping, resume's window rebuild — all read the same tunable values.
+  Every number here is a gates.edn edit away from different behaviour, which
+  is the point: dirge hardcodes its window and threshold, and the standing
+  rule says a decision the agent cannot retune at runtime is in the wrong
+  place."
+  []
+  {:enabled? (boolean (threshold :storm-enabled))
+   :window-size (threshold :storm-window-size)
+   :threshold (threshold :storm-threshold)
+   :timeout-floor (threshold :storm-timeout-floor)
+   :min-cycles (threshold :storm-min-cycles)
+   :strikes-to-force (threshold :storm-strikes-to-force)
+   :verify-exempt? (boolean (threshold :storm-verify-exempt))
+   :exempt-tools (or (tool-vocab :storm-exempt) #{})
+   :mutating-tools (or (tool-vocab :storm-mutating) #{})})
+
 (defn- prompt [name]
   (sp/prompt name))
 

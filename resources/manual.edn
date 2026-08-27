@@ -88,6 +88,12 @@
     :summary "Re-append an older version of a userspace piece as the newest — the universal rollback, recorded with your stated reason."}
    {:name samizdat.agent.phases/withholds
     :summary "Which tools a phase refuses, from phases.edn."}
+   {:name samizdat.agent.gates/storm-policy
+    :summary "The storm guard's live policy: window, thresholds, and tool classification for withholding repeated identical calls. Tune the :storm-* thresholds and the :storm-exempt/:storm-mutating vocabularies in gates.edn; the withhold rules themselves are the phases.edn :storm entries."}
+   {:name samizdat.agent.storm/blocked?
+    :summary "Whether the next call with this signature would be withheld as a repeat, judged against a branch's storm window."}
+   {:name samizdat.agent.storm/oscillating?
+    :summary "Whether a call would extend an A-B-A-B alternation between two calls — the loop shape no failure-keyed guard can see."}
    {:name samizdat.prompt/render
     :summary "Render a prompt resource through selmer. Every harness message the model sees comes through here."}]}
 

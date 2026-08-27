@@ -67,9 +67,12 @@
       (if (:ok r)
         (base/ok branch (scrubbed (str "=> " (:value r)
                                        (when (seq (:out r)) (str "\n" (:out r))))))
-        (base/fail branch (scrubbed (str "Eval error: " (:error r)
-                                         (when (seq (:out r))
-                                           (str "\n" (:out r))))))))))
+        (assoc (base/fail branch (scrubbed (str "Eval error: " (:error r)
+                                                (when (seq (:out r))
+                                                  (str "\n" (:out r))))))
+               ;; Same flag run-shell carries: a timed-out eval burned its
+               ;; whole budget, and the loop weights it accordingly.
+               :timeout? (= "timeout" (:error-type r)))))))
 
 (defmethod base/run-tool "doc" [{:keys [branch] :as ctx}]
   (if-let [m (base/missing ctx :symbol)]

@@ -107,6 +107,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.state :as state]
+            [samizdat.agent.storm :as storm]
             [samizdat.agent.tools.tasks :as task-tool]
             [samizdat.repl :as repl]
             [samizdat.store.journal :as journal]
@@ -148,7 +149,7 @@
 
   The green snapshot is not journalled, so a resumed branch always starts
   the safe-state rule from its 'otherwise' arm."
-  [run branch-row turns artifacts firings max-turns]
+  [run branch-row turns artifacts firings max-turns storm-pol]
   (let [branch-id (:id branch-row)
         ;; The branch's OWN problem where it has one — a decompose unit's
         ;; contract, a team worker's sub-task — else the run's. Rebuilding
@@ -221,6 +222,15 @@
                        branch-turns)
         branch (assoc branch
                       :tiers-seen (set (keep :tier (:artifacts branch)))
+                      ;; The storm window rebuilds from the journal's verbatim
+                      ;; args, so a resumed branch keeps its repeat protection
+                      ;; — unlike repeating-failure?, which the docstring
+                      ;; above documents comes back blind. Strikes are not
+                      ;; rebuilt (a refusal row is not distinguishable from a
+                      ;; malformed one), so the give_up escalation restarts;
+                      ;; the withhold itself does not.
+                      :storm-window (storm/window-from-turns
+                                     branch-turns storm-pol)
                       :mechanics {:calls (count branch-turns)
                                   :parse-errors (count (filter :parse_error branch-turns))
                                   :auto-repairs (count (filter #(pos? (:auto_repaired %))
@@ -305,9 +315,13 @@
                :git-baseline (gitdiff/baseline root)
                :repl-session (repl/new-session)
                :abort abort}
+          ;; :verify-cmd rides on the policy so the rebuilt window skips
+          ;; verify calls exactly the way the live path never notes them.
+          storm-pol (assoc (gates/storm-policy)
+                           :verify-cmd (get-in config [:run :verify-cmd]))
           branches (mapv (fn [row]
                            (let [b (rebuild-branch run row turns artifacts
-                                                   firings max-turns)
+                                                   firings max-turns storm-pol)
                                  ;; The task claim survives the crash on its
                                  ;; ROW; without restoring it here the branch
                                  ;; came back reading "No task claimed", could

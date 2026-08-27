@@ -70,6 +70,37 @@ but the table is read, so a coding loop's policy plugs back in as a data edit.
 Effect names dispatch in `loop.clj` to state functions, because **a table cannot
 mutate a branch**.
 
+### The storm guard
+
+Every steer above keys on failure or on budget. A model repeating the same
+*successful* call, or alternating A-B-A-B between two calls, tripped nothing
+and burned the run (karamazov-ekk; dirge's `storm.rs` was built for the same
+hole). The guard splits along the standing rule:
+
+- **Mechanism** — `samizdat.agent.storm`: pure functions over a per-branch
+  window of `(tool, canonical-args)` signatures. Canonicalization (sorted
+  keys, string keys, `1` ≡ `1.0`) means signature equality is call identity,
+  not serialization accident.
+- **Decision** — two `phases.edn` `:refusals` rules (`:storm`,
+  `:storm-oscillation`) withhold the Nth identical call and the alternation
+  extension, through the same `phase-refusal` seam as every other refusal:
+  `:mechanics` + `:policy-refusal? true`, because a withheld call says
+  nothing about the branch's line of inquiry. It **withholds** rather than
+  warns — the begin-reframe experience is that gates which merely suggest
+  went 0-for-4.
+- **Policy** — the `:storm-*` thresholds and the `:storm-exempt` /
+  `:storm-mutating` vocabularies in `gates.edn`. dirge hardcodes its 6/3
+  window; here the agent can retune or disable the guard at runtime.
+- **Escalation** — consecutive withholds count `:storm-strikes`; the `:storm`
+  gate (this table, priority 2.7) then *forces* an honest `give_up`, the
+  last-call mechanism reused. Withheld signatures also join the `:abandoned`
+  reflexion log, so stuck/safe-state steers quote them back as dead ends.
+
+Exempt tools (the read-only surface, plus `done`/`give_up`) are never
+withheld: repeated reads are the studying gate's business, and storm blocking
+a `done` that last-call is forcing would be one guard punishing what another
+demands — a conflict dirge documents hitting three times.
+
 ### The winner rubric
 
 `:finished-key` is a vector of EDN forms compiled at load into a ranking tuple,

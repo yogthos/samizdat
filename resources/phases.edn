@@ -74,7 +74,28 @@
  [{:rule :work-needs-a-task
    :when (nil? (:task branch))
    :tools #{"write_file" "edit_file"}
-   :message-file "task-required"}]
+   :message-file "task-required"}
+
+  ;; The storm guard (karamazov-ekk): withhold the identical repeat and the
+  ;; A-B-A-B extension. Detection is samizdat.agent.storm (pure); thresholds
+  ;; and tool classification are gates.edn (:storm-* thresholds, :storm-exempt
+  ;; / :storm-mutating vocabularies); this table is only the DECISION that a
+  ;; detected storm is withheld — remove a rule and the guard is advisory-off
+  ;; for that shape, no rebuild. Ordered after the task rule so a task-less
+  ;; repeated write is refused for the sharper reason. :tools :all because
+  ;; exemption is the policy's business (the :storm-exempt vocabulary), not a
+  ;; second list here to drift.
+  {:rule :storm
+   :when (samizdat.agent.storm/repeat-blocked?
+          ctx (samizdat.agent.gates/storm-policy))
+   :tools :all
+   :message-file "storm"}
+
+  {:rule :storm-oscillation
+   :when (samizdat.agent.storm/oscillation-blocked?
+          ctx (samizdat.agent.gates/storm-policy))
+   :tools :all
+   :message-file "storm-oscillation"}]
 
  ;; #3: tool-result signals → branch-state effects. The claim-first state
  ;; machine as a declarative table instead of cond-> clauses in the

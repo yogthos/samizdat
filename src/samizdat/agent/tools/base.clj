@@ -25,7 +25,14 @@
   (:require [clojure.string :as str]
             [jolt.fs :as fs]
             [samizdat.agent.files :as files]
+            ;; gates and storm are not used by name here: the phases.edn
+            ;; refusal :when forms reference them fully qualified, and the
+            ;; table compiles lazily on the first phase-refusal call — which
+            ;; lands in this namespace. Requiring them here is what makes
+            ;; that compile find them loaded wherever the caller came from.
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.phases :as phases]
+            [samizdat.agent.storm :as storm]
             [samizdat.prompt :as prompt]))
 
 (defmulti run-tool
@@ -200,7 +207,10 @@
    (some (fn [{:keys [tools message-file] :as rule}]
            (let [condition (:when rule)]
              (clojure.core/when
-              (and (contains? (set tools) tool-name)
+              ;; :all opts a rule in for every tool, so a rule whose scoping
+              ;; lives in its own policy (the storm guard's exempt vocabulary)
+              ;; does not need a second tool list here to drift out of date.
+              (and (or (= :all tools) (contains? (set tools) tool-name))
                    (when-fn-holds? condition ctx))
               (refusal branch
                        (prompt/render message-file

@@ -531,11 +531,19 @@
   emitting nothing but garbage would hold a beam slot to the turn budget. Any
   well-formed call clears the tally — the branch has demonstrated it can work
   the protocol, whatever the call then did."
-  [branch {:keys [category progress? claim tool policy-refusal?]}]
+  [branch {:keys [category progress? claim tool policy-refusal? weight]}]
   (let [real-progress? (and progress?
                             (or (nil? claim) (advances-thesis? branch claim)))]
     (cond-> branch
-      (= :failure category) (update :consecutive-failures inc)
+      ;; :weight is the failure's cost, default 1. A timeout carries
+      ;; gates.edn :timeout-failure-weight (2): it burned a whole time budget,
+      ;; and counting it like a millisecond failure made a branch stuck
+      ;; retrying a hang the weakest possible signal — one cheap-looking
+      ;; error per 120s (karamazov-ekk, after dirge's Outcome cost lesson).
+      ;; The streak gates (:stuck, :safe-state) read the same counter, so
+      ;; they trip sooner on expensive loops with no change of their own.
+      (= :failure category) (update :consecutive-failures
+                                    + (long (or weight 1)))
       ;; What the stuck gate withholds, and what it withholds it from. Only
       ;; failures set it: a branch that failed on A and then succeeded on B
       ;; has not been told to abandon anything. Left alone on a claimless

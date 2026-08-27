@@ -116,6 +116,7 @@
             [samizdat.server-test]
             [samizdat.adapter-test]
             [samizdat.proc-test]
+            [samizdat.storm-test]
             [samizdat.store-test]
             [samizdat.gui-api-test]
             [samizdat.gui-ops-test]
@@ -168,6 +169,7 @@
     mycelium.validate-warn-test
     mycelium.validation-test
     mycelium.workflow-test
+    samizdat.storm-test
     samizdat.store-test
     samizdat.llm-test
     samizdat.agent-test

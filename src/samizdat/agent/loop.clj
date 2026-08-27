@@ -43,6 +43,7 @@
             [samizdat.agent.infer :as infer]
             [samizdat.agent.phases :as phases]
             [samizdat.agent.state :as state]
+            [samizdat.agent.storm :as storm]
             [samizdat.agent.tools :as tools]
             [samizdat.agent.skills :as skills]
             [samizdat.prompt :as prompt]
@@ -468,6 +469,42 @@
           branch
           (transition-effects {:result result :artifact artifact})))
 
+(defn- note-storm
+  "The storm guard's per-call bookkeeping (karamazov-ekk): note the
+  dispatched call in the branch's window, count consecutive withholds as
+  strikes for the :storm gate, and put a withheld signature on the reflexion
+  log so the stuck/safe-state steers quote it back as a dead end. The
+  withhold itself already happened (or did not) in tools/phase-refusal; the
+  policy is gates.edn data; the detection is samizdat.agent.storm. A
+  withheld call is never noted — it did not run, and keeping the originals
+  in the window is what keeps the repeat withheld until the branch actually
+  changes course. Tracked dispatched calls reset the strikes; exempt calls
+  leave them alone — a read between two withheld attempts is still the same
+  storm."
+  [branch {:keys [tool sig result refused? verify?]} policy]
+  (let [tracked? (and (storm/tracked? policy tool)
+                      ;; A verify call is invisible to the guard end to end:
+                      ;; never counted, never withheld (see storm/verify-call?).
+                      (not verify?))
+        storm-refused? (contains? #{:storm :storm-oscillation}
+                                  (:refusal-rule result))
+        line (str "withheld repeat: " sig)]
+    (cond-> branch
+      (and tracked? (not refused?))
+      (-> (update :storm-window storm/note-call
+                  {:sig sig
+                   :mutating? (storm/mutating? policy tool)
+                   :timeout? (boolean (:timeout? result))}
+                  policy)
+          (assoc :storm-strikes 0))
+
+      storm-refused?
+      (update :storm-strikes (fnil inc 0))
+
+      (and storm-refused?
+           (not (some #{line} (:abandoned branch))))
+      (assoc :abandoned (state/abandoned-log branch line)))))
+
 (defn tool-step
   "Dispatch the parsed call: phase policy first, then the tool, then the
   branch bookkeeping the outcome demands. Returns {:branch :result :tool}."
@@ -482,13 +519,19 @@
         result (or refusal
                    (tools/run-tool (assoc ctx :branch branch :turn turn
                                           :tool-name tool :args (:args parsed))))
+        storm-policy (gates/storm-policy)
         branch (-> (:branch result)
                     ;; The tool and the claim ride along so the branch can
                     ;; remember what it was grinding when it failed — which is
                     ;; what the stuck gate withholds (vf-9wx).
                     (state/record-outcome
                      (assoc result :tool tool
-                            :claim (get-in parsed [:args :claim])))
+                            :claim (get-in parsed [:args :claim])
+                            ;; A timeout is the most expensive failure there
+                            ;; is; the streak gates read the counter it
+                            ;; weights (gates.edn :timeout-failure-weight).
+                            :weight (when (:timeout? result)
+                                      (gates/threshold :timeout-failure-weight))))
                    (state/add-turn {:turn turn :tool tool
                                     :category (:category result)
                                     ;; Kept for failures AND malformed calls,
@@ -497,7 +540,15 @@
                                     ;; authoritative result.
                                     :error (when (#{:failure :mechanics}
                                                   (:category result))
-                                             (str (:result result)))}))
+                                             (str (:result result)))})
+                   (note-storm {:tool tool
+                                :sig (storm/signature tool (:args parsed))
+                                :result result
+                                :refused? (some? refusal)
+                                :verify? (storm/verify-call?
+                                          tool (:args parsed)
+                                          (get-in ctx [:config :run :verify-cmd]))}
+                               storm-policy))
         ;; 29 of gen-20's 57 failures were four identical (tool, message)
         ;; pairs, and the harness answered the fifth exactly as it answered
         ;; the first. Say something different instead.

@@ -528,4 +528,8 @@
                      :success :failure)
          :progress? true
          :result redacted
+         ;; Carried as a flag rather than left to string-matching the output:
+         ;; the loop weights a timeout heavier on the failure streak and drops
+         ;; the storm window's retry allowance for the call that hung.
+         :timeout? (boolean (:timeout r))
          :policy {:effect :allow}}))))
