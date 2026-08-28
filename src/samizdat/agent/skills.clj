@@ -33,7 +33,7 @@
   samizdat repo itself: every implementor silently lost the REPL/TDD guidance
   and the catalogue rendered empty (karamazov-blt.33). Same reasoning as
   cells/shipped-cells; pinned against resources/skills by skills-test."
-  ["mycelium" "repl-workflow"])
+  ["clojure-style" "mycelium" "repl-workflow"])
 
 (def default-dirs
   "The project-overlay directories scanned in addition to the shipped
