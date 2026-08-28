@@ -46,6 +46,7 @@
             [samizdat.agent.storm :as storm]
             [samizdat.agent.tools :as tools]
             [samizdat.agent.skills :as skills]
+            [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
             [samizdat.store.artifacts :as artifacts]
@@ -385,10 +386,20 @@
   "No usable call. Say exactly what was wrong; a bare \"try again\" produces
   another identical attempt."
   [{:keys [conn run-id]} branch turn {:keys [parsed signals said response]}]
-  (let [msg (cond
+  ;; A reply that is nothing but a copy of the harness's own compaction
+  ;; marker. On a long branch almost every message is an [unloaded] digest
+  ;; standing in for a past turn, and a model reading its own history that
+  ;; way starts writing digests instead of calls — eight in a row on a live
+  ;; supervisor (karamazov-068). It needs its OWN complaint: told merely to
+  ;; emit a tool call, it emits another digest.
+  (let [imitation? (and (message/unloaded? said)
+                        (not (:truncated signals)))
+        msg (cond
               (:truncated signals)
               (str "[harness] Your response hit the token limit before you"
                    " emitted a tool call. Think less and call a tool.")
+              imitation?
+              (prompt/prompt "no-call-imitation")
               (nil? parsed)
               (str "[harness] No ```tool-call block in your response."
                    " Every turn must end with exactly one.")
@@ -424,7 +435,14 @@
         ;; named: nothing is being steered — the branch had a plan and failed
         ;; to act on it, and picking its next call for it would replace a
         ;; mechanics failure with the harness doing the reasoning.
-        (assoc :prefill "```tool-call\n"))))
+        ;;
+        ;; EXCEPT on an imitation, where the prefill is half the trap: the
+        ;; model opens inside a fence, looks at a context of digest lines,
+        ;; and the likeliest continuation is another digest. Withholding
+        ;; prose is the right instinct against rambling and the wrong one
+        ;; here, so this turn gets a clean slate to reason in
+        ;; (karamazov-068).
+        (as-> b (if imitation? (dissoc b :prefill) (assoc b :prefill "```tool-call\n"))))))
 
 (defn transition-effects
   "The effect names a turn envelope triggers, per phases.edn `:transitions`.

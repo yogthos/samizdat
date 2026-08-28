@@ -31,12 +31,19 @@
   a call that did not parse is a format/prompt problem, a provider failure
   is an endpoint problem, a tool failure is the work itself going wrong.
 
-  Returns DATA — {:parse :provider :tool}, each {:count n :lines s} or
+  Carries a few WINS alongside them, and that is load-bearing rather than
+  decorative: Metan (research/2608.24735v1, App. D) ablated exactly this
+  ratio and found a failures-only diet \"strips out positive exemplars and
+  produces overfit constraints\" — an improver shown only what broke writes
+  rules against breakage instead of rules for working. gates.edn
+  :supervisor-digest :wins sets how many.
+
+  Returns DATA — {:parse :provider :tool :wins}, each {:count n :lines s} or
   absent — and the run-health template owns the words around it, so the
   section headings the supervisor reads are prompts/ prose like everything
   else it reads. Pure over the rows; caps are gates.edn :supervisor-digest
   policy."
-  [rows {:keys [per-kind chars]}]
+  [rows {:keys [per-kind chars wins]}]
   (let [snip (fn [x] (let [t (str/replace (str x) #"\s+" " ")]
                        (if (> (count t) chars)
                          (str (subs t 0 chars) "…")
@@ -57,11 +64,26 @@
                    :when (and (= "failure" (str (:category r)))
                               (not (str/starts-with? (str (:tool_name r)) "__")))]
                (line r (:result r)))
+        ;; What WORKED, so the supervisor is not reasoning from breakage
+        ;; alone. Progress-bearing successes only — a read that returned
+        ;; fine is not news; a write or a green check is.
+        won (for [r rows
+                  :when (and (= "success" (str (:category r)))
+                             (not (str/starts-with? (str (:tool_name r)) "__")))]
+              (line r (:result r)))
+        cap-wins (fn [lines]
+                   (when (and wins (pos? wins) (seq lines))
+                     {:count (count lines)
+                      :lines (str/join "\n" (take-last wins lines))}))
         m (cond-> {}
             (kind parse) (assoc :parse (kind parse))
             (kind provider) (assoc :provider (kind provider))
-            (kind tool) (assoc :tool (kind tool)))]
-    (not-empty m)))
+            (kind tool) (assoc :tool (kind tool))
+            (cap-wins won) (assoc :wins (cap-wins won)))]
+    ;; A run with nothing but successes needs no failures section at all —
+    ;; wins alone are not a report of trouble.
+    (when (some m [:parse :provider :tool])
+      (not-empty m))))
 
 (defn branch-health
   "Per-branch health from journal turn rows: turns taken, how many were
@@ -88,6 +110,34 @@
   ([k ctx]
    (prompt/render-str (get-in (health-policy) [:signals k]) ctx)))
 
+(defn layer-of
+  "Which layer a failure belongs to: `:base`, `:userspace`, or nil when the
+  text does not say (karamazov-i1u).
+
+  This is the single most useful thing the harness can tell its supervisor
+  about a failure, and it used to tell it nothing. A live supervisor spent
+  108 of a run's 211 turns on a `board/next` crash whose cause was
+  `samizdat.store.runs/open-branch!` — compiled base, unreachable from a
+  role loop whose file tools are scoped to the project — and, unable to
+  tell that from a cell bug, degenerated into 26 shell calls hunting a
+  source tree it will never be allowed to open.
+
+  The distinction is legible in the text, and WHICH text says which layer is
+  a vocabulary — wordlists.edn `:failure-layers` — not a constant here. The
+  namespace prefixes are exactly the sort of thing a project that renamed or
+  re-rooted something has to be able to correct without a rebuild.
+  Userspace is tested first and wins a tie: a cell frame in the trace means
+  the cell is the thing that can actually be edited, whatever base code it
+  went on to call."
+  [s]
+  (let [t (str s)
+        {:keys [userspace base]} (lexicon/wordlist :failure-layers)
+        any? (fn [pats] (boolean (some #(re-find (re-pattern %) t) pats)))]
+    (cond
+      (any? userspace) :userspace
+      (any? base) :base
+      :else nil)))
+
 (defn signals
   "The suboptimality flags the digest calls out explicitly, so the supervisor
   does not have to re-derive the obvious: a stage crashed, nothing shipped, a
@@ -104,7 +154,19 @@
         {:keys [thrash-min-turns thrash-mechanics-rate]} (health-policy)]
     (cond-> []
       (seq errors)
-      (into (map #(signal :stage-crashed {:detail %}) errors))
+      (into (map (fn [e]
+                   ;; Which layer owns it, so the supervisor knows before it
+                   ;; starts whether this is its to fix (karamazov-i1u). The
+                   ;; branch is passed as booleans rather than compared in
+                   ;; the template: selmer's `if` tests truthiness and has no
+                   ;; equality operator.
+                   (let [l (layer-of e)]
+                     (signal :stage-crashed
+                             {:detail e
+                              :layer (some-> l name)
+                              :base? (= :base l)
+                              :userspace? (= :userspace l)})))
+                 errors))
 
       hollow?
       (conj (signal :hollow))

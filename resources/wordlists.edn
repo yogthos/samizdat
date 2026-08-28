@@ -188,6 +188,20 @@
  ;; servers say 'maximum context length' / 'context_length_exceeded'.
  "(?i)context (size|length|window)|context_length_exceeded|maximum context"
 
+ :failure-layers
+ ;; How a failure names the layer it belongs to (karamazov-i1u). The
+ ;; supervisor can edit userspace and cannot reach the compiled base, so
+ ;; telling it which side a crash lives on is the difference between a
+ ;; one-turn escalation and half a run spent hunting a source tree it will
+ ;; never be allowed to open. Regex PATTERN STRINGS, re-patterned at the use
+ ;; site, matched against the error text.
+ ;;
+ ;; :userspace is tested FIRST and wins a tie: a cell frame in a trace means
+ ;; the cell is the thing that can actually be edited, whatever base code it
+ ;; went on to call.
+ {:userspace ["\\bcells[./]" "manifest|prompts?/|gates\\.edn|phases\\.edn"]
+  :base ["\\bsamizdat[./]"]}
+
  :shell-refusal
  ;; How the shell policy phrases a refusal. Read to turn a refused command
  ;; into a durable project fact, which is worth more than it looks: it saves

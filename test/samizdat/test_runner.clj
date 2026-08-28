@@ -118,6 +118,7 @@
             [samizdat.proc-test]
             [samizdat.board-bt-test]
             [samizdat.finalization-test]
+            [samizdat.mechanics-test]
             [samizdat.repair-test]
             [samizdat.storm-test]
             [samizdat.tournament-test]
@@ -176,6 +177,7 @@
     mycelium.workflow-test
     samizdat.board-bt-test
     samizdat.finalization-test
+    samizdat.mechanics-test
     samizdat.repair-test
     samizdat.storm-test
     samizdat.tournament-test

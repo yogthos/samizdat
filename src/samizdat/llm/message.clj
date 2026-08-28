@@ -108,17 +108,35 @@
   by index, not by role."
   #{"assistant" "user"})
 
-(def ^:private unloaded-tail
+(def unloaded-marker
   "The marker every compacted message carries, so the model can tell a summary
   from something that was actually said.
 
-  Deliberately TERSE. It is repeated on every compacted message, so a long
+  LEADS the line, and that position is the fix for a real failure. It used to
+  trail — `t69 cell → neutral [unloaded]` — and on a 119-turn supervisor
+  branch, whose context was by then almost entirely these lines standing in
+  for its OWN past turns, the model concluded that a digest line is what an
+  assistant writes here and emitted eight of them in a row instead of a tool
+  call (karamazov-068). A model reads left to right: with the marker last,
+  everything it sees first is imitable content. With the marker first, the
+  line announces itself as harness bookkeeping before it says anything else.
+
+  Still deliberately TERSE. It repeats on every compacted message, so a long
   sentence here is a per-message tax on the very context compaction exists to
-  shrink — sixty compacted messages would carry sixty copies of it. Where the
-  detail went, and how to get it back with `fetch_turn`, belongs in the system
-  prompt, which says it once. Constant, so a compacted message never changes
-  again once written."
-  " [unloaded]")
+  shrink. Where the detail went, and how to get it back with `fetch_turn`,
+  belongs in the system prompt, which says it once. Constant, so a compacted
+  message never changes again once written."
+  "[unloaded] ")
+
+(defn unloaded?
+  "Whether `s` is (or begins as) one of the harness's own compaction digests.
+
+  The loop uses this to recognize a reply that is nothing but an imitation of
+  the marker, which needs a different complaint from an ordinary missing
+  fence — telling a model that copied our bookkeeping to 'emit a tool call'
+  produces another copy (karamazov-068)."
+  [s]
+  (str/includes? (str s) (str/trim unloaded-marker)))
 
 (defn- self-summary
   "A message summarised from its OWN content: the first non-blank line,
@@ -132,8 +150,8 @@
   [{:keys [content]}]
   (let [line (or (first (remove str/blank? (str/split-lines (str content)))) "")
         line (str/trim line)]
-    (str (if (> (count line) 90) (str (subs line 0 90) "…") line)
-         unloaded-tail)))
+    (str unloaded-marker
+         (if (> (count line) 90) (str (subs line 0 90) "…") line))))
 
 (defn- replacement-for
   "What an unloaded message becomes: its turn's digest where the message
@@ -141,7 +159,7 @@
   content."
   [m turns-by-number]
   (if-let [t (get turns-by-number (:turn m))]
-    (str (digest-line t) unloaded-tail)
+    (str unloaded-marker (digest-line t))
     (self-summary m)))
 
 (defn compact

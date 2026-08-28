@@ -103,3 +103,65 @@
     (is (str/includes? d "row 7"))
     (is (str/includes? d "missing entry in object"))
     (is (str/includes? d "fetch_turn"))))
+
+;; --- layer attribution (karamazov-i1u) --------------------------------------
+
+(deftest failures-are-attributed-to-a-layer
+  (testing "a base frame is the base — unreachable from a role loop"
+    (is (= :base (telemetry/layer-of
+                  "UNIQUE constraint failed: branches.id at samizdat.store.runs/open-branch!")))
+    (is (= :base (telemetry/layer-of "samizdat.agent.loop/tool-step threw"))))
+  (testing "a cell, manifest, prompt or policy is userspace — the tools reach it"
+    (is (= :userspace (telemetry/layer-of "cells.board/next threw: boom")))
+    (is (= :userspace (telemetry/layer-of "cells/feature.clj:112 nil pointer")))
+    (is (= :userspace (telemetry/layer-of "the board manifest has no :review edge")))
+    (is (= :userspace (telemetry/layer-of "gates.edn :storm-threshold is not a number"))))
+  (testing "userspace wins a tie: a cell frame means the cell is what can
+            actually be edited, whatever base code it called into"
+    (is (= :userspace (telemetry/layer-of
+                       "cells.board/next → samizdat.store.runs/open-branch! failed"))))
+  (testing "silence rather than a guess when the text does not say"
+    (is (nil? (telemetry/layer-of "something went wrong")))
+    (is (nil? (telemetry/layer-of nil)))))
+
+(deftest the-digest-tells-the-supervisor-which-layer-owns-a-crash
+  (let [base (telemetry/digest
+              {:results [] :revision 0
+               :errors ["boom at samizdat.store.runs/open-branch!"]}
+              [])
+        user (telemetry/digest
+              {:results [] :revision 0 :errors ["boom in cells.board/next"]}
+              [])]
+    (is (str/includes? base "layer: base"))
+    (is (str/includes? base "record it with"))
+    (is (str/includes? user "layer: userspace"))
+    (is (str/includes? user "yours"))))
+
+(deftest the-digest-shows-what-worked-not-only-what-broke
+  ;; Metan App. D: a failures-only diet "strips out positive exemplars and
+  ;; produces overfit constraints".
+  (let [rows [{:id 1 :turn 1 :branch_id "T0" :tool_name "write_file"
+               :category "success" :result "wrote src/mdlite/core.clj"}
+              {:id 2 :turn 2 :branch_id "T0" :tool_name "shell"
+               :category "failure" :result "1 test failed"}
+              {:id 3 :turn 3 :branch_id "T0" :tool_name "read_file"
+               :category "neutral" :result "..."}]
+        out (telemetry/failure-exemplars rows {:per-kind 3 :chars 120 :wins 2})]
+    (is (str/includes? (get-in out [:wins :lines]) "wrote src/mdlite/core.clj"))
+    (is (= 1 (get-in out [:wins :count])))
+    (is (not (str/includes? (str (get-in out [:wins :lines])) "row 3"))
+        "a neutral read is not a win worth reporting"))
+  (testing "a clean run still reports nothing — wins alone are not trouble"
+    (is (nil? (telemetry/failure-exemplars
+               [{:id 1 :turn 1 :branch_id "T0" :tool_name "write_file"
+                 :category "success" :result "ok"}]
+               {:per-kind 3 :chars 120 :wins 2}))))
+  (testing "and the digest renders them"
+    (let [d (telemetry/digest
+             {:results [] :revision 0}
+             [{:id 1 :turn 1 :branch_id "T0" :tool_name "write_file"
+               :category "success" :result "wrote core.clj"}
+              {:id 2 :turn 2 :branch_id "T0" :tool_name "shell"
+               :category "failure" :result "boom"}])]
+      (is (str/includes? d "what WORKED"))
+      (is (str/includes? d "wrote core.clj")))))

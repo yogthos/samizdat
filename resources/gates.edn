@@ -322,6 +322,25 @@
         signatures, deliberately: near-alternation among three or more calls
         is divergence, and counting it manufactures phantom oscillation."}
 
+ :mechanics-streak-threshold
+ {:value 6 :kind :threshold :capability-tunable? true
+  :doc "Consecutive turns producing no usable tool call before the
+        mechanics-streak rung forces an honest give_up. Matched to the bar
+        the beam already uses to cull on mechanics (cull-threshold ×
+        cull-mechanics-multiple = 6), because it is the same judgement: a
+        branch that cannot work the protocol six turns running is not going
+        to. It exists as a GATE rather than only as a cull because a cull
+        happens in the beam, and a role sub-loop — the supervisor, the
+        reviewer — does not run under one. A live supervisor emitted eight
+        unusable replies in a row with nothing to stop it (karamazov-068);
+        gates fire wherever the arbiter does, which is every turn-shaped
+        manifest."}
+
+ :max-mechanics-forces
+ {:value 2 :kind :re-fire-guard :capability-tunable? true
+  :doc "How often the mechanics-streak rung may force a give_up on one
+        branch."}
+
  :storm-strikes-to-force
  {:value 3 :kind :threshold :capability-tunable? true
   :doc "Consecutive storm-withheld calls before the :storm gate forces an
@@ -1031,7 +1050,7 @@
   {:thrash-min-turns 4
    :thrash-mechanics-rate 0.33
    :signals
-   {:stage-crashed "STAGE CRASHED — {{detail}}"
+   {:stage-crashed "STAGE CRASHED — {{detail}}{% if layer %} [layer: {{layer}}{% if base? %} — the base is compiled and unreachable from here: name it, record it with `remember` so a later run inherits it, and move on. Do NOT go looking for the source{% endif %}{% if userspace? %} — userspace, so this one IS yours: the cell/manifest/prompt tools can fix it{% endif %}]{% endif %}"
     :hollow "NO FILES CHANGED — done was called but the working tree is unchanged; nothing was actually built"
     :nobody-shipped "NO IMPLEMENTOR SHIPPED — the implement round produced nothing verified"
     :tests-failing "TESTS FAILING — {{detail}}"
@@ -1069,7 +1088,7 @@
         in trouble is the last one that should be shown less of it."}
 
  :supervisor-digest
- {:value {:per-kind 4 :chars 220}
+ {:value {:per-kind 4 :chars 220 :wins 2}
   :kind :threshold :capability-tunable? true
   :doc "How many failure exemplars of each kind the run-health digest shows
         the supervisor, and how much of each failure's text. The digest used
@@ -1079,7 +1098,18 @@
         result, each with the journal row id fetch_turn takes. Newest last,
         per kind, because the three kinds are fixed in different places (a
         parse failure in the prompt/format, a provider failure at the
-        endpoint, a tool failure in the work itself)."}
+        endpoint, a tool failure in the work itself).
+
+        :wins is how many SUCCESSES ride along with them, and it is not
+        decoration. Metan (research/2608.24735v1, App. D) ablated the ratio
+        of failures to successes in what it feeds its improver and found
+        that a diet of failures alone \"strips out positive exemplars and
+        produces overfit constraints\" — an improver shown only what broke
+        writes rules against breakage rather than rules for working. Their
+        settled ratio is 3:1 failure-to-success, which is what 4-per-kind
+        against 2 wins approximates. A supervisor that has seen what
+        WORKING looks like on this run can tell a loop that is struggling
+        from one that is fine."}
 
  :context-squeeze
  {:value {:factor 0.5 :min-keep-pairs 1 :min-compaction-chars 5000}
@@ -1396,6 +1426,7 @@
    :emergency-review #{"done" "thesis"}
    :stuck            #{"thesis"}
    :storm            #{"done" "give_up"}
+   :mechanics-streak #{"done" "give_up"}
    :safe-state       #{"thesis" "done" "give_up"}
    :done-blocked     #{"done" "give_up"}
    :turn-budget      #{"done" "give_up"}
@@ -1489,6 +1520,28 @@
    :message-file "last-call"
    :message-suffix "\n\nYou are at turn {{turn-count}} of {{max-turns}} — your last turns. Ship your best partial now with done."
    :prediction "the branch ships"
+   :window 2}
+
+  {:gate :mechanics-streak
+   :priority 2.6
+   :budget :max-mechanics-forces
+   :tool "give_up"
+   :doc "The branch has produced no usable tool call for several turns
+         running — malformed fences, prose, or (karamazov-068) copies of the
+         harness's own compaction marker. The no-call path already answers
+         each one specifically; this rung answers the STREAK, which means
+         the specific answers are not landing either. Forces an honest
+         give_up so the work goes back with an account rather than the
+         branch burning to its cap emitting nothing.
+
+         Above :storm because a branch making no calls at all is further
+         gone than one repeating a call, and the storm window cannot even
+         see it: nothing reaches dispatch."
+   :when (and (state/active? branch)
+              (>= (or (:consecutive-mechanics-failures branch) 0)
+                  (threshold :mechanics-streak-threshold)))
+   :message-file "mechanics-streak"
+   :prediction "the branch gives up honestly, or produces a well-formed call"
    :window 2}
 
   {:gate :storm

@@ -194,13 +194,26 @@
   working the run-level problem. It is what a resume rebuilds the branch's
   opening messages from (karamazov-blt.23)."
   [conn run-id {:keys [branch-id parent-id created-at-turn problem]}]
-  (db/with-writer
-    (db/execute! conn
-                   ["INSERT INTO branches (id, run_id, parent_id, status, created_at_turn, problem)
-                     VALUES (?, ?, ?, 'active', ?, ?)"
-                    branch-id run-id parent-id (or created-at-turn 0) problem]))
-  (journal/note! conn run-id :branch-opened
-                 {:branch-id branch-id :data {:parent parent-id}})
+  ;; IDEMPOTENT, because a resumed run re-opens branch ids it already has.
+  ;; Branch ids are round-scoped by construction (T0, T0v1, T0r1), so after a
+  ;; crash and resume the board claims the same task to the same id and the
+  ;; plain INSERT died on the (run_id, id) primary key — taking the board
+  ;; stage down with it and surfacing to the supervisor as a crash it then
+  ;; spent half a run chasing (karamazov-otd, found live on run e0c7662f).
+  ;;
+  ;; OR IGNORE rather than an upsert, deliberately: the existing row is this
+  ;; same branch's record, and the one thing it holds that we must not
+  ;; overwrite is how it ENDED. close-branch! refuses to rewrite a closed
+  ;; branch's status for exactly that reason (provenance R2-4); re-opening
+  ;; must not do through the back door what closing refuses to do directly.
+  ;; So a rejoin keeps the row and says so in the journal.
+  (let [n (db/with-writer
+            (db/execute! conn
+                         ["INSERT OR IGNORE INTO branches (id, run_id, parent_id, status, created_at_turn, problem)
+                           VALUES (?, ?, ?, 'active', ?, ?)"
+                          branch-id run-id parent-id (or created-at-turn 0) problem]))]
+    (journal/note! conn run-id (if (pos? n) :branch-opened :branch-rejoined)
+                   {:branch-id branch-id :data {:parent parent-id}}))
   branch-id)
 
 (defn close-branch!

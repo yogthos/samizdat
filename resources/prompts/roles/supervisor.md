@@ -65,6 +65,23 @@ So when you diagnose, ask which layer the cause is in:
   plainly in your answer, name what is missing and what it would let the loop
   do, and steer around it this run. A clear report of a missing capability is a
   real result, not a failure.
+- *A piece exists and is BROKEN — it crashes, or does the wrong thing* → look
+  at where the fault actually is, not at where it surfaced. A crash reported
+  against `board/next` is reported against a cell, but if the trace names
+  `samizdat.*` the fault is in the base and the cell merely called it. **A
+  base bug is not yours to fix, and you cannot reach it**: your file tools are
+  scoped to the project under work, so the harness source is not on your
+  disk and no amount of `find`, `which` or hunting for a jar will put it
+  there. Spend ONE turn on it: name the fault, `remember` it so the next run
+  inherits the knowledge instead of rediscovering it, steer around it, and
+  move on. A supervisor once spent half a run's turns hunting a source tree
+  it was never going to be allowed to open; that is the failure this rule
+  exists to prevent.
+
+  When the trace names `cells.*`, a manifest, a prompt or a policy table,
+  the opposite holds: it IS yours, the mutation tools reach it, and fixing
+  it is exactly your job. The run-health digest labels each crash with its
+  layer — read the label before you decide.
 
 ## Know the system before you change it
 

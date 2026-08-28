@@ -1017,3 +1017,42 @@
           (is (some? id) "the sweep-and-log path starts the run")
           (is (empty? (journal/turns c old))
               "and the aged-out record was actually pruned"))))))
+
+;; --- re-opening a branch a resume already has (karamazov-otd) ---------------
+
+(deftest open-branch-is-idempotent-so-a-resume-does-not-crash
+  ;; Branch ids are round-scoped (T0, T0v1), so a resumed run's board claims
+  ;; the same task to the same id. The plain INSERT died on the (run_id, id)
+  ;; primary key and took the board stage down with it.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "T0" :problem "part one"})
+      (is (= "T0" (runs/open-branch! c rid {:branch-id "T0" :problem "part one"}))
+          "re-opening returns the id rather than throwing")
+      (is (= 1 (count (db/fetch c ["SELECT * FROM branches WHERE run_id = ? AND id = ?"
+                                   rid "T0"])))
+          "and leaves exactly one row"))))
+
+(deftest re-opening-never-rewrites-how-a-branch-ended
+  ;; The one thing the existing row holds that must survive: its ending.
+  ;; close-branch! refuses to rewrite a closed branch's status (R2-4), and
+  ;; re-opening must not do through the back door what closing refuses to do.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "T0"})
+      (runs/close-branch! c rid "T0" :done nil)
+      (runs/open-branch! c rid {:branch-id "T0"})
+      (let [row (first (db/fetch c ["SELECT * FROM branches WHERE run_id = ? AND id = ?"
+                                    rid "T0"]))]
+        (is (= "done" (:status row))
+            "still done — a rejoin is not a resurrection")))))
+
+(deftest a-rejoin-is-journalled-as-a-rejoin
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "T0"})
+      (runs/open-branch! c rid {:branch-id "T0"})
+      (let [kinds (set (map :kind (db/fetch c ["SELECT kind FROM events WHERE run_id = ?" rid])))]
+        (is (contains? kinds "branch-opened"))
+        (is (contains? kinds "branch-rejoined")
+            "the record distinguishes a first open from a resume's rejoin")))))

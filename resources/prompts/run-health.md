@@ -20,6 +20,11 @@ Provider failures ({{failures.provider.count}} total):
 {% endif %}{% if failures.tool %}
 Tool failures ({{failures.tool.count}} total):
 {{failures.tool.lines}}
+{% endif %}{% if failures.wins %}
+And what WORKED ({{failures.wins.count}} successful calls this run) — read
+these before concluding the loop is broken, and before writing a rule that
+would have stopped them:
+{{failures.wins.lines}}
 {% endif %}{% endif %}
 Signals:
 {% if signals %}{{signals}}{% else %}- none flagged; the loop looks healthy{% endif %}
