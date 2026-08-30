@@ -109,6 +109,7 @@
             [samizdat.ratelimit-test]
             [samizdat.repl-confinement-test]
             [samizdat.retire-test]
+            [samizdat.schemacheck-test]
             [samizdat.repl-guard-test]
             [samizdat.repl-test]
             [samizdat.roles-test]
@@ -247,6 +248,7 @@
     samizdat.ratelimit-test
     samizdat.repl-confinement-test
     samizdat.retire-test
+    samizdat.schemacheck-test
     samizdat.repl-guard-test
     samizdat.repl-test
     samizdat.roles-test
