@@ -27,6 +27,8 @@
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.roles :as roles]
+            [samizdat.agent.tools.base :as base]
             [samizdat.control :as control]
             [samizdat.system :as system]
             [samizdat.agent.loop :as aloop]
@@ -156,6 +158,31 @@
         (is (= 409 (:status (api-control/abort! c rid))))
         (is (= "completed" (:status (runs/get-run c rid))))
         (finally (swap! api-control/active dissoc rid))))))
+
+(deftest a-directive-against-an-ENDED-run-is-refused-whatever-ended-it
+  ;; The rule this enforces is already written at the call site: a directive
+  ;; against a run that has ended would sit `pending` forever, showing in the
+  ;; UI as an intervention that will never resolve (blt.38). The set that
+  ;; decided "has ended" listed completed/aborted/failed and MISSED the other
+  ;; two terminal statuses.
+  ;;
+  ;; `interrupted` is written by startup reconciliation — every row still
+  ;; saying `running` when the process comes up is a leftover, since the beam
+  ;; only ever runs in this process. Those runs are as over as an aborted one.
+  ;;
+  ;; `exhausted` is new here: the beam's exhaust path used to record :failed,
+  ;; which is also what a THROWN error records, so "the harness broke" and
+  ;; "the work honestly ran out of budget" were the same row (karamazov-emw).
+  (with-db [c]
+    (doseq [st ["completed" "aborted" "failed" "interrupted" "exhausted"]]
+      (let [rid (runs/start-run! c {:problem "p"})]
+        (runs/finish-run! c rid (keyword st) nil)
+        (let [r (api-control/intervene! c rid {:kind "message"
+                                           :payload {:text "do a thing"}})]
+          (is (= 409 (:status r))
+              (str "a directive against a " st " run is refused, not queued"))
+          (is (empty? (interventions/pending c rid))
+              (str "and nothing is left pending on a " st " run")))))))
 
 (deftest an-unknown-intervention-kind-is-a-400-not-a-500
   ;; provenance R3-12: submit! throws on an unknown kind, and intervene! let it
@@ -588,3 +615,42 @@
         (is (true? @seen) "the run was visible to the abort endpoint while live")
         (is (not (contains? @api-control/active "r-oai"))
             "and deregistered when it finished")))))
+
+;; --- the supervisor's hands -------------------------------------------------
+;; store/interventions/submit! has always taken :issued-by, and until now no
+;; tool could call it. The supervisor had the full tool surface and could
+;; rewrite prompts for the NEXT run while being unable to touch the one in
+;; front of it — eyes and no hands. Runs fps5 and fps6 both stalled with a
+;; supervisor that could see the stall and say nothing.
+
+(deftest intervene-puts-a-directive-on-the-live-run
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          call (fn [args]
+                 (base/run-tool {:conn c :run-id rid :tool-name "intervene"
+                                 :branch {:id "S0"} :args args}))]
+      (testing "a well-formed steer lands as a pending directive"
+        (call {:kind "message" :branch "T0" :text "write the file you named"})
+        (let [[d] (interventions/pending c rid)]
+          (is (= "message" (:kind d)))
+          (is (= "T0" (:branch_id d)))
+          (is (str/includes? (str (:payload d)) "write the file"))))
+      (testing "issued_by distinguishes it from a human's directive — the
+                journal must not attribute the harness's own steering to the
+                operator"
+        (is (= "supervisor" (:issued_by (first (interventions/history c rid))))))
+      (testing "an unknown kind is a malformed call, not a crash"
+        (let [r (call {:kind "obliterate" :branch "T0"})]
+          (is (not (:progress? r)))
+          (is (str/includes? (str (:result r)) "obliterate"))))
+      (testing "the refusal lists what IS available, so the next call can be right"
+        (let [r (call {:kind "obliterate" :branch "T0"})]
+          (is (every? #(str/includes? (str (:result r)) %)
+                      ["message" "review" "cull" "extend"])))))))
+
+(deftest intervene-is-not-on-the-implementor-surface
+  ;; A branch that could cull its siblings or raise its own turn cap is not an
+  ;; implementor any more. Steering is the supervisor's job precisely because
+  ;; it is the one role whose context is ABOUT the run rather than in it.
+  (is (not (roles/may-use? :implementor "intervene")))
+  (is (roles/may-use? :supervisor "intervene")))

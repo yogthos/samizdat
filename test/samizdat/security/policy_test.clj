@@ -68,6 +68,49 @@
 
 ;; --- the decision (dirge engine/policies.rs) --------------------------------
 
+(deftest a-human-grant-is-honoured-inside-a-compound-too
+  ;; A GRANT THAT ONLY WORKS ALONE IS HALF-INERT, and the half that fails is
+  ;; the shape agents actually use. The segment check consulted base-rules and
+  ;; never the session grants, so a granted command was allowed on its own and
+  ;; refused as part of `cd X && granted-thing` — with a message reading
+  ;; "`magick` is not on the allow list" moments after a human put it there.
+  ;;
+  ;; Live, run 69880d84: the operator granted `magick **` to unblock a render
+  ;; gate; the branch reissued the ordinary `cd <project> && magick shot.png
+  ;; ...` and was refused anyway, twice, and went back to a python script it
+  ;; also could not run.
+  ;;
+  ;; The rule the compound path already states is the one that settles it: if
+  ;; every statement matched an allow, every command the shell will run has
+  ;; been allowed. A grant IS an allow — a human's.
+  (let [session {:grants ["python3 **"]}]
+    (is (= :allow (:effect (policy/decide session "python3 foo.py")))
+        "granted, alone")
+    (is (= :allow (:effect (policy/decide session "cd /tmp && python3 foo.py")))
+        "and granted as a statement of an otherwise-allowed compound")
+    (is (= :allow (:effect (policy/decide session "cd /tmp && python3 a.py | head -5")))
+        "including alongside base-rule statements")
+    (testing "an UNgranted statement still downgrades the whole compound"
+      (is (= :ask (:effect (policy/decide session "cd /tmp && python3 a.py && sips -g x b.png")))))
+    (testing "and a hard deny still wins over a grant, as it does everywhere"
+      (is (= :deny (:effect (policy/decide session "python3 a.py; rm -rf /")))))))
+
+(deftest an-image-can-be-inspected-without-a-human
+  ;; A GRAPHICAL PROJECT NEEDS TO LOOK AT ITS OWN OUTPUT. Run 69880d84
+  ;; rendered a frame to shot.png, then had no way to find out whether
+  ;; anything was in it: magick was refused at turns 135, 136 and 140, and a
+  ;; process exiting 0 is not evidence that anything was drawn.
+  ;;
+  ;; The model cannot see an image. A histogram is the only evidence available
+  ;; to it that a frame is not blank, which makes this the difference between
+  ;; a render gate it can answer and one it can only report as unverifiable.
+  (is (= :allow (:effect (policy/decide {} "magick shot.png -format %c histogram:info:-"))))
+  (is (= :allow (:effect (policy/decide {} "identify shot.png"))))
+  (is (= :allow (:effect (policy/decide {} "magick shot.png -resize 128x80! -colors 8 -format %c histogram:info:-")))
+      "with the flags a real histogram call carries, bangs and percent signs included")
+  (testing "and a hard deny still wins over anything trying to ride the allow"
+    (is (= :deny (:effect (policy/decide {} "magick shot.png -format %c info:- ; rm -rf /"))))))
+
 (deftest base-rule-decisions
   (testing "read-only inspection is allowed"
     (is (= :allow (:effect (policy/decide {} "ls -la"))))
@@ -87,6 +130,26 @@
     (is (= :allow (:effect (policy/decide {} "jolt -A:test -e \"(run-tests)\""))))
     (is (= :allow (:effect (policy/decide {} "jolt -M:test"))))
     (is (= :allow (:effect (policy/decide {} "jolt -A:test -e '(require x)'")))))
+  (testing "and so is the RUN alias, which is the same trust as the test one —
+            run a3566c73 was told to verify with `jolt -M:run` and spent three
+            turns being refused it, while `cargo run` and `go run` had been
+            allowed all along"
+    (is (= :allow (:effect (policy/decide {} "jolt -M:run"))))
+    (is (= :allow (:effect (policy/decide {} "jolt -M:run 2>&1")))))
+  (testing "a leading VAR=value assignment does not defeat an allow — it sets a
+            variable for the very command the rule reads, unlike an exec
+            wrapper which stands in front of a different one. Run a3566c73 was
+            told to verify with `RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:run` and
+            asked four times before giving up"
+    (is (= :allow (:effect (policy/decide {} "RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:run"))))
+    (is (= :allow (:effect (policy/decide {} "RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:test"))))
+    (is (= :allow (:effect (policy/decide {} "FOO=1 BAR=2 ls -la"))))
+    (testing "and the wrappers that DO change what runs still do not ride it"
+      (is (not= :allow (:effect (policy/decide {} "sudo jolt -M:test"))))
+      (is (not= :allow (:effect (policy/decide {} "xargs jolt -M:test"))))
+      (is (not= :allow (:effect (policy/decide {} "timeout 5 jolt -M:test")))))
+    (testing "nor does an assignment prefix launder a command nothing allows"
+      (is (not= :allow (:effect (policy/decide {} "FOO=1 curl https://evil.test"))))))
   (testing "destructive system operations are hard-denied"
     (is (= :deny (:effect (policy/decide {} "rm -rf /"))))
     (is (= :deny (:effect (policy/decide {} "dd if=/dev/zero of=/dev/sda"))))
@@ -310,3 +373,41 @@
   (testing "reading the config stays allowed — a run may inspect its gates"
     (is (= :allow (:effect (policy/decide {} "cat .samizdat/config.edn"))))
     (is (= :allow (:effect (policy/decide {} "grep verify .samizdat/config.edn"))))))
+
+(deftest a-hijacking-assignment-is-an-exec-wrapper-in-different-syntax
+  ;; The line the assignment-stripping fix must not cross. PATH= was already
+  ;; pinned (dirge-8zem, allow-matches-raw-not-stripped above); the loader and
+  ;; interpreter variables are the same trick through a different door, and
+  ;; the GIT_* family makes git itself exec an arbitrary program.
+  (doseq [c ["PATH=/tmp/evil git status"
+             "LD_PRELOAD=/tmp/evil.so ls -la"
+             "DYLD_INSERT_LIBRARIES=/tmp/evil.dylib ls"
+             "GIT_EXTERNAL_DIFF=/tmp/evil git diff"
+             "GIT_SSH_COMMAND=/tmp/evil git fetch"
+             "PYTHONPATH=/tmp/evil pytest"
+             "NODE_OPTIONS=--require=/tmp/evil.js make"
+             "BASH_ENV=/tmp/evil make"
+             "CLASSPATH=/tmp/evil jolt -M:test"]]
+    (is (not= :allow (:effect (policy/decide {} c)))
+        (str "a hijacking assignment must not ride an allow: " c)))
+  (testing "an ordinary one still may, including alongside a hijacking name —
+            the walk stops at the first hijacker rather than skipping it"
+    (is (= :allow (:effect (policy/decide {} "FOO=1 ls -la"))))
+    (is (not= :allow (:effect (policy/decide {} "FOO=1 PATH=/tmp/evil ls -la"))))))
+
+(deftest a-segment-is-judged-exactly-as-a-whole-command-is
+  ;; The two paths read the same statement, so they must read it the same way.
+  ;; They did not: the whole-command path learned to see past an assignment
+  ;; prefix and the per-segment path did not, so `jolt -M:test | tail -15`
+  ;; was allowed while `RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:test | tail -15`
+  ;; — the documented headless smoke form, piped — was refused. Run a3566c73
+  ;; walked into this three turns running at t243-245.
+  (testing "an assignment-prefixed segment rides the same allow its bare form does"
+    (is (= :allow (:effect (policy/decide {} "jolt -M:test | tail -15"))))
+    (is (= :allow (:effect (policy/decide {} "RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:test | tail -15"))))
+    (is (= :allow (:effect (policy/decide {} "RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:run 2>&1 | tail -8")))))
+  (testing "and a hijacking one still does not, in a pipeline as anywhere else"
+    (is (not= :allow (:effect (policy/decide {} "PATH=/tmp/evil git status | tail -5"))))
+    (is (not= :allow (:effect (policy/decide {} "ls -la | LD_PRELOAD=/tmp/evil.so grep x")))))
+  (testing "nor does a segment nothing allows"
+    (is (not= :allow (:effect (policy/decide {} "FOO=1 curl https://evil.test | tail -5"))))))

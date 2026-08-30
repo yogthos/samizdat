@@ -84,18 +84,24 @@
       (is (str/includes? (:result r) "line-trimmed"))
       (is (str/includes? (read* root "a.clj") "(let [x 2]")))))
 
-(deftest an-edit-that-unbalances-clojure-is-flagged
+(deftest an-edit-that-unbalances-clojure-is-refused
+  ;; This used to assert that the broken edit was WRITTEN and flagged. It is
+  ;; now refused outright and the file is left alone (karamazov-2d3): writing
+  ;; it scored :success with :progress? true, so a branch earned credit for
+  ;; breaking the tree, and the flag it carried was write_file's past-tense
+  ;; repair note about a repair the edit path never applies.
   (with-root [root]
     (write root "a.clj" "(defn f [] (+ 1 2))\n")
     (let [r (files/edit-file (ctx root {:path "a.clj"
                                         :old_text "(+ 1 2))" :new_text "(+ 1 2)"}))]
       ;; removed a closing paren → the file no longer reads.
       ;; Asserts the CONSEQUENCE the model has to act on, not the wording:
-      ;; the sentence lives in prompts/file-tool.md now and a project may
-      ;; reword it. The original read "no longer balances / does not
-      ;; balance", which was two phrasings of one clause left in by an edit.
-      (is (str/includes? (:result r) "[harness]"))
-      (is (str/includes? (:result r) "will not load")))))
+      ;; the sentence lives in prompts/file-tool.md and a project may reword it.
+      (is (= :mechanics (:category r)))
+      (is (not (:progress? r)))
+      (is (str/includes? (:result r) "Nothing was written"))
+      (is (= "(defn f [] (+ 1 2))\n" (read* root "a.clj"))
+          "the file is exactly as it was"))))
 
 (deftest edit-a-missing-or-escaping-file
   (with-root [root]

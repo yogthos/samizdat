@@ -1,0 +1,1 @@
+recorded by an EARLIER run, and it claims work is finished. Check the tree before you rely on it — a claim like this has already been wrong here, and a worker that believed one shipped saying it had not made the change. `read_file` or `shell` settles it in one turn; this memory does not.

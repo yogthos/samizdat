@@ -9,6 +9,7 @@
   harness's files nor another project's copy is affected. A layer that is
   shared is not userspace no matter which directory it lives in."
   (:require [clojure.java.io :as io]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [jolt.fs :as jfs]
@@ -390,7 +391,13 @@
     (is (= ["Mine"] (mapv :group (manual/groups)))))
   (testing "and none of it wrote the harness's own files"
     (is (re-find #":cull-threshold" (us/template :policy "gates")))
-    (is (not (re-find #"99" (us/template :policy "gates"))))
+    ;; The VALUE, not the digits. A bare "99" anywhere in a 2000-line
+    ;; gates.edn — another threshold, a doc citing a run id — collided with
+    ;; this sentinel and failed a test about something else entirely. Assert
+    ;; the thing actually at stake: the template still holds its own value.
+    (is (= 3 (get-in (edn/read-string (us/template :policy "gates"))
+                     [:cull-threshold :value]))
+        "the project's 99 did not write through to the shipped template")
     (is (not= "this project's own reprieve wording" (us/template :prompt "cull-reprieve")))
     (is (re-find #"The tape" (us/template :policy "manual")))))
 
@@ -551,3 +558,31 @@
           (is (str/includes? (str (:result lst)) "phases")
               "unedited tables list too — the whole surface is discoverable")))
       (finally (us/unbind!) (gates/reload-config!) (db/close c)))))
+
+(deftest seeding-the-same-entry-from-parallel-branches-writes-one-version
+  ;; karamazov-cuv. save! takes the writer lock for its insert, but the
+  ;; load-latest that decides whether to seed at all sat outside it — so two
+  ;; branches reaching an unseeded entry in the same instant both read nil,
+  ;; both seeded, and the second appended a version whose body was
+  ;; byte-identical to the first.
+  ;;
+  ;; Live in run a3ba69bb: roles/implementor v1 and v2, 1ms apart at run
+  ;; start, when four fan-out workers each triggered the first read. Harmless
+  ;; in content and not harmless in the history: a version that changed
+  ;; nothing is the one thing an append-only record must not contain, and it
+  ;; breaks first-write-wins for anything reading it.
+  (let [conn (db/open! ":memory:")
+        _ (doseq [f (mapv (fn [_] (future (store/seed! conn :prompt "roles/implementor" "BODY")))
+                          (range 8))]
+            @f)
+        rows (db/fetch conn ["SELECT version, body FROM userspace WHERE name = ?"
+                             "roles/implementor"])]
+    (is (= [1] (mapv :version rows)) "one seed, however many branches raced for it")
+    (is (= ["BODY"] (mapv :body rows))))
+  (testing "and a project edit still appends, identical body or not — an edit
+            that turned out to be a no-op is a fact about what was tried, and
+            suppressing it would make the history lie by omission"
+    (let [conn (db/open! ":memory:")]
+      (store/seed! conn :prompt "p" "BODY")
+      (store/save! conn :prompt "p" "BODY")
+      (is (= [1 2] (sort (mapv :version (db/fetch conn ["SELECT version FROM userspace WHERE name = ?" "p"]))))))))

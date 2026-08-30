@@ -85,6 +85,48 @@
     (when (some m [:parse :provider :tool])
       (not-empty m))))
 
+(defn gate-health
+  "Per (branch, gate): how often it fired and how its predictions settled.
+
+  KEYED BY BRANCH, and that is the whole point. The session tally rolls gate
+  outcomes up per GATE across the whole run, which hides the case that matters:
+  run ace34d83 fired `:no-edits` six times, T0 ignored all three of its own and
+  S0 obeyed all three of its own, and the aggregate — met > 0 — read as a gate
+  that works. The branch that had actually stalled was invisible, and
+  `watch`'s :gate-ignored never fired. `gate_firings` has carried `branch_id`
+  the whole time; only the rollup threw it away.
+
+  `met-late` counts as met: the advice worked and the WINDOW was wrong, which
+  is a different repair from a gate nobody obeys. Pure over rows."
+  [rows]
+  (reduce (fn [acc {:keys [gate branch_id outcome]}]
+            (let [k [(str branch_id) (str gate)]
+                  o (str outcome)]
+              (-> acc
+                  ;; Both counters seeded, so a caller reading :met on a gate
+                  ;; that has only ever gone unmet gets 0 rather than nil.
+                  (update k #(merge {:fired 0 :met 0 :unmet 0} %))
+                  (update-in [k :fired] inc)
+                  (update-in [k (if (contains? #{"met" "met-late"} o) :met :unmet)]
+                             inc))))
+          {}
+          rows))
+
+(defn gate-lines
+  "The gates a BRANCH is ignoring — fired at least `floor` times for that
+  branch and never once met — as digest lines, or nil when steering is working.
+
+  Only the ignored ones. A gate that is being obeyed is the loop functioning
+  and costs the supervisor nothing to not read about; a gate a branch has
+  ignored three times is either the wrong advice, aimed at the wrong branch, or
+  a model that does not respond to advice at all — and all three are the
+  supervisor's business."
+  [health floor]
+  (let [dead (for [[[branch gate] {:keys [fired met]}] (sort health)
+                   :when (and (>= (or fired 0) floor) (zero? (or met 0)))]
+               (str "- " branch " has ignored `" gate "` " fired " times"))]
+    (when (seq dead) (str/join "\n" dead))))
+
 (defn branch-health
   "Per-branch health from journal turn rows: turns taken, how many were
   mechanics (a no-call or parse-repair — the loop spinning without acting), and
@@ -195,7 +237,8 @@
 (defn digest
   "The run-health block the supervisor reads. `facts` = {:results :review
   :critic :revision}; `rows` = the run's journal turns."
-  [{:keys [results review critic revision errors] :as facts} rows]
+  ([facts rows] (digest facts rows nil))
+  ([{:keys [results review critic revision errors] :as facts} rows firings]
   (let [health (branch-health rows)
         total (count results)
         shipped (count (filter #(= :done (:status %)) results))
@@ -213,7 +256,16 @@
                               (str "- " b ": " (:turns h) " turns, "
                                    (:mechanics h) " thrash, shipped=" (:shipped? h))))
       :failures (failure-exemplars rows (gates/threshold :supervisor-digest))
+      ;; WHETHER THE STEERING IS WORKING, which the digest never carried.
+      ;; The supervisor's job is to notice a loop going wrong and change it;
+      ;; a gate one branch has ignored three times is exactly that, and it
+      ;; used to be visible only to `watch` — which talks to the implementor,
+      ;; not to the supervisor (karamazov-b9v).
+      :gates (some-> firings
+                     gate-health
+                     (gate-lines (:min-gate-firings (lexicon/policy :session-findings)))
+                     not-empty)
       :signals (when (seq sigs)
-                 (str/join "\n" (map #(str "- " %) sigs)))})))
+                 (str/join "\n" (map #(str "- " %) sigs)))}))))
 ;; NOTE: run-health.md destructures :failures itself ({{failures.parse.count}}
 ;; etc.) — the map is the seam, the words are the template's.

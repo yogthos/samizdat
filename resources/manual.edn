@@ -74,7 +74,11 @@
    {:name samizdat.workflow/compile-loop
     :summary "Compile a workflow definition through mycelium's static checks. Throws on any violation."}
    {:name samizdat.workflow/turn-manifest
-    :summary "A whole-run manifest reduced to one turn — the slice the beam schedules."}]}
+    :summary "A whole-run manifest reduced to one turn — the slice the beam schedules."}
+   {:name samizdat.userspace/self-hosting?
+    :summary "Whether the project under work IS a samizdat checkout. What the system prompt gates its sections about cells, manifests and src-vs-resources on: all of it is load-bearing here and standing instruction about the wrong codebase anywhere else."}
+   {:name samizdat.agent.files/reference-roots
+    :summary "The READ-ONLY roots a project declared beside its own (.samizdat/config.edn :run :reference-paths). read_file and grep resolve against them; writes stay confined to the root."}]}
 
  {:group "Policy as data"
   :entries
@@ -103,10 +107,27 @@
    {:name samizdat.prompt/render
     :summary "Render a prompt resource through selmer. Every harness message the model sees comes through here."}]}
 
+ {:group "Reading and writing Clojure"
+  :entries
+  [{:name samizdat.lisp/diagnose
+    :summary "Why a piece of Clojure would not load AS WRITTEN, or nil — reason plus 1-based line/col, naming both ends of a mismatch. Answers 'is this loadable now', which is a different question from lisp/balance's 'could this be repaired': the delimiters balancing does not promise it READS, and `(defn f [] :)` is perfectly balanced and is not Clojure."}
+   {:name samizdat.lisp/balance
+    :summary "The repair half: closes a trailing truncation or trims a trailing over-close when the result reads, and refuses anything mid-file because closing it would re-parent code. Returns data, not sentences — the words live in prompts/file-tool.md."}
+   {:name samizdat.lisp/first-odd-quote-line
+    :summary "The line where the running unescaped-quote count first goes odd — the line that most likely opened a string nobody closed, which is NOT where the reader complains."}
+   {:name samizdat.hashline/line-anchor
+    :summary "Mint a `<line>:<hash>` anchor: the line locates, the three-hex content hash of the trimmed line verifies. What read_file({anchors: true}) prints and the patch tool spends."}
+   {:name samizdat.hashline/apply-edits
+    :summary "Apply a batch of anchored edits atomically. Every edit resolves against the same read, so order does not matter; one stale anchor or two edits over a line refuses the whole batch rather than half-writing it."}
+   {:name samizdat.hashline/resolve-one
+    :summary "The refusal ladder behind an anchor: exact, drifted-so-follow-the-content, ambiguous-hash-so-the-explicit-line-wins, far-away-so-REFUSE, and gone-but-here-is-the-current-anchor. A false refuse costs one re-read; a false accept corrupts the file."}]}
+
  {:group "The record"
   :entries
   [{:name samizdat.store.journal/note!
     :summary "Append a note to the run's journal. The durable record a later run reads back."}
+   {:name samizdat.store.journal/last-note
+    :summary "The most recent note of one kind on a run, parsed back from JSON. How a pipeline stage reads what the supervision STREAM concluded — the stream runs beside the run and hands its output to nobody, so the journal is the only place the two meet."}
    {:name samizdat.store.journal/artifacts
     :summary "Every artifact this run banked, across all branches."}
    {:name samizdat.store.journal/branch-turns
@@ -118,4 +139,17 @@
    {:name samizdat.session/render
     :summary "The live session tally since a named mark — what changed while your last adjustment was in force."}
    {:name samizdat.events/subscribe
-    :summary "A channel of every event published from now on, for watching a run without polling."}]}]
+    :summary "A channel of every event published from now on, for watching a run without polling."}]}
+
+ {:group "Which image your eval lands in"
+  :entries
+  [{:name samizdat.repl.route/image-of
+    :summary "Whether this role's eval runs in the sandboxed project image or the live harness one. `introspect` prints the same thing in prose."}
+   {:name samizdat.repl.route/sandbox-spec
+    :summary "What the project image may not read, and the only directory it may exec from. Not tunable at runtime — it is the confinement."}
+   {:name samizdat.config/eval-image
+    :summary "The rule itself: :project for every role but the supervisor, unless the operator set :eval :mode in .samizdat/config.edn."}
+   {:name samizdat.repl.route/release!
+    :summary "Stop the project image for a root. The next eval starts a fresh one, losing everything defined at the REPL."}
+   {:name samizdat.security.sandbox/seatbelt-profile
+    :summary "The macOS profile the project image runs under, as text — read it when a refusal is surprising."}]}]

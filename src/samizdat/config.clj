@@ -49,6 +49,92 @@
          (if (map? v) v {}))
        (catch Exception _ {})))
 
+;; --- the eval toggle --------------------------------------------------------
+
+(def eval-defaults
+  "Which image the REPL runs in, absent an operator saying otherwise.
+
+  `:project` RATHER THAN `:harness`, deliberately. The mode names an image:
+
+    :off      no REPL at all — the tools are withheld and the REPL-first
+              sections of the system prompt are suppressed with them.
+    :project  a `jolt nrepl-server` subprocess rooted at the PROJECT, under an
+              OS sandbox. What a role building a project should be talking to.
+    :harness  the live harness image, in-process. The supervisor's, and only
+              behind the mutation protocol.
+
+  Defaulting to `:harness` would have left karamazov-zrq open for everyone who
+  did not read a release note — a P0 whose escape was observed live is not
+  closed by making the fix opt-in. So the DANGEROUS mode is the one an operator
+  opts into, not the safe one.
+
+  `:sandbox :auto` resolves to the platform's backend and `:none` skips it.
+  `:none` is legitimate rather than a footgun: inside a container, or on a host
+  without a backend, the subprocess split alone still ends in-process access to
+  the harness and still fixes the classpath and cwd bugs. The OS layer hardens
+  that; it is not what makes it correct."
+  {:mode :project :sandbox :auto})
+
+(def ^:private eval-modes #{:off :project :harness})
+(def ^:private eval-sandboxes #{:auto :none})
+
+(defn eval-settings
+  "The `:eval` block of a project config, normalised to
+  `{:mode … :sandbox …}`.
+
+  PURE, and a total function of whatever the file happened to contain. It
+  follows `project-config`'s rule — a broken project file must never stop the
+  harness — with the direction that rule implies for a security control: an
+  unreadable setting falls back to the DEFAULT, never to the open image. A
+  string `\"project\"` is not the keyword `:project` and is not guessed at,
+  because guessing is how an operator who meant `:off` silently gets a REPL."
+  [cfg]
+  (let [m (:eval cfg)
+        m (if (map? m) m {})]
+    {:mode    (get eval-modes (:mode m) (:mode eval-defaults))
+     :sandbox (get eval-sandboxes (:sandbox m) (:sandbox eval-defaults))}))
+
+(defn eval-mode
+  "The eval mode for the project rooted at `root`. nil root — a test, a bare
+  REPL — gets the default."
+  [root]
+  (:mode (eval-settings (when root (project-config root)))))
+
+(defn eval-sandbox
+  "The sandbox backend setting for the project at `root` (`:auto` or `:none`)."
+  [root]
+  (:sandbox (eval-settings (when root (project-config root)))))
+
+(def harness-image-roles
+  "The roles that keep the LIVE harness image under `:mode :project`.
+
+  Only the supervisor, because only the supervisor's job is the harness: it
+  reads the run's health and changes manifests, cells, prompts and policy, and
+  a project image rooted at somebody else's repo cannot see any of that. Its
+  kernel-source writes are what the mutation protocol is for.
+
+  Not in roles.edn. A run that could add itself to this set by editing
+  userspace would be granting itself the harness image, which is the escape
+  this whole bead is about. A role nobody has heard of gets `:project` — the
+  safe direction, and the one that makes adding a role harmless."
+  #{:supervisor "supervisor"})
+
+(defn eval-image
+  "Which image `role` evaluates in under `mode`: `:off`, `:project` or
+  `:harness`.
+
+  `:mode :project` is a posture for the RUN, not a single answer for every
+  role — the supervisor stays in the harness image inside it. Resolving this
+  in one pure function keeps the prompt and the router from disagreeing: the
+  prompt telling a supervisor it is in a separate project image, while its
+  evals actually land in the harness, is the same false claim this bead is
+  otherwise about removing."
+  [mode role]
+  (case mode
+    :off :off
+    :harness :harness
+    (if (contains? harness-image-roles role) :harness :project)))
+
 (def ^:private providers
   {;; /beta rather than /v1, for prefix completion. A gate that names one tool
    ;; steers by ending the request mid-fence rather than by asking, which
@@ -58,7 +144,19 @@
    ;; not a trade: nothing else about the run changes. The adapter checks the
    ;; URL anyway and simply does not prefill against /v1, so overriding
    ;; HARNESS_BASE_URL back is safe.
-   :deepseek {:base-url "https://api.deepseek.com/beta"
+   :deepseek {;; The model's context window, which the compaction ladder reads:
+              ;; every rung is a FRACTION of this, so without it the whole
+              ;; ladder is inert and folds never happen. Per provider because
+              ;; it is a property of the model, and overridable with
+              ;; HARNESS_CONTEXT_WINDOW because a table cannot keep up with
+              ;; what endpoints serve.
+              ;;
+              ;; A wrong value is not a correctness bug, it moves WHEN folding
+              ;; starts: too small folds early and spends summarizer calls,
+              ;; too large folds late and risks an overflow the ladder existed
+              ;; to prevent.
+              :context-window 128000
+              :base-url "https://api.deepseek.com/beta"
               :key-env  "DEEPSEEK_API_KEY"
               ;; deepseek-v4-flash is the development and test model: cheap
               ;; enough to run the beam repeatedly. deepseek-v4-pro is the
@@ -69,22 +167,29 @@
    ;; drives GLM through in practice, tuned for agentic coding traffic. Same
    ;; OpenAI-compatible chat-completions surface, so the openai-family adapter
    ;; handles it unchanged.
-   :glm      {:base-url "https://open.bigmodel.cn/api/coding/paas/v4"
+   :glm      {:context-window 128000
+              :base-url "https://open.bigmodel.cn/api/coding/paas/v4"
               :key-env  "ZHIPU_API_KEY"
               :model    "glm-5.3"
               ;; GLM benefits from a low temperature on coding tasks (dirge
               ;; pins 0.2); the loop leaves it unset for other providers.
               :temperature 0.2}
-   :openai   {:base-url "https://api.openai.com/v1"
+   :openai   {:context-window 128000
+              :base-url "https://api.openai.com/v1"
               :key-env  "OPENAI_API_KEY"
               :model    "gpt-4o"}
    ;; A local llama-server / vLLM / LM Studio OpenAI-compatible endpoint.
-   :local    {:base-url "http://127.0.0.1:8080/v1"
+   :local    {;; A local endpoint is launched with whatever -c it was given, so
+              ;; the conservative value is right until HARNESS_CONTEXT_WINDOW
+              ;; or the llama.cpp probe says otherwise.
+              :context-window 32768
+              :base-url "http://127.0.0.1:8080/v1"
               :key-env  nil
               :model    "local-model"}
    ;; Ollama's NATIVE api, so no /v1 suffix. See llm/adapter/ollama.clj for
    ;; why the native surface rather than Ollama's OpenAI-compatible one.
-   :ollama   {:base-url "http://127.0.0.1:11434"
+   :ollama   {:context-window 32768
+              :base-url "http://127.0.0.1:11434"
               :key-env  nil
               :model    "qwen3"}})
 
@@ -152,6 +257,11 @@
                   ;; takes reasoning_effort per run and overrides this.
                   :reasoning-effort (env "HARNESS_REASONING_EFFORT")
                   :max-tokens  (or (env-long "HARNESS_MAX_TOKENS") 16384)
+                  ;; What the compaction ladder measures pressure against. Its
+                  ;; rungs are fractions of this; absent, samizdat.agent.compaction
+                  ;; routes :none and no fold ever happens.
+                  :context-window (or (env-long "HARNESS_CONTEXT_WINDOW")
+                                      (:context-window defaults))
                   ;; A provider default (GLM pins 0.2 for coding) wins over the
                   ;; family default of 0.7; HARNESS_TEMPERATURE overrides both.
                   :temperature (or (some-> (env "HARNESS_TEMPERATURE") parse-double)

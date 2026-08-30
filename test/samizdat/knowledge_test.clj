@@ -1,5 +1,6 @@
 (ns samizdat.knowledge-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [samizdat.agent.gitdiff :as gitdiff]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.string :as str]
             [samizdat.memory :as memory]
             [samizdat.store.db :as db]
@@ -340,3 +341,59 @@
             "the content follows the newest evidence")
         (is (some #(= (:id row) (:id %)) (knowledge/recall c "shell"))
             "and the memory answers to its NEW wording, not just its first")))))
+
+;; --- the store must not tell a new run its work is already done -------------
+
+(deftest a-completion-claim-needs-a-diff-to-back-it
+  ;; karamazov-mjb, run cc88a760. The shared store held two memories from
+  ;; earlier FAILED runs — "messages.clj store is settled and verified
+  ;; end-to-end at the REPL" and one like it — written by workers who had
+  ;; eval-prototyped and never written the files. A later worker recalled one
+  ;; at turn 3, concluded its part was done, and called done at turn 14
+  ;; literally saying "I did not complete the change".
+  ;;
+  ;; A completion claim is the ONE memory the harness can check, and the one
+  ;; that does real damage when wrong, because memories outlive their run.
+  (let [conn (db/open! ":memory:")
+        call (fn [content changed]
+               (with-redefs [gitdiff/changed-files (constantly changed)]
+                 (:result (tools/run-tool {:branch {:id "W1"} :tool-name "remember"
+                                           :conn conn :root "/x" :git-baseline "b"
+                                           :args {:content content}}))))]
+    (testing "a claim that the work is finished, off an empty diff, is refused"
+      (is (str/includes? (call "the messages store is settled and verified end-to-end" [])
+                         "Nothing was stored")))
+    (testing "but a FINDING is not gated — a supervisor writing down what it
+              diagnosed has no diff and should not need one"
+      (is (str/includes? (call "jolt has no Java interop; a JVM diagnosis is wrong" [])
+                         "Remembered")))
+    (testing "and the same claim WITH a real diff is stored"
+      (is (str/includes? (call "the messages store is settled and verified" ["src/messages.clj"])
+                         "Remembered")))
+    (testing "it fails OPEN when git cannot answer — nil is cannot-tell, not
+              nothing-changed, and refusing on unknown would block honest
+              memories on any checkout without git"
+      (is (str/includes? (call "the store is settled and verified" nil) "Remembered")))))
+
+(deftest a-completion-claim-from-another-run-is-not-authority-over-this-one
+  (let [conn (db/open! ":memory:")]
+    (knowledge/remember! conn {:content "the messages store is settled and verified"
+                               :run-id "OLD-RUN"})
+    (knowledge/remember! conn {:content "jolt has no Java interop, so a JVM diagnosis is wrong"
+                               :run-id "OLD-RUN"})
+    (let [out (:result (tools/run-tool {:branch {:id "W1"} :tool-name "recall" :conn conn
+                                        :run-id "NEW-RUN"
+                                        :args {:query "messages store jolt interop"}}))]
+      (is (str/includes? out "recorded by an EARLIER run")
+          "the completion claim is flagged")
+      (is (= 1 (count (re-seq #"recorded by an EARLIER run" out)))
+          "and only it — a finding from another run is ordinary knowledge")
+      (is (str/includes? out "settled and verified")
+          "the claim still SHOWS: that the work has a history is often the
+           useful hint. What it no longer does is settle the question"))
+    (testing "and a claim from THIS run carries no annotation"
+      (knowledge/remember! conn {:content "the parser is complete and verified"
+                                 :run-id "NEW-RUN"})
+      (let [out (:result (tools/run-tool {:branch {:id "W1"} :tool-name "recall" :conn conn
+                                          :run-id "NEW-RUN" :args {:query "parser complete"}}))]
+        (is (not (str/includes? out "recorded by an EARLIER run")))))))

@@ -50,8 +50,8 @@
   binary (same reasoning as cells/shipped-cells and prompt/shipped-prompts).
   Pinned against the directory by workflow-test."
   ["loop" "beam" "critic" "orchestrator" "probe" "review" "reviewer"
-   "supervisor" "worker" "team" "board" "board-bt" "feature" "decompose"
-   "repair"])
+   "supervisor" "oversight" "worker" "team" "board" "board-bt" "feature" "decompose"
+   "repair" "repl"])
 
 (defn manifest-resource
   "The factory resource path a manifest name seeds from, e.g. \"loop\" ->
@@ -269,14 +269,66 @@
                           (:edges definition))]
     (boolean (and (contains? cells :llm/infer) loops-back?))))
 
+(defn start-back-edge
+  "The `[node label]` of an edge routing back to the start node, or nil."
+  [definition]
+  (first
+   (for [[node to] (:edges definition)
+         [label target] (if (map? to) to {nil to})
+         :when (= start-node target)]
+     [node label])))
+
+(defn check-entry-back-edge!
+  "Refuse to SLICE a non-iterating manifest that routes an edge back to its
+  start node.
+
+  For an ITERATING loop, looping back to start IS the definition of a turn and
+  the slice cuts it deliberately. For a whole-run workflow the same shape is
+  silent data loss: `turn-manifest` redirects that edge into :end, so under the
+  beam driver each cycle runs as a separate turn on a FRESH data map. Live in
+  run 3b8d2af5 — the feature loop's revise edge went to :start, so every
+  revision round reset :feature/revisions, collided branch ids, lost the
+  guidance, and crash-looped the judge and supervisor calls.
+
+  The shipped manifests were fixed by adding a re-entry node of their own
+  (feature's :redispatch, orchestrator's :retry) and manifest_test pins their
+  shape. This is the other half: an AGENT-AUTHORED manifest saved at runtime
+  cannot reintroduce it, because the mutation protocol compiles before it
+  stores (karamazov-emw).
+
+  CHECKED AT THE SLICE, not at compile. The shape is only dangerous for a
+  manifest the beam turn-slices, and that is knowable here and not from the
+  definition alone: `beam.edn`, the scheduler's OWN manifest, routes :tick
+  back to :start and is non-iterating by the same test — it schedules the
+  branches that make model calls rather than making one — and it is never
+  sliced, so it was never in danger. Compiling the check caught it and was
+  wrong to."
+  [definition]
+  (when-not (iterating? definition)
+    (when-let [[node label] (start-back-edge definition)]
+      (throw (ex-info
+              (str "node " node " routes " (if label (str "its " label " edge") "an edge")
+                   " back to " start-node ", and this manifest does not iterate."
+                   " Under the beam driver that edge is cut into :end, so each"
+                   " cycle runs as a separate turn on a fresh data map — the"
+                   " counters, the ids and the guidance all reset. Add a"
+                   " re-entry node that repeats " start-node "'s dispatch and"
+                   " route to that instead, the way feature uses :redispatch.")
+              {:node node :label label :start start-node})))))
+
 (defn turn-manifest
   "`definition` reduced to ONE turn: edges back to the start node and edges
   into :loop/finish are redirected to :end, and the finish node is dropped
   (mycelium's reachability check refuses an orphan).
 
   Returns a definition that compiles and runs exactly like the original up to
-  the turn boundary, and then stops."
+  the turn boundary, and then stops.
+
+  REFUSES a non-iterating manifest with a back edge to the start node — see
+  check-entry-back-edge!. This is the operation that turns that edge into
+  silent data loss, so it is the operation that must not perform it."
   [definition]
+  (check-entry-back-edge! definition)
   (let [finish (finish-nodes definition)
         terminal (conj finish start-node)
         retarget (fn [to] (if (contains? terminal to) :end to))]

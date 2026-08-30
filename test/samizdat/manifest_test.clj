@@ -19,7 +19,13 @@
 (ns samizdat.manifest-test
   "Multiple named loop manifests: config selects which drives a run, and the
   manifest tool lists/shows/saves them behind a real compile."
-  (:require [clojure.java.io :as io]
+  (:require [samizdat.llm.client :as llm]
+            [samizdat.agent.gitdiff :as gitdiff]
+            [samizdat.agent.judge :as judge]
+            [samizdat.agent.beam :as beam]
+            [samizdat.manifests :as manifests]
+            [samizdat.cells :as cells]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [mycelium.cell :as cell]
@@ -281,3 +287,66 @@
           (is (= :neutral (:category r)) (str "save refused: " (:result r)))
           (is (some? (us/load-latest conn :manifest "composed"))))
         (finally (userspace/unbind!))))))
+
+(deftest a-non-iterating-manifest-may-not-route-back-to-its-entry
+  ;; The other half of a-whole-run-manifest-never-routes-back-to-its-entry
+  ;; above. That test pins the SHIPPED manifests; this refuses the shape at
+  ;; COMPILE time, so an agent-authored manifest saved at runtime cannot
+  ;; reintroduce it — the mutation protocol compiles before it stores
+  ;; (karamazov-emw).
+  (cells/load-cells!)
+  (testing "a whole-run manifest routing an edge to :start is refused, and the
+            refusal names the fix rather than only the fault"
+    (let [e (try (manifests/turn-manifest
+                  {:cells {:start :loop/assemble :work :feature/route}
+                   :edges {:start :work :work {:again :start :done :end}}
+                   :dispatches {:work [[:again (fn [d] true)] [:done (fn [d] true)]]}})
+                 nil
+                 (catch Throwable t t))]
+      (is (some? e) "accepted a shape that silently resets the data map")
+      (is (str/includes? (str (ex-message e)) "fresh data map"))
+      (is (str/includes? (str (ex-message e)) "re-entry node"))))
+  (testing "an ITERATING loop routing back to :start is fine — that IS the
+            definition of a turn, and the slice cuts it deliberately"
+    (doseq [nm ["loop" "worker" "supervisor" "reviewer"]]
+      (is (some? (manifests/compiled-manifest nm)) nm)))
+  (testing "and every shipped whole-run manifest still compiles"
+    (doseq [nm ["feature" "team" "board" "decompose" "orchestrator"]]
+      (is (some? (manifests/compiled-manifest nm)) nm)))
+  (testing "the scheduler's OWN manifest routes :tick back to :start and is
+            non-iterating by the same test — it schedules the branches that
+            make model calls rather than making one — and is never sliced, so
+            checking this at compile time was wrong and caught it"
+    (is (some? (manifests/compiled-manifest "beam")))))
+
+(deftest the-beam-driver-runs-a-whole-run-manifest-end-to-end
+  ;; THE STRUCTURAL BLIND SPOT karamazov-emw names: every other test of these
+  ;; flows drives workflow/run!, which carries data across a back edge, while
+  ;; POST /v1/runs drives beam/run!, which turn-slices. That is how the :start
+  ;; back edge shipped — no behavioural test could see it.
+  (with-redefs [judge/deterministic-block (constantly nil)
+                judge/parse-verdict (constantly :complete)
+                judge/blocking-findings (constantly nil)
+                gitdiff/changed-files (constantly ["src/example.clj" "test/example_test.clj"])
+                llm/chat (fn [_ _ msgs & _]
+                           (let [c (str/join " " (map :content msgs))]
+                             {:content
+                              (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\""
+                                   (cond
+                                     (str/includes? c "Your role: reviewer")
+                                     "PASS: the implementors' work satisfies the feature and the tests pass."
+                                     (str/includes? c "Your role: supervisor")
+                                     "CONTINUE: the implementors shipped and the reviewer passed."
+                                     :else "built the part as asked; the suite is green")
+                                   "\"}}\n```")
+                              :finish-reason "stop"}))]
+    (let [conn (db/open! ":memory:")
+          r (beam/run! {:conn conn
+                        :llm-adapter :a :llm-config {:max-tokens 16384}
+                        :problem "the feature" :max-turns 6 :beam-width 1
+                        :config {:run {:loop "feature" :subtasks ["alpha"]
+                                       :max-revisions 2 :max-revisions-hard 1}}})]
+      (is (contains? #{:completed :abandoned :done} (:status r))
+          (str "a beam-driven feature run reached a real ending, not a crash: "
+               (pr-str (:status r))))
+      (is (some? (:run-id r))))))

@@ -41,9 +41,16 @@
   To add a tool: open the group namespace it belongs to (or create a new one
   beside them) and defmethod base/run-tool there. This file stays as is."
   (:require [clojure.tools.logging :as log]
+            [samizdat.agent.gates :as gates]
+            [samizdat.agent.toolerr :as toolerr]
+            [samizdat.lexicon :as lexicon]
+            [samizdat.prompt :as prompt]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.repl]
             [samizdat.agent.tools.files]
+            [samizdat.agent.tools.intervene]
+            [samizdat.agent.tools.plan]
+            [samizdat.agent.tools.websearch]
             [samizdat.agent.tools.shell]
             [samizdat.agent.tools.ship :as ship]
             [samizdat.agent.tools.tasks]
@@ -122,6 +129,50 @@
     (nil? (:branch r))
     "returned a result map with no :branch, so the turn had no branch to carry forward"))
 
+(defn- retrying
+  "Dispatch, and run it again when the failure was TRANSIENT and the tool is
+  one that re-running cannot duplicate an effect.
+
+  Both conditions, never either alone (dirge tool_retry.rs). A provider request
+  retries freely because a request that failed in transport never reached the
+  model; a tool call is not like that, because a timeout does not mean the work
+  did not happen. The language server that timed out while indexing is the case
+  this exists for: a failure that is purely a function of WHEN the call was
+  made, that the branch can do nothing useful about, and that is otherwise
+  handed back as an error to reason about.
+
+  The retry is invisible to the branch when it succeeds — that is the point,
+  it never spent a turn on a blip — and the attempt count rides out on a
+  failure so the record shows the call was tried more than once."
+  [ctx]
+  (let [{:keys [max-attempts base-backoff-ms]} (gates/threshold :tool-retry)
+        classes (lexicon/wordlist :tool-error-classes)
+        read-only (lexicon/wordlist :retry-safe-tools)]
+    (loop [attempt 1]
+      (let [r (base/run-tool ctx)]
+        (if (or (not= :failure (:category r))
+                (not (toolerr/should-retry?
+                      {:tool (:tool-name ctx)
+                       :class (toolerr/classify r classes)
+                       :attempt attempt}
+                      {:max-attempts max-attempts :read-only read-only})))
+          (cond-> r
+            (> attempt 1) (assoc :attempts attempt)
+            ;; WHAT IT LANDED, when that is unknown (dirge side_effect.rs). A
+            ;; result is success-or-error text, which answers whether the tool
+            ;; reported a problem — not the question the next turn needs
+            ;; answered after a mutating call was cut short. Left unsaid, the
+            ;; branch reads a timeout as a failure and does the reasonable
+            ;; thing, which is the unsafe one.
+            (toolerr/uncertain-effect?
+             {:tool (:tool-name ctx) :timeout? (:timeout? r)
+              :class (toolerr/classify r classes)}
+             read-only)
+            (update :result str "\n\n"
+                    (prompt/render "uncertain-effect" {:tool (:tool-name ctx)})))
+          (do (Thread/sleep (toolerr/backoff-ms attempt base-backoff-ms))
+              (recur (inc attempt))))))))
+
 (defn run-tool
   "Dispatch one tool call and return a result the loop can always use.
 
@@ -143,7 +194,7 @@
   3. The model-bound strings are redacted. See the note above the delay."
   [{:keys [branch tool-name] :as ctx}]
   (let [known (known-values-for ctx)
-        outcome (try {:ok (base/run-tool ctx)}
+        outcome (try {:ok (retrying ctx)}
                      (catch Throwable e {:threw e}))]
     (if-let [e (:threw outcome)]
       (do (log/warn "tool" tool-name "threw:" (ex-message e))

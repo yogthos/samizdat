@@ -33,6 +33,11 @@
             [samizdat.agent.gates :as gates]
             [samizdat.agent.phases :as phases]
             [samizdat.agent.storm :as storm]
+            ;; Same reason as gates/storm above: the repl-session refusal
+            ;; :when forms name samizdat.agent.state fully qualified.
+            [samizdat.agent.roles :as roles]
+            [samizdat.agent.state :as state]
+            [samizdat.agent.suggest :as suggest]
             [samizdat.prompt :as prompt]))
 
 (defmulti run-tool
@@ -83,7 +88,22 @@
   [branch capability e]
   (ok branch (str capability " is unavailable: " (ex-message e))))
 
-(defn arg [ctx k] (get-in ctx [:args k]))
+(defn arg
+  "A tool call's argument `k`, however the model spelled it.
+
+  Calls arrive as JSON keywordized verbatim, so an argument the prompt
+  documents as `timeout_ms` reaches the map as :timeout_ms while the tool asks
+  for :timeout-ms. That mismatch returns nil, and a nil optional argument is
+  indistinguishable from one the model never sent — so `eval` ran on its
+  default timeout no matter what was passed, silently, until a supervisor
+  noticed a turn that asked for 60s and stopped at 10."
+  [ctx k]
+  (let [args (:args ctx)
+        underscored (keyword (str/replace (name k) "-" "_"))]
+    (or (get args k)
+        (get args underscored)
+        (get args (name k))
+        (get args (name underscored)))))
 
 (defn save-body
   "The body for a save action: the inline argument `k` when present, else the
@@ -215,7 +235,17 @@
               (refusal branch
                        (prompt/render message-file
                                       {:tool-name tool-name
-                                       :phase (some-> (:phase branch) name)})
+                                       :phase (some-> (:phase branch) name)
+                                       ;; What the repl-session exit refusal
+                                       ;; names back: a refusal that cannot
+                                       ;; say WHICH file is outstanding is one
+                                       ;; more unactionable message.
+                                       :role (some-> (:role branch) name)
+                                       :role-doc (some-> (:role branch)
+                                                         roles/doc)
+                                       :unwritten (str/join "\n"
+                                                            (map #(str "  - " %)
+                                                                 (state/unwritten branch)))})
                        :refusal-rule (:rule rule)))))
          (phases/refusals))))
 
@@ -231,10 +261,16 @@
   ;; exists to handle a bad call was itself the crash. The dispatch seam turns
   ;; a throw into a :mechanics result now (RFC-008), which would have masked
   ;; this rather than fixed it.
-  (fail (update-in branch [:mechanics :unknown-tools] (fnil inc 0))
-        (str "No tool named `" tool-name "`. Available: "
-             (str/join ", " (sort (remove #{:default} (keys (methods run-tool)))))
-             ".")))
+  (let [known (sort (remove keyword? (keys (methods run-tool))))
+        ;; A NEAREST NAME first, when the miss is a typo. The list of every
+        ;; tool is the fallback answer, not the useful one: it is 36 names the
+        ;; model has already been shown, and reading it back is a turn spent
+        ;; re-reading its own prompt. `read_fil` wants one word.
+        near (suggest/closest tool-name known)]
+    (fail (update-in branch [:mechanics :unknown-tools] (fnil inc 0))
+          (str "No tool named `" tool-name "`."
+               (when near (str " Did you mean `" near "`?"))
+               " Available: " (str/join ", " known) "."))))
 
 (defn tool-names []
   (sort (remove keyword? (keys (methods run-tool)))))

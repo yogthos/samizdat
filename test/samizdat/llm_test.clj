@@ -568,11 +568,19 @@
     ;; live call here. Treating that as a steering problem would be wrong: the
     ;; fix is more tokens.
     (is (= {:no-fence false :truncated true :parse-error false
-            :auto-repaired false :multiple-fences false}
+            :auto-repaired false :scavenged false :multiple-fences false}
            (fence/signals {:finish-reason "length"} nil)))
     (is (= {:no-fence true :truncated false :parse-error false
-            :auto-repaired false :multiple-fences false}
-           (fence/signals {:finish-reason "stop"} nil)))))
+            :auto-repaired false :scavenged false :multiple-fences false}
+           (fence/signals {:finish-reason "stop"} nil))))
+  (testing ":scavenged is its OWN signal, not folded into :auto-repaired — a
+            repair fixed text the model got slightly wrong, this recovered a
+            call it put where the parser does not look, and a run full of the
+            second wants the PROMPT changed rather than the parser loosened"
+    (let [p (fence/parse-tool-call
+             "<think>```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"x\"}}\n```</think>")]
+      (is (:scavenged (fence/signals {:finish-reason "stop"} p)))
+      (is (not (:auto-repaired (fence/signals {:finish-reason "stop"} p)))))))
 
 ;; --- messages ---------------------------------------------------------------
 
@@ -1297,3 +1305,34 @@
     (is (= "__parse_error__" (:name parsed)))
     (is (str/includes? (:parse-error parsed) "brace")
         "the complaint names the missing-closer cause alongside the others")))
+
+
+;; --- a drifted closing tag must not swallow the next parameter --------------
+;; Run c377260b turn 300: the model wrote a complete, correct boundary_test.clj
+;; and closed its parameters with `</parameter-name>` — mirroring the `name=`
+;; of the opening tag. The value then ran on to the NEXT parameter's closing
+;; tag, so `path` became "…clj</parameter-name>\n<parameter name="content">(ns…"
+;; and `content` vanished. The harness answered "write_file needs `content`",
+;; blaming the model for a file the parser had just destroyed — its one correct
+;; write in 300 turns.
+
+(defn- xml-args
+  "Parse an <invoke> whose FIRST parameter closes with `close`."
+  [close]
+  (:args (fence/parse-tool-call
+          (str "<invoke name=\"write_file\">\n"
+               "<parameter name=\"path\">a.clj" close "\n"
+               "<parameter name=\"content\">(ns a)</parameter>\n"
+               "</invoke>")
+          {})))
+
+(deftest a-drifted-parameter-close-does-not-merge-parameters
+  (let [args (xml-args "</parameter-name>")]
+    (is (= "a.clj" (:path args)) "the path stops at its own closing tag")
+    (is (= "(ns a)" (:content args)) "and the next parameter survives")))
+
+(deftest every-plausible-parameter-close-is-accepted
+  (doseq [close ["</parameter>" "</parameter-name>" "</param>" "</parameter >"]]
+    (let [args (xml-args close)]
+      (is (= "a.clj" (:path args)) (str "closing with " close))
+      (is (= "(ns a)" (:content args)) (str "content survived " close)))))

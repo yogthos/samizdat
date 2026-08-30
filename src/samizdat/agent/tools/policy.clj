@@ -43,6 +43,7 @@
             [samizdat.agent.tools.base :as base]
             [samizdat.lexicon :as lexicon]
             [samizdat.manual :as manual]
+            [samizdat.agent.roles :as roles]
             [samizdat.prompt :as prompt]
             [samizdat.store.userspace]
             [samizdat.userspace :as userspace]))
@@ -50,7 +51,7 @@
 (def shipped-policies
   "The policy tables that ship, ENUMERATED not globbed — same reason as every
   other resource list (a classpath has no directory listing)."
-  ["gates" "manual" "phases" "prompt-chain" "wordlists"])
+  ["gates" "manual" "phases" "prompt-chain" "roles" "wordlists"])
 
 (defn- msg [ctx] (prompt/render "policy-tool" ctx))
 
@@ -79,6 +80,20 @@
                     (lexicon/wordlist :usage-cap-signals))
     "manual"    ;; Every :name in the manual must resolve; render walks them.
                 (manual/render)
+    "roles"     ;; Every role must still declare a surface, and every tool it
+                ;; names must be one the loop can dispatch — a surface naming
+                ;; a tool that does not exist silently narrows that role.
+                (let [registered (roles/all-tool-names)]
+                  (doseq [r (roles/names)
+                          :let [surface (roles/surface r)]]
+                    (when-not (or (= :all surface) (set? surface))
+                      (throw (ex-info (str "role " r " declares no tool surface")
+                                      {:role r})))
+                    (when (and registered (set? surface))
+                      (when-let [unknown (seq (remove registered surface))]
+                        (throw (ex-info (str "role " r " names unregistered tools: "
+                                             (str/join ", " unknown))
+                                        {:role r :unknown unknown}))))))
     nil)
   nil)
 

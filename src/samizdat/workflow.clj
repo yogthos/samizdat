@@ -53,6 +53,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.repl :as repl]
+            [samizdat.repl.route :as route]
             [samizdat.session :as session]
             [samizdat.watch :as watch]
             [samizdat.userspace :as userspace]
@@ -208,12 +209,18 @@
   the run's provider and only change the model. This is how a cheap model can
   implement while a stronger one reviews or supervises."
   [ctx role]
-  (if-let [spec (get-in (:config ctx) [:run :role-models role])]
-    (let [provider (or (some-> (:provider spec) name str/lower-case keyword)
-                       (:provider (:llm-config ctx)))
-          llm (config/provider-llm provider (dissoc spec :provider))]
-      (assoc ctx :llm-adapter (registry/adapter-for provider) :llm-config llm))
-    ctx))
+  ;; :role rides the ctx from here on. It used to be consumed by prompt
+  ;; assembly and dropped, which left the tool layer unable to tell a
+  ;; supervisor from an implementor — and WHICH IMAGE AN EVAL LANDS IN is
+  ;; exactly that question (samizdat.repl.route). A ctx with no role gets the
+  ;; project image, which is the safe direction.
+  (let [ctx (assoc ctx :role role)]
+    (if-let [spec (get-in (:config ctx) [:run :role-models role])]
+      (let [provider (or (some-> (:provider spec) name str/lower-case keyword)
+                         (:provider (:llm-config ctx)))
+            llm (config/provider-llm provider (dissoc spec :provider))]
+        (assoc ctx :llm-adapter (registry/adapter-for provider) :llm-config llm))
+      ctx)))
 
 (defn run-turn
   "Advance one branch by one turn, through the manifest.
@@ -352,4 +359,7 @@
         ;; The run's eval namespace does not outlive the run
         ;; (provenance CR1-6): one namespace per run, never removed, was
         ;; unbounded growth on a serve process.
-        (repl/close-session (:repl-session ctx)))))))
+        (repl/close-session (:repl-session ctx))
+        ;; The project image outlives a session, because it is a PROCESS. Left
+        ;; running it holds a port and a sandbox for the life of the harness.
+        (route/release! (:root ctx)))))))

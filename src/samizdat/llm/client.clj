@@ -44,6 +44,7 @@
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.message :as message]
+            [samizdat.llm.ratelimit :as ratelimit]
             [samizdat.util :as util]
             [samizdat.session :as session]))
 
@@ -145,9 +146,32 @@
 (defn- decode [body]
   (try (json/read-str body :key-fn keyword) (catch Throwable _ nil)))
 
+(declare post-once*)
+
 (defn- post-once [adapter config request]
-  (let [url (adapter/chat-url adapter config)
-        payload (json/write-str (adapter/chat-body adapter config request))
+  (let [url (adapter/chat-url adapter config)]
+    ;; THE LATCH, before the socket. One account is one window, and the beam's
+    ;; branches do not know about each other — so without this the endpoint's
+    ;; exhaustion costs one 429 per branch, repeatedly. Refused here rather
+    ;; than slept on: the retry ladder above owns waiting and checks the abort
+    ;; flag between attempts (karamazov-2oc).
+    (if-let [left (ratelimit/latched-for url (System/currentTimeMillis))]
+      {:outcome :retry
+       :status 429
+       ;; The retry-after is not decoration. It carries the latch into the
+       ;; existing far-reset heuristic below, which turns a window longer than
+       ;; the in-run budget into a cap-shaped fatal rather than a sleep — so a
+       ;; long latch composes into the right answer without a special case.
+       :headers {"retry-after" (str (long (Math/ceil (/ left 1000.0))))}
+       ;; Carried from where the trouble was DETECTED, per the taxonomy: this
+       ;; is not a call that failed, it is a call that was never made.
+       :reason :rate-limit-latch
+       :error (str (adapter/display-name adapter) " is rate-limited for another "
+                   (long (Math/ceil (/ left 1000.0))) "s — not sent")}
+      (post-once* adapter config request url))))
+
+(defn- post-once* [adapter config request url]
+  (let [payload (json/write-str (adapter/chat-body adapter config request))
         started (System/currentTimeMillis)
         resp (http/post url {:headers (merge (adapter/auth-headers adapter config)
                                              {"Content-Type" "application/json"})
@@ -160,6 +184,17 @@
         status (:status resp)
         decoded (decode (:body resp))]
     (log/debug (adapter/display-name adapter) "responded" status "in" elapsed "ms")
+    ;; A success is better evidence than our arithmetic about when the window
+    ;; would reopen, so it releases the latch outright.
+    (when (<= 200 status 299) (ratelimit/clear! url))
+    ;; And a DEFINITIVE signal — the provider stating when, by Retry-After or
+    ;; by a zero remaining-count with a reset — latches the host for everyone.
+    ;; A bare 429 does not: it may be a burst limit that clears in a second,
+    ;; and latching on it would stop every branch over one unlucky request.
+    (when-let [ms (ratelimit/definitive-signal status (:headers resp))]
+      (ratelimit/latch! url ms (System/currentTimeMillis))
+      (log/warn (adapter/display-name adapter) "rate-limited for"
+                (long (/ ms 1000)) "s — latched for every branch"))
     (if (<= 200 status 299)
       (if-let [err (adapter/error-message adapter decoded)]
         ;; Some providers return 200 with an error object in the body.

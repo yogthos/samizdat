@@ -4,6 +4,7 @@
 (ns samizdat.skills-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is]]
+            [jolt.fs :as fs]
             [samizdat.agent.skills :as skills]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.skills]))
@@ -77,3 +78,46 @@
                      set)]
     (is (= on-disk (set skills/shipped-skills))
         "the enumerated list is pinned against the directory")))
+
+;; --- karamazov-15h -----------------------------------------------------------
+;; Discovery scanned `<dir>/*.md` only, so it could not read a skill DIRECTORY
+;; holding SKILL.md — the shape Claude Code, pi, opencode, vis and the agents
+;; standard all use, and the shape of every skill checked into this very repo.
+;; AGENTS.md points the agent at .agents/skills/beads/SKILL.md; its own harness
+;; had no way to load it.
+
+(deftest a-skill-directory-holding-SKILL-md-is-discovered
+  (let [root (str "/tmp/samizdat-skills-" (random-uuid))
+        dir (str root "/.samizdat/skills")]
+    (fs/create-dirs (str dir "/nested-one"))
+    (fs/create-dirs (str dir "/nested-two"))
+    (try
+      (spit (str dir "/flat.md")
+            "---\nname: flat\ndescription: Use when flat.\n---\nflat body")
+      (spit (str dir "/nested-one/SKILL.md")
+            "---\nname: nested-one\ndescription: Use when nested.\n---\nnested body")
+      ;; no `name:` in the frontmatter — the DIRECTORY name is the fallback
+      (spit (str dir "/nested-two/SKILL.md")
+            "---\ndescription: Use when unnamed.\n---\nunnamed body")
+      (let [found (skills/discover (skills/project-dirs root))]
+        (is (contains? found "flat") "the flat form still works")
+        (is (contains? found "nested-one") "a SKILL.md directory is found")
+        (is (contains? found "nested-two") "and names itself after its directory")
+        (is (str/includes? (get-in found ["nested-one" :body]) "nested body"))
+        (is (= "Use when unnamed." (get-in found ["nested-two" :description]))))
+      (finally (fs/delete-tree root)))))
+
+(deftest the-skill-roots-are-policy-not-a-literal-in-src
+  (let [roots (skills/skill-roots)]
+    (is (seq roots) "there is a root list, and it comes from resources")
+    (is (some #(str/includes? % ".samizdat/skills") roots)
+        "samizdat's own root still wins")
+    (is (some #(str/includes? % ".agents/skills") roots)
+        "the agents-standard root AGENTS.md points at is scanned")))
+
+(deftest this-repos-own-beads-skill-is-reachable
+  ;; The regression that motivated the bead: the canonical instruction file
+  ;; directs the agent to a skill the harness could not read.
+  (let [found (skills/discover (skills/project-dirs "."))]
+    (is (contains? found "beads")
+        "AGENTS.md names .agents/skills/beads/SKILL.md; it must be loadable")))

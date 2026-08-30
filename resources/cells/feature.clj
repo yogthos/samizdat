@@ -104,13 +104,28 @@
   artifacts; the tests must be green) do not apply — they gated the verdict
   on the very condition it was reporting, and every advisory role exhausted
   its budget unable to conclude (karamazov-t86)."
-  [{:keys [conn run-id] :as ctx} compiled bid prob suffix]
+  ([ctx compiled bid prob suffix] (run-role ctx compiled bid prob suffix nil))
+  ([{:keys [conn run-id] :as ctx} compiled bid prob suffix role]
   (runs/open-branch! conn run-id {:branch-id bid})
   (let [b (assoc (state/new-branch {:id bid :problem prob
-                                    :messages (turn/initial-messages prob suffix)})
-                 :advisory? true)
+                                    ;; ROLE-SCOPED: the tool catalogue this
+                                    ;; role is shown is filtered to what it
+                                    ;; may call, so its own prompt no longer
+                                    ;; has to argue it out of the rest.
+                                    :messages (turn/initial-messages prob suffix role)})
+                 :advisory? true
+                 ;; The branch carries its role, which is what the
+                 ;; :outside-role-surface refusal reads. A branch with no role
+                 ;; is unrestricted, so a workflow that names none is unchanged.
+                 :role role)
         out (myc/run-compiled compiled ctx {:branch b :turn 1})]
-    {:verdict (:verdict out) :answer (get-in out [:branch :final-answer])}))
+    {:verdict (:verdict out) :answer (get-in out [:branch :final-answer])})))
+
+(defn- run-role-as
+  "run-role with the ROLE named first — the call sites read better that way and
+  the role is the thing that must not be forgotten."
+  [role ctx compiled bid prob suffix]
+  (run-role ctx compiled bid prob suffix role))
 
 (defn- review-decision
   "PASS/REVISE from the reviewer's verdict + answer. A reviewer that could not
@@ -212,7 +227,7 @@
         (let [prob (str "Review this feature's work.\n\nFeature:\n" (:problem branch)
                         "\n\nThe implementors reported:\n" (:final-answer branch))
               {:keys [verdict answer]}
-              (try (run-role (wf/role-ctx ctx :reviewer) (wf/compiled-manifest "reviewer")
+              (try (run-role-as :reviewer (wf/role-ctx ctx :reviewer) (wf/compiled-manifest "reviewer")
                              (str "R" (revision data)) prob
                              (wf/prompt-text "roles/reviewer"))
                    (catch Throwable e {:verdict :error :answer (ex-message e)}))
@@ -345,13 +360,22 @@
                                                (tail (str (:out r) "\n" (:err r)) 25)))))))))
 
 (cell/defcell :feature/supervise
-  {:doc "The supervisor: the harness's introspection. It runs a supervisor ROLE
-        loop (supervisor.edn) over a run-health digest — it diagnoses what is
-        suboptimal and decides. Two levers: a within-run directive (CONTINUE /
-        REVISE / STOP, read by :feature/route) and, through its own tools, tuning
-        the harness's manifests/prompts/cells for future runs (the mutation
-        protocol validates those). Not a fixed rule — a reasoning agent. Fails
-        SAFE to :continue so it can never wedge the loop."
+  {:doc "The ROUTING supervisor: one look at the round, one decision about what
+        the outer loop does next — CONTINUE / REVISE / STOP, plus the SWITCH
+        and EXTEND levers. A pipeline decision, which is why it stays a
+        pipeline node.
+
+        IT NO LONGER OWNS DIAGNOSIS. The supervision STREAM
+        (manifests/oversight.edn) watches the whole run continuously on its
+        own branch and tunes the harness through the mutation protocol; this
+        stage sees one round, at one moment, and a second supervisor deriving
+        its own diagnosis from a different context reaches a different
+        conclusion about the same run and neither knows about the other
+        (karamazov-poe). So the stream's last conclusion is QUOTED into this
+        stage's brief, and this stage is asked to route rather than to
+        re-diagnose.
+
+        Fails SAFE to :continue so it can never wedge the loop."
    :effects [:net :db]
    :requires [:config :conn :run-id]}
   (fn [{:keys [conn run-id config] :as ctx} {:keys [results] :as data}]
@@ -376,7 +400,14 @@
                                      ;; verdict: at it, the supervisor decides.
                                      :at-cap? (>= rev soft-cap)
                                      :soft-cap soft-cap}
-                                    (journal/turns conn run-id))
+                                    (journal/turns conn run-id)
+                                    ;; Per-branch gate outcomes: which steering
+                                    ;; this run is doing and which a branch has
+                                    ;; been ignoring. The rollup the session
+                                    ;; tally keeps is per GATE, which hides a
+                                    ;; gate one branch obeys and another does
+                                    ;; not (karamazov-b9v).
+                                    (journal/gate-firings conn run-id))
               ;; The mark the supervisor's deltas are measured from. Stamped
               ;; BEFORE it is shown anything, so `since` covers the interval
               ;; from its last intervention to now — the interval its last
@@ -385,9 +416,24 @@
               mark (str "supervisor:" run-id)
               live (session/render mark)
               _ (session/mark! mark)
-              prob (str "Introspect on this run and decide whether the loop needs "
-                        "an adjustment. If a problem is systemic, tune "
-                        "the harness.\n\n"
+              ;; The stream's last word, so the two supervisors on this run
+              ;; agree or disagree in the open rather than in parallel.
+              stream (journal/last-note conn run-id :oversight)
+              prob (str "Decide what the outer loop does next with this round: "
+                        "CONTINUE, REVISE, or STOP, and whether to SWITCH the "
+                        "implement strategy or EXTEND the turn budget.\n\n"
+                        (if (and stream (seq (str (:notes stream))))
+                          (str "## What the supervision stream already concluded\n"
+                               "A supervisor has been watching this run continuously on its own "
+                               "branch, with the whole run in view rather than one round. Its "
+                               "latest conclusion:\n\n> "
+                               (str/replace (str (:notes stream)) #"\n" "\n> ")
+                               "\n\nStart from that. If you disagree, say what you saw that it "
+                               "did not — do not re-derive the same diagnosis from scratch, and "
+                               "do not tune the harness here: that is the stream's job and it "
+                               "has more context to do it with.\n\n")
+                          (str "No supervision-stream conclusion is on record for this run yet. "
+                               "Route on what the digest below shows.\n\n"))
                         ;; Claim a crash only when one happened. The
                         ;; unconditional "a STAGE CRASHED signal is a harness
                         ;; bug — diagnose it" sentence sent a supervisor with a
@@ -451,7 +497,7 @@
                         ;; the supervisor itself.
                         (try (wf/render-catalog conn) (catch Throwable _ "")))
               {:keys [verdict answer]}
-              (try (run-role (wf/role-ctx ctx :supervisor) (wf/compiled-manifest "supervisor")
+              (try (run-role-as :supervisor (wf/role-ctx ctx :supervisor) (wf/compiled-manifest "supervisor")
                              (str "S" (revision data)) prob
                              (wf/prompt-text "roles/supervisor"))
                    (catch Throwable e {:verdict :error :answer (ex-message e)}))

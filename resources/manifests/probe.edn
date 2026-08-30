@@ -15,6 +15,12 @@
 ;; data map, the predicate only reads it.
 {:description "The factory loop plus a non-committing probe: before spending a turn on a branch that has been emitting unusable calls, try several framings of the next step against its own context and steer toward the one that produced a real tool call. Costs inference, never a turn."
  :cells {:start          :loop/assemble
+         ;; The context-budget ladder, as in every other turn manifest — a
+         ;; probe turn is a turn and pays the same context costs.
+         :measure        :compaction/measure
+         :cap            :compaction/cap
+         :prune          :compaction/prune
+         :fold           :compaction/fold
          :probe          :probe/next-move
          :ab             :probe/ab-model
          :infer          :llm/infer
@@ -37,7 +43,13 @@
          ;; names some models, which it does not by default. Wired anyway: a
          ;; cell no manifest reaches is unreachable, so "the comparison is
          ;; recorded" was an intention rather than a fact (RFC-002 F1).
-         :ab             :infer
+         :ab             :measure
+         :measure        {:cap  :cap
+                          :none :infer}
+         :cap            {:prune :prune
+                          :none  :infer}
+         :prune          :fold
+         :fold           :infer
          :infer          :parse
          :parse          {:provider-error :provider-error
                           :no-call        :no-call
@@ -59,7 +71,11 @@
          :distil         :finish
          :finish         :end}
 
- :dispatches {:parse [[:provider-error (fn [d] (not (:ok (:call d))))]
+ :dispatches {:measure [[:cap  (fn [d] (= :cap (:compaction/route d)))]
+                        [:none (fn [d] true)]]
+              :cap     [[:prune (fn [d] (= :prune (:compaction/route d)))]
+                        [:none  (fn [d] true)]]
+              :parse [[:provider-error (fn [d] (not (:ok (:call d))))]
                       [:no-call (fn [d] (let [p (:parsed d)]
                                           (or (nil? p)
                                               (= "__parse_error__" (:name p)))))]

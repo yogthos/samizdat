@@ -21,6 +21,10 @@
 
   Two renderings, both bounded:
 
+    IMAGE   which image `eval` lands in for this role, and what the sandbox
+            around it allows — so a supervisor reading a failed eval can tell
+            a policy refusal from a broken form.
+
     WIRING  the loop graph from the manifest — every node, its cell, the
             cell's effects, and its outgoing edge or dispatch table. The
             same data reload_cells validates an edit against.
@@ -36,7 +40,11 @@
             [mycelium.cell :as cell]
             [samizdat.agent.tools.base :as base]
             [samizdat.cells :as cells]
+            [samizdat.config :as config]
+            [samizdat.repl.route :as route]
+            [samizdat.security.sandbox :as sandbox]
             [samizdat.manual :as manual]
+            [samizdat.prompt :as prompt]
             [samizdat.manifests :as manifests]
             [samizdat.store.journal :as journal]))
 
@@ -129,12 +137,37 @@
                    " | parse errors: " parse-errors)]
      (str head "\n\nrecent:\n" (render-recent rows)))))
 
+(defn- render-eval-image
+  "Which image this run's `eval` lands in, and how confined it is.
+
+  WITHOUT THIS A SUPERVISOR CANNOT TELL A DENIAL FROM A DEFECT. It reads a
+  worker's failed eval with no way to know whether the sandbox refused the
+  call or the code is broken, and the standing rule is that everything the
+  supervisor might act on has to be enumerable at runtime with a description.
+  The wording is prompts/eval-image.md, like every other sentence the model
+  reads."
+  [ctx]
+  (let [image (route/image-of ctx)
+        root (:root ctx)]
+    (prompt/render "eval-image"
+                   {:image (clojure.core/name image)
+                    :root root
+                    :role (or (:role ctx) "(unset)")
+                    :harness (= :harness image)
+                    :project (= :project image)
+                    :off (= :off image)
+                    :backend (clojure.core/name
+                              (sandbox/backend-for (config/eval-sandbox root)
+                                                   (System/getProperty "os.name")))})))
+
 (defmethod base/run-tool "introspect" [{:keys [branch conn run-id max-turns] :as ctx}]
   (let [{:keys [name version definition]} (active-manifest ctx)]
     (base/ok branch
              (str "=== LOOP WIRING (" name
                   (when version (str " v" version)) ") ===\n\n"
                   (render-wiring definition)
+                  "\n\n=== EVAL IMAGE ===\n\n"
+                  (render-eval-image ctx)
                   "\n\n=== RUN HEALTH ===\n\n"
                   (if conn
                     (render-health

@@ -106,15 +106,38 @@
             :else (recur (str acc (ffi/read-bytes buf n))))))
       (finally (ffi/free buf)))))
 
+(defn- free-port
+  "A port the OS says is free right now.
+
+  This used to be `(+ 40000 (rand-int 20000))` — a guess, bound with no check
+  that anything else held it. It was latent for as long as nothing else in the
+  suite took ephemeral ports; karamazov-zrq's project images do, Linux hands
+  those out of a range that overlaps 40000-59999, and CI failed with
+  `bind() failed on port 52106`. Asking the OS is both narrower and correct.
+
+  Still a race in principle — the port is free when we close it and taken by
+  the time the server binds — which is why the caller retries."
+  []
+  (with-open [s (java.net.ServerSocket. 0)]
+    (.getLocalPort s)))
+
 (defn- with-server
   "Run (f port) against an adapter whose handler records every request it
-  sees into `captured`."
+  sees into `captured`.
+
+  Retries the bind, because a free port can be taken between asking and using
+  it and a test that fails on that is testing the scheduler, not the adapter."
   [opts captured f]
-  (let [port (+ 40000 (rand-int 20000))
-        handler (fn [req]
+  (let [handler (fn [req]
                   (swap! captured conj req)
                   {:status 200 :headers {"Content-Type" "text/plain"} :body "ok"})
-        server (adapter/run-server handler (assoc opts :port port))]
+        [port server] (loop [attempt 0]
+                        (let [p (free-port)
+                              srv (try (adapter/run-server handler (assoc opts :port p))
+                                       (catch Exception e
+                                         (when (>= attempt 4) (throw e))
+                                         nil))]
+                          (if srv [p srv] (recur (inc attempt)))))]
     (try (f port) (finally (adapter/stop-server server)))))
 
 (defn- lengthed-post [body]

@@ -76,6 +76,142 @@
  {:value 2 :kind :re-fire-guard :capability-tunable? true
   :doc "How often the stall nudge may re-fire on one branch."}
 
+ :oversight-note-chars
+ {:value 400 :kind :threshold :capability-tunable? true
+  :doc "How much of the supervisor's conclusion is kept on the pass record.
+
+        Enough to read back what it decided without storing a whole reply per
+        pass. The full reasoning lives in its branch's messages; this is the
+        index into it."}
+
+ :oversight-unmet-floor
+ {:value 2 :kind :threshold :capability-tunable? true
+  :doc "Gate firings a run may leave UNMET before the supervisor stream spends
+        a model call looking at it.
+
+        An unmet firing is the harness having said something the branch did not
+        act on — the single most direct evidence that the harness's own words
+        are wrong, which is the supervisor's actual subject. One is noise; two
+        is a pattern worth the call."}
+
+ :oversight-idle-floor
+ {:value 25 :kind :threshold :capability-tunable? true
+  :doc "Turns a run may go without writing a file before the supervisor stream
+        looks at it.
+
+        Set well above :orient-turns (60 is the gate that speaks TO the branch;
+        this is the threshold at which the harness starts examining ITSELF).
+        Every stalled run in this project's history shows this signal, and it
+        is the cheapest reliable one there is."}
+
+ :orient-turns
+ {:value 60 :kind :threshold :capability-tunable? true
+  :doc "Turns a branch may READ without declaring a plan or writing anything.
+
+        Reading is how a branch decides what to declare, so orientation is
+        free — but not endless. Three branches across three runs read for 316,
+        148 and 87 turns without ever entering the repl contract, invisible to
+        every gate because all three arming conditions require having entered
+        it first.
+
+        60 is set ABOVE the one branch that got this right, which declared at
+        turn 40 after reading from turn 1. A floor below that would interrupt
+        the behaviour we want. Raise it for a project whose codebase genuinely
+        takes longer to read into; lowering it below ~45 will start nagging
+        orientation that was going to succeed on its own."}
+
+ :no-edit-turns
+ {:value 4 :kind :threshold :capability-tunable? true
+  :doc "Turns a branch may work WITHOUT writing to a file before the no-edits
+        nudge fires, once it has written at least one.
+
+        Distinct from :studying-turns, and much shorter, because it catches a
+        different failure. Studying is a branch that stopped doing anything —
+        read, grep, read again. This is a branch that is BUSY: prototyping in
+        the REPL, form after form, learning things it never commits. Run
+        c99c6fd6 spent turns 45-50 that way, six evals around a single arity
+        bug in a function it had not written down, while write_file sat at 3
+        from turn 25 onward.
+
+        Four is deliberately tight. The nudge is cheap, bounded by
+        :max-no-edit-nudges, and the cost it prevents is a whole run's turns
+        spent in a REPL whose state dies with the run."}
+
+ :max-no-edit-nudges
+ {:value 3 :kind :re-fire-guard :capability-tunable? true
+  :doc "How often the no-edits nudge may re-fire on one branch. Bounded for
+        dirge's reason: a nudge that can repeat forever becomes the thing the
+        model is responding to instead of the work."}
+
+ :same-failure-turns
+ {:value 4 :kind :threshold :capability-tunable? true
+  :doc "How many times a branch may run the code and get back the SAME failure,
+        without having changed the code in between, before the suspect-the-test
+        steer fires.
+
+        Four, not one: a genuinely broken implementation also fails repeatedly,
+        and telling a model to doubt a correct test is strictly worse than
+        silence. Four identical failures across an unchanged implementation is
+        no longer a branch converging — it is a branch confirming.
+
+        Run bd56a286 would have tripped it around turn 160 and did not, and
+        spent the 238 turns to 390 reading the file the bug was not in."}
+
+ :same-failure-chars
+ {:value 400 :kind :budget :capability-tunable? true
+  :doc "How much of the repeated failure the steer quotes back. Enough for the
+        assertion and its message, which is the pair the branch has to compare;
+        a whole suite's output would bury the one line that matters."}
+
+ :mutation-diff-lines
+ {:value 40 :kind :budget :capability-tunable? true
+  :doc "How many lines of a REJECTED cell edit are kept, per side, when the
+        mutation protocol rolls it back.
+
+        The record has to be small enough that it is always kept — a diff
+        nobody keeps is the failure it exists to fix. Common prefix and suffix
+        are dropped before this applies, so a one-line change inside a
+        three-hundred-line cell costs one line and this cap only bites on a
+        rewrite. A clipped span is marked :truncated so it never reads as the
+        whole change.
+
+        From WikiSkill (research/2608.27454v1 s3.2.4): their skill-impact.md
+        keeps every proposal's diff with its accept/reject outcome, and their
+        case study turns on it — the rejection at iteration 0 is what lets
+        iteration 1 propose something different and be accepted. samizdat kept
+        the reason and restored the files over the attempt (karamazov-mpd)."}
+
+ :max-suspect-test-nudges
+ {:value 2 :kind :re-fire-guard :capability-tunable? true
+  :doc "How often suspect-the-test may re-fire in one episode — and an episode
+        ends when the branch writes a file, which is what clears the gate's own
+        precondition (see gates/fired-count).
+
+        Two rather than three: this steer hands over a hypothesis, and a
+        hypothesis repeated becomes an instruction. If the branch has checked
+        its tests twice and still believes them, it is not going to be talked
+        out of them by a third telling, and the honest next move is the
+        implementation."}
+
+ :image-connect-ms
+ {:value 20000 :kind :threshold :capability-tunable? true
+  :doc "How long to wait for the sandboxed project image's nREPL port to
+        answer before giving up on it. A cold jolt start is a second or two;
+        this is generous for a loaded machine and short enough that a broken
+        profile fails a run rather than hanging it. Tunable because a large
+        project on a slow box legitimately needs longer.
+
+        Shrinking this cannot buy an escape: an image that fails to start
+        fails the eval, and NEVER falls back to the harness image
+        (karamazov-zrq). That is what makes it safe to leave in userspace."}
+
+ :image-reap-ms
+ {:value 3000 :kind :threshold :capability-tunable? true
+  :doc "How long to wait for a killed project image to actually be gone.
+        Destroying is asynchronous — the kill is unconditional either way, so
+        this only decides how long teardown watches before it warns that it
+        may have leaked a port."}
+
  :studying-turns
  {:value 10 :kind :threshold :capability-tunable? true
   :doc "Consecutive inspection-only turns (read/grep/eval/…), after the branch
@@ -86,26 +222,6 @@
  :max-studying-nudges
  {:value 3 :kind :re-fire-guard :capability-tunable? true
   :doc "How often the studying nudge may re-fire on one branch."}
-
- :max-reflection-nudges
- {:value 3 :kind :re-fire-guard :capability-tunable? false
-  :doc "How often the reflection nudge may re-fire on one branch.
-
-        It had no budget at all — it fires on a cadence rather than on a
-        condition, so nothing bounded it. Measured across four live runs: 11
-        firings, zero compliance. An unbounded nudge that nothing ever acts on
-        is a per-firing tax on the branch's context, paid to ask again for
-        something already declined ten times.
-
-        Not capability-tunable, for the same reason the cadence is not: the
-        tier under observation should not loosen the terms on which it is
-        invited to reshape the machinery observing it.
-
-        Three rather than one because the ask is legitimate — a run that never
-        reconsiders its own machinery keeps whatever friction it started with
-        — and the branch may only be in a position to act on it later in a
-        run. If the met-rate stays at zero with a budget, the ask itself is
-        aimed at the wrong role, and that is the next thing to change."}
 
  :max-stuck-hints
  {:value 3 :kind :re-fire-guard :capability-tunable? true
@@ -420,13 +536,6 @@
         every proposal beyond the first becomes a sibling branch — a
         concurrent provider call per turn plus its own process."}
 
- :reflection-cadence
- {:value 15 :kind :threshold :capability-tunable? false
-  :doc "Turns between reflection nudges. Not capability-tunable: the nudge
-        invites the branch to reshape its own loop (reload_cells), and the
-        tier under observation should not loosen the cadence at which it is
-        invited to mutate the machinery observing it."}
-
  :share
  {:value {:statuses #{:confirmed} :require-relevance? true}
   :kind :threshold :capability-tunable? false
@@ -718,6 +827,31 @@
         verdict is `too early`. :meaningful-delta — how much per-turn fitness
         must move before a change counts as having done anything, rather than
         the supervisor reading its own preferences into the third decimal."}
+
+ :oversight
+ {:value {:enabled? true
+          :poll-ms 5000
+          ;; A pass is a model call, so the cadence is minutes and the budget
+          ;; is small. The stream is meant to be the thing that notices, not
+          ;; the thing that runs.
+          :every-ms 120000
+          :budget 12}
+  :kind :policy :capability-tunable? false
+  :doc "THE SUPERVISOR STREAM: the harness reasoning about itself, in parallel
+        with the run, in its own context.
+
+        Distinct from :watch, which is a REFLEX — rule-based, every few
+        seconds, steering only, and never a model call. This is DELIBERATION:
+        it runs the supervisor role over the run's health and may tune the
+        harness (prompts, thresholds, manifests, cells) as well as steer the
+        run. Different costs, so different cadences and different evidence
+        bars: a steer is wrong for one turn, a userspace edit is wrong for
+        every run until somebody changes it back.
+
+        :budget bounds the model calls one run may spend supervising itself.
+        Twelve is roughly one look every two minutes across a long run, and it
+        binds unconditionally — a bound a distress signal can lift is not a
+        bound."}
 
  :watch
  {:value {:enabled? true
@@ -1125,6 +1259,193 @@
         budget assembled ~33k-token prompts and the branch re-sent them on
         backoff, burning wall-clock against a wall."}
 
+ :context-pressure
+ {:value {:operating-ceiling 24000
+          :advisory 0.75
+          :urgent 0.90}
+  :kind :threshold :capability-tunable? false
+  :doc "WHEN A PROMPT IS GETTING TOO BIG, MEASURED BEFORE IT IS FATAL.
+
+        TWO CEILINGS. The HARD one is the endpoint's context window — the
+        size a request is rejected above. The OPERATING ceiling is this
+        number: the size a request should stay under so there is room left to
+        work. They are not the same question, and pricing pressure against
+        the hard one means noticing only once it is already too late. vis
+        puts it well: on a 1M-window model, 150k of handled context reads as
+        15% saturation with 850k headroom while its own hint is already
+        saying FOLD SOON.
+
+        :operating-ceiling  prompt tokens one request should stay under.
+                            NOT the context window — leave room for the
+                            reply, the tool result, and the next exchange.
+                            24000 suits a 32k local endpoint; raise it with
+                            the window.
+        :advisory           fraction of the ceiling that counts as close
+        :urgent             fraction at which the branch's compaction budget
+                            is squeezed a notch, one turn BEFORE the wall
+
+        Squeezing at :urgent rather than on overflow is the whole point. The
+        provider reports the size of every request it accepted, so the wall
+        is visible a turn early; recovery used to begin only after a request
+        had already failed and the backoff had been spent (karamazov-d41,
+        karamazov-3y5)."}
+
+ :anchor
+ {:value {:drift-tolerance 40}
+  :kind :threshold :capability-tunable? false
+  :doc "HOW FAR AN ANCHOR MAY HAVE DRIFTED AND STILL BE HONOURED.
+
+        An anchor is `<line>:<hash>` — the line locates, the hash verifies.
+        When the hash no longer sits at the stated line, this is how many
+        lines away its content may be found before the anchor is called
+        MISPLACED and the write refused.
+
+        Deliberately tight, and asymmetric on purpose: a false refuse costs
+        one re-read, a false accept corrupts a file. The common path never
+        reaches it — an anchor spent right after the read that minted it
+        resolves exactly — so this only forgives small drift when anchors are
+        reused across several edits without re-reading. Raising it past a
+        screenful trades the wrong-line guard for convenience."}
+
+ :thinking-budget
+ {:value {:factor 2 :floor 8192 :fallback 65536 :chars-per-token 4
+          :off-value "none"}
+  :kind :threshold :capability-tunable? true
+  :doc "THE RUNAWAY-REASONING BREAKER (dirge thinking_budget.rs).
+
+        The cap is DERIVED: factor x whatever the turn was granted, floored.
+        A flat constant is what dirge shipped first and it was wrong by
+        inspection — a high-effort turn was granted a large budget by the
+        request and cut off below it by the breaker, the harness truncating
+        reasoning it had just asked for. Traces of tens of thousands of tokens
+        are ordinary on a hard turn; that is the feature working.
+
+        fallback applies when the grant is unknown, and is deliberately the
+        most permissive value rather than a guess at a typical one: a missed
+        runaway costs a turn, a truncated good turn costs the work in it.
+
+        off-value is what :reasoning-effort becomes once the breaker fires —
+        for the rest of the TASK, because a model that just spent a whole
+        budget deliberating will spend the next one the same way."}
+
+ :tool-retry
+ {:value {:max-attempts 3 :base-backoff-ms 250}
+  :kind :threshold :capability-tunable? true
+  :doc "RETRYING A TRANSIENTLY-FAILED TOOL CALL, where re-running it cannot
+        duplicate an effect (dirge tool_retry.rs).
+
+        max-attempts 3 means the original plus two retries. Small on purpose:
+        this sits INSIDE the branch's turn, and a read still failing on its
+        third try is reporting a real condition rather than a blip.
+
+        base-backoff-ms doubles per attempt — 250 then 500. A beat, not a
+        rate-limit backoff: the condition it waits out is a language server
+        still indexing, and a minute-long pause mid-turn is indistinguishable
+        from a hang.
+
+        WHICH tools may be retried is wordlists.edn :retry-safe-tools, and it
+        is a positive allowlist. The error class says retrying could work; the
+        tool says retrying is allowed to be tried; both must hold."}
+
+ :compaction
+ {:value
+  {;; THE BUDGET LADDER, as fractions of the model's context window. Ported
+   ;; from dirge's context_manager (itself a port of Reasonix's
+   ;; context-manager.ts). Fractions rather than character counts so one
+   ;; policy is right on an 8k local model and a 200k hosted one — the old
+   ;; :compaction-chars was a fixed size that could not be both.
+   ;;
+   ;; PROACTIVE. A fold at 0.75 happens while the branch is still working
+   ;; well; a fold at 0.98 happens after the model has lost the thread. The
+   ;; cheapest rung runs first and often makes the rest unnecessary.
+   :ladder {:aggressive-cap  0.60   ; tighten the per-result cap
+            :fold            0.75   ; fold older history into a summary
+            :aggressive-fold 0.78   ; the normal fold bought too little
+            :force           0.80   ; force a summary and end the turn
+            :turn-start      0.90}  ; fold before the first call of a turn
+
+   ;; Rough token estimate. Bytes over this, the same method the session
+   ;; meter uses, so the two cannot disagree about what they are measuring.
+   :chars-per-token 4
+
+   ;; Messages never folded. The HEAD is the system prompt and the opening
+   ;; statement of the problem — fold those and the branch is working from a
+   ;; summary of its own instructions. The TAIL is what is still in play.
+   :protect-head 2
+   :protect-tail 5
+   ;; The aggressive rung halves the tail it keeps.
+   :aggressive-tail 2
+
+   ;; Per-tool-result caps, in tokens. The model that CALLED the tool saw the
+   ;; whole result on its dispatch turn; later turns see head+tail with the
+   ;; dropped count, and can call again for the middle.
+   :result-cap {:normal 3000 :aggressive 1000}
+   ;; A result shorter than this is left alone: summarising it costs more
+   ;; than it saves and loses something readable at a glance.
+   :prune-min-chars 500
+   ;; When capping frees this fraction of the window, a NORMAL fold can be
+   ;; skipped — the snip already bought the headroom. Never applies to an
+   ;; aggressive tier: past that point the summary is the thing needed.
+   :snip-sufficient 0.10
+
+   ;; The summary's own size: a fraction of what is folded, floored so a
+   ;; small fold still carries its load-bearing facts, capped so a summary
+   ;; approaching the size of what it replaced is not called compaction.
+   :summary {:ratio 0.20 :floor 2000 :ceiling 12000}
+   ;; How many of the template's sections must carry a real body before the
+   ;; result is treated as a summary. The caller acts on that by DROPPING
+   ;; history, so this is the guard on destroying turns for a stub. Two, not
+   ;; fourteen: rejecting a usable summary forces prune-only folding, which
+   ;; walks the branch into the overflow the fold existed to prevent.
+   :min-summary-sections 2
+   ;; Section bodies that say nothing.
+   :empty-bodies #{"" "none" "n/a" "na" "-" "—" "unknown" "nothing" "todo" "tbd"}
+   ;; How much of a pruned result's text survives as a preview.
+   :preview-chars 80
+   ;; Which message roles hold tool results. In this harness a tool result
+   ;; comes back as a "user" turn, which is why capping and pruning key on it
+   ;; — a project whose loop shapes messages differently retunes this rather
+   ;; than editing a cell.
+   :result-roles #{"user"}
+   ;; What a clipped result says about its missing middle. Prose, and it has
+   ;; to name the way back: a truncation marker that does not is a dead end.
+   :clip-note "\n… [{{chars}} chars dropped — fetch_turn to reopen this turn in full] …\n"
+   ;; The one-line stand-in a pruned tool result becomes, keyed by tool. The
+   ;; useful line differs per tool, which is the whole reason this is a table
+   ;; and not one format string.
+   :prune-lines {"shell"      "[shell] ran `{{first-line}}` → {{lines}} lines, {{chars}} chars"
+                 "eval"       "[eval] {{lines}} lines, {{chars}} chars — {{preview}}"
+                 "read_file"  "[read_file] {{chars}} chars, {{lines}} lines"
+                 "grep"       "[grep] {{lines}} lines of matches, {{chars}} chars"
+                 "lsp"        "[lsp] {{lines}} lines"
+                 "write_file" "[write_file] wrote {{chars}} chars"
+                 "edit_file"  "[edit_file] patched {{chars}} chars"
+                 "patch"      "[patch] patched {{chars}} chars"
+                 "task"       "[task] {{preview}}"
+                 "recall"     "[recall] {{lines}} memories, {{chars}} chars"}
+   :prune-line-default "[{{tool}}] {{preview}} ({{chars}} chars)"
+
+   ;; What a fold leaves behind in the knowledge store. A folded region is
+   ;; not discarded — it is distilled into memories the breadcrumb index then
+   ;; surfaces on every later turn, one line each, expandable with `recall`.
+   ;; Without this a fold is lossy and the branch has only `fetch_turn`, which
+   ;; requires already knowing which turn to reopen.
+   ;; `episodic` — a specific thing that happened in this run, which is what
+   ;; a folded region is. Ranked below semantic and procedural in recall, and
+   ;; correctly so: the durable lesson is the supervisor's to record, not the
+   ;; fold's to claim.
+   :distil {:max-memories 5 :min-chars 40 :kind "episodic"}}
+  :kind :threshold :capability-tunable? true
+  :doc "WHEN A BRANCH COMPACTS, HOW HARD, AND WHAT IT KEEPS.
+
+        Every rung is a fraction of the model's context window, so the policy
+        travels across models. See samizdat.agent.compaction for what each
+        rung does and why the head and tail are protected.
+
+        The old single :compaction-chars threshold is still read by the
+        in-place digest path; this governs the LADDER, which decides whether
+        that path runs at all and whether a fold is needed on top of it."}
+
  :context-budget
  {:value {:tool-result-chars   4000
           :file-read-chars     60000
@@ -1132,6 +1453,24 @@
           :judge-rules-chars   6000
           :judge-transcript-chars 12000
           :grep-ranges         20
+          ;; How many matching lines one grep reports before handing back an
+          ;; offset to continue from. Was a literal 200 in the tool with no
+          ;; way to continue past it (karamazov-2py).
+          :grep-hits           200
+          ;; One search result, clipped. An unbounded result is a context
+          ;; leak dressed as an answer — the cost this tool must not become.
+          :websearch-chars     3000
+          ;; How many results one search asks for by default, the ceiling a
+          ;; caller may raise it to, and how long to wait. All three are the
+          ;; cost of a search against its usefulness, which is exactly the
+          ;; trade a project should be able to retune.
+          :websearch-results   5
+          :websearch-max-results 20
+          :websearch-timeout-ms 20000
+          ;; How much of a failed search's body the model is shown. Enough to
+          ;; diagnose (a rate-limit note, an auth complaint), not so much that
+          ;; a failure costs more context than a success.
+          :websearch-error-chars 200
           :inbox-lines         3
           :tree-lines          8
           :keep-pairs          10
@@ -1401,9 +1740,13 @@
  ;; run-tools (provenance R3-6): a name the loop cannot dispatch is a gate whose
  ;; prediction silently narrows to :unmet.
  {:verification #{"eval" "shell"}
-  :shipping #{"write_file" "edit_file" "shell" "reload_cells" "manifest"
-              "done" "give_up" "thesis" "branch_theses"}
-  :file-write #{"write_file" "edit_file"}
+  ;; `patch` writes files exactly as `write_file` and `edit_file` do; it was
+  ;; added to the loop and to none of these, so a branch editing by anchor
+  ;; scored as having shipped NOTHING and drew studying nudges for work it
+  ;; was doing (karamazov-0kk landed the tool, this landed the vocabulary).
+  :shipping #{"write_file" "edit_file" "patch" "shell" "reload_cells"
+              "manifest" "done" "give_up" "thesis" "branch_theses"}
+  :file-write #{"write_file" "edit_file" "patch"}
   ;; The storm guard's tool classification (karamazov-ekk). :storm-exempt is
   ;; the read-only surface — repeated identical reads are over-studying's
   ;; business, not a storm — plus done/give_up, whose repetition belongs to
@@ -1420,7 +1763,15 @@
                     "cell" "prompt" "manifest" "experiment" "remember"
                     "forget"}
   :settle-called
-  {:milestone        #{"done"}
+  {:orienting        #{"plan" "write_file" "edit_file" "patch"}
+   :no-edits         #{"write_file" "edit_file" "patch"}
+   ;; A WRITE, not another test run. The steer asked the branch to form a
+   ;; hypothesis about where the defect is; editing the test it doubted and
+   ;; editing the implementation it now believes is wrong are both that
+   ;; hypothesis acted on, and either one ends the window. Running the suite
+   ;; again is the thing it was already doing.
+   :suspect-the-test #{"write_file" "edit_file" "patch"}
+   :milestone        #{"done"}
    :branch-out       #{"branch_theses"}
    :repopulate       #{"branch_theses"}
    :emergency-review #{"done" "thesis"}
@@ -1432,7 +1783,10 @@
    :turn-budget      #{"done" "give_up"}
    :wind-down        #{"done"}
    :last-call        #{"done" "give_up"}
-   :reflection       #{"introspect" "reload_cells" "cells"}
+   ;; :reflection's vocabulary went with its gate (karamazov-634): 69 firings
+   ;; and 0 met across two models, five task shapes and two harness
+   ;; generations. A prediction vocabulary for a gate that no longer exists
+   ;; reads as a gate somebody forgot to wire up.
    :studying         #{"write_file" "edit_file" "shell" "reload_cells"
                        "done" "give_up"}}}
 
@@ -1447,27 +1801,7 @@
  ;; tuning a threshold stays runtime-editable; only the form structure
  ;; compiles at load. :message-file names a prompts/ file; {{turn-count}}
  ;; and {{max-turns}} interpolate at fire time.
- [{:gate :reflection
-   :priority 13
-   :budget :max-reflection-nudges
-   :doc "A quiet-turn nudge to reflect on the loop itself. Lowest priority, so
-         it is passed over whenever any real steer holds and surfaces only on a
-         turn where nothing else does. The loop is a mycelium workflow the
-         branch can see (introspect) and reshape (reload_cells); a run that
-         never reconsiders its own machinery keeps whatever friction it started
-         with. Fires on a cadence, not a condition, which is why it sits below
-         every gate that fires because something is wrong."
-   :when (and (state/active? branch)
-              ;; The branch's OWN turns: a fork reflects on a fresh cadence
-              ;; rather than inheriting its parent's position (blt.16).
-              (pos? (state/own-turn-count branch))
-              (zero? (mod (state/own-turn-count branch)
-                          (threshold :reflection-cadence))))
-   :message-file "reflection"
-   :prediction "the branch inspects or reshapes its loop"
-   :window 1}
-
-  {:gate :prologue-cap
+ [{:gate :prologue-cap
    :priority 9
    :budget nil
    :doc "The branch has produced nothing at all. Every other guard is
@@ -1541,6 +1875,10 @@
               (>= (or (:consecutive-mechanics-failures branch) 0)
                   (threshold :mechanics-streak-threshold)))
    :message-file "mechanics-streak"
+   ;; Names the failing call and how to pull the whole record. A streak gate
+   ;; that reports only its own count tells the model it is failing without
+   ;; telling it at what.
+   :message-suffix "{% if failed-error %}\n\nThe last one, on turn {{failed-turn}} via `{{failed-tool}}`:\n\n> {{failed-error}}\n\nfetch_turn({\"turn\": {{failed-turn}}}) has the whole record if that is not enough to act on.{% endif %}{% if goal %}\n\nYou are working on: {{goal}}{% endif %}"
    :prediction "the branch gives up honestly, or produces a well-formed call"
    :window 2}
 
@@ -1561,6 +1899,7 @@
               (>= (or (:storm-strikes branch) 0)
                   (threshold :storm-strikes-to-force)))
    :message-file "storm-force"
+   :message-suffix "{% if failed-error %}\n\nMost recent failure, turn {{failed-turn}} via `{{failed-tool}}`:\n\n> {{failed-error}}\n\nfetch_turn({\"turn\": {{failed-turn}}}) has the full record.{% endif %}{% if goal %}\n\nYou are working on: {{goal}}{% endif %}"
    :prediction "the branch abandons the repeated call honestly — give_up with
                 an account of what was tried, or a genuinely different
                 approach"
@@ -1595,6 +1934,7 @@
    :when (and (>= (:consecutive-failures branch) (threshold :cull-threshold))
               (state/confirmed-in-last branch (threshold :cull-recent-window)))
    :message-file "emergency-review"
+   :message-suffix "{% if goal %}\n\nYou are working on: {{goal}}{% endif %}"
    :prediction "the branch ships or changes technique"
    :window 3}
 
@@ -1609,6 +1949,7 @@
          (vf-8fl), which is the same failure the zebra run produced."
    :when (state/has-relevant-confirmed? branch)
    :message-file "milestone"
+   :message-suffix "{% if goal %}\n\nYou are working on: {{goal}}{% endif %}"
    :prediction "the branch ships within two turns"
    :window 2}
 
@@ -1694,7 +2035,7 @@
                notified (:notified-fractions branch #{})]
            (boolean (some #(and (>= used %) (not (contains? notified %)))
                           (threshold :turn-budget-notices))))
-   :message-suffix "**Turn budget**: you have used {{turn-count}} of {{max-turns}} turns. Land what you can verify rather than opening a new line of attack."
+   :message-suffix "**Turn budget**: you have used {{turn-count}} of {{max-turns}} turns. Land what you can verify rather than opening a new line of attack.{% if goal %} You are working on: {{goal}}{% endif %}"
    ;; Says what it MEASURES. The rule reads :settle-called :turn-budget,
    ;; which is #{"done" "give_up"} — terminating, not converging. A branch
    ;; that edits and writes its way toward finishing was settling `unmet`
@@ -1731,7 +2072,9 @@
          which gate is unmet, because 'not yet' with no reason produces
          another identical attempt."
    :when (some? done-block)
-   :message-form done-block
+   :message-form (str done-block
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nJudge \"done\" against what you set out to do: " g)))
    :prediction "the branch supplies the missing evidence or gives up"
    :window 3}
 
@@ -1746,6 +2089,13 @@
    :when (state/safe-state-due? branch (threshold :cull-threshold)
                                (threshold :safe-state-multiple))
    :message-form (str (prompt "safe-state")
+                      (when-let [f (state/last-failure branch)]
+                        (str "\n\nMost recent failure, turn " (:turn f) " via `"
+                             (:tool f) "`:\n\n> " (:error f)
+                             "\n\nfetch_turn({\"turn\": " (:turn f)
+                             "}) has the full record."))
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nYou are working on: " g))
                       "\n\nYour last green test run was at turn "
                       (:green-snapshot branch) ". "
                       (if (:ok safe-state-coverage)
@@ -1780,6 +2130,8 @@
          beside the turn-budget bookkeeping."
    :when (>= (:consecutive-failures branch) (threshold :stuck-threshold))
    :message-form (str (prompt "stuck")
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nYou are working on: " g))
                       (when-let [c (:last-failed-claim branch)]
                         (str "\n\n**Withheld**, until you put a different approach"
                              " on record:\n\n> " c "\n\nThat claim will not reach an"
@@ -1811,6 +2163,8 @@
    :when (>= (get-in branch [:file-touch :streak] 0)
              (threshold :file-thrash-threshold))
    :message-form (str (prompt "file-thrash")
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nYou are working on: " g))
                       (when-let [fs (seq (get-in branch [:file-touch :files]))]
                         (str "\n\nThe files in the streak: "
                              (str/join ", " (sort fs)))))
@@ -1827,10 +2181,141 @@
    :when (and (:any-progress? branch)
               (>= (:turns-since-progress branch)
                   (threshold :progress-stall-threshold)))
+   ;; RE-ANCHORED. A steer that says "nothing has advanced" without saying at
+   ;; WHAT asks the model to compare an outcome against an intention it has to
+   ;; remember. Naming the goal it stated is what makes the nudge answerable.
    :message-form (str (prompt "progress-stalled")
                       "\n\nNothing has advanced in " (:turns-since-progress branch)
-                      " turns.")
+                      " turns."
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nYou are working on: " g)))
    :prediction "the branch produces a new confirmed artifact or discharges a sub-claim"
+   :window 3}
+
+  {:gate :orienting
+   :priority 10.4
+   :budget :max-no-edit-nudges
+   :doc "READING WITHOUT ENTERING THE CONTRACT. The branch has declared no
+         plan, written nothing, and spent :orient-turns turns reading.
+
+         This is the last route around the repl session, and three branches
+         across three runs took it — 316 turns, 148, and 87. Every arming
+         condition the session has requires the branch to have entered it
+         first: the entry refusal needs an `eval` attempt, :no-edits needs a
+         declared plan or a write history. A branch that only reads satisfies
+         none of them, so nothing could speak to it at all.
+
+         Fires BEFORE :no-edits (10.4 against 10.5) because it is the earlier
+         and more specific state: not `you declared and did not land`, but
+         `you have not said what you are doing at all`."
+   :when (and (state/active? branch)
+              (state/orienting-too-long? branch
+                                         (tool-vocab :file-write)
+                                         (threshold :orient-turns)))
+   :message-form (str (prompt "orienting")
+                      "\n\nYou have read for " (count (:turns branch))
+                      " turns without saying what you are looking for."
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nYou are working on: " g)))
+   :prediction "the branch declares a plan or writes a file"
+   :window 3}
+
+  {:gate :suspect-the-test
+   ;; ABOVE :progress-stalled, :no-edits and :studying — all three of which
+   ;; hold on this branch, and all three of which the branch can answer.
+   ;; Lower number wins, and the ladder's own principle is the one :no-edits
+   ;; states: more specific is the more actionable steer when both are true.
+   ;; This is the narrowest precondition in that whole band — same failure,
+   ;; unchanged implementation, N times — so it takes the boundary's one slot.
+   :priority 9.9
+   :budget :max-suspect-test-nudges
+   :doc "LOOKING IN THE WRONG PLACE. The branch has run the code
+         :same-failure-turns times since it last changed the code and got the
+         same failure every time.
+
+         Every other gate here measures whether the branch is DOING something.
+         This one measures whether it is looking in the right PLACE, and it is
+         the only one that hands over a HYPOTHESIS rather than a demand.
+
+         Run bd56a286 is why it exists: 238 turns cycling read-implementation,
+         run-tests, read-implementation, while the ten failures it was chasing
+         were in its own tests — two assertions inverted against their own
+         descriptions and a bare float equality. Its single edit in that span
+         went to the implementation, the one place the bug was not. :no-edits
+         said write a file (which file? the code is correct) and :studying said
+         commit and test (it tested thirteen times). Both were answerable; this
+         is not (karamazov-70b).
+
+         THE SAME failure, not merely repeated ones: a branch working through
+         different errors is making progress, and telling it to doubt a correct
+         test would be strictly worse than silence."
+   :when (and (state/active? branch)
+              (supervisor/repeating-one-failure? (tool-vocab :file-write)
+                                                 (tool-vocab :verification)
+                                                 (:turns branch)
+                                                 (threshold :same-failure-turns)))
+   ;; The steer QUOTES what the branch is staring at. A gate that describes a
+   ;; failure the branch can already see spends its turn saying less than the
+   ;; branch knows; one that quotes it points at a specific line. Rendered
+   ;; here rather than through :message-file because this template takes
+   ;; variables of its own, and the shared render context is a fixed six keys.
+   :message-form (sp/render-str
+                  (prompt "suspect-the-test")
+                  {:count (threshold :same-failure-turns)
+                   :failure (supervisor/unchanged-failure
+                             (tool-vocab :file-write)
+                             (tool-vocab :verification)
+                             (:turns branch)
+                             (threshold :same-failure-chars))})
+   :prediction "the branch edits a file — the test it doubted, or the implementation it now believes is wrong"
+   :window 4}
+
+  {:gate :no-edits
+   :priority 10.5
+   :budget :max-no-edit-nudges
+   :doc "BUSY BUT NOT COMMITTING. The branch has written a file before and has
+         not written one in :no-edit-turns turns — it is working, usually in
+         the REPL, and none of it is landing anywhere that survives the run.
+
+         Armed only after the first write, like :progress-stalled and
+         :studying: a run reading its way into an unfamiliar codebase must
+         never be nagged for not having written anything yet.
+
+         Sits between :progress-stalled and :studying on purpose. It fires
+         sooner than studying (4 turns against 10) and is more specific, so
+         when both are true this is the more actionable steer. Studying says
+         you have stopped; this says you are going and it is not being kept."
+   ;; TWO WAYS TO ARM, because there are two ways to be not-writing.
+   ;;
+   ;; A STALE PLAN is the sharp one: the branch has DECLARED files and has not
+   ;; written them, so it has said itself what it owes and there is nothing to
+   ;; infer. This reaches a branch that has never written at all, which the
+   ;; history rule below cannot — run bd56a286's T1 read for 316 turns and run
+   ;; 90674c19's T0 explored 32 turns past its own declaration, both invisible
+   ;; to a gate that arms on having written before (karamazov-gez).
+   ;;
+   ;; The HISTORY rule stays for a branch working without a plan: it wrote,
+   ;; then stopped. Armed after the first write so opening exploration is
+   ;; never nagged.
+   :when (and (state/active? branch)
+              (or (state/plan-stale? branch
+                                     (tool-vocab :file-write)
+                                     (threshold :no-edit-turns))
+                  (supervisor/over-studying? (tool-vocab :file-write)
+                                             (:turns branch)
+                                             (threshold :no-edit-turns))))
+   ;; Names the OUTSTANDING FILES when there is a plan. "Write something" is
+   ;; answerable with "which?"; "you said you would change these three and
+   ;; have not" is not.
+   :message-form (str (prompt "no-edits")
+                      "\n\nNothing has been written to a file in "
+                      (threshold :no-edit-turns) " turns."
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nYou are working on: " g))
+                      (when-let [owed (seq (state/unwritten branch))]
+                        (str "\n\nYou declared these and have not written them:\n"
+                             (clojure.string/join "\n" (map #(str "  - " %) owed)))))
+   :prediction "the branch writes or edits a file"
    :window 3}
 
   {:gate :studying
@@ -1848,9 +2333,11 @@
               (supervisor/over-studying? (tool-vocab :shipping)
                                          (:turns branch)
                                          (threshold :studying-turns)))
-   :message-form (supervisor/stall-nudge (tool-vocab :shipping)
-                                         (:turns branch)
-                                         (threshold :studying-turns))
+   :message-form (str (supervisor/stall-nudge (tool-vocab :shipping)
+                                              (:turns branch)
+                                              (threshold :studying-turns))
+                      (when-let [g (state/stated-goal branch)]
+                        (str "\n\nYou are working on: " g)))
    :prediction "the branch commits a change, runs a test, or ships"
    :window 3}]
 

@@ -242,4 +242,66 @@
  ;; model's own plan, and advising follow-ups is a legitimate way to end.
  #{"you " "your " "you'll" "you can" "you should" "you may" "you might"
    "let me know"}
-}
+
+ :tool-error-classes
+ ;; What a failed tool result SAYS, mapped to what the branch should do about
+ ;; it (samizdat.agent.toolerr, ported from dirge tool_error_class.rs). The
+ ;; phrases are what this harness's own tools emit; a project whose tools speak
+ ;; differently retunes the classification here rather than in code.
+ ;;
+ ;; Order matters at the use site: fatal before transient before missing-info,
+ ;; because a permission refusal often also mentions a path.
+ {:fatal        #{"permission denied" "read-only file system" "operation not permitted"
+                  "no space left" "too many open files"}
+  :transient    #{"timed out" "timeout" "connection reset" "connection refused"
+                  "temporarily unavailable" "resource busy" "broken pipe"
+                  "try again"}
+  :missing-info #{"no such file" "does not exist" "no file " "not found"
+                  "no matches for" "unable to resolve symbol"
+                  "old_text not found" "outside the project root"}}
+
+ :completion-claim
+ ;; Phrases that assert WORK IS FINISHED. A memory carrying one is a claim
+ ;; about the tree, and the tree can be checked — which is what separates it
+ ;; from every other kind of memory the harness stores.
+ ;;
+ ;; Run cc88a760: the shared store held two of these from earlier FAILED runs
+ ;; ("messages.clj store is settled and verified end-to-end at the REPL",
+ ;; "tasks.clj store settled"). Both workers had eval-prototyped and written
+ ;; nothing — empty diffs — then recorded the claim as if done. A later worker
+ ;; recalled one at turn 3, concluded its part was already finished, and
+ ;; called done at turn 14 literally saying "I did not complete the change".
+ ;; The harness's own memory sabotaged the next run (karamazov-mjb).
+ #{"settled" "verified" "is done" "are done" "complete" "completed"
+   "finished" "working end-to-end" "end-to-end" "implemented" "landed"
+   "all tests pass" "suite is green" "shipped" "in place and working"}
+
+ :retry-safe-tools
+ ;; The tools re-running cannot duplicate an effect: pure reads. A POSITIVE
+ ;; allowlist, so a new tool is non-retryable until somebody argues otherwise
+ ;; — the safe answer is the one that should have to be argued against.
+ ;;
+ ;; `eval` and `shell` are deliberately absent even though many of their uses
+ ;; are reads: a timed-out shell may have run to completion, and nothing in the
+ ;; result can say which. That is the whole reason the gate is on the TOOL and
+ ;; not on the error.
+ #{"read_file" "grep" "lsp" "doc" "complete" "manual" "recall"
+   "fetch_turn" "fetch_artifact" "cells" "introspect"}
+
+ :skill-roots
+ ;; Project-relative directories a skill may live in, EARLIEST WINS. Two
+ ;; shapes are read from each: `<root>/<name>.md` (samizdat's flat form) and
+ ;; `<root>/<name>/SKILL.md` (a directory per skill plus its bundled
+ ;; resources — what Claude Code, pi, opencode, vis and the agents standard
+ ;; all write).
+ ;;
+ ;; A VECTOR, so order is precedence, and here rather than in src/ because
+ ;; which other harnesses' skills a project honours is a project's business.
+ ;; Discovery scanned only `.samizdat/skills/*.md`, which meant it could not
+ ;; read the skills checked into this very repository — including
+ ;; .agents/skills/beads/SKILL.md, the one AGENTS.md tells the agent to use
+ ;; (karamazov-15h). Adding a root costs nothing when the directory is
+ ;; absent: a missing root is skipped, never an error.
+ [".samizdat/skills"
+  ".agents/skills"
+  ".claude/skills"]}

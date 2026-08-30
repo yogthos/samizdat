@@ -138,15 +138,40 @@
 
   Every one of these is covered by the dispatch seam's redaction. The two
   above `:host-bytes` need MORE than that, and name what supplies it."
-  {"eval"        {:reach :in-process     :also "tools/repl scrubbed wrapper"}
+  {;; BOTH, and which one depends on the role (karamazov-zrq). The supervisor
+   ;; still evaluates in the harness image; every other role gets a sandboxed
+   ;; `jolt nrepl-server` subprocess rooted at the project. The subprocess half
+   ;; is why :env matters here — image/start! scrubs before spawning, because
+   ;; the rule above says output redaction alone is not enough for a tool that
+   ;; spawns.
+   "eval"        {:reach :in-process     :also "tools/repl scrubbed wrapper; repl.image/start! scrub-env before spawn (project image)"}
    "shell"       {:reach :spawns-process :also "policy/run-shell: scrub-env before spawn"}
 
+   ;; The two READ tools. Wider than the write tools by one deliberate step:
+   ;; resolve-for-read admits the project root plus the reference roots the
+   ;; project declared in .samizdat/config.edn, which the agent may not write
+   ;; (karamazov-1an). Still canonicalized, still refused outside all of them.
    "read_file"   {:reach :host-bytes}
    "grep"        {:reach :host-bytes}
    "lsp"         {:reach :host-bytes}
    "skill"       {:reach :host-bytes}
    "write_file"  {:reach :host-bytes}
    "edit_file"   {:reach :host-bytes}
+   ;; Anchored editing (karamazov-0kk). Same reach as edit_file and confined
+   ;; the same way — resolve-under-root, and the run config refused — because
+   ;; it is the same act by a different address.
+   "patch"       {:reach :host-bytes}
+   ;; The repl session's declaration. Records file PATHS on the branch and
+   ;; reads nothing off the machine — the paths are the model's own words,
+   ;; not a directory listing, and nothing resolves or opens them here.
+   "plan"        {:reach :harness-only}
+   ;; The only tool that reaches OFF the machine. Nothing local is read and no
+   ;; secret is sent — the query is the model's own words and EXA_API_KEY is a
+   ;; rate-limit token, not a credential granting access to anything of ours —
+   ;; but the result is third-party text entering model space, so it crosses
+   ;; the redaction boundary like every other tool result.
+   "websearch"   {:reach :spawns-process
+                  :also "outbound HTTP only; query is model text, no local read"}
    "doc"         {:reach :in-process     :also "reads the live image, same as eval"}
    "complete"    {:reach :in-process     :also "reads the live image, same as eval"}
 
@@ -156,6 +181,10 @@
    "forget"      {:reach :harness-only}
    "recall"      {:reach :harness-only}
    "outcome"     {:reach :harness-only}
+   ;; Writes a row to the run's own interventions table. It reaches no host
+   ;; resource — but it is the only tool that changes what ANOTHER branch will
+   ;; do, which is why the implementor role is denied it (roles.edn :denied).
+   "intervene"   {:reach :harness-only}
    "experiment"  {:reach :harness-only}
    "verdict"     {:reach :harness-only}
    "fetch_turn"  {:reach :harness-only}

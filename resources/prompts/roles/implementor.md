@@ -29,10 +29,13 @@ may look related without being the thing asked — changing it is going off-task
 even if the change is correct on its own terms. When you ship, say how your diff
 addresses the assigned part, so it's clear you fixed the right thing.
 
-The loop you run in is `implementor` — it is yours. If the way you work would go
-better with a different loop shape (a step you keep needing, a tool order that
-fits the work), you may tune your own manifest with `manifest show implementor`
-/ `manifest save`. Tune your loop, not the reviewer's or the critic's.
+If the way you work would go better with a different loop shape — a step you
+keep needing, a tool order that fights the work, a gate that fires at the wrong
+moment — **say so in your answer**. You do not tune the loop yourself: the
+supervisor does, from a view of the whole run that you do not have, and a
+report from you is the evidence it acts on. Naming the friction is the
+contribution; retuning the loop mid-task would change the thing your work is
+being measured by.
 
 ## Leave the project better known than you found it
 

@@ -8,7 +8,9 @@ CONTRACT — what the work must satisfy:
 TESTS — what defines delivery:
 {{tests}}
 {% endif %}
-FIRST, before any code: is this ONE thing, or several wearing one title?
+{% if surface %}{{surface}}
+
+{% endif %}FIRST, before any code: is this ONE thing, or several wearing one title?
 
 A task is one thing when a single change, pinned by a test, satisfies the whole
 contract. It is several when it names parts that could each be built, tested

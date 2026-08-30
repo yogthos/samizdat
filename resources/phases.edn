@@ -95,7 +95,54 @@
    :when (samizdat.agent.storm/oscillation-blocked?
           ctx (samizdat.agent.gates/storm-policy))
    :tools :all
-   :message-file "storm-oscillation"}]
+   :message-file "storm-oscillation"}
+
+  ;; THE REPL SESSION CONTRACT — its two conditions, as refusals rather than
+  ;; as advice. Nudges are 0-for-6 across two model tiers (karamazov-qic); a
+  ;; withhold is what actually holds.
+  ;;
+  ;; ENTRY. `eval` is refused until the branch has named the files it intends
+  ;; to change. Run bd56a286: a strong model spent 238 turns in the REPL
+  ;; hunting a defect that was in its own tests, because nothing ever made it
+  ;; say WHERE it thought the defect was. Declaring a file is a hypothesis,
+  ;; and the refusal is what forces one to exist before exploring starts.
+  ;;
+  ;; Note this withholds eval only from a branch that has NOT planned — a
+  ;; branch that has said what it is doing may use the REPL freely, which is
+  ;; the difference between this and the blanket eval withhold considered and
+  ;; rejected in karamazov-qic. The mutation protocol does not use the eval
+  ;; TOOL (mutation.clj references eval nowhere), so a supervisor's ability to
+  ;; change the harness does not depend on this.
+  {:rule :repl-needs-a-plan
+   :when (not (samizdat.agent.state/planned? branch))
+   :tools #{"eval"}
+   :message-file "repl-needs-a-plan"}
+
+  ;; EXIT. `done` is refused while a declared file is still unwritten. The
+  ;; session closes by LANDING what it said it would, so exploration cannot
+  ;; quietly become the deliverable — T1 of that same run read for 316 turns
+  ;; and wrote nothing.
+  ;; THE ROLE SURFACE, enforced. resources/roles.edn says which tools each role
+  ;; may call; this is what makes that a boundary rather than a suggestion.
+  ;;
+  ;; Without it a role prompt has to argue the model out of capabilities the
+  ;; system prompt advertised — the supervisor's still carries the scar of
+  ;; that, a paragraph explaining its file tools cannot reach the harness
+  ;; source, written after one spent 108 of a run's 211 turns hunting a source
+  ;; tree it was never going to be allowed to open. A role is no longer SHOWN
+  ;; a tool outside its surface; this is the case where it asks anyway.
+  ;;
+  ;; A branch with no :role is unrestricted, so a workflow that names no role
+  ;; behaves exactly as it did before roles existed.
+  {:rule :outside-role-surface
+   :when (not (samizdat.agent.roles/may-use? (:role branch) tool-name))
+   :tools :all
+   :message-file "outside-role-surface"}
+
+  {:rule :plan-not-landed
+   :when (seq (samizdat.agent.state/unwritten branch))
+   :tools #{"done"}
+   :message-file "plan-not-landed"}]
 
  ;; #3: tool-result signals → branch-state effects. The claim-first state
  ;; machine as a declarative table instead of cond-> clauses in the
@@ -137,8 +184,15 @@
  ;; weakening; a cross-checked confirmation beats a one-shot; independent
  ;; engines compose (one Prolog + one Z3 beats two Z3s).
  :finished-key
- [(if (:relaxation? (:last-audit branch)) 0 1)
-  (if (contains? (:tiers-seen branch) :slow) 1 0)
+ ;; The first component used to be
+ ;;   (if (:relaxation? (:last-audit branch)) 0 1)
+ ;; and it was a CONSTANT. :last-audit was seeded nil by new-branch and
+ ;; written by nothing, so the component was always 1 and never separated any
+ ;; two branches. The rule it claimed to enforce — a branch that proved the
+ ;; asked claim beats one that proved a weakening — has never once applied.
+ ;; Removed rather than left in: a ranking component that cannot discriminate
+ ;; reads as a rule the harness keeps (karamazov-83p).
+ [(if (contains? (:tiers-seen branch) :slow) 1 0)
   (count (distinct (keep :kind (confirmed-artifacts branch))))
   (count (confirmed-artifacts branch))
   (:id branch)]}

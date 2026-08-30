@@ -144,18 +144,31 @@
   overwrite the supervisor's work with the template — the one thing userspace
   exists to prevent."
   [conn kind name body]
-  (let [row (load-latest conn kind name)]
-    (cond
-      (nil? row)
-      (save! conn kind name body "factory")
+  ;; THE READ AND THE DECISION UNDER ONE LOCK. `save!` takes the writer lock
+  ;; for its own insert, but the `load-latest` that decides whether to seed at
+  ;; all sat outside it — so two branches reaching an unseeded entry in the
+  ;; same instant both read nil, both seeded, and the second appended a
+  ;; version 2 whose body was byte-identical to version 1.
+  ;;
+  ;; Live in run a3ba69bb: roles/implementor v1 and v2, created 1ms apart at
+  ;; run start, when four fan-out workers each triggered the first read. Not a
+  ;; content problem — both bodies were the template — but it puts a version in
+  ;; the history that changed nothing, which is the one thing a version history
+  ;; must not contain, and it breaks any first-write-wins assumption reading
+  ;; it. The lock is reentrant (`locking` on the connection monitor), so the
+  ;; nested take inside `save!` is free (karamazov-cuv).
+  (db/with-writer
+    (let [row (load-latest conn kind name)]
+      (cond
+        (nil? row)
+        (save! conn kind name body "factory")
 
-      (and (= "factory" (:source row)) (not= (str body) (str (:body row))))
-      (db/with-writer
+        (and (= "factory" (:source row)) (not= (str body) (str (:body row))))
         (db/execute! conn ["UPDATE userspace SET body = ?, created_at = ?
                              WHERE kind = ? AND name = ? AND version = ?"
                            (str body) (db/now)
-                           (kind-str kind) (str name) (long (:version row))])))
-    (load-latest conn kind name)))
+                           (kind-str kind) (str name) (long (:version row))]))
+      (load-latest conn kind name))))
 
 (defn revert!
   "Re-append the body of `version` as a NEW latest version — the rollback.

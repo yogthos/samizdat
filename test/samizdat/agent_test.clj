@@ -310,8 +310,17 @@
   ;; rebuild. Pin the move: the keys exist, carry the live vocabulary, and
   ;; settle's table still keys by gate.
   (is (= #{"eval" "shell"} (gates/tool-vocab :verification)))
-  (is (= #{"write_file" "edit_file"} (gates/tool-vocab :file-write)))
   (is (contains? (gates/tool-vocab :shipping) "write_file"))
+  ;; EVERY tool that writes a file must be in both, or a branch using it
+  ;; scores as having shipped nothing and gets nudged for work it is doing.
+  ;; `patch` was added to the loop and to neither, which is exactly the shape
+  ;; of the omission this now pins: assert the RULE, not a frozen set, so the
+  ;; next write tool fails here rather than silently going uncounted.
+  (doseq [t ["write_file" "edit_file" "patch"]]
+    (is (contains? (gates/tool-vocab :file-write) t)
+        (str t " writes files but is missing from :file-write"))
+    (is (contains? (gates/tool-vocab :shipping) t)
+        (str t " writes files but is missing from :shipping")))
   (let [settle-called (gates/tool-vocab :settle-called)]
     (is (map? settle-called))
     (is (= #{"done"} (:milestone settle-called)))
@@ -326,7 +335,6 @@
   (is (= 2 (gates/threshold :cull-mechanics-multiple)))
   (is (= 2 (gates/threshold :safe-state-multiple)))
   (is (= 4 (gates/threshold :max-branch-theses)))
-  (is (= 15 (gates/threshold :reflection-cadence)))
   (is (= [:progress :momentum :distinctness :viability]
          (gates/threshold :critic-objectives)))
   (is (= 3 (gates/threshold :decompose-max-depth)))
@@ -1744,42 +1752,24 @@
       (is (re-find #"(?i)4 .*fence|4 .*malformed" (:inactive-reason dead))
           "the two kinds are counted separately, so the record stays true"))))
 
-(deftest reflection-nudge-fires-on-cadence-and-settles
-  ;; The periodic self-reflection rung: lowest priority, fires on a cadence
-  ;; rather than because something is wrong, and settles on the branch actually
-  ;; inspecting or reshaping its loop.
-  (let [refl (gates/by-name :reflection)]
-    (testing "it is the lowest-priority gate"
-      (is (= 13 (:priority refl)))
-      (is (= 13 (apply max (map :priority (gates/gates))))
-          "nothing sits below reflection, so a real steer always outranks it"))
-    (testing "fires on a turn that is a multiple of 15, while active"
-      (is ((:when refl) {:branch (branch-with :turns (vec (repeat 15 {})))}))
-      (is ((:when refl) {:branch (branch-with :turns (vec (repeat 30 {})))})))
-    (testing "silent off-cadence and at turn 0"
-      (is (not ((:when refl) {:branch (branch-with :turns (vec (repeat 14 {})))})))
-      (is (not ((:when refl) {:branch (branch-with :turns [])}))))
-    (testing "passed over when a human directive also holds"
-      (let [chosen (arbiter/decide {:branch (branch-with :turns (vec (repeat 15 {})))
-                                    :max-turns 40 :directive {:payload "do X"}})]
-        (is (= :human-directive (:gate chosen)))
-        (is (some #{:reflection} (:passed-over chosen)))))
-    (testing "settles :met when the branch inspected or reshaped its loop"
-      (is (= :met (arbiter/settle {:gate :reflection :turn 1 :window 1}
-                                  {:current-turn 2 :tools-called ["introspect"]
-                                   :branch-before (branch-with) :branch-after (branch-with)})))
-      ;; A turn past the window with the wrong tool is no longer :unmet on the
-      ;; spot — it is still OPEN through the grace, because a gate's advice
-      ;; commonly costs a turn to attempt and another to verify, and settling
-      ;; the moment the window passes made slow-but-followed advice read
-      ;; exactly like ignored advice.
-      (is (nil? (arbiter/settle {:gate :reflection :turn 1 :window 1}
-                                {:current-turn 3 :tools-called ["eval"]
-                                 :branch-before (branch-with) :branch-after (branch-with)})))
-      (is (= :unmet (arbiter/settle {:gate :reflection :turn 1 :window 1}
-                                    {:current-turn 20 :tools-called ["eval"]
-                                     :branch-before (branch-with) :branch-after (branch-with)}))
-          "past the grace it is genuinely unmet"))))
+(deftest the-reflection-gate-is-retired-and-stays-retired
+  ;; RETIRED, on evidence: it fired in every run of this campaign and was met
+  ;; in none of them — 0 for 9 across two model tiers. Two reasons, and the
+  ;; second is why rewording it would not have helped.
+  ;;
+  ;; It fired ON A CADENCE rather than because anything was wrong, so most of
+  ;; its firings interrupted a branch that was fine. And it asked the
+  ;; IMPLEMENTER to inspect and reshape its own loop — which is the
+  ;; supervisor's job, done now by the oversight stream with the right role,
+  ;; the right context and the evidence to judge a change afterwards. A gate
+  ;; asking the wrong role to do someone else's work cannot be fixed by better
+  ;; wording.
+  (is (nil? (gates/by-name :reflection))
+      "if this fails, something re-added the gate — read karamazov-634 first")
+  (is (nil? (gates/threshold :reflection-cadence)))
+  (testing "the reflection POLICY is a different thing and stays: it bounds
+            how much of a turn the task reflector sees"
+    (is (some? (lexicon/policy :reflection)))))
 
 (deftest the-studying-gate-catches-inspect-without-shipping
   (let [studying (branch-with :turns (vec (concat [{:tool "write_file"}]
@@ -1810,29 +1800,32 @@
 
 
 (deftest pilot-gates-are-config-data
-  ;; Tier 3a: :reflection and :prologue-cap moved from closures in gates.clj
-  ;; to :gates entries in gates.edn with EDN :when forms — the steer policy
-  ;; as data, the same direction as the manifest dispatches. The forms are
-  ;; compiled once at load into the closure shape the arbiter reads, and
-  ;; call the same accessors the closures did: (threshold k) reads the
-  ;; config atom at fire time, so tuning stays runtime-editable.
-  (let [refl (gates/by-name :reflection)
+  ;; Tier 3a: gates moved from closures in gates.clj to :gates entries in
+  ;; gates.edn with EDN :when forms — the steer policy as data, the same
+  ;; direction as the manifest dispatches. The forms are compiled once at load
+  ;; into the closure shape the arbiter reads, and call the same accessors the
+  ;; closures did: (threshold k) reads the config atom at fire time, so tuning
+  ;; stays runtime-editable.
+  ;;
+  ;; :reflection was the other pilot and has since been retired on evidence
+  ;; (0 for 9); :orienting stands in, being the same shape — an EDN :when that
+  ;; reads a threshold, and a :message-form rather than a plain file.
+  (let [orient (gates/by-name :orienting)
         pro (gates/by-name :prologue-cap)]
-    (is (= 13 (:priority refl)) "the data entry replaces the closure")
     (is (= 9 (:priority pro)))
-    (is (fn? (:when refl)) "the EDN form compiled into a predicate fn")
-    (let [b15 (assoc (branch-with) :turns (vec (repeat 15 {})))
-          b14 (assoc (branch-with) :turns (vec (repeat 14 {})))]
-      (is ((:when refl) {:branch b15}) "fires on the cadence")
-      (is (not ((:when refl) {:branch b14}))))
+    (is (fn? (:when orient)) "the EDN form compiled into a predicate fn")
+    (is (fn? (:when pro)))
+    (let [floor (gates/threshold :orient-turns)
+          reading (fn [n] (assoc (branch-with) :turns (vec (repeat n {:tool "shell"}))))]
+      (is ((:when orient) {:branch (reading floor)}) "fires at the floor")
+      (is (not ((:when orient) {:branch (reading (dec floor))}))
+          "and not before it — orientation below the floor is free"))
     (let [pro-b (-> (branch-with :phase :build :any-progress? false)
                     (assoc :turns (vec (repeat 8 {}))))]
       (is ((:when pro) {:branch pro-b}))
       (is (not ((:when pro) {:branch (assoc pro-b :phase :explore)}))
           "explore is deliberately exempt — a reframe sends one back there")
       (is (not ((:when pro) {:branch (assoc pro-b :any-progress? true)}))))
-    (is (str/includes? ((:message refl) {}) "introspect")
-        "the reflection prose moved to a prompt file")
     (is (str/includes? ((:message pro) {:branch (assoc (branch-with)
                                                        :turns (vec (repeat 8 {})))})
                        "8 turns in")
@@ -2039,9 +2032,32 @@
 
     (testing "investigating never needs a task — a branch must be able to find
               out what to claim before it can claim it"
-      (doseq [t ["read_file" "grep" "lsp" "shell" "eval" "task" "message"]]
+      (doseq [t ["read_file" "grep" "lsp" "shell" "task" "message"]]
         (is (nil? (tools-base/phase-refusal {:branch unclaimed :tool-name t}))
             (str t " was refused, which is a deadlock rather than a policy"))))
+
+    (testing "`eval` is the exception, and the deadlock argument still holds"
+      ;; eval used to sit in the list above. It now requires a PLAN — not a
+      ;; task — because a REPL session must begin by naming the files it
+      ;; intends to change (karamazov-70b: a run spent 238 turns exploring
+      ;; without ever having to say where it thought the bug was).
+      ;;
+      ;; This is not the deadlock the case above rules out. Every tool you
+      ;; ORIENT with stays free: read_file, grep, lsp and shell are all
+      ;; unrefused for a branch with neither task nor plan, and reading the
+      ;; failing assertion plus the code it calls is how you decide which file
+      ;; is lying. What is gated is EXPLORING, which is the step that comes
+      ;; after you have a hypothesis.
+      (let [planned (assoc unclaimed :repl-plan {:files ["src/a.clj"]})]
+        (is (some? (tools-base/phase-refusal {:branch unclaimed :tool-name "eval"}))
+            "no plan: the REPL is closed")
+        (is (= :repl-needs-a-plan
+               (:refusal-rule (tools-base/phase-refusal
+                               {:branch unclaimed :tool-name "eval"}))))
+        (is (nil? (tools-base/phase-refusal {:branch planned :tool-name "eval"}))
+            "a branch that said what it is changing may explore freely")
+        (is (nil? (tools-base/phase-refusal {:branch planned :tool-name "plan"}))
+            "and may always re-plan")))
 
     (testing "finishing never needs a task — discarding completed work over a
               missing row is the worst available trade, and ending a run is
@@ -2135,20 +2151,33 @@
         "no signal, no transition")))
 
 (deftest winner-rubric-is-resource-data
-  ;; drg-4026 #30: the finished-key rubric (non-relaxation > slow-tier >
-  ;; engine-diversity > confirmed-count > id) moved from a tuple literal in
-  ;; state.clj to phases.edn forms compiled at load. Behavior is unchanged;
-  ;; retuning the rubric is a data edit.
-  (is (= 5 (count (phases/finished-key-forms))))
-  (let [strong (assoc (branch-with)
-                      :artifacts [{:claim-status :confirmed :kind :z3 :turn 1}])
-        weak   (-> (branch-with)
-                   (assoc :artifacts [{:claim-status :confirmed :kind :z3 :turn 1}])
-                   (assoc :last-audit {:relaxation? true}))]
-    (is (= [1 0 1 1 "B1"] (state/finished-key strong)))
-    (is (= [0 0 1 1 "B1"] (state/finished-key weak))
-        "a relaxation ranks below a direct proof")
-    (is (= [strong weak] (state/rank-finished [weak strong])))))
+  ;; drg-4026 #30: the finished-key rubric moved from a tuple literal in
+  ;; state.clj to phases.edn forms compiled at load. Retuning it is a data
+  ;; edit.
+  ;;
+  ;; THE NON-RELAXATION COMPONENT IS GONE (karamazov-83p), and this test is
+  ;; why it survived so long. It read (:relaxation? (:last-audit branch)), and
+  ;; :last-audit was seeded nil by new-branch and written by NOTHING in the
+  ;; harness — so the component was a constant in production and never
+  ;; separated two branches. The test passed because it manufactured the key
+  ;; by hand. A test that supplies an input production cannot produce is
+  ;; testing the function and not the feature, and it is exactly how a dead
+  ;; ranking rule keeps a green tick.
+  (is (= 4 (count (phases/finished-key-forms))))
+  (let [b (assoc (branch-with)
+                 :artifacts [{:claim-status :confirmed :kind :z3 :turn 1}])]
+    (is (= [0 1 1 "B1"] (state/finished-key b)))
+    (testing "every remaining component reads something the harness writes"
+      (is (= [1 1 1 "B1"] (state/finished-key (assoc b :tiers-seen #{:slow})))
+          "tiers-seen is set by record-outcome")))
+  (testing "and a branch with more confirmed artifacts still outranks one with
+            fewer, which is the rubric's real job"
+    (let [more (assoc (branch-with)
+                      :artifacts [{:claim-status :confirmed :kind :z3 :turn 1}
+                                  {:claim-status :confirmed :kind :prolog :turn 2}])
+          less (assoc (branch-with)
+                      :artifacts [{:claim-status :confirmed :kind :z3 :turn 1}])]
+      (is (= [more less] (state/rank-finished [less more]))))))
 
 (deftest every-context-budget-key-is-actually-read
   ;; A knob that is documented, parsed, and read by nothing is worse than no

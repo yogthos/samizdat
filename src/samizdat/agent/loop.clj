@@ -39,11 +39,15 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.arbiter :as arbiter]
+            [samizdat.agent.files :as files]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.infer :as infer]
+            [samizdat.config :as config]
             [samizdat.agent.phases :as phases]
+            [samizdat.agent.roles :as roles]
             [samizdat.agent.state :as state]
             [samizdat.agent.storm :as storm]
+            [samizdat.agent.thinking :as thinking]
             [samizdat.agent.tools :as tools]
             [samizdat.agent.skills :as skills]
             [samizdat.llm.message :as message]
@@ -55,7 +59,8 @@
             [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.store.messages :as messages]
-            [samizdat.store.runs :as runs]))
+            [samizdat.store.runs :as runs]
+            [samizdat.userspace :as userspace]))
 
 (defn max-result-chars
   "How much of one tool result the branch is shown, from gates.edn
@@ -64,33 +69,74 @@
   []
   (:tool-result-chars (gates/threshold :context-budget)))
 
-(defn system-prompt
-  "The system prompt, with the template catalogue substituted in.
+(defn system-prompt-for
+  "The system prompt as ROLE sees it: the tool catalogue filtered to that
+  role's surface (resources/roles.edn).
 
-  The catalogue is generated rather than written into the file because it is
-  pure data and would otherwise drift: before this, the only way the model
-  learned which templates exist was to guess a name and read the list off the
-  error, which meant a template it had not guessed was effectively invisible.
+  Roles used to be the implementer's world plus a suffix, so a supervisor was
+  handed 31 tools written for somebody building the project and its own prompt
+  had to argue it back out of them — a whole paragraph explaining that its file
+  tools cannot reach the harness source, which was there because this prompt
+  had just told it it has file tools. Constructing the catalogue instead means
+  the argument is unnecessary: a role is not shown a tool it may not call, and
+  calling one anyway is refused rather than discouraged.
+
+  The catalogue is still HAND WRITTEN prose in system.md; only WHICH entries
+  appear is computed. A nil role keeps all of it, which is what a workflow
+  that names no role has always had.
+
+  The TEXT comes through the :system chain (prompt-chain.edn, LR-7), so a
+  project can replace the shipped prompt outright or suppress it entirely.
+  First-present-wins: a level replaces, never concatenates. A suppressed base
+  is legitimate — a workflow's own :prompt then IS the instruction set — so
+  this renders empty rather than falling back to the shipped file.
+
+  SCOPED TO THE PROJECT as well as to the role. `self-hosting` gates the
+  sections about this harness's own architecture, and `reference-paths` names
+  the read-only trees this project declared — both facts about the run's
+  target, and both previously rendered as if every run worked on samizdat with
+  nothing beside it."
+  [role]
+  (let [root (userspace/project-root)
+        ;; WHICH IMAGE, or none. The prompt's opening sentence and its whole
+        ;; REPL-first section are claims about where `eval` runs, and both were
+        ;; unconditional. `repl.clj`'s docstring records what that costs when
+        ;; the claim is false — the prompt promising a workflow the harness
+        ;; cannot deliver. Under :project the model is in a SEPARATE image
+        ;; rooted at the project, not "the same image the harness runs in", so
+        ;; :project needs the rewording as much as :off needs the suppression.
+        eval-mode (config/eval-mode root)
+        ;; PER ROLE, not per run: `:project` is a posture, and the supervisor
+        ;; keeps the harness image inside it. Telling a supervisor it is in a
+        ;; separate project image while its evals land in the harness would be
+        ;; the same false claim this is meant to remove.
+        image (config/eval-image eval-mode role)]
+    (roles/scope-catalogue
+     (prompt/render-str (or (prompt/layer :system) "")
+       {:templates ""
+        :skills (skills/render-catalog)
+        :self-hosting (userspace/self-hosting?)
+        :repl (not= :off image)
+        :harness-image (= :harness image)
+        ;; From the project's own config file rather than the merged run
+        ;; config, which prompt assembly is not handed. Same file, same key —
+        ;; `.samizdat/config.edn` is the only place these are ever set, and it
+        ;; is the operator's rather than the agent's.
+        :reference-paths (seq (files/reference-roots
+                               (get-in (config/project-config root)
+                                       [:run :reference-paths])
+                               root))})
+     role eval-mode)))
+
+(defn system-prompt
+  "The whole system prompt, unscoped — every tool the harness has.
 
   The tool documentation IS hand written, because a prompt is prose and
   generated prose reads like it. `samizdat.prompt-test` asserts every name in
   `tools/tool-names` appears here, so a new tool cannot be added without being
   documented — that is what kept the whole Lean surface unreachable."
   []
-  ;; Tier 2d-era seam, now selmer: {{templates}} stays until the coding
-  ;; prompt replaces system.md outright; the skill catalogue is always in
-  ;; the prompt but cheap — names and trigger descriptions only, never
-  ;; bodies — so the model knows what it can `skill load` and WHEN,
-  ;; without spending a turn to discover them.
-  ;;
-  ;; The TEXT comes through the :system chain (prompt-chain.edn, LR-7), so a
-  ;; project can replace the shipped prompt outright or suppress it entirely.
-  ;; First-present-wins: a level replaces, never concatenates. A suppressed
-  ;; base is legitimate — a workflow's own :prompt then IS the instruction
-  ;; set — so this renders empty rather than falling back to the shipped file.
-  (prompt/render-str (or (prompt/layer :system) "")
-    {:templates ""
-     :skills (skills/render-catalog)}))
+  (system-prompt-for nil))
 
 (defn judge-exemptions
   "The DO-NOT-FLAG list shipped to the audit and review judges. A var rather
@@ -140,9 +186,10 @@
   its own instructions at the start (a review workflow adds review guidance on
   top of the base prompt, keeping the whole tool surface). nil/blank leaves the
   base prompt untouched."
-  ([problem] (initial-messages problem nil))
-  ([problem prompt-suffix]
-   [{:role "system" :content (cond-> (system-prompt)
+  ([problem] (initial-messages problem nil nil))
+  ([problem prompt-suffix] (initial-messages problem prompt-suffix nil))
+  ([problem prompt-suffix role]
+   [{:role "system" :content (cond-> (system-prompt-for role)
                                (not (str/blank? prompt-suffix))
                                (str "\n\n" prompt-suffix))}
     ;; The opening user turn is prose the model reads and a project may want
@@ -269,7 +316,17 @@
   the response hit the token cap before emitting a tool call, and a provider
   failure returned as {:ok false :error} rather than thrown."
   [ctx branch]
-  ((infer/complete-fn ctx) (infer/of-branch branch)))
+  ;; The branch's own reasoning effort, not the run's. Once the runaway
+  ;; breaker has fired on this branch, thinking is off for the rest of its
+  ;; task — read HERE at request time rather than written into the run config,
+  ;; because the config belongs to the run and this decision belongs to one
+  ;; branch (samizdat.agent.thinking).
+  (let [off (:off-value (gates/threshold :thinking-budget))
+        ctx (update ctx :llm-config
+                    (fn [c]
+                      (assoc c :reasoning-effort
+                             (thinking/effort-for branch (:reasoning-effort c) off))))]
+    ((infer/complete-fn ctx) (infer/of-branch branch))))
 
 (defn- settle-predictions!
   "Close out any prediction whose window has passed or whose expectation the
@@ -289,7 +346,25 @@
                                                :branch-before before
                                                :branch-after after})
                             turn))
-    (assoc after :open-predictions (vec kept))))
+    ;; Stamp the MET settlements onto gate-history: that is the episode
+    ;; boundary a budget re-arms at (karamazov-gez). Without it a gate spends
+    ;; its whole run's allowance on the first stall and is silent for every
+    ;; stall after, however much worse.
+    (let [met-gates (into #{}
+                          (comp (filter (fn [p]
+                                          (contains?
+                                           #{:met :met-late}
+                                           (arbiter/settle p {:current-turn turn
+                                                              :tools-called tools-called
+                                                              :branch-before before
+                                                              :branch-after after}))))
+                                (map :gate))
+                          closed)]
+      (cond-> (assoc after :open-predictions (vec kept))
+        (seq met-gates)
+        (update :gate-history
+                (fnil into [])
+                (map (fn [g] {:gate g :turn turn :settled :met}) met-gates))))))
 
 (defn phase-valve
   "The release valve for the explore prologue (vf-b25): a branch that cannot
@@ -375,12 +450,27 @@
   ([branch response] (absorb-response branch response nil))
   ([branch response turn]
    (let [{:keys [tape parsed signals said]}
-         (infer/absorb (infer/of-branch branch) response turn)]
+         (infer/absorb (infer/of-branch branch) response turn)
+         ;; PROACTIVE, not reactive (karamazov-3y5). The only thing that used
+         ;; to tell a branch its prompt had grown too big was a failed
+         ;; request: the overflow came back, THEN the budget was squeezed.
+         ;; The provider reports the size of every request it accepted, so
+         ;; the wall is visible one turn before it is hit — squeeze on the
+         ;; approach and the overflow never happens. Still harness-side and
+         ;; invisible to the model, exactly like compaction always is; the
+         ;; model-facing half of vis's hint waits on a fold tool to name,
+         ;; because telling a model it is near a ceiling it has no lever to
+         ;; move is noise.
+         pressure (state/context-pressure
+                   (get-in response [:usage :prompt-tokens])
+                   (gates/threshold :context-pressure))]
      {:parsed parsed
       :signals signals
       :said said
-      :branch (-> (infer/into-branch branch tape)
-                  (state/record-mechanics signals))})))
+      :pressure pressure
+      :branch (cond-> (-> (infer/into-branch branch tape)
+                          (state/record-mechanics signals))
+                (contains? #{:urgent :over} pressure) state/squeeze-context)})))
 
 (defn no-call-step
   "No usable call. Say exactly what was wrong; a bare \"try again\" produces
@@ -394,7 +484,22 @@
   ;; emit a tool call, it emits another digest.
   (let [imitation? (and (message/unloaded? said)
                         (not (:truncated signals)))
+        ;; RUNAWAY REASONING, which is a different failure from a budget that
+        ;; was merely too small and wants the opposite advice: more tokens
+        ;; will not help a model that deliberates without converging, and the
+        ;; harness has watched this happen without being able to stop it
+        ;; (:provider-empty-replies). Both signals required — cut off at the
+        ;; limit AND a trace past its own derived budget.
+        tb (gates/threshold :thinking-budget)
+        runaway? (thinking/runaway?
+                  {:truncated? (:truncated signals)
+                   :parsed parsed
+                   :reasoning (:reasoning response)}
+                  (thinking/derived-cap (:thinking-grant response) tb)
+                  (:chars-per-token tb))
         msg (cond
+              runaway?
+              (prompt/prompt "thinking-runaway")
               (:truncated signals)
               (str "[harness] Your response hit the token limit before you"
                    " emitted a tool call. Think less and call a tool.")
@@ -427,6 +532,7 @@
                            :usage (:usage response)})
     (-> branch
         (state/record-outcome {:category :mechanics :progress? false})
+        (cond-> runaway? thinking/recovery)
         (state/add-message "user" msg {:turn turn})
         ;; And make the next request end mid-fence, so prose is not an
         ;; available reply. Telling the model to emit a fence is the
@@ -530,6 +636,14 @@
       ;; A refused call touched nothing and leaves the streak alone.
       (not refused?)
       (update :file-touch storm/note-file-touch paths)
+
+      ;; A landed WRITE discharges the file from the repl session's plan. Only
+      ;; a write — reading a file you promised to change is not changing it,
+      ;; and the whole contract is that exploration ends in a file.
+      (and (not refused?)
+           (contains? (gates/tool-vocab :file-write) tool)
+           (= :success (:category result)))
+      (as-> b (reduce state/note-write b paths))
 
       storm-refused?
       (update :storm-strikes (fnil inc 0))
@@ -808,7 +922,13 @@
         ;; (karamazov-blt.12).
         max-turns (+ max-turns (or (:extended-turns branch) 0))]
     (if (:done? result)
-      (state/add-message branch "user" (truncate (:result result)) {:turn turn})
+      ;; :tool as well as :turn. Compaction's prune pass replaces an old tool
+      ;; result with one line keyed BY TOOL — a shell result's useful line is
+      ;; its command, a grep's is its match count, a read's is its size — and
+      ;; a message that does not say which tool produced it gets the generic
+      ;; preview instead, which is the one shape that carries nothing.
+      (state/add-message branch "user" (truncate (:result result))
+                         {:turn turn :tool tool})
       ;; Coverage answers whether the safe-state rung's fallback is honest:
       ;; the green cursor still points into a turn log the journal can
       ;; replay up to.

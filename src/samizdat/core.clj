@@ -57,7 +57,9 @@
             ;; open rather than by accident and so `jolt build` reaches it.
             [jolt.nrepl]
             [nrepl.middleware]
+            [samizdat.control :as control]
             [samizdat.llm.client :as llm]
+            [samizdat.repl.guard :as guard]
             ;; Statically required so the build reaches the whole server and
             ;; engine subtree; core is the only place that can, since server
             ;; requires system.
@@ -115,11 +117,32 @@
       (log/warn "nREPL not started:" (ex-message e))
       nil)))
 
+(defn- record-exit!
+  "Name what was still running when the process ended.
+
+  Best-effort and silent on failure by design: this runs during shutdown, when
+  the store may already be closing, and a hook that throws would replace a
+  useful warning with a stack trace about the warning."
+  []
+  (try
+    (guard/record-exit!
+     (->> (control/runs (system/conn))
+          (filter #(= "running" (:status %)))
+          (map :id)))
+    (catch Throwable _ nil)))
+
 (defn -main [& _args]
   (system/start! #'server/handler)
   (let [cfg (system/config)
         nrepl-port (get-in cfg [:nrepl :port])
         warm (warm-tls! cfg)]
+    ;; RECORD THE EXIT BEFORE TEARING ANYTHING DOWN. A parked server does not
+    ;; exit on its own, so an exit with work still in flight is a bug — and the
+    ;; reason run a3ba69bb cost a whole investigation is that it went with a 0
+    ;; and no message, which is indistinguishable from somebody stopping it
+    ;; (karamazov-1xx). Registered FIRST so it runs while the store is still
+    ;; open and can still say what was running.
+    (jolt.host/add-shutdown-hook record-exit!)
     (jolt.host/add-shutdown-hook system/stop!)
     (start-nrepl! nrepl-port)
     (println)

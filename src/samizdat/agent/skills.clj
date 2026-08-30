@@ -24,7 +24,8 @@
   resources/skills/; a project can add or override them in .samizdat/skills/,
   first match by directory order — the same layering as cells and config."
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [samizdat.lexicon :as lexicon]))
 
 (def shipped-skills
   "Basenames of the skills that ship, ENUMERATED not globbed — a classpath has
@@ -35,24 +36,62 @@
   cells/shipped-cells; pinned against resources/skills by skills-test."
   ["clojure-style" "mycelium" "repl-workflow"])
 
+(defn skill-roots
+  "The project-relative directories a skill may live in, in precedence order —
+  wordlists.edn `:skill-roots`, earliest wins.
+
+  A LIST, and policy rather than a literal here, because samizdat is not the
+  only harness that leaves skills on disk. Claude Code, pi, opencode and the
+  agents standard all write `<root>/<name>/SKILL.md`, and which of those roots
+  a given project honours is exactly the sort of thing the standing rule says
+  the agent should be able to change without a rebuild. Adapted from vis's
+  ordered cross-harness registry (resources/vis-docs/skills.md), whose framing
+  is the right one: reading another harness's skills is a compatibility layer,
+  not a format."
+  []
+  (lexicon/wordlist :skill-roots))
+
 (def default-dirs
   "The project-overlay directories scanned in addition to the shipped
   resources. Relative to the process cwd; a caller working on another project
   passes `(project-dirs root)` instead."
-  [".samizdat/skills"])
+  (skill-roots))
 
 (defn project-dirs
   "Where a project's own skills live, under the RUN's root — not the
   harness's cwd (karamazov-blt.33)."
   [root]
-  [(str (io/file (str (or root ".")) ".samizdat/skills"))])
+  (mapv #(str (io/file (str (or root ".")) (str %))) (skill-roots)))
 
-(defn- md-files [dir]
+(def ^:private skill-doc
+  "The filename a skill DIRECTORY carries its instructions in. Every other
+  harness spells it this way, so reading theirs costs nothing."
+  "SKILL.md")
+
+(defn- skill-files
+  "The skill sources in `dir`, as [name file] pairs, in stable name order.
+
+  TWO SHAPES, because a skill on disk has two conventions and only one of them
+  was ever read here (karamazov-15h):
+    <dir>/<name>.md          — samizdat's own flat form
+    <dir>/<name>/SKILL.md    — a directory per skill, plus its bundled
+                               resources; what every other harness writes,
+                               and what this repo's own .agents/skills holds
+  A directory's name is the fallback skill name, so a SKILL.md with no
+  frontmatter `name` still lands under something meaningful."
+  [dir]
   (let [d (io/file dir)]
     (when (.isDirectory d)
       (->> (.listFiles d)
-           (filter #(str/ends-with? (.getName ^java.io.File %) ".md"))
-           (sort-by #(.getName ^java.io.File %))))))
+           (keep (fn [^java.io.File f]
+                   (cond
+                     (and (.isFile f) (str/ends-with? (.getName f) ".md"))
+                     [(str/replace (.getName f) #"\.md$" "") f]
+
+                     (.isDirectory f)
+                     (let [doc (io/file f skill-doc)]
+                       (when (.isFile doc) [(.getName f) doc])))))
+           (sort-by first)))))
 
 (defn parse-frontmatter
   "Split a skill file into {:meta {..} :body ..}. A leading `---` fenced block
@@ -104,16 +143,15 @@
   ([dirs]
    (reduce
     (fn [acc dir]
-      (reduce (fn [m ^java.io.File f]
+      (reduce (fn [m [nm ^java.io.File f]]
                 (try
-                  (let [nm (str/replace (.getName f) #"\.md$" "")
-                        fm (parse-frontmatter (slurp f))
+                  (let [fm (parse-frontmatter (slurp f))
                         nm (or (not-empty (str (get-in fm [:meta :name]))) nm)]
                     (assoc m nm {:path (.getPath f)
                                  :description (describe fm nm)
                                  :body (:body fm)}))
                   (catch Throwable _ m)))
-              acc (md-files dir)))
+              acc (skill-files dir)))
     (shipped-entries)
     dirs)))
 

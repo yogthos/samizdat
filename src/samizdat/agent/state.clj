@@ -69,7 +69,6 @@
    :any-progress? false
    :thesis nil
    :last-review nil
-   :last-audit nil
    ;; Tool-call mechanics only, for the capability tier. Never verification or
    ;; progress signals: a signal may tune a guard that fires on the same thing
    ;; the signal measures (dirge PR 740).
@@ -593,6 +592,210 @@
   (cond-> (update branch :artifacts conj artifact)
     (:tier artifact) (update :tiers-seen (fnil conj #{}) (:tier artifact))))
 
+(defn- norm-path
+  "A declared path and a written path compared leniently: leading ./ dropped,
+  trimmed. The model declares `src/a.clj` and the write arrives as
+  `./src/a.clj` often enough that exact string equality would make the exit
+  condition unsatisfiable for reasons that have nothing to do with the work."
+  [p]
+  (-> (str p) str/trim (str/replace #"^\./" "")))
+
+(defn declare-plan
+  "Record what this branch is about to change: `{:files [...] :tests [...]
+  :goal \"...\"}`. REPLACES any previous plan — a model that learns the bug is
+  somewhere else must be able to say so, since the contract is commit to a
+  hypothesis, not never change your mind.
+
+  THIS IS THE HYPOTHESIS. Run bd56a286 spent 238 turns in the REPL hunting a
+  defect that was in its own tests, and the reason it could not escape is that
+  it never had to say WHERE it thought the defect was. Naming a file before
+  exploring forces the question; re-naming a different file is how the answer
+  gets corrected.
+
+  WHAT THE BRANCH HAS WRITTEN SURVIVES A RE-PLAN. `:repl-written` is a fact
+  about this branch's history, not about the current hypothesis, and clearing
+  it made re-planning a trap: run a3566c73 fixed three files, had its `done`
+  refused for an unrelated reason, re-planned to say what it had actually
+  done — and was then told it had never written the files it had just fixed,
+  because the re-plan wiped the ledger. It spent turns rewriting correct files
+  to satisfy a counter. Whether the diff is real is the ship gate's question
+  and it asks git; this ledger only answers whether the branch went where it
+  said it would go."
+  [branch {:keys [files tests goal]}]
+  (let [files (vec (distinct (map norm-path (remove nil? (concat files tests)))))]
+    (assoc branch :repl-plan {:files files
+                              :tests (vec (map norm-path (remove nil? tests)))
+                              :goal (some-> goal str not-empty)}
+                  :repl-written (or (:repl-written branch) #{}))))
+
+(defn plan
+  "The branch's current declaration, or nil."
+  [branch]
+  (:repl-plan branch))
+
+(defn note-write
+  "Record that `path` was actually written, discharging it from the plan."
+  [branch path]
+  (update branch :repl-written (fnil conj #{}) (norm-path path)))
+
+(defn unwritten
+  "Declared files this branch has not written yet, in declaration order — the
+  EXIT condition of a repl session. Empty when the session may close."
+  [branch]
+  (let [written (or (:repl-written branch) #{})]
+    (vec (remove written (:files (plan branch))))))
+
+(defn last-failure
+  "The most recent turn that went wrong, as `{:turn :tool :error}`, or nil.
+
+  The other half of `stated-goal`. A gate that fires BECAUSE something failed
+  and does not say WHAT failed asks the model to repair from memory — only
+  :stuck named its failure; every other gate said \"something is going wrong\"
+  and left the model to work it out.
+
+  Mechanics count, not just failures: a call the harness could not use is a
+  thing to fix, and it is the commonest thing a streak gate fires on."
+  [branch]
+  (->> (:turns branch)
+       (filter #(contains? #{:failure :mechanics} (:category %)))
+       last
+       ((fn [t] (when t (select-keys t [:turn :tool :error]))))
+       (#(when (seq %) %))))
+
+(defn stated-goal
+  "What this branch has SAID it is doing, most specific first: the repl
+  session's goal, then the claimed task, then the thesis, then the run's
+  problem. nil when it has stated nothing.
+
+  Steering used to arrive without it. Eighteen of nineteen gates fired with no
+  mention of the branch's own goal, so a nudge said \"you are doing badly\"
+  and never \"at WHAT\" — and a model cannot compare an outcome against an
+  intention it is expected to remember. A live team worker went off-task onto
+  a superficially-similar recalled fix with nothing to re-anchor it.
+
+  Most specific FIRST because that is what it is answerable against: the run's
+  problem is true all run and steers nothing, while \"you claimed
+  MAKE-THE-WIDGET-SPIN\" is a thing this turn can be measured against."
+  [branch]
+  (->> [(get-in branch [:repl-plan :goal])
+        (get-in branch [:task :title])
+        (get-in branch [:thesis :goal])
+        (:problem branch)]
+       (map #(some-> % str str/trim))
+       (remove str/blank?)
+       first))
+
+(defn planned?
+  "Whether this branch has an OPEN repl session: it has named at least one file
+  and has not yet written them all.
+
+  OPEN, not ever-declared. A landed plan used to keep this true for the rest of
+  the run, so the entry condition was satisfied forever and the NEXT piece of
+  work proceeded under a stale declaration about the last one. Run 8710067f
+  landed its green-suite plan at turn 35 and then spent 118 turns building the
+  window layer — different work, different files — with nothing asking it to
+  say what it was changing now.
+
+  Landing closes the session, so the next `eval` needs its own plan. That makes
+  the contract cyclic rather than one-shot, which is what any multi-part task
+  needs. An empty declaration is still not a plan: naming no file is the state
+  the contract exists to rule out."
+  [branch]
+  (boolean (and (seq (:files (plan branch)))
+                (seq (unwritten branch)))))
+
+(defn branch-id-for
+  "A branch id that says WHICH TASK it is working: `T<owner><-slug>[v<round>]`.
+
+  Ids used to be the owner index alone, so one id covered every task that owner
+  ever touched — run 8710067f ran turns 1-153 under \"T0\" across two tasks with
+  two separate fresh contexts, and the journal could not tell them apart. Every
+  per-branch metric then aggregated across a boundary that genuinely exists,
+  which is the same mistake as reading per-branch turn counters in aggregate.
+
+  The slug is a label, not a description: lower-cased, punctuation collapsed to
+  single hyphens, bounded. A blank title degrades to the bare owner id rather
+  than to something unreadable."
+  [owner round title]
+  (let [slug (-> (str title)
+                 str/lower-case
+                 (str/replace #"[^a-z0-9]+" "-")
+                 (str/replace #"^-+|-+$" ""))
+        ;; Cut at a WORD boundary. Truncating mid-word produced ids like
+        ;; `…-render-i`, which reads as a typo rather than a label.
+        slug (if (<= (count slug) 34)
+               slug
+               (let [cut (subs slug 0 34)
+                     i (str/last-index-of cut "-")]
+                 (if (and i (> i 8)) (subs cut 0 i) cut)))
+        slug (some-> slug (str/replace #"-+$" ""))]
+    (str "T" owner
+         (when (seq slug) (str "-" slug))
+         (when (pos? (or round 0)) (str "v" round)))))
+
+(defn orienting-too-long?
+  "Whether this branch has been READING without ever entering the contract:
+  no plan declared, nothing written, and `n` turns gone.
+
+  THE LAST ROUTE AROUND THE REPL SESSION. Its three arming conditions all
+  require the branch to have entered it — the entry refusal needs an `eval`
+  attempt, plan-stale? needs a declared plan, over-studying? needs a write —
+  so a branch that only reads satisfies none of them and no gate can speak.
+  Three branches across three runs found this: 316 turns, 148, and 87, all
+  invisible.
+
+  Reading is how you decide what to declare, so orientation stays free; what
+  ends is orientation WITHOUT END. A declared plan or a single write clears it
+  either way, because both mean the branch has said what it is doing."
+  [branch tools n]
+  (and (not (seq (:files (plan branch))))
+       ;; The TURN HISTORY, not :repl-written — that only tracks files a plan
+       ;; declared, and a branch that wrote without one is still a branch that
+       ;; is working rather than orienting.
+       (not-any? (set tools) (keep :tool (:turns branch)))
+       (>= (count (:turns branch)) n)))
+
+(defn plan-stale?
+  "Whether this branch has DECLARED files it has not written and has not
+  touched a file in the last `n` turns. `tools` is the :file-write vocabulary.
+
+  A SHARPER ARMING SIGNAL than the write history it replaces. :no-edits used to
+  arm on \"this branch has written something before\", which is a heuristic
+  groping for \"is it supposed to be writing by now\" — and it left a branch
+  that had never written completely unreachable, which is how one run read for
+  316 turns and another declared a plan and then explored for 32 more with no
+  gate able to say a word (karamazov-gez).
+
+  A declared, unlanded plan answers the question outright: the branch has said
+  what it owes, and it is not paying. No history heuristic needed."
+  [branch tools n]
+  (let [ts (vec (:turns branch))]
+    (and (seq (unwritten branch))
+         (>= (count ts) n)
+         (not-any? (set tools) (keep :tool (take-last n ts))))))
+
+(defn context-pressure
+  "How close the LAST request came to the operating ceiling: nil, `:advisory`,
+  `:urgent`, or `:over`. `policy` is gates.edn `:context-pressure`.
+
+  TWO CEILINGS, and this is priced against the soft one. The hard ceiling is
+  the endpoint's context window, the number a request is REJECTED above; the
+  operating ceiling is the size a request should stay under so there is room
+  to work. vis states the trap plainly: \"on a 1M-window model, 150k of
+  handled context reads as saturation 15% with 850k headroom while
+  over-budget-hint is already saying FOLD SOON.\" Measuring against the hard
+  window means noticing pressure only once it is already fatal.
+
+  Pure, over the prompt-token count the provider reported."
+  [prompt-tokens {:keys [operating-ceiling advisory urgent]}]
+  (let [used (or prompt-tokens 0)]
+    (when (and (pos? used) (pos? (or operating-ceiling 0)))
+      (let [ratio (/ (double used) (double operating-ceiling))]
+        (cond (> ratio 1.0) :over
+              (>= ratio urgent) :urgent
+              (>= ratio advisory) :advisory
+              :else nil)))))
+
 (defn squeeze-context
   "Tighten this branch's compaction budget one notch (karamazov-d41).
 
@@ -754,22 +957,23 @@
                  proved (set (map :claim confirmed))
                  grouped (group-by artifact-substantiates (:artifacts b))
                  provenance #(mapv (fn [a] (select-keys a [:claim :kind :tier :turn])) %)
-                 audit (:last-audit b)]
-             (cond-> {:branch (:id b)
-                      :goal goal
-                      :outstanding (vec (remove proved subClaims))
-                      :proved (vec (filter proved subClaims))
-                      :established (provenance (get grouped :established))
-                      :existential (provenance (get grouped :existential))
-                      :measured (provenance (get grouped :measured))
-                      :ambiguous (provenance (get grouped :ambiguous))}
-               ;; Drift is only reportable when the audit actually restated
-               ;; what the evidence establishes; an audit with no ESTABLISHED
-               ;; line has nothing to compare against the goal.
-               (:established audit)
-               (assoc :drift {:goal goal
-                              :established (:established audit)
-                              :relaxation? (:relaxation? audit)}))))
+                 ]
+             ;; The :drift section that used to hang off (:last-audit b) is
+             ;; gone with it. It was gated on the audit having restated what
+             ;; the evidence establishes, and nothing ever wrote an audit —
+             ;; :last-audit was seeded nil and assigned by nobody — so the
+             ;; section could not render and the four keys it fed the residual
+             ;; template were dead with it (karamazov-83p). Restore both ends
+             ;; together if an audit step is ever built; half of a feature is
+             ;; worse than neither half, because it reads as one that works.
+             {:branch (:id b)
+              :goal goal
+              :outstanding (vec (remove proved subClaims))
+              :proved (vec (filter proved subClaims))
+              :established (provenance (get grouped :established))
+              :existential (provenance (get grouped :existential))
+              :measured (provenance (get grouped :measured))
+              :ambiguous (provenance (get grouped :ambiguous))}))
          branches)
    :failures (vec failures)
    :gate-tally (vec gate-tally)})
@@ -810,14 +1014,7 @@
          :existential (claim-lines (:existential b))
          :measured (claim-lines (:measured b))
          :ambiguous (claim-lines (:ambiguous b))
-         :drift (boolean (:drift b))
-         :drift-established (:established (:drift b))
-         :drift-goal (:goal (:drift b))
-         ;; Whether the audit found a WEAKENING is the one judgement in this
-         ;; report. It reaches the template as a flag and the template says
-         ;; both readings, so a project can reword either without touching a
-         ;; conditional in compiled code.
-         :drift-relaxation (boolean (:relaxation? (:drift b)))})
+         })
       :failures (when (seq (:failures r))
                   (str/join "\n" (for [f (:failures r)]
                                    (str "- [" (:branch_id f) " t" (:turn f) " "

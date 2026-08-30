@@ -17,9 +17,11 @@
   not the templates."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [jolt.fs :as fs]
             [samizdat.agent.loop :as loop]
             [samizdat.agent.tools :as tools]
-            [samizdat.prompt :as prompt]))
+            [samizdat.prompt :as prompt]
+            [samizdat.userspace :as userspace]))
 
 (deftest every-tool-is-documented
   ;; Matched as a WORD at the start of a documentation line, not as a
@@ -183,3 +185,79 @@
   (doseq [n prompt/shipped-prompts]
     (is (string? (prompt/render-str (prompt/prompt n) {}))
         (str "prompts/" n ".md does not render"))))
+
+;; --- the prompt is scoped to the PROJECT, not just the role ------------------
+
+(deftest the-self-hosting-sections-only-appear-when-the-target-is-the-harness
+  ;; karamazov-8zk. system.md spends several sections on samizdat's own
+  ;; architecture — cells and manifests, src-is-mechanism vs
+  ;; resources-are-behaviour, "you are building the very harness you run in".
+  ;; All of it is load-bearing when the run's target IS samizdat and all of it
+  ;; is standing instruction about the wrong codebase otherwise, in the
+  ;; most-weighted part of the context. Live, for every run of the fps
+  ;; campaign: a model writing a raylib renderer was being told to prefer
+  ;; adding a reusable cell and to put its decisions in gates.edn.
+  (let [prev (userspace/project-root)]
+    (try
+      (userspace/bind-root! (System/getProperty "user.dir"))
+      (let [own (loop/system-prompt)]
+        (is (str/includes? own "src is mechanism"))
+        (is (str/includes? own "the very harness you run in")))
+      (userspace/bind-root! "/tmp")
+      (let [other (loop/system-prompt)]
+        (is (not (str/includes? other "src is mechanism"))
+            "a run on another project is told where changes go in SAMIZDAT")
+        (is (not (str/includes? other "the very harness you run in")))
+        (is (not (str/includes? other "prefer to add a reusable cell")))
+        (testing "what survives is the project-agnostic half — the turn format,
+                  the REPL-first loop, the honesty rules, one-namespace-one-
+                  responsibility"
+          (is (str/includes? other "One namespace, one responsibility"))
+          (is (str/includes? other "REPL first"))
+          (is (str/includes? other "```tool-call"))
+          (is (str/includes? other "what you build, don't just test it"))))
+      (testing "no unfilled placeholders or stray tags survive either branch"
+        (doseq [p [(do (userspace/bind-root! (System/getProperty "user.dir"))
+                       (loop/system-prompt))
+                   (do (userspace/bind-root! "/tmp") (loop/system-prompt))]]
+          (is (not (str/includes? p "{%")))
+          (is (empty? (->> (re-seq #"\{\{([^}]+)\}\}" p)
+                           (map second)
+                           (remove #(str/starts-with? % "env/")))))))
+      (finally (userspace/bind-root! prev)))))
+
+(deftest an-unbound-root-keeps-the-whole-prompt
+  ;; Unknown reads as TRUE. A test, a bare REPL, a driver that forgot to bind:
+  ;; deleting whole instruction blocks on a missing binding is a silent
+  ;; failure, and the shipped prompt is the harness's own.
+  (let [prev (userspace/project-root)]
+    (try
+      (userspace/bind-root! nil)
+      (is (str/includes? (loop/system-prompt) "the very harness you run in"))
+      (finally (userspace/bind-root! prev)))))
+
+(deftest declared-reference-paths-are-named-in-the-tool-catalogue
+  ;; karamazov-1an, the other half: the read is now allowed, and the model has
+  ;; to be told it is. A capability nothing announces is one only a model that
+  ;; guesses at it will use.
+  (let [prev (userspace/project-root)
+        root (str "/tmp/samizdat-prompt-" (random-uuid))
+        examples (str root "-examples")]
+    (fs/create-dirs (str root "/.samizdat"))
+    (fs/create-dirs examples)
+    (spit (str root "/.samizdat/config.edn")
+          (pr-str {:run {:reference-paths [examples]}}))
+    (try
+      (userspace/bind-root! root)
+      (let [p (loop/system-prompt)]
+        (is (str/includes? p (str (fs/canonicalize examples)))
+            "the declared path is named in read_file's entry")
+        (is (str/includes? p "READ-ONLY reference material")))
+      (userspace/bind-root! "/tmp")
+      (is (not (str/includes? (loop/system-prompt) "READ-ONLY reference material"))
+          "a project that declared none is not told about a capability it has
+           not got")
+      (finally
+        (userspace/bind-root! prev)
+        (fs/delete-tree root)
+        (fs/delete-tree examples)))))

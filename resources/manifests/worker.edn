@@ -8,6 +8,16 @@
 ;; as the flat loop up to the point it would finish.
 {:description "The worker sub-loop: one branch doing the actual per-turn work, returning its verdict to whatever composed it. Not usually run on its own — it is the implementor unit the team, feature, and decompose loops build on."
  :cells {:start          :loop/assemble
+         ;; THE CONTEXT-BUDGET LADDER, as nodes. Compaction used to be a
+         ;; side effect of building the request — invisible to every
+         ;; manifest, unreachable by introspect, tunable only by moving a
+         ;; character count. It runs between assembling the turn and calling
+         ;; the model, which is the only place the cheap rungs can act, and
+         ;; each rung is its own node so a project can rewire or drop one.
+         :measure        :compaction/measure
+         :cap            :compaction/cap
+         :prune          :compaction/prune
+         :fold           :compaction/fold
          :infer          :llm/infer
          :parse          :llm/parse
          :provider-error :loop/provider-error
@@ -21,7 +31,17 @@
          ;; composed — the parent decides finishing, not remembering.
          :distil         :memory/distil}
 
- :edges {:start          :infer
+ :edges {:start          :measure
+         ;; measure WRITES :compaction/route and the dispatch READS it —
+         ;; never the other way round. A predicate that computed the tier
+         ;; here would put the routing back inside code and leave the
+         ;; manifest showing an opaque box.
+         :measure        {:cap  :cap
+                          :none :infer}
+         :cap            {:prune :prune
+                          :none  :infer}
+         :prune          :fold
+         :fold           :infer
          :infer          :parse
          :parse          {:provider-error :provider-error
                           :no-call        :no-call
@@ -39,7 +59,11 @@
                           :exhausted :distil}
          :distil         :end}
 
- :dispatches {:parse [[:provider-error (fn [d] (not (:ok (:call d))))]
+ :dispatches {:measure [[:cap  (fn [d] (= :cap (:compaction/route d)))]
+                        [:none (fn [d] true)]]
+              :cap     [[:prune (fn [d] (= :prune (:compaction/route d)))]
+                        [:none  (fn [d] true)]]
+              :parse [[:provider-error (fn [d] (not (:ok (:call d))))]
                       [:no-call (fn [d] (let [p (:parsed d)]
                                           (or (nil? p)
                                               (= "__parse_error__" (:name p)))))]

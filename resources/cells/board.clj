@@ -148,6 +148,28 @@
    :requires [:config :conn :run-id]}
   (fn [{:keys [conn config run-id]} {:keys [branch] :as data}]
     (let [existing (workable conn run-id)
+          ;; WHAT DEFINES DELIVERY, on every task the board opens.
+          ;;
+          ;; The field existed, the schema had it, task-claimed.md renders it
+          ;; under "TESTS — what defines delivery", the task tool documents it
+          ;; as half the delegation spec, and the same template tells an owner
+          ;; to set it on any subtask IT creates. The board set :title, :body,
+          ;; :contract and :type and never this one, so the block — which is
+          ;; `{% if tests %}` — silently rendered as nothing on every task the
+          ;; harness ever handed anybody.
+          ;;
+          ;; That matters because of WHERE it lands. A claimed task's statement
+          ;; is pinned in the owner's context and does not age out (RFC-004),
+          ;; so this is the one place a delivery requirement sits beside the
+          ;; work for the whole task. The same instruction exists in
+          ;; roles/implementor and the repl-workflow skill — measured at
+          ;; character 34,720 of a 39,595-character system message, behind
+          ;; 30KB of tool catalogue. Run f2014821 wrote five namespaces and
+          ;; zero tests across 124 turns with both of those in its prompt.
+          ;;
+          ;; Prose, so a project working in a language the seam paragraph does
+          ;; not fit can reword it without a rebuild.
+          tests (wf/prompt-text "task-tests")
           guidance (str (:board/guidance data))
           given (->> (or (:subtasks data) (get-in config [:run :subtasks]))
                      (remove #(str/blank? (str %)))
@@ -164,17 +186,19 @@
             [:findings [{:title (title-of (str "Address the review findings: " guidance))
                          :body guidance
                          :contract guidance
+                         :tests tests
                          :type "feature"}]]
 
             (seq given)
             [:subtasks (mapv (fn [s] {:title (title-of s) :body (str s)
-                                      :contract (str s) :type "feature"})
+                                      :contract (str s) :tests tests
+                                      :type "feature"})
                              given)]
 
             :else
             (let [prob (str (:problem branch))]
               [:problem [{:title (title-of prob) :body prob :contract prob
-                          :type "feature"}]]))]
+                          :tests tests :type "feature"}]]))]
       (if (nil? specs)
         (assoc data :board/planned (count existing))
         (let [ids (mapv #(tasks/create! conn (assoc % :run-id run-id)) specs)]
@@ -206,7 +230,11 @@
       ;; round's turns to the last round's branch.
       (let [n worked
             round (or (:board/round data) 0)
-            bid (str "T" n (when (pos? round) (str "v" round)))
+            ;; The id NAMES THE TASK. It used to be the owner index alone, so
+            ;; every task that owner ever worked shared one id — run 8710067f
+            ;; ran turns 1-153 under "T0" across two tasks with two separate
+            ;; fresh contexts, and nothing downstream could tell them apart.
+            bid (state/branch-id-for n round (:title t))
             prob (str (or (not-empty (str (:body t))) (:title t)))
             claimed (do (runs/open-branch! conn run-id {:branch-id bid :problem prob})
                         (tasks/claim! conn (:id t) run-id bid))]
@@ -233,6 +261,37 @@
                :board/verdict :task
                :branch (assoc branch :task {:id (:id t) :title (:title t)})))
       (assoc data :board/verdict :empty)))))
+
+(defn surface-block
+  "THE SURFACE a task sits in: the overarching goal and the sibling parts, one
+  line each with who is on them. nil when there are no siblings — a heading
+  over an empty list is a per-turn tax on the common case.
+
+  A task owner used to get its own contract and nothing about the whole, so it
+  could not tell which interfaces were shared, what another owner was already
+  building, or what its part was FOR. Metan (research/2608.24735v1) ablated
+  exactly this channel and put the plain conditioning string passed between
+  layers at ~72% of what recursion buys — the cheapest thing there is, and
+  this had none of it. A live worker went off-task onto a superficially
+  similar recalled fix for want of it (karamazov-b3z).
+
+  DELIBERATELY THIN: titles and status, never contracts or bodies. The parent
+  holds the surface and each child holds its own implementation; handing a
+  child its siblings' contracts would put us back to everybody reading
+  everything, which is the thing the layering exists to avoid."
+  [{:keys [goal siblings mine]}]
+  (let [others (remove #(= (str (:id %)) (str mine)) siblings)]
+    (when (seq others)
+      (str "## Where this fits\n\n"
+           (when (seq (str goal))
+             (str "The whole this serves: " goal "\n\n"))
+           "Other parts of it, so you know what NOT to build and which "
+           "interfaces are shared:\n"
+           (str/join "\n"
+                     (for [t others]
+                       (str "  - " (:title t) " [" (:status t) "]")))
+           "\n\nThose are somebody else's to build. If your part needs one of "
+           "them, define the interface and keep going — do not build theirs."))))
 
 (defn- owner-prompt
   "The implementor's prompt suffix: its role identity and the repl-workflow
@@ -266,15 +325,39 @@
                   (tasks/claim! conn task run-id bid))
                 (let [b (-> (state/new-branch
                              {:id bid :problem prob
-                              :messages (turn/initial-messages prob (owner-prompt))})
-                            (assoc :task {:id task :title (:title t)})
+                              ;; ROLE-SCOPED, and role-ENFORCED. The board is
+                              ;; the default implement stage and it passed
+                              ;; neither: the owner was shown every tool the
+                              ;; harness has (roles/scope-catalogue never ran)
+                              ;; and could call any of them (:outside-role-surface
+                              ;; needs a :role on the branch to refuse). The
+                              ;; machinery roles.edn describes was wired into
+                              ;; feature.clj's advisory roles only, so the one
+                              ;; role that writes code was the one role without
+                              ;; a scoped world.
+                              :messages (turn/initial-messages prob (owner-prompt)
+                                                               :implementor)})
+                            (assoc :task {:id task :title (:title t)}
+                                   :role :implementor)
                             (state/add-message
                              "user"
                              (str "[harness] "
                                   (prompt/render "task-claimed"
                                                  {:id task :title (:title t)
                                                   :contract (:contract t)
-                                                  :tests (:tests t)}))
+                                                  :tests (:tests t)
+                                                  ;; WHERE THIS FITS. The
+                                                  ;; parent holds the surface;
+                                                  ;; the child gets its own
+                                                  ;; contract plus a one-line
+                                                  ;; map of the rest, never
+                                                  ;; the siblings' contracts
+                                                  ;; (karamazov-b3z).
+                                                  :surface
+                                                  (surface-block
+                                                   {:goal (:problem data)
+                                                    :mine task
+                                                    :siblings (tasks/board conn {:run-id run-id})})}))
                              {:pinned? true :task-id task}))]
                   (myc/run-compiled (wf/worker-compiled) ictx {:branch b :turn 1}))
                 (catch Throwable e

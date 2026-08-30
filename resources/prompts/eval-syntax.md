@@ -1,0 +1,2 @@
+{% if syntax %}That is not loadable Clojure, so nothing was evaluated: {{syntax}}
+{% if delimiter %}Fix it and send the form again — the harness closes a dropped trailing delimiter for you, but it will not guess at one in the middle.{% endif %}{% if does-not-read %}Read that complaint literally: the parens are fine, so it is a TOKEN that is wrong — a bad string escape (a backslash in a Clojure string must be doubled, `"\\*"` not `"\*"`), a malformed number, or a stray reader macro. Sending the same form again will fail the same way.{% endif %}{% endif %}

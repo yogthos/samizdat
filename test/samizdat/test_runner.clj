@@ -67,12 +67,14 @@
             [samizdat.agent-test]
             [samizdat.base-test]
             [samizdat.boundary-test]
+            [samizdat.compaction-test]
             [samizdat.collab-test]
             [samizdat.select-test]
             [samizdat.session-test]
             [samizdat.reflect-test]
             [samizdat.watch-test]
             [samizdat.tasks-test]
+            [samizdat.kernel-write-test]
             [samizdat.knowledge-test]
             [samizdat.messages-test]
             [samizdat.prompt-test]
@@ -90,19 +92,30 @@
             [samizdat.supervisor-test]
             [samizdat.gitdiff-test]
             [samizdat.skills-test]
+            [samizdat.source-test]
             [samizdat.security.secrets-test]
             [samizdat.config-test]
             [samizdat.files-test]
             [samizdat.edit-test]
+            [samizdat.eval-mode-test]
             [samizdat.grep-test]
+            [samizdat.hashline-test]
             [samizdat.control-test]
             [samizdat.util-test]
             [samizdat.lisp-test]
             [samizdat.lsp-test]
             [samizdat.cells-test]
             [samizdat.mutation-test]
+            [samizdat.ratelimit-test]
+            [samizdat.repl-confinement-test]
+            [samizdat.repl-guard-test]
             [samizdat.repl-test]
+            [samizdat.roles-test]
+            [samizdat.sandbox-test]
+            [samizdat.websearch-test]
+            [samizdat.toolerr-test]
             [samizdat.tape-test]
+            [samizdat.image-test]
             [samizdat.infer-test]
             [samizdat.fork-test]
             [samizdat.probe-test]
@@ -118,6 +131,8 @@
             [samizdat.proc-test]
             [samizdat.board-bt-test]
             [samizdat.finalization-test]
+            [samizdat.replroots-test]
+            [samizdat.oversight-test]
             [samizdat.mechanics-test]
             [samizdat.repair-test]
             [samizdat.storm-test]
@@ -177,6 +192,8 @@
     mycelium.workflow-test
     samizdat.board-bt-test
     samizdat.finalization-test
+    samizdat.replroots-test
+    samizdat.oversight-test
     samizdat.mechanics-test
     samizdat.repair-test
     samizdat.storm-test
@@ -187,12 +204,14 @@
     samizdat.agent-test
     samizdat.base-test
     samizdat.boundary-test
+    samizdat.compaction-test
     samizdat.collab-test
     samizdat.select-test
     samizdat.session-test
     samizdat.reflect-test
     samizdat.watch-test
     samizdat.tasks-test
+    samizdat.kernel-write-test
     samizdat.knowledge-test
     samizdat.messages-test
     samizdat.prompt-test
@@ -210,19 +229,30 @@
     samizdat.supervisor-test
     samizdat.gitdiff-test
     samizdat.skills-test
+    samizdat.source-test
     samizdat.security.secrets-test
     samizdat.config-test
     samizdat.files-test
     samizdat.edit-test
+    samizdat.eval-mode-test
     samizdat.grep-test
+    samizdat.hashline-test
     samizdat.control-test
     samizdat.util-test
     samizdat.lisp-test
     samizdat.lsp-test
     samizdat.cells-test
     samizdat.mutation-test
+    samizdat.ratelimit-test
+    samizdat.repl-confinement-test
+    samizdat.repl-guard-test
     samizdat.repl-test
+    samizdat.roles-test
+    samizdat.sandbox-test
+    samizdat.websearch-test
+    samizdat.toolerr-test
     samizdat.tape-test
+    samizdat.image-test
     samizdat.infer-test
     samizdat.fork-test
     samizdat.probe-test

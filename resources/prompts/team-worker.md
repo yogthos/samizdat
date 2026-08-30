@@ -7,6 +7,14 @@ listed above — they are running right now, in parallel with you.
 
 Coordinate; do not work blind. Your peers are the branch ids above (W0, W1, …):
 
+- Before you edit a file a peer might also touch, announce it. The whole call:
+
+  ```tool-call
+  {"name": "message", "args": {"body": "taking src/flight/render.clj"}}
+  ```
+
+  A bare `body` broadcasts, which is what an announcement wants. Add
+  `"to": "W2"` to address one peer, or `"action": "inbox"` to read yours.
 - Before you edit a file a peer might also touch, announce it — call `message`
   with `action:"send"` and a `body` saying what you're taking (omit `to` to
   broadcast, or set `to` to a peer's id). Say what you're changing, not just

@@ -112,6 +112,55 @@
 
 (defn bound? [] (some? @project))
 
+;; --- the project DIRECTORY ---------------------------------------------------
+;;
+;; The connection above says which store userspace reads; this says which tree
+;; the run is working IN. Prompt assembly needs it and cannot be handed it:
+;; `initial-messages` is called from a dozen cells and drivers, and the shipped
+;; system prompt has to know whether the project under work is the harness
+;; itself. Bound once by `system/start!` from the same config the drivers take
+;; their `:root` from.
+
+(defonce ^:private root (atom nil))
+
+(defn bind-root!
+  "Point userspace at the directory this process works on. Returns the previous
+  value."
+  [dir]
+  (let [prev @root]
+    (reset! root (some-> dir str))
+    prev))
+
+(defn project-root
+  "The bound project directory, or nil when nothing has bound one — a test, a
+  bare REPL."
+  []
+  @root)
+
+(def ^:private harness-markers
+  "Files that exist in a samizdat checkout and nowhere else. Two rather than
+  one, from opposite layers, so a directory that merely vendored a copy of the
+  loop manifest is not mistaken for the harness."
+  ["src/samizdat/workflow.clj" "resources/manifests/loop.edn"])
+
+(defn self-hosting?
+  "Whether the project being worked on IS a samizdat checkout.
+
+  The system prompt spends several sections on this harness's own
+  architecture — cells and manifests, src-is-mechanism vs
+  resources-are-behaviour, `use what you build`. All of it is load-bearing
+  when the run's target is samizdat and all of it is standing instruction
+  about the wrong codebase when the target is anything else, in the
+  most-weighted part of the context (karamazov-8zk).
+
+  UNKNOWN READS AS TRUE. With no root bound there is nothing to go on, and the
+  shipped prompt is the harness's own; defaulting the other way would delete
+  whole instruction blocks from every run whose driver forgot to bind, which
+  is a silent failure rather than a loud one."
+  ([] (if-let [r (project-root)] (self-hosting? r) true))
+  ([dir]
+   (boolean (and dir (every? #(.exists (io/file (str dir) %)) harness-markers)))))
+
 ;; --- the template ------------------------------------------------------------
 
 (def ^:private resource-path

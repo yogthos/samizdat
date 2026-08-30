@@ -74,9 +74,14 @@
                 (revise data branch (str "[critic] " det) (inc attempts)))
             (let [evidence (judge/evidence rows)
                   diff (gitdiff/diff root git-baseline)
-                  transcript (->> (:messages branch) (map :content) (str/join "\n"))
-                  prompt (judge/critic-prompt {:rules (turn/system-prompt)
-                                               :transcript transcript
+                  prompt (judge/critic-prompt {;; WHAT WAS ASKED, which this
+                                               ;; never used to carry: the
+                                               ;; critic was asked whether the
+                                               ;; task was complete with the
+                                               ;; task absent from the message,
+                                               ;; and inferred it from the
+                                               ;; implementer's own transcript.
+                                               :requirement (:problem branch)
                                                :evidence evidence
                                                :diff diff
                                                :answer (:final-answer branch)})

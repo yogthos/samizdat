@@ -279,6 +279,31 @@
                   tunes: widening it weakens the redirection downgrade, which
                   is a security control (see the secrets.clj note)."}}
 
+   "src/samizdat/repl/guard.clj"
+   {:vocabulary {"(^|/)(src|vendor)/"
+                 "Which trees ARE the kernel, for the guard that refuses a
+                  supervisor's eval from patching them (karamazov-zrq.9). The
+                  same reason this whole namespace is in src/ and not in
+                  gates.edn, stated in its own docstring: a guard the guarded
+                  thing can edit is not a guard. resources/ is deliberately
+                  absent from the pattern, which is what keeps the supervisor's
+                  actual editing surface open."
+                 "samizdat"
+                 "How the guard recognises a HARNESS namespace in a
+                  `(require … :reload)` — the hot-load half of the same
+                  escape. Same reasoning; a run that could edit this could
+                  rename its way past it."}}
+
+   "src/samizdat/repl/route.clj"
+   {:vocabulary {"posix_spawn|Operation not permitted|Permission denied|EPERM"
+                 "What the KERNEL says when the sandbox refuses. Protocol
+                  strings from the OS, like the LSP header below — not a
+                  vocabulary anyone tunes, and widening it would only make
+                  ordinary failures read as policy refusals."
+                 "posix_spawn|process|sh\\b|exec"
+                 "Which half of the refusal message to show — the exec advice
+                  or the path advice. Same OS strings, same reasoning."}}
+
    "src/samizdat/lsp/client.clj"
    {:threshold {5000 "LSP request timeout."
                 20000 "LSP read timeout."}
@@ -288,6 +313,27 @@
 
    "src/samizdat/lisp.clj"
    {:threshold {256 "Reader recursion bound."}}
+
+   "src/samizdat/agent/state.clj"
+   {:threshold
+    {34 "Characters of task slug in a branch id. An ID FORMAT, not a policy:
+         the slug exists so a human and the journal can tell two of an owner's
+         branches apart at a glance, and the bound keeps it a label rather
+         than a description. Changing it at runtime would make ids for the
+         same task differ between rounds, which is the confusion the slug was
+         added to remove."
+     8 "Minimum slug length before the word-boundary cut applies. Below it the
+        cut is taken mid-word rather than producing a uselessly short slug.
+        Part of the same format rule."}}
+
+   "src/samizdat/hashline.clj"
+   {:threshold
+    {3 "Hex chars in an anchor's content hash — the WIRE FORMAT, not a
+        tuning knob. Every anchor already printed into a branch's context
+        carries this width, so changing it at runtime would invalidate every
+        outstanding anchor mid-run, and it is also what makes our anchors
+        identical to the ones vis mints. The drift TOLERANCE, which is a real
+        judgement call, does live in gates.edn (:anchor)."}}
 
    "src/samizdat/store/db.clj"
    {:threshold {120 "Busy-timeout clamp for SQLite."}}
@@ -620,17 +666,9 @@
    #{
     "Review what you have and ship it."
     }
-   "src/samizdat/lisp.clj"
-   #{
-    " delimiter(s) to balance the text. If that placement is"
-    " placement is wrong, resend the corrected text."
-    " surrounding forms are not re-parented."
-    " wrong, resend the corrected text."
-    "an extra closing delimiter at position "
-    "an unterminated string or an unrecognized opener; cannot auto-close."
-    "an unterminated string starting at position "
-    "the text has unclosed delimiters that do not resolve by closing at the end."
-    }
+   ;; samizdat/lisp.clj is off the backlog entirely: `balance` answers in DATA
+   ;; (a reason plus line/col plus the reader's own words) and every sentence
+   ;; around it moved to resources/prompts/file-tool.md, keyed by reason.
    "src/samizdat/llm/client.clj"
    #{
     " :max-tokens or shorten the context."

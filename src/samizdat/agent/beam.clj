@@ -73,7 +73,10 @@
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
             [samizdat.watch :as watch]
+            [samizdat.lexicon :as lexicon]
+            [samizdat.agent.oversight :as oversight]
             [samizdat.repl :as repl]
+            [samizdat.repl.route :as route]
             [samizdat.store.artifacts :as artifacts]
             [samizdat.store.failures :as failures]
             [samizdat.store.interventions :as interventions]
@@ -720,6 +723,38 @@
         (recur inner node (inc depth))
         {:throwable cur :node node}))))
 
+(defn- oversight-stream
+  "Start the supervisor's parallel stream over this run.
+
+  MECHANISM ONLY. When a pass happens is `oversight/start!`; what a pass IS is
+  manifests/oversight.edn; whether it happens at all and how often is the
+  `:oversight` policy in gates.edn. This function knows none of it — it hands
+  the driver a thunk and gets a stop function back.
+
+  The stream carries its branch across passes, which is what gives the
+  supervisor one continuous memory of the run instead of a cold re-read every
+  time (see cells/oversight.clj :oversight/reason)."
+  [{:keys [conn run-id llm-adapter] :as ctx}]
+  (let [p (lexicon/policy :oversight)]
+    (if-not (and conn run-id llm-adapter (:enabled? p))
+      (constantly nil)
+      (oversight/start!
+       (assoc ctx :enabled? true
+              :every-ms (:every-ms p) :budget (:budget p) :poll-ms (:poll-ms p))
+       (fn [pass-ctx]
+         (let [out (myc/run-compiled (workflow/compiled-manifest "oversight")
+                                     pass-ctx {:oversight/carry (:carry pass-ctx)})]
+           {;; The carry: the supervisor's branch, so the next pass continues
+            ;; the same conversation rather than starting one. A QUIET pass
+            ;; produces no branch, and returning its nil wiped the carry — so
+            ;; a healthy stretch erased the supervisor's memory of the run and
+            ;; the next reasoning pass started cold, which is the one thing
+            ;; the stream exists to avoid.
+            :carry (or (:oversight/branch out) (:carry pass-ctx))
+            ;; And a quiet pass made no model call, so it must not spend the
+            ;; budget that exists to bound model calls (karamazov-808).
+            :spent? (boolean (:oversight/worth-a-look? out))}))))))
+
 (defn run-rounds
   "Drive the beam's scheduler manifest from round `start-turn`.
 
@@ -753,7 +788,19 @@
         ;; the round it is watching.
         ctx (assoc ctx :live-branches live-branches)
         _ (session/mark-run! run-id)
-        ctx (assoc ctx :stop-watch (watch/start! ctx))]
+        ctx (assoc ctx :stop-watch (watch/start! ctx))
+        ;; THE SUPERVISOR STREAM, beside the run rather than inside it. The
+        ;; watcher above is the reflex — rule-based, cheap, steering only. This
+        ;; is the deliberate one: it runs the supervisor role over the run's
+        ;; health and may tune the harness as well as steer the run.
+        ;;
+        ;; Started here for the same reason the watcher is: a supervisor wired
+        ;; as a node in the workflow it supervises only runs where that
+        ;; workflow puts it, and `:feature/supervise` sits after the implement
+        ;; stage RETURNS. Runs fps5 and fps6 both ended having never reached
+        ;; it, because the implementer stalled and never returned — the
+        ;; watchdog was downstream of the thing it watches for.
+        ctx (assoc ctx :stop-oversight (oversight-stream ctx))]
     (try
       (let [data (myc/run-compiled (beam-manifest conn config) ctx
                                    {:branches branches :turn start-turn})]
@@ -786,6 +833,8 @@
       (finally
         ;; The watcher stops with the run, however the run ended.
         (when-let [stop (:stop-watch ctx)] (stop))
+        ;; The supervisor stream stops with the run, however the run ended.
+        (when-let [stop (:stop-oversight ctx)] (stop))
         ;; SHORT-TERM BECOMES LONG-TERM. The session tally dies with the
         ;; process; a pattern that held across the run is a candidate for
         ;; something the next run should start out knowing, and this is the
@@ -826,7 +875,13 @@
         (when repl-session
           (try (repl/close-session repl-session)
                (catch Throwable e
-                 (log/warn "closing the run's eval session failed:" (ex-message e)))))))))
+                 (log/warn "closing the run's eval session failed:" (ex-message e)))))
+        ;; And the project image, which is a PROCESS rather than a namespace:
+        ;; closing the session leaves it running, holding a port and a sandbox
+        ;; for the life of the harness.
+        (try (route/release! (:root ctx))
+             (catch Throwable e
+               (log/warn "stopping the project image failed:" (ex-message e))))))))
 
 (defn run!
   "Run a beam to completion.

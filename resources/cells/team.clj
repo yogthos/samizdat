@@ -91,8 +91,12 @@
     ;; The sub-task is the branch's OWN problem, durably — what a resume
     ;; rebuilds this branch's opening messages from (blt.23).
     (runs/open-branch! conn run-id {:branch-id bid :problem prob})
-    (let [b (state/new-branch {:id bid :problem prob
-                               :messages (turn/initial-messages prob suffix)})
+    (let [b (assoc (state/new-branch
+                    {:id bid :problem prob
+                     ;; Scoped and enforced, as the board's owners are — a
+                     ;; fan-out worker is an implementor by another name.
+                     :messages (turn/initial-messages prob suffix :implementor)})
+                   :role :implementor)
           ;; The worker opens HOLDING its part of the board. Claimed here rather
           ;; than left to the worker to claim itself, because the split already
           ;; decided who does what — asking each worker to go and claim the row

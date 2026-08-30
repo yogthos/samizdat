@@ -142,6 +142,12 @@
          ;; (a bare REPL, a unit test) the same reads fall back to the
          ;; templates, which is what the harness did before the store existed.
          _ (bind-project! c)
+         ;; And which DIRECTORY the project is. Prompt assembly reads it to
+         ;; decide whether this run's target is the harness itself — the
+         ;; sections about cells, manifests and src-vs-resources are standing
+         ;; instruction about the wrong codebase on any other project
+         ;; (karamazov-8zk). The same value the drivers take :root from.
+         _ (userspace/bind-root! (get-in cfg [:run :root]))
          ;; The repair ladder is a COMPOSITION, so the workflow layer owns it:
          ;; the `repair` manifest wires the fence's rung fns as cells, and
          ;; this install is how the fence — which sits below the workflow
@@ -200,7 +206,8 @@
                        ;; Unbind BEFORE the connection closes: a userspace read
                        ;; against a closed handle would throw where the same
                        ;; read against no handle simply serves the template.
-                       ["userspace" #(userspace/unbind!)]
+                       ["userspace" #(do (userspace/unbind!)
+                                         (userspace/bind-root! nil))]
                        ["database" #(db/close (:conn s))]]]
       (try (f) (catch Throwable e (log/warn "stopping" label "failed:" (ex-message e)))))
     (reset! system nil)

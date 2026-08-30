@@ -38,8 +38,11 @@
             [clojure.tools.logging :as log]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
+            [samizdat.agent.gates :as gates]
             [samizdat.cells :as cells]
+            [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
+            [samizdat.store.userspace :as store]
             [samizdat.userspace :as userspace]))
 
 (def ^:private soak-timeout-ms 10000)
@@ -49,6 +52,50 @@
   [files]
   (doseq [[path content] files]
     (spit path content)))
+
+(defn changed-span
+  "The lines `before` and `after` actually differ by, as
+  `{:removed [...] :added [...] :at n}`, or nil when they are the same.
+
+  Common prefix and suffix are dropped, so a one-line change inside a
+  three-hundred-line cell records as one line and not as the file. Both spans
+  are capped at `cap` lines: the record has to be small enough to always keep,
+  and a diff nobody keeps is the bug this exists to fix. `:truncated` says so
+  rather than letting a clipped span read as the whole change."
+  [before after cap]
+  (let [a (vec (str/split-lines (str before)))
+        b (vec (str/split-lines (str after)))]
+    (when (not= a b)
+      (let [n (min (count a) (count b))
+            pre (or (first (for [i (range n) :when (not= (a i) (b i))] i)) n)
+            suf (or (first (for [i (range (- n pre))
+                                 :let [x (- (count a) 1 i) y (- (count b) 1 i)]
+                                 :when (not= (a x) (b y))]
+                             i))
+                    (- n pre))
+            rm (subvec a pre (- (count a) suf))
+            ad (subvec b pre (- (count b) suf))]
+        (cond-> {:at (inc pre)
+                 :removed (vec (take cap rm))
+                 :added (vec (take cap ad))}
+          (or (> (count rm) cap) (> (count ad) cap))
+          (assoc :truncated true))))))
+
+(defn- attempt-of
+  "What the agent actually wrote, read off disk BEFORE the checkpoint is
+  restored over it. One entry per changed file.
+
+  Best effort: this runs on the failure path, and a rollback that threw while
+  describing itself would trade a working recovery for a record of it."
+  [files]
+  (vec (keep (fn [[path original]]
+               (try
+                 (let [now (slurp path)]
+                   (when-let [d (changed-span original now
+                                              (gates/threshold :mutation-diff-lines))]
+                     (assoc d :path (str path))))
+                 (catch Throwable _ nil)))
+             files)))
 
 (defn- soak
   "Dry-run the loop with the edited cells to catch a cell that compiles and
@@ -119,14 +166,19 @@
   ;; (good) files so the loader's known-good content re-syncs. The reload of
   ;; good files cannot fail; if it somehow does, the registry restore above
   ;; already left the running system working.
+  (let [attempt (attempt-of files)]
   (restore-files! files)
   (cell/registry-restore! registry)
   (try (cells/load-cells! (or dirs cells/default-dirs)) (catch Throwable _ nil))
+  ;; WHAT WAS TRIED, not only that something was. Read before restore-files!
+  ;; above overwrites it — the reason alone lets the next run re-derive the
+  ;; same edit, which is the failure WikiSkill's skill-impact.md exists to
+  ;; prevent (karamazov-mpd).
   (when (and conn run-id)
     (journal/note! conn run-id :mutation-rolled-back
-                   {:data {:reason reason}}))
+                   {:data {:reason reason :attempt attempt}}))
   (log/warn "cell mutation rolled back:" reason)
-  {:status :rolled-back :reason reason})
+  {:status :rolled-back :reason reason}))
 
 (defn apply-cell-edit!
   "Run the mutation protocol after the agent has edited cell files on disk.
@@ -197,6 +249,38 @@
 ;; with the reason — which is the right split: the store holds versions that
 ;; were live, the journal holds every attempt and its verdict.
 
+(defn shadowed-cells
+  "Cell ids in `body` that ANOTHER stored cell file already defines, as
+  `[[id owning-name] ...]`. Empty when the save is honest.
+
+  WHY THIS IS A REFUSAL AND NOT A WARNING. `load-cells!` loads the stored
+  files name-sorted, so two files defining the same id both register and the
+  later name wins. Nothing about that is visible: the body compiles, the cells
+  register, the soak passes, and the mutation reports success. The damage
+  appears later, when somebody edits the CANONICAL file and their version is
+  silently shadowed by the stale copy.
+
+  Live in run e1491f04 — the first fully validated agent self-edit, and a real
+  fix. The supervisor guarded a prompt sentence that had been sending it to
+  chase a phantom crash, then saved the WHOLE feature cell file under the new
+  name `feature/supervise`. Every `:feature/*` cell was then defined twice,
+  with the copy sorting later and winning. The edit was right and only the
+  name was wrong, which is exactly the mistake a check can catch and a soak
+  cannot (karamazov-990).
+
+  Best effort: a body that will not read is not this function's complaint to
+  make — `load-string` below reports that far better."
+  [name body]
+  (try
+    (let [ids (set (cells/defcell-ids body))]
+      (when (seq ids)
+        (vec (for [[other b] (some-> (userspace/conn) (store/latest-bodies :cell))
+                   :when (not= (str other) (str name))
+                   id (set (cells/defcell-ids b))
+                   :when (contains? ids id)]
+               [id other]))))
+    (catch Throwable _ nil)))
+
 (defn propose-cell!
   "Validate a candidate cell body, and commit it as a new version of this
   project's cell only if it survives.
@@ -220,6 +304,7 @@
   written to the store."
   [{:keys [name body loop-def extra-defs soak-input compile-fn rationale conn run-id]}]
   (let [compile-fn (or compile-fn myc/pre-compile)
+        shadowing (shadowed-cells name body)
         snapshot (cell/registry-snapshot)
         fail (fn [reason]
                (cell/registry-restore! snapshot)
@@ -228,6 +313,17 @@
                                 {:data {:cell name :reason reason}}))
                (log/warn "cell proposal rejected:" name reason)
                {:status :rolled-back :reason reason})]
+    (if (seq shadowing)
+      ;; REFUSED BEFORE INSTALLING. A save under the wrong name is not a bad
+      ;; edit that a soak can catch — the body compiles, the cells register,
+      ;; the soak passes, and the damage only appears later when the canonical
+      ;; file is edited and silently loses. Nothing to roll back either,
+      ;; because nothing went wrong.
+      (fail (prompt/render "cell-shadowed"
+                           {:ids (str/join ", " (map first shadowing))
+                            :one (= 1 (count shadowing))
+                            :owners (str/join ", " (distinct (map second shadowing)))
+                            :name name}))
     (try
       ;; INSTALL the candidate into the live image, on top of the project's
       ;; other cells. Syntax errors surface here.
@@ -263,4 +359,4 @@
                   (log/info "cell" name "committed as version" v)
                   {:status :committed :version v})))))
       (catch Throwable e
-        (fail (str "the candidate did not load — " (or (ex-message e) (str e))))))))
+        (fail (str "the candidate did not load — " (or (ex-message e) (str e)))))))))

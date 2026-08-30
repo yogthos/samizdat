@@ -453,6 +453,24 @@
   [conn run-id kind data]
   (emit! conn run-id kind data))
 
+(defn last-note
+  "The data of the most recent `kind` note on this run, parsed back from JSON,
+  or nil.
+
+  One stage reading another's conclusion out of the journal rather than out of
+  a data map is deliberate: the supervision STREAM runs beside the run and
+  hands its output to nobody, so the journal is the only place a pipeline
+  stage can meet it (karamazov-poe). Best effort on the parse — a note the
+  reader cannot make sense of is not worth failing a stage over."
+  [conn run-id kind]
+  (when-let [row (first (db/fetch conn
+                                  ["SELECT data FROM events
+                                     WHERE run_id = ? AND kind = ?
+                                     ORDER BY id DESC LIMIT 1"
+                                   run-id (name kind)]))]
+    (try (json/read-str (str (:data row)) :key-fn keyword)
+         (catch Throwable _ nil))))
+
 (def ^:private record-tables
   "The tables holding a run's account of itself, and how each one names its
   run. Ordered so an FTS mirror goes before the rows it indexes — deleted the

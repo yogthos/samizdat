@@ -96,6 +96,26 @@ flowchart LR
     toolcall --> lsp
     scrub --> lsp
     lsp --> redact
+
+    websearch[websearch tool: outbound HTTP to a search endpoint]
+    toolcall --> websearch
+    websearch --> redact
+
+    plan[plan tool: records declared paths on the branch]
+    toolcall --> plan
+    plan --> redact
+
+    files[file tools: write_file, edit_file, patch]
+    root[Project root confinement]
+    toolcall --> files
+    files --> root
+    root --> redact
+
+    reads[read tools: read_file, grep]
+    readroots[Project root + declared reference roots]
+    toolcall --> reads
+    reads --> readroots
+    readroots --> redact
 ```
 
 The `eval` node and its three edges were absent from this graph until this RFC
@@ -110,6 +130,23 @@ confinement every file tool enforces. Both fixed in the 2026-08 audit
 (karamazov-blt.27, blt.28): it spawns through `scrub` and its paths go
 through `resolve-under-root`; its replies were already inside the envelope
 redaction.
+
+**Reads and writes no longer share one boundary** (karamazov-1an). Writes keep
+`resolve-under-root` unchanged: one root, canonicalized, fails closed. Reads go
+through `resolve-for-read`, which admits the project root plus the READ-ONLY
+reference roots the project declared in `.samizdat/config.edn`
+(`:run :reference-paths`) — the operator's file, which the agent may not
+rewrite, so the agent cannot widen its own read surface. Each declared root is
+still canonicalized and a read outside all of them is still refused.
+
+Splitting them makes the boundary WEAKER on paper and stronger in practice,
+which is why it is written down here. The confinement it replaces did not
+prevent the reads: run bd56a286's brief named a language reference and ~95
+worked examples as required reading, both siblings of the root; `read_file`
+refused them and the model read every one through `shell`, which spawns a
+process. Forcing the narrow, paged, bounded tool to fail so the broad one gets
+used protects nothing and costs the audit trail. `shell` remains the wider
+capability and is unchanged by this.
 
 Reading the load-bearing solid edges:
 
@@ -194,7 +231,7 @@ Reading the load-bearing solid edges:
 | 3 | `resolve` reaches nothing except through `scrub → sub`, and `sub`'s only outlet is `redact`. | `run-shell`'s structure. |
 | 4 | `grants` are written only by a human. | The model has no edge into the grants table; the API's write path is human-only. |
 | 5 | A complex command never rides an `allow`. | `policy/decide` promotes it to a whole-command claim. `policy-test/complex-commands-never-ride-an-allow`. |
-| 6 | The run config (`.samizdat/config.edn`) — the ship-gate definition — is not writable by the run it gates. | `files/run-config?` refuses it in `write_file`/`edit_file`; `policy/decide` hard-denies any shell statement naming it under a write-capable head (grants do not unlock it). Reads stay open. `files-test/the-run-config-is-not-writable-by-the-run-it-gates`, `policy-test/the-shell-cannot-mutate-the-run-config-either`. Hardcoded in src on purpose: a protected list in agent-editable gates.edn could be unprotected by the party it protects against (karamazov-kvw). |
+| 6 | The run config (`.samizdat/config.edn`) — the ship-gate definition — is not writable by the run it gates. | `files/run-config?` refuses it in `write_file`/`edit_file`/`patch`; `policy/decide` hard-denies any shell statement naming it under a write-capable head (grants do not unlock it). Reads stay open. `files-test/the-run-config-is-not-writable-by-the-run-it-gates`, `policy-test/the-shell-cannot-mutate-the-run-config-either`. Hardcoded in src on purpose: a protected list in agent-editable gates.edn could be unprotected by the party it protects against (karamazov-kvw). |
 
 **A property is only as strong as the graph it is checked against.** Adding a
 model-reachable tool means adding a node to the diagram above and extending the

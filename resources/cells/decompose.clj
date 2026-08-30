@@ -60,8 +60,12 @@
       ;; The unit's contract is the branch's OWN problem, durably — what a
       ;; resume rebuilds this branch's opening messages from (blt.23).
       (runs/open-branch! conn run-id {:branch-id bid :problem prob})
-      (let [b (state/new-branch {:id bid :problem prob
-                                 :messages (turn/initial-messages prob (attempt-suffix node))})
+      (let [b (assoc (state/new-branch
+                      {:id bid :problem prob
+                       ;; Scoped and enforced, as the board's owners are.
+                       :messages (turn/initial-messages prob (attempt-suffix node)
+                                                        :implementor)})
+                     :role :implementor)
             ;; The attempt's own baseline reaches the worker's ship gate, so the
             ;; done tool's test rung diffs against exactly what THIS attempt
             ;; changed (a green suite with no diff of its own is not a ship).

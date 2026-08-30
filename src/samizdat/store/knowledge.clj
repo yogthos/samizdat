@@ -81,6 +81,18 @@
               ORDER BY created_at DESC, id DESC LIMIT ?"
              (str "%" query "%") (long limit)]))
 
+(defn completion-claim?
+  "Whether `content` asserts that work is FINISHED.
+
+  The one kind of memory the harness can check against the tree, and the one
+  kind that does real damage when it is wrong: memories outlive the run that
+  wrote them, so a false one tells every later worker its part is already
+  done. `vocab` is wordlists.edn :completion-claim, because which phrases mean
+  finished is language, not mechanism."
+  [content vocab]
+  (let [t (str/lower-case (str content))]
+    (boolean (some #(str/includes? t (str %)) vocab))))
+
 (defn remember!
   "Insert a fact and return its id. Kind defaults to 'note' — the column
   exists so later kinds (decisions, gotchas, references) need no migration."

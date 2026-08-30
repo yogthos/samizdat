@@ -22,7 +22,8 @@
   A good edit commits and changes behavior; a broken one (syntax, wiring, or a
   cell that throws on valid input) rolls back cleanly and is journaled, so a
   bad edit can never brick the loop."
-  (:require [clojure.string :as str]
+  (:require [samizdat.store.userspace :as store]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is use-fixtures]]
             [jolt.fs :as fs]
             [mycelium.cell :as cell]
@@ -131,6 +132,68 @@
       (let [events (journal/events-since conn rid 0 100)]
         (is (some #(= "mutation-rolled-back" (:kind %)) events)
             "the failed mutation is on the record for the agent to learn from")))))
+
+(deftest the-diff-records-the-change-and-not-the-file
+  ;; The record has to be small enough to ALWAYS keep. A diff nobody keeps is
+  ;; the bug this exists to fix, so a one-line edit inside a long cell must
+  ;; record as one line.
+  (let [before (str/join "\n" (map #(str "line " %) (range 300)))
+        after  (str/replace before "line 150" "line 150 CHANGED")
+        d      (mut/changed-span before after 40)]
+    (is (= ["line 150"] (:removed d)))
+    (is (= ["line 150 CHANGED"] (:added d)))
+    (is (= 151 (:at d)) "1-indexed, so it reads like a line number")
+    (is (not (:truncated d))))
+  (testing "identical content is not a change"
+    (is (nil? (mut/changed-span "a\nb" "a\nb" 40))))
+  (testing "a pure insertion removes nothing"
+    (let [d (mut/changed-span "a\nc" "a\nb\nc" 40)]
+      (is (= [] (:removed d)))
+      (is (= ["b"] (:added d)))))
+  (testing "a pure deletion adds nothing"
+    (let [d (mut/changed-span "a\nb\nc" "a\nc" 40)]
+      (is (= ["b"] (:removed d)))
+      (is (= [] (:added d)))))
+  (testing "a span past the cap is clipped and SAYS so, rather than reading as
+            the whole change"
+    (let [d (mut/changed-span "x" (str/join "\n" (map str (range 100))) 5)]
+      (is (= 5 (count (:added d))))
+      (is (true? (:truncated d)))))
+  (testing "a rewrite with nothing in common still reports both sides"
+    (let [d (mut/changed-span "a\nb" "c\nd" 40)]
+      (is (= ["a" "b"] (:removed d)))
+      (is (= ["c" "d"] (:added d))))))
+
+(deftest a-rollback-records-what-was-actually-tried
+  ;; THE RECORD ABOVE KEEPS THE VERDICT AND THROWS AWAY THE EVIDENCE.
+  ;; :mutation-rolled-back carried a reason string; restore-files! then wrote
+  ;; the checkpoint's original content back over the agent's edit, so what the
+  ;; agent TRIED was gone. A later run learns "something was rolled back
+  ;; because X" and cannot learn not to try it again.
+  ;;
+  ;; From WikiSkill (research/2608.27454v1 s3.2.4): their skill-impact.md keeps
+  ;; the unified diff of every proposal with its accept/reject outcome, and
+  ;; their case study turns on it — iteration 0 is rejected, and BECAUSE the
+  ;; diff survives, iteration 1 proposes something different and is accepted
+  ;; (karamazov-mpd).
+  (with-open []
+    (let [conn (db/open! ":memory:")
+          rid (runs/start-run! conn {:problem "p"})]
+      (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+      (cells/load-cells! (:dirs (opts)))
+      (spit (str @root "/cells/mini.clj")
+            "(ns cells.mini)\n(defcell :mini/step {} (fn [_ d] (BOOM d)))")
+      (mut/apply-cell-edit! (assoc (opts) :conn conn :run-id rid))
+      (let [ev (->> (journal/events-since conn rid 0 100)
+                    (filter #(= "mutation-rolled-back" (:kind %)))
+                    first)
+            attempt (str (:data ev))]
+        (is (some? ev) "still journaled")
+        (is (re-find #"BOOM" attempt)
+            "and the attempt itself is recoverable — the token that made it
+             wrong has to survive, or the next run re-derives the same edit")
+        (is (re-find #"mini" attempt)
+            "named to the file it targeted")))))
 
 ;; --- the store-backed proposal (per-project userspace) -----------------------
 
@@ -271,3 +334,44 @@
       (is (= before (us/template :cell "loop"))
           "the harness's own file is untouched — that is what makes it a template")
       (finally (us/unbind!) (db/close c)))))
+
+(deftest a-cell-body-may-not-be-saved-under-a-name-that-does-not-own-it
+  ;; karamazov-990, from run e1491f04 — the first fully validated agent
+  ;; self-edit, and a real fix. The supervisor guarded a prompt sentence that
+  ;; had been sending it to chase a phantom crash, then saved the WHOLE
+  ;; feature cell file under the new name `feature/supervise`. Every
+  ;; :feature/* cell was then defined twice, and load-cells! loads stored
+  ;; files name-sorted, so the copy sorted later and won.
+  ;;
+  ;; A SOAK CANNOT CATCH THIS. The body compiles, the cells register, the
+  ;; dry-run passes, and the mutation reports success. The damage appears
+  ;; later, when somebody edits the canonical file and loses silently. So it
+  ;; is refused before anything is installed — and there is nothing to roll
+  ;; back, because nothing went wrong.
+  (let [conn (db/open! ":memory:")]
+    (us/bind! conn)
+    (try
+      (store/save! conn :cell "feature"
+                   "(ns cells.feature) (cell/defcell :feature/route {} (fn [_ d] d))")
+      (testing "the same id under a different name is shadowing"
+        (is (= [[:feature/route "feature"]]
+               (mut/shadowed-cells
+                "feature/supervise"
+                "(ns cells.copy) (cell/defcell :feature/route {} (fn [_ d] d))"))))
+      (testing "editing the file that owns the id is not"
+        (is (empty? (mut/shadowed-cells
+                     "feature"
+                     "(ns cells.feature) (cell/defcell :feature/route {} (fn [_ d] d))"))))
+      (testing "and a genuinely new cell under a new name is not"
+        (is (empty? (mut/shadowed-cells
+                     "mine" "(ns cells.mine) (cell/defcell :mine/thing {} (fn [_ d] d))"))))
+      (testing "the proposal is REFUSED, and the refusal names the owner and
+                the way out rather than only saying no"
+        (let [r (mut/propose-cell!
+                 {:name "feature/supervise"
+                  :body "(ns cells.copy) (cell/defcell :feature/route {} (fn [_ d] d))"
+                  :loop-def {:cells {} :edges {}}})]
+          (is (= :rolled-back (:status r)))
+          (is (str/includes? (str (:reason r)) "feature"))
+          (is (str/includes? (str (:reason r)) "Save under the owning name"))))
+      (finally (us/unbind!)))))

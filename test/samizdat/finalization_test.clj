@@ -52,9 +52,26 @@
     (is (not (ship/unfinished-claim?
               "Implemented the converter and the CLI; the suite is green."))
         "a finished report trips nothing"))
-  (testing "the verb match is an exact token, so latest is not test"
-    (is (not (ship/unfinished-claim?
-              "I will describe the latest results below.")))))
+  (testing "a word BOUNDARY, not an exact token — the two rules pull opposite
+            ways and both are needed (dirge completeness_gate.rs)"
+    (testing "requiring a boundary keeps the honest sentences quiet"
+      (is (not (ship/unfinished-claim? "I will describe the latest results below."))
+          "`latest` must not read as `test`")
+      (is (not (ship/unfinished-claim? "I will explain the prefix handling above."))
+          "`prefix` must not read as `fix`")
+      (is (not (ship/unfinished-claim? "I will check the report and move on."))
+          "`report` must not read as `port`"))
+    (testing "requiring only the LEADING boundary keeps the inflections, which
+              is how a model actually announces work it has not done"
+      (is (ship/unfinished-claim? "I will be implementing the retry path next.")
+          "an exact-token match missed every gerund — measured, not supposed")
+      (is (ship/unfinished-claim? "I am going to be testing the renderer.")))
+    (testing "and the second-person exemption is word-anchored too"
+      (is (ship/unfinished-claim?
+           "The bayou samples are done; I will fix the parser.")
+          "`bayou` contains `you ` and used to silence a genuine hit")
+      (is (not (ship/unfinished-claim? "I will leave the migration to you."))
+          "a real handoff is still a legitimate ending"))))
 
 (deftest the-completeness-rung-blocks-a-half-done-ship
   (let [msg (ship/ship-gate-block

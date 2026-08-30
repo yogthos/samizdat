@@ -17,6 +17,7 @@
             [samizdat.cells :as cells]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
+            [samizdat.agent.resume :as resume]
             [samizdat.store.runs :as runs]
             [samizdat.workflow :as workflow]))
 
@@ -109,7 +110,19 @@
       (let [r (drive c rid (fn [bs _turn] bs))]
         (is (= :exhausted (:status r)))
         (is (some? (:report r)) "the residual report is what a resume reads")
-        (is (string? (:report-text r))))
+        (is (string? (:report-text r)))
+        (testing "and the ROW says so too, rather than :failed"
+          ;; A thrown error also records :failed (beam/run!'s catch), so
+          ;; recording an honest end-of-budget the same way made "the harness
+          ;; broke" and "the work did not finish in the turns it had" the same
+          ;; row. The in-memory result said :exhausted all along; only the
+          ;; durable record lied (karamazov-emw).
+          (is (= "exhausted" (:status (runs/get-run c rid)))))
+        (testing "it is over, so a directive against it is refused"
+          (is (runs/terminal? (runs/get-run c rid))))
+        (testing "and still resumable — running out of budget is the ordinary
+                  reason to continue a run, not a reason to refuse to"
+          (is (resume/resumable? c rid))))
       (finally (db/close c)))))
 
 (deftest an-empty-beam-exhausts-rather-than-spinning

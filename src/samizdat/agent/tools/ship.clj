@@ -68,6 +68,38 @@
   (util/generation-cache lexicon/gen
                          #(lexicon/wordlist :completeness-second-person)))
 
+(defn- word-starting-with?
+  "Whether `needle` occurs in `haystack` at the START of a word.
+
+  THE LEADING BOUNDARY ONLY, and both halves of that are load-bearing —
+  dirge's completeness_gate.rs learned each one from a false firing.
+
+  Requiring a boundary at all is what stops `test` reading out of `latest`,
+  `fix` out of `prefix`, and `you ` out of `bayou `. Measured here before the
+  fix: \"The bayou samples are done; I will fix the parser\" did not fire,
+  because the unanchored second-person check found `you ` inside `bayou ` and
+  read a genuine abandoned intention as advice to the reader.
+
+  Requiring only the LEADING one is what keeps inflections. The verbs are
+  listed in the infinitive and a sentence inflects them — \"I will be
+  implementing the retry path\" is the most natural way a model announces
+  work it has not done, and an exact-token match misses every one of them.
+  Measured here before the fix: that sentence did not fire either.
+
+  So the two rules pull in opposite directions and both are needed. A gate
+  that fires on honest work gets switched off; a gate that misses the ordinary
+  phrasing never fires at all."
+  [haystack needle]
+  (let [h (str haystack) n (str needle)]
+    (and (seq n)
+         (loop [from 0]
+           (if-let [i (str/index-of h n from)]
+             (if (or (zero? i)
+                     (not (re-matches #"[a-z0-9]" (subs h (dec i) i))))
+               true
+               (recur (inc i)))
+             false)))))
+
 (defn unfinished-claim?
   "Whether the answer says, in the model's own first-person voice, that work
   remains (dirge completeness_gate.rs, karamazov-g86). Fires only when ONE
@@ -85,11 +117,10 @@
         second-p (completeness-second-person)]
     (boolean
      (some (fn [sentence]
-             (let [s (str " " (str/lower-case (str/trim sentence)) " ")
-                   tokens (set (re-seq #"[a-z']+" s))]
-               (and (some #(str/includes? s %) fwd)
-                    (some tokens verbs)
-                    (not-any? #(str/includes? s %) second-p))))
+             (let [s (str " " (str/lower-case (str/trim sentence)) " ")]
+               (and (some #(word-starting-with? s %) fwd)
+                    (some #(word-starting-with? s %) verbs)
+                    (not-any? #(word-starting-with? s %) second-p))))
            (str/split (str answer) #"[.!?\n]+")))))
 
 (defn answer-tokens

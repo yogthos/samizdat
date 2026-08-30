@@ -36,7 +36,9 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [jolt.host :as host]))
+            [jolt.host :as host]
+            [samizdat.prompt :as prompt]
+            [samizdat.repl.guard :as guard]))
 
 (defn- project-paths
   "The source paths `root` declares in its own deps.edn: `:paths` plus every
@@ -84,6 +86,23 @@
                 "— start the harness from the project root, or use absolute paths in eval")
       {:root root* :cwd here})))
 
+(defn declared-roots
+  "The absolute source roots `root` declares, resolved.
+
+  A declared path may be ABSOLUTE — a project that puts a library outside its
+  own tree on the classpath, which is how fps-game reaches its raylib FFI
+  binding. `(io/file parent child)` joins an absolute child ONTO the parent
+  instead of replacing it, so resolving those the same way as relative ones
+  produced `/…/fps-game//Users/…/raylib-jolt-examples/src`: a directory that
+  does not exist. The require then failed inside `eval` while succeeding from
+  a shell in the same directory, and the run spent its budget reading that
+  library's source with `shell` because nothing else could see it (628ffd2e)."
+  [root]
+  (mapv (fn [p]
+          (let [f (io/file p)]
+            (str (if (.isAbsolute f) f (io/file root p)))))
+        (project-paths root)))
+
 (defn ensure-project-roots!
   "Make the project at `root` loadable from `eval`, and return the paths added.
 
@@ -108,7 +127,7 @@
   [root]
   (when root
     (warn-if-not-cwd! root)
-    (let [added (mapv #(str (io/file root %)) (project-paths root))
+    (let [added (declared-roots root)
           current (vec (host/source-roots))
           missing (remove (set current) added)]
       (when (seq missing)
@@ -215,12 +234,61 @@
                (try
                  (let [value (binding [*ns* ns* *out* out]
                                (let [forms (read-string (str "[" code "\n]"))]
+                                 ;; REFUSED BEFORE THE FIRST FORM RUNS, not per
+                                 ;; form: the forms share a process, so form 1
+                                 ;; having already run does not make form 2's
+                                 ;; exit survivable — and a partial eval that
+                                 ;; then kills the server is the worst of both
+                                 ;; (karamazov-1xx).
+                                 (when (guard/terminating-form? forms)
+                                   (throw (ex-info (prompt/render
+                                                    "eval-terminates-process"
+                                                    {:calls (str/join " and "
+                                                                      (guard/offending forms))})
+                                                   {:samizdat/refused :process-exit})))
+                                 ;; And the route the symbol check cannot see:
+                                 ;; the exit is inside the callee, one file
+                                 ;; away, in code the agent wrote itself.
+                                 (when (guard/entry-point-call? forms)
+                                   (throw (ex-info (prompt/render
+                                                    "eval-calls-main"
+                                                    {:call (str/join " and "
+                                                                     (guard/main-calls forms))})
+                                                   {:samizdat/refused :entry-point})))
                                  (reduce (fn [_ form] (eval form)) nil forms)))]
                    {:ok true :value (pr-str value) :out (str out)})
                  (catch Throwable e
                    {:ok false
-                    :error (or (ex-message e) (str e))
+                    ;; EVERY RUNG, because each of the ones above it has been
+                    ;; observed returning nothing usable.
+                    ;;
+                    ;; not-empty, not `or`: `or` only falls through on NIL,
+                    ;; and an exception carrying an EMPTY message handed the
+                    ;; model the whole of "Eval error: " and nothing else
+                    ;; (run bd56a286, twice).
+                    ;;
+                    ;; Then ex-data, which is where Jolt puts what it knows —
+                    ;; {:jolt/error {:type :unresolved-symbol :symbol … :suggestions […]}}
+                    ;; is strictly more actionable than any prose rendering of
+                    ;; it, and it survives when the message does not.
+                    ;;
+                    ;; `(str e)` LAST, not first, because a Jolt condition is
+                    ;; not a JVM Throwable and prints as the literal
+                    ;; `#object[:object]` — an error the model cannot read,
+                    ;; which is worse than a crash because it looks like an
+                    ;; answer. Four of those cost run f2014821 ten turns and
+                    ;; took a supervisor pass to unstick (karamazov-60c).
+                    :error (or (not-empty (str (ex-message e)))
+                               (some-> (ex-data e) not-empty pr-str)
+                               (not-empty (str (type e)))
+                               (str e))
                     :error-type (str (type e))
+                    ;; WHERE it ran. An eval failure is about the live image,
+                    ;; which may hold half-loaded state for a namespace whose
+                    ;; file on disk is perfectly correct — and nothing said so,
+                    ;; so a branch reads it as a defect in its own code and
+                    ;; goes looking in the file.
+                    :where (str ns*)
                     :out (str out)})
                  (finally
                    (try (__reader-features-set! features)

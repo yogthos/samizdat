@@ -38,8 +38,11 @@
   inside the process. That case is out of scope by design and RFC-003 says so
   rather than leaving it silently unhandled."
   (:require [clojure.string :as str]
+            [samizdat.agent.source :as source]
             [samizdat.agent.tools.base :as base]
+            [samizdat.prompt :as prompt]
             [samizdat.repl :as repl]
+            [samizdat.repl.route :as route]
             [samizdat.security.secrets :as secrets]))
 
 (defn- scrubbed
@@ -49,7 +52,44 @@
   [s]
   (secrets/redact (str s) (secrets/known-values (into {} (System/getenv)))))
 
-(defmethod base/run-tool "eval" [{:keys [branch repl-session] :as ctx}]
+(defn- eval-vetted
+  "Evaluate source that has already passed the syntax gate. `note` is the
+  repair sentence when the harness closed a truncation, so the model is told
+  its code was completed rather than silently corrected — an invisible repair
+  teaches nothing and the next form drops the same closer."
+  [{:keys [branch repl-session] :as ctx} code note]
+  (let [timeout (some-> (base/arg ctx :timeout-ms) str str/trim not-empty parse-long)
+        session (or (:repl-session branch) repl-session)
+        prefix (if note (str "[harness] " note "\n") "")
+        ;; WHICH IMAGE, decided per role by the operator's config. Everything
+        ;; below is unchanged: route/eval-for answers in the same shape
+        ;; repl/eval-code always did, so the redaction boundary, the syntax
+        ;; gate and the timeout flag all still apply exactly as they did.
+        r (route/eval-for ctx code session timeout)]
+    (if (:ok r)
+      (base/ok branch (scrubbed (str prefix "=> " (:value r)
+                                     (when (seq (:out r)) (str "\n" (:out r))))))
+      (assoc (base/fail branch
+                        (scrubbed (str prefix "Eval error: " (:error r)
+                                       (when (seq (:out r)) (str "\n" (:out r)))
+                                       ;; WHERE it ran, every time it fails.
+                                       ;; A branch that cannot tell a stale
+                                       ;; session from a broken file reads
+                                       ;; every eval failure as a defect in
+                                       ;; its own code and goes looking in the
+                                       ;; file — which is exactly what run
+                                       ;; f2014821 did for ten turns until a
+                                       ;; supervisor pass told it otherwise
+                                       ;; (karamazov-60c).
+                                       (when (:where r)
+                                         (str "\n\n"
+                                              (prompt/render "eval-error"
+                                                             {:where (:where r)}))))))
+             ;; Same flag run-shell carries: a timed-out eval burned its
+             ;; whole budget, and the loop weights it accordingly.
+             :timeout? (= "timeout" (:error-type r))))))
+
+(defmethod base/run-tool "eval" [{:keys [branch] :as ctx}]
   ;; The BRANCH's session when it has one, the run's otherwise. Per-branch is
   ;; what keeps two competing branches from seeing each other's defs; the run
   ;; session remains the answer for a single-branch driver and for a resume
@@ -61,23 +101,36 @@
   ;; to. Defs persist across evals within a run (the session is per-run).
   (if-let [m (base/missing ctx :code)]
     (base/malformed branch m)
-    (let [timeout (some-> (base/arg ctx :timeout-ms) str str/trim not-empty parse-long)
-          session (or (:repl-session branch) repl-session)
-          r (repl/eval-code (str (base/arg ctx :code)) session timeout)]
-      (if (:ok r)
-        (base/ok branch (scrubbed (str "=> " (:value r)
-                                       (when (seq (:out r)) (str "\n" (:out r))))))
-        (assoc (base/fail branch (scrubbed (str "Eval error: " (:error r)
-                                                (when (seq (:out r))
-                                                  (str "\n" (:out r))))))
-               ;; Same flag run-shell carries: a timed-out eval burned its
-               ;; whole budget, and the loop weights it accordingly.
-               :timeout? (= "timeout" (:error-type r)))))))
+    ;; THE SAME GATE THE FILE TOOLS USE. An eval form is wholly authored in
+    ;; this call, so nothing pre-existing can be re-parented and a dropped
+    ;; closer is repaired exactly as it would be in a write_file — which is
+    ;; what this path did NOT do, for no reason anyone had decided. Run
+    ;; 5e8b5973 lost 2 of its first 17 turns to `Eval error: Unmatched
+    ;; delimiter: )`, a message with no line, no column and no repair, for text
+    ;; the harness already knew how to fix. Unrepairable source never reaches
+    ;; the reader at all: it is a malformed CALL, not a failed evaluation, so
+    ;; it is :mechanics with a line and a column rather than :failure with the
+    ;; reader's guess at where things went wrong.
+    (let [{:keys [code problem note]} (source/vet (str (base/arg ctx :code))
+                                                  {:whole? true})]
+      (if problem
+        ;; WHICH KIND of problem, so the advice matches it. The template used
+        ;; to append a delimiter hint to every refusal, including reasons that
+        ;; have nothing to do with delimiters: run ace34d83 refused a bad
+        ;; string escape six times and told the model about parens each time,
+        ;; which is where T0 spent its last six turns.
+        (base/malformed branch
+                        (prompt/render "eval-syntax"
+                                       {:syntax note
+                                        (name (:reason problem)) true
+                                        :delimiter (not= :does-not-read
+                                                         (:reason problem))}))
+        (eval-vetted ctx code note)))))
 
 (defmethod base/run-tool "doc" [{:keys [branch] :as ctx}]
   (if-let [m (base/missing ctx :symbol)]
     (base/malformed branch m)
-    (let [d (repl/doc-sym (str (base/arg ctx :symbol)))]
+    (let [d (route/doc-for ctx (str (base/arg ctx :symbol)))]
       (if (:not-found d)
         (base/malformed branch (str "No var " (base/arg ctx :symbol) " is loaded."))
         (base/ok branch (str (:name d) "\n" (pr-str (:arglists d)) "\n\n" (:doc d)))))))
@@ -85,7 +138,7 @@
 (defmethod base/run-tool "complete" [{:keys [branch] :as ctx}]
   (if-let [m (base/missing ctx :prefix)]
     (base/malformed branch m)
-    (let [ms (repl/complete (str (base/arg ctx :prefix)))]
+    (let [ms (route/complete-for ctx (str (base/arg ctx :prefix)))]
       (base/ok branch (if (seq ms)
                    (str/join "\n" (take 50 ms))
                    (str "No symbols match " (base/arg ctx :prefix) "."))))))

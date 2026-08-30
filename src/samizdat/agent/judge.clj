@@ -198,16 +198,31 @@
   (prompt/prompt "judge"))
 
 (defn critic-prompt
-  "The judge's user message: the agent's rules, the evidence, the transcript,
-  the diff of what the run changed, and the answer under review."
-  [{:keys [rules transcript evidence answer diff]}]
+  "The critic's user message: THE REQUIREMENT, the diff of what the run
+  changed, the deterministic evidence, and the answer under review.
+
+  It used to be handed the implementer's system prompt as `rules` and the
+  implementer's TRANSCRIPT, and never the requirement at all — it was asked
+  \"is this task complete and correct?\" with the task itself nowhere in the
+  message. It inferred what had been asked from the implementer's own account
+  of it, which is the one source that cannot contradict the work under review.
+
+  So the transcript is gone and the requirement is in. A critic that reads the
+  implementer's reasoning adopts its framing; a critic that reads the
+  requirement and the diff forms its own. The transcript is still reachable —
+  the journal has every turn — but it is no longer poured in by default."
+  [{:keys [requirement transcript evidence answer diff]}]
   (let [budget (gates/threshold :context-budget)]
     (prompt/render
      "judge-user"
-     {:rules (one-line rules (:judge-rules-chars budget))
+     {:requirement (one-line requirement (:judge-rules-chars budget))
       :evidence evidence
       :diff (when (seq (str diff)) (str diff))
-      :transcript (one-line transcript (:judge-transcript-chars budget))
+      ;; Absent by default. Kept as a seam because a caller that has a
+      ;; specific reason to show it can, and removing the parameter would hide
+      ;; that this was ever a choice.
+      :transcript (when (seq (str transcript))
+                    (one-line transcript (:judge-transcript-chars budget)))
       :answer (str answer)
       :preamble (preamble)})))
 

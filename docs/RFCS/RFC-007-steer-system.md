@@ -124,6 +124,28 @@ UCLA's FirstProof ranked prose candidates with an LLM judge because nothing
 about their candidates was mechanical. Ours are engine-audited, so the ranking
 is data and no model sits in the path.
 
+### Who may write a directive
+
+The interventions table is the run's steering channel, drained at a round
+boundary by `:beam/directives`. It has two writers.
+
+A **human** writes one from outside the process — `control/steer!`, the HTTP
+control API, or a REPL against the run's db. This is the original path and the
+reason the table exists.
+
+The **supervisor** writes one with the `intervene` tool. Its directives carry
+`issued_by = "supervisor"` so the record distinguishes the harness steering
+itself from a person steering it; reading a run's history afterwards, that
+distinction is the difference between an adaptive loop and an operated one.
+
+`intervene` reaches no host resource and is classified `:harness-only`, but it
+is the only tool in the harness that changes what ANOTHER branch will do. That
+authority is scoped by role rather than by the permission engine: the
+`implementor` role carries `:denied #{"intervene"}` in `roles.edn` even though
+its surface is `:all`, because a branch that can cull its siblings or raise its
+own turn cap has stopped being an implementor. A broad surface with a narrow
+carve-out is how that is expressed without giving up the `:all` sentinel.
+
 ## API
 
 ### `samizdat.agent.gates`

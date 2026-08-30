@@ -27,9 +27,20 @@
   ;; Both actions are :neutral bookkeeping, like the task board: leaving and
   ;; reading messages coordinates branches but is not itself progress. A
   ;; missing body and unknown actions are :mechanics.
-  (let [action (some-> (base/arg ctx :action) str str/trim str/lower-case not-empty)
+  (let [declared (some-> (base/arg ctx :action) str str/trim str/lower-case not-empty)
         body (base/arg ctx :body)
-        to (base/arg ctx :to)]
+        to (base/arg ctx :to)
+        ;; A BARE BODY IS A SEND. The {action, body} shape is easy to get
+        ;; wrong and was got wrong: in the team dogfood W1 made three message
+        ;; calls and all three were refused for a missing action, so one real
+        ;; message landed all run and no worker announced the file it had
+        ;; taken (karamazov-8an).
+        ;;
+        ;; Inferred only when the call is UNAMBIGUOUS — a body present and no
+        ;; action named. `inbox` takes no body, so nothing else it could have
+        ;; meant; and a wrong action still gets the usage rather than a guess.
+        action (or declared
+                   (when-not (str/blank? (str body)) "send"))]
     (try
       (case action
         nil

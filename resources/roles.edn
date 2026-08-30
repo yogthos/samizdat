@@ -1,0 +1,106 @@
+;; WHAT EACH ROLE IS, AND WHAT IT MAY TOUCH.
+;;
+;; Roles used to be one world plus a suffix: every role got the implementer's
+;; system prompt — all 31 tools, the REPL-first workflow, how to change code —
+;; and then its own prompt argued it back out of the parts that were not its
+;; job. The supervisor's role prompt still carries the scar: a whole paragraph
+;; explaining that its file tools cannot reach the harness source, which is
+;; there because the shared prompt had just told it it has file tools. One
+;; supervisor spent 108 of a run's 211 turns hunting a source tree it was
+;; never going to be allowed to open (karamazov-i1u).
+;;
+;; So roles are CONSTRUCTED here rather than subtracted in prose. A role's
+;; surface is the tools it may call; the catalogue it is shown is filtered to
+;; that surface, and calling outside it is refused rather than discouraged.
+;;
+;; :tools  the tool surface. :all means every registered tool.
+;; :prompt the role prompt appended to the (scoped) system prompt, or nil.
+;; :sees   what its opening context is built from — documentation for the
+;;         reader and for the supervisor deciding what to tune; the cells that
+;;         assemble each role's context name the same keys.
+;;
+;; SEPARATE CONTEXTS ARE NOT THE SAME AS SEALED ONES. Every role already runs
+;; on its own branch with its own message stream, and that stays true: no role
+;; reads another's history directly. The supervisor investigates ACROSS that
+;; boundary on purpose — fetch_turn, fetch_artifact, introspect and recall are
+;; how it looks at what an implementer did — but what it learns arrives as a
+;; tool result in its own stream, which is the difference between reading a
+;; record and inheriting a context.
+{:implementor
+ {:doc "Builds the thing. Guided by its manifests through a task: claim it,
+        declare what it will change, explore, land the files, ship. The only
+        role that writes to the project."
+  ;; EXPLICIT, not `:all`. The catalogue a role is shown is filtered to its
+  ;; surface, so `:all` meant the implementor's system prompt carried every
+  ;; tool the harness has — measured at 30,625 characters, of which 21,210 was
+  ;; the catalogue and 9,000 was the "Changing the harness itself" block
+  ;; alone: how to save a cell, version a manifest, edit a policy table,
+  ;; rewrite a prompt, reload the loop, introspect its wiring. Nine tools an
+  ;; implementor building a game has no use for.
+  ;;
+  ;; MEASURED BEFORE CUTTING, across runs 498450e1, a3566c73 and f2014821:
+  ;; 641 implementor turns, ZERO calls to any of the nine. The block was
+  ;; costing every implementor turn and buying nothing. What it displaced is
+  ;; visible in the same runs — the TDD instruction sat at character 34,720
+  ;; of a 39,595-character system message, behind all of it.
+  ;;
+  ;; This is the division roles.edn already states in the other direction:
+  ;; roles/supervisor.md says the supervisor does not write project code
+  ;; because doing so hides the loop problem behind a patch. The converse is
+  ;; the same argument — an implementor that retunes the loop mid-task is
+  ;; changing the thing it is being measured by, and the supervisor is the
+  ;; role with the run-wide view needed to do that responsibly.
+  ;;
+  ;; `intervene` needs no :denied carve-out any more: an explicit surface
+  ;; excludes by absence, which is what made the sentinel need one.
+  :tools #{"thesis" "branch_theses" "done" "give_up"
+           "plan" "eval" "doc" "complete" "manual"
+           "read_file" "grep" "lsp" "write_file" "edit_file" "patch"
+           "shell" "websearch" "skill"
+           "task"
+           "remember" "recall" "outcome" "forget" "message"
+           "fetch_artifact" "fetch_turn"}
+  :prompt "roles/implementor"
+  :sees #{:task :problem :shared-tree :skills}}
+
+ :supervisor
+ {;; `intervene` is the supervisor's HANDS. Everything else on this surface
+  ;; observes the run or tunes the harness for the next one; this is the only
+  ;; tool that reaches the run in front of it.
+  :doc "The meta process. Does not care how the feature is implemented; cares
+        whether the implementer is moving through its steps and what to tune
+        when it is not. Reads the run's health, investigates the record, and
+        changes the harness — manifests, cells, prompts, policy — so the next
+        run does better. It does not write project code: that is the
+        implementer's job and doing it here hides the loop problem behind a
+        patch."
+  ;; `websearch` is investigation: a supervisor diagnosing an endpoint or a
+  ;; library's behaviour has the same need an implementor does.
+  :tools #{"intervene" "read_file" "grep" "lsp" "skill" "doc" "complete" "manual"
+           "introspect" "cells" "cell" "manifest" "prompt" "policy"
+           "fetch_turn" "fetch_artifact" "recall" "remember" "forget" "outcome"
+           "experiment" "message" "eval" "shell" "websearch" "done" "give_up"}
+  :prompt "roles/supervisor"
+  :sees #{:run-health :gate-health :failures}}
+
+ :reviewer
+ {:doc "Reads the work against what was asked and returns PASS or REVISE. It
+        does not fix what it finds — a reviewer that edits has stopped
+        reviewing and the next reviewer inherits its opinion as fact."
+  ;; Deliberately NO websearch. A reviewer judges the work against what was
+  ;; asked, and going off to read the internet is how a review becomes a
+  ;; second opinion about the domain instead of a check on the diff.
+  :tools #{"read_file" "grep" "lsp" "doc" "complete" "fetch_artifact"
+           "fetch_turn" "recall" "done" "give_up"}
+  :prompt "roles/reviewer"
+  :sees #{:requirement :diff :answer}}
+
+ :critic
+ {:doc "One call, not a loop: the requirement, the diff, and the deterministic
+        evidence, in and a verdict out. Holds no tools deliberately — a critic
+        that can go and look is a critic that can be talked round by what it
+        finds, and the point of it is an opinion formed from the requirement
+        and the change alone."
+  :tools #{}
+  :prompt nil
+  :sees #{:requirement :diff :evidence :answer}}}

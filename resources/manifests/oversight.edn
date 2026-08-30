@@ -1,0 +1,44 @@
+;; THE SUPERVISOR'S OWN WORKFLOW — a stream beside the run, not a node in it.
+;;
+;; The run being supervised has its own manifest and its own context. This is
+;; the second one: the supervisor's. They share a run id and nothing else, and
+;; that is the point — a supervisor whose context is the implementer's context
+;; is reading the work instead of watching the worker.
+;;
+;; One pass of this manifest is one look at the run: gather what has happened,
+;; decide whether anything needs saying or changing, then act — steer the run
+;; through the interventions queue, tune the harness through the mutation
+;; protocol, or do neither, which is the common and correct answer.
+;;
+;; The stream driver (samizdat.agent.oversight) decides WHEN a pass happens.
+;; This decides what a pass IS, so both halves stay editable at runtime.
+{:description "The supervisor's parallel stream: one pass gathers the run's health, reasons about it as the supervisor role, and applies whatever it decided — a steer into the running run, a tuning change for the next one, or nothing. Runs beside a run rather than inside it, so a stalled implementer cannot starve it."
+
+ :cells {:start   :oversight/gather
+         :reason  :oversight/reason
+         :apply   :oversight/apply
+         :quiet   :oversight/quiet}
+
+ :edges {:start  {:reason :reason
+                  ;; Nothing worth a model call. By far the most common
+                  ;; outcome, and the cheap path has to be the default or the
+                  ;; stream costs more than the run it watches.
+                  :quiet  :quiet}
+         :reason :apply
+         :apply  :end
+         :quiet  :end}
+
+ :dispatches {:start [[:reason (fn [d] (:oversight/worth-a-look? d))]
+                      [:quiet  (fn [d] true)]]}
+
+ :invariants
+ [{:type :must-follow :if :reason :then :apply :enforced true
+   :protects "A pass that reasoned always reaches apply. A supervisor that
+              decides something and then drops it on the floor is worse than
+              one that never ran: the decision is in the journal, so the record
+              shows a steer that never happened."}
+
+  {:type :must-precede :cell :start :before :reason :enforced true
+   :protects "The supervisor reasons over gathered evidence, never over an
+              empty data map. Its whole authority to change the harness rests
+              on having looked first."}]}

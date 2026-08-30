@@ -189,6 +189,64 @@
           (recur rest)
           :else s)))))
 
+(def ^:private hijacking-vars
+  "Environment variables that change WHICH program runs, or what it loads
+  before running. An assignment of one of these is an exec wrapper wearing a
+  different syntax, and must not be stripped when matching an allow.
+
+  `PATH=/tmp/evil git status` is the canonical case (dirge-8zem) and it was
+  already pinned by a test — the loader and interpreter variables below are
+  the same trick through a different door, and the git ones make git itself
+  exec an arbitrary program. Matched by prefix for the LD_/DYLD_/GIT_
+  families, because their members are numerous and keep being added.
+
+  Anything NOT here falls through to today's behaviour when in doubt: the
+  command is matched raw, no allow rule fires, and a human is asked."
+  {:names #{"IFS" "ENV" "BASH_ENV" "SHELLOPTS" "PYTHONPATH" "PYTHONSTARTUP"
+            "PYTHONHOME" "NODE_OPTIONS" "NODE_PATH" "PERL5LIB" "PERL5OPT"
+            "RUBYOPT" "RUBYLIB" "GEM_PATH" "CLASSPATH" "JAVA_TOOL_OPTIONS"
+            "JDK_JAVA_OPTIONS" "_JAVA_OPTIONS" "PATH"}
+   :prefixes ["LD_" "DYLD_" "GIT_"]})
+
+(defn- hijacking-var? [nm]
+  (let [nm (str nm)]
+    (boolean (or (contains? (:names hijacking-vars) nm)
+                 (some #(str/starts-with? nm %) (:prefixes hijacking-vars))))))
+
+(defn- assignments-stripped
+  "The command with leading `VAR=val` assignments removed — and nothing else,
+  and only for variables that cannot change what runs.
+
+  An ordinary assignment prefix and an exec wrapper are not the same act, and
+  treating them as one made a documented workflow unreachable. `sudo cmd`,
+  `xargs cmd` and `timeout cmd` all change what runs — `sudo` escalates,
+  `xargs` runs the command once per input line — so an allow rule matched past
+  them would be approving something it never read. `FOO=1 cmd` runs exactly
+  `cmd` with one more variable in its environment, and the program may read
+  its environment either way (what it may SEE is scrub-env's question).
+
+  The exception is the variables in `hijacking-vars`, which do choose the
+  program or its libraries. Hitting one stops the walk, so the command is
+  matched raw and falls through to `ask`.
+
+  Live consequence (run a3566c73): the brief said to verify with
+  `RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:run`, which is how the examples repo
+  documents a headless smoke run — and the assignment in head position meant
+  no allow rule could match it, not even the one for `jolt -M:test`. The
+  branch asked four times across the run and was refused every time.
+
+  Anything a substitution could hide (`FOO=$(…)`) is a complex-marker and is
+  caught by `classify` before this matters."
+  [raw]
+  (loop [s (str/trim (str raw))]
+    (let [tok (str (first (str/split s #"\s+")))
+          rest (str/trim (subs s (min (count s) (count tok))))]
+      (if (and (re-matches #"[A-Za-z_][A-Za-z0-9_]*=.*" tok)
+               (not (hijacking-var? (first (str/split tok #"=" 2))))
+               (not (str/blank? rest)))
+        (recur rest)
+        s))))
+
 (defn- command-head
   "The leading executable token of the real command — env/wrapper prefixes
   stripped — for display and rule matching."
@@ -234,13 +292,40 @@
    ["which **" :allow] ["type **" :allow] ["cat **" :allow] ["head **" :allow]
    ["tail **" :allow] ["wc **" :allow] ["sort **" :allow] ["uniq **" :allow]
    ["cut **" :allow] ["diff **" :allow] ["grep **" :allow] ["rg **" :allow]
-   ;; sed and awk sit with the other text tools rather than with the mutators:
-   ;; `sed -i` does write, but so do `mv`, `cp`, `touch` and `chmod` below it,
-   ;; and the agent already has an unrestricted `write_file`. Refusing them
-   ;; protected nothing and cost a turn every time a run reached for the most
-   ;; ordinary way to read part of a file.
+   ;; sed and awk sit with the other text tools rather than with the mutators
+   ;; because refusing them cost a turn every time a run reached for the most
+   ;; ordinary way to read part of a file, and `sed -n` is a read.
+   ;;
+   ;; THE JUSTIFICATION THAT USED TO BE HERE WAS FALSE, and it is worth saying
+   ;; so rather than replacing it quietly. It read "the agent already has an
+   ;; unrestricted write_file", which was never true: write_file is confined to
+   ;; the project root (files/resolve-under-root), and eval — the other thing
+   ;; that could once write anywhere — is confined too now (karamazov-zrq). An
+   ;; argument of the form "this is open anyway" outlived the two things that
+   ;; made it true, which is exactly how a hole survives a review.
+   ;;
+   ;; What is actually true: `sed -i` here CAN write outside the project root,
+   ;; and nothing above catches it unless the path is in protected-paths. That
+   ;; is a real gap, accepted for the read case's sake and written down instead
+   ;; of dressed up. Narrowing it means splitting the read and write forms of
+   ;; these heads, which the classifier cannot do today.
    ["sed **" :allow] ["awk **" :allow]
    ["find **" :allow] ["file **" :allow] ["stat **" :allow] ["env" :allow]
+   ;; `magick` reads an image and reports on it — a histogram, the dimensions,
+   ;; the mean colour. It sits with the read-only inspectors because that is
+   ;; what a graphical project needs it for: run 69880d84 rendered a frame to
+   ;; shot.png, had no way to find out whether anything was IN it, and burned
+   ;; four turns being refused (135, 136, 140, and again after a grant). The
+   ;; model cannot see an image, so a histogram is the only evidence available
+   ;; to it that a frame is not blank — and "the process exited 0" is not
+   ;; evidence that anything was drawn.
+   ;;
+   ;; ImageMagick can also WRITE, and this allows that — the same accepted gap
+   ;; as sed/awk above, and on the same terms: it is allowed for the read case,
+   ;; the write half is not separately gated, and that is a cost rather than a
+   ;; non-issue. It is NOT justified by write_file being unrestricted, which it
+   ;; never was.
+   ["magick **" :allow] ["identify **" :allow]
    ["date **" :allow] ["whoami" :allow] ["hostname" :allow]
    ;; benign shell builtins
    ["export *" :allow] ["set *" :allow] ["unset *" :allow]
@@ -267,6 +352,15 @@
    ["jolt -e **" :allow] ["jolt -A **" :allow] ["jolt -M **" :allow]
    ["jolt -A:test **" :allow] ["jolt -M:test **" :allow] ["jolt -A:dev **" :allow]
    ["jolt -A:test -e **" :allow] ["jolt -M:test -e **" :allow]
+   ;; The project's RUN alias, beside its test alias. `cargo run` and `go run`
+   ;; were already here and this was not, purely because the colon-alias quirk
+   ;; above needs one pattern per alias and nobody had needed this one. Live
+   ;; consequence (run a3566c73): the brief's second acceptance criterion is
+   ;; `RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:run`, and the branch spent three
+   ;; turns being refused a command it had been told to run. Running the
+   ;; project's own entry point is the same trust as running its tests, and
+   ;; the shell timeout still bounds a program that never exits.
+   ["jolt -M:run **" :allow] ["jolt -A:run **" :allow] ["jolt run **" :allow]
    ["clj -M **" :allow] ["clojure -M **" :allow] ["lein test **" :allow]
    ["cargo check **" :allow] ["cargo build **" :allow] ["cargo test **" :allow]
    ["cargo fmt **" :allow] ["cargo clippy **" :allow] ["cargo run **" :allow]
@@ -342,7 +436,12 @@
         ;; segment (each is a command the shell would run on its own) plus its
         ;; exec-prefix-stripped form, so a denied command hidden after a `;`, a
         ;; newline, or a pipe still denies — widening here can only over-deny.
-        allow-candidates [raw]
+        ;; …with one exception, and only one: a leading `VAR=val` assignment,
+        ;; which sets a variable for the very command a rule is about to read
+        ;; rather than standing in front of a different one. See
+        ;; `assignments-stripped` — exec wrappers are deliberately NOT stripped
+        ;; here.
+        allow-candidates (distinct [raw (assignments-stripped raw)])
         deny-candidates (->> (shell-split raw)
                              :segments
                              (cons raw)
@@ -371,8 +470,27 @@
         ;; allow, then every command the shell will run has been allowed.
         ;; Substitution, subshells and writing redirections still hide a
         ;; command and still downgrade.
+        ;; Judged exactly as a whole command is, assignment prefix and all —
+        ;; the two paths reading the same statement differently is how
+        ;; `jolt -M:test | tail` was allowed while
+        ;; `RAYLIB_APP_AUTO_QUIT_MS=1500 jolt -M:test | tail` was not.
+        ;; GRANTS COUNT HERE TOO. The rule this path already states is that if
+        ;; every statement matched an allow, every command the shell will run
+        ;; has been allowed — and a grant IS an allow, a human's. Reading only
+        ;; base-rules made a grant work alone and fail inside `cd X && granted`,
+        ;; which is the shape agents actually use: run 69880d84 was granted
+        ;; `magick **` to unblock a render gate and was still refused, told
+        ;; "`magick` is not on the allow list" moments after a human put it
+        ;; there. A deny still wins above; this only widens the allow side.
+        granted? (fn [cands] (some (fn [p] (some #(matches? p %) cands))
+                                   (:grants session)))
         segment-effects (when decomposable?
-                          (map #(last-match base-rules [%]) segments))
+                          (map (fn [seg]
+                                 (let [cands (distinct [seg (assignments-stripped seg)])]
+                                   (if (granted? cands)
+                                     :allow
+                                     (last-match base-rules cands))))
+                               segments))
         compound-allow? (and decomposable?
                              (not deny-hit)
                              (seq segments)

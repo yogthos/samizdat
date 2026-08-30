@@ -20,6 +20,9 @@
   is the whole point. Add a namespace here whenever a new shipped cell reaches
   for one that nothing in src already pulls in."
   (:require [samizdat.agent.decompose]
+            ;; cells/oversight.clj reads the run's own health to decide
+            ;; whether the harness needs looking at.
+            [samizdat.agent.gates]
             [samizdat.agent.gitdiff]
             [samizdat.agent.judge]
             [samizdat.agent.planner]

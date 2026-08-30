@@ -614,7 +614,12 @@
           (doseq [r residuals]
             (journal/note! conn run-id :residual {:branch-id (:branch r) :data r}))
           (journal/note! conn run-id :residual-report {:data report})
-          (runs/finish-run! conn run-id :failed nil)
+          ;; :exhausted, NOT :failed. A thrown error also records :failed
+          ;; (beam/run!'s catch), so recording an honest end-of-budget the same
+          ;; way made "the harness broke" and "the work did not finish in the
+          ;; turns it had" the same row — and the second is an ordinary
+          ;; outcome that a resume is built to continue (karamazov-emw).
+          (runs/finish-run! conn run-id :exhausted nil)
           (assoc data :status :exhausted
                  :result {:status :exhausted :run-id run-id :branches branches
                           :residuals (vec residuals) :report report

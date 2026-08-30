@@ -16,7 +16,24 @@
             [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
+            [samizdat.store.runs :as runs]
             [samizdat.workflow :as workflow]))
+
+(defn- owner-ran?
+  "Whether owner `n` ran, by prefix. Branch ids carry the task they worked now
+  (`T0-get-the-suite-green`), so pinning the bare `T0` froze an id format that
+  deliberately changed — the owner is the thing these tests mean."
+  [ids n]
+  (boolean (some #(str/starts-with? (str %) (str "T" n)) ids)))
+
+(defn- round-ran?
+  "Whether owner `n` ran a REVISE round `r`. The round suffix is still `v<r>`;
+  what moved is the task slug between the owner and the suffix."
+  [ids n r]
+  (boolean (some #(and (str/starts-with? (str %) (str "T" n))
+                       (str/ends-with? (str %) (str "v" r)))
+                 ids)))
 
 ;; Ground truth (step 3): a done with no diff is not a completed feature. By
 ;; default these tests simulate a run that DID change files, so the wiring tests
@@ -98,8 +115,8 @@
         ;; once — and each was critic-reviewed on its own diff before closing,
         ;; so the round-level reviewer role is skipped (RFC-011).
         (let [b (branch-ids conn)]
-          (is (contains? b "T0"))
-          (is (contains? b "T1"))
+          (is (owner-ran? b 0))
+          (is (owner-ran? b 1))
           (is (not (contains? b "R0"))))))))
 
 (deftest feature-critique-revise-loops-back-to-implement-bounded
@@ -119,9 +136,9 @@
         (is (= :abandoned (:status r))))
       (testing "each revise round re-implemented on a versioned branch"
         (let [b (branch-ids conn)]
-          (is (contains? b "T0"))     ; round 0
-          (is (contains? b "T0v1"))   ; revise round 1
-          (is (contains? b "T0v2"))   ; revise round 2, then the runaway guard trips
+          (is (owner-ran? b 0))     ; round 0
+          (is (round-ran? b 0 1))   ; revise round 1
+          (is (round-ran? b 0 2))   ; revise round 2, then the runaway guard trips
           (is (not (contains? b "T0v3"))))))))
 
 (deftest supervisor-reasons-over-telemetry-and-forces-a-round
@@ -138,7 +155,7 @@
                                               :max-revisions 9 :max-revisions-hard 1}}
                                :max-turns 3})]
       (testing "a revise round happened despite the reviewer passing"
-        (is (contains? (branch-ids conn) "T0v1")))
+        (is (round-ran? (branch-ids conn) 0 1)))
       (testing "and since the implementors never shipped, it ends unsolved, not falsely completed"
         (is (= :abandoned (:status r)))))))
 
@@ -209,8 +226,11 @@
         (let [turns (into {} (map (juxt :branch_id :t)
                                   (db/fetch conn ["SELECT branch_id, MAX(turn) t FROM turns
                                                    WHERE branch_id LIKE 'T0%' GROUP BY branch_id"])))]
-          (is (= 3 (get turns "T0")) "round 0 ran under the run's own budget")
-          (is (= 9 (get turns "T0v1"))
+          (is (= 3 (val (first (filter #(str/starts-with? (key %) "T0") turns))))
+              "round 0 ran under the run's own budget")
+          (is (= 9 (some (fn [[k v]] (when (and (str/starts-with? k "T0")
+                                                   (str/ends-with? k "v1")) v))
+                             turns))
               "after EXTEND: 9, the revise round's owner ran under the extended budget"))))))
 
 (deftest an-advisory-branch-ships-its-verdict-without-the-evidence-rungs
@@ -280,7 +300,7 @@
                                               :max-revisions 9 :max-revisions-hard 2}}})]
       (is (not= :completed (:status r)) "an empty diff is never reported completed")
       (testing "it kept solving before giving up (revised, did not abandon on the first empty round)"
-        (is (contains? (branch-ids conn) "T0v1")))
+        (is (round-ran? (branch-ids conn) 0 1)))
       (is (= :abandoned (:status r)) "only the runaway guard ends it, honestly unsolved"))))
 
 (deftest a-ship-carries-an-answer-even-when-the-last-round-landed-nothing
@@ -407,7 +427,7 @@
                                                :max-revisions-hard 3}}})
             branches (branch-ids conn)]
         (testing "round 0 ran the board (the default strategy)"
-          (is (contains? branches "T0")))
+          (is (owner-ran? branches 0)))
         (testing "after SWITCH: decompose, the next round ran the decompose loop"
           (is (contains? branches "DT") "the decompose root attempt ran"))))))
 
@@ -426,9 +446,76 @@
                                         :max-revisions 1 :max-revisions-hard 3}}})
       (let [branches (branch-ids conn)]
         (testing "round 0 ran the board (the default strategy)"
-          (is (contains? branches "T0")))
+          (is (owner-ran? branches 0)))
         (testing "the loop auto-advanced along the ladder on its own"
           ;; board -> team -> decompose: a strategy that keeps failing its
           ;; soft-cap rounds hands over without waiting for the supervisor.
           (is (contains? branches "W0v1") "the fan-out, the next rung (at revision 1)")
           (is (contains? branches "DT") "and then decompose"))))))
+
+;; --- one run, two supervisors (karamazov-poe) --------------------------------
+
+(deftest the-routing-stage-reads-the-streams-conclusion-instead-of-a-second-one
+  ;; The supervision STREAM watches the whole run continuously on its own
+  ;; branch; :feature/supervise sees one round at one moment. Both are
+  ;; supervisors with the full tool surface and separate contexts, so left
+  ;; alone they reach two conclusions about the same run and neither knows the
+  ;; other exists. The stage now quotes the stream and routes; diagnosis and
+  ;; harness tuning belong to the stream, which has more to go on.
+  (let [seen (atom nil)
+        base (roles {:review :pass})]
+    (with-redefs [judge/deterministic-block (constantly nil)
+                  judge/parse-verdict (constantly :complete)
+                  judge/blocking-findings (constantly nil)
+                  llm/chat (fn [a b messages & more]
+                             (let [c (str/join " " (map :content messages))]
+                               (when (str/includes? c "Your role: supervisor")
+                                 (reset! seen c))
+                               (apply base a b messages more)))]
+      (let [conn (db/open! ":memory:")]
+        ;; The stream's last word, written the way the stream writes it.
+        (with-redefs [journal/last-note
+                      (constantly {:verdict "done"
+                                   :notes "the classpath is wrong: eval cannot load the project's own FFI namespace"})]
+          (run-feature conn {:config {:run {:loop "feature" :subtasks ["alpha"]
+                                            :max-revisions 9 :max-revisions-hard 1}}
+                             :max-turns 3}))
+        (is (str/includes? (str @seen) "the classpath is wrong")
+            "the stage was not shown what the stream already concluded")
+        (is (str/includes? (str @seen) "do not re-derive the same diagnosis")
+            "and is told to route rather than diagnose a second time")))))
+
+(deftest with-no-stream-conclusion-the-routing-stage-still-routes
+  ;; The stream is budgeted and most passes are quiet, so a round can easily
+  ;; arrive with nothing on record. That must not leave the stage with a
+  ;; dangling quote or a missing instruction.
+  (let [seen (atom nil)
+        base (roles {:review :pass})]
+    (with-redefs [judge/deterministic-block (constantly nil)
+                  judge/parse-verdict (constantly :complete)
+                  judge/blocking-findings (constantly nil)
+                  llm/chat (fn [a b messages & more]
+                             (let [c (str/join " " (map :content messages))]
+                               (when (str/includes? c "Your role: supervisor")
+                                 (reset! seen c))
+                               (apply base a b messages more)))]
+      (let [conn (db/open! ":memory:")]
+        (run-feature conn {:config {:run {:loop "feature" :subtasks ["alpha"]
+                                          :max-revisions 9 :max-revisions-hard 1}}
+                           :max-turns 3})
+        (is (str/includes? (str @seen) "No supervision-stream conclusion"))
+        (is (str/includes? (str @seen) "CONTINUE, REVISE, or STOP"))))))
+
+(deftest the-journal-hands-back-the-last-note-of-a-kind
+  ;; The stream hands its output to nobody, so the journal is the only place a
+  ;; pipeline stage can meet it.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (is (nil? (journal/last-note conn rid :oversight))
+        "no note yet is nil, not a throw")
+    (journal/note! conn rid :oversight {:data {:notes "first" :verdict "done"}})
+    (journal/note! conn rid :oversight {:data {:notes "second" :verdict "done"}})
+    (journal/note! conn rid :supervise {:data {:directive "revise"}})
+    (is (= "second" (:notes (journal/last-note conn rid :oversight)))
+        "the LAST note of that kind, not the last note")
+    (is (= "revise" (:directive (journal/last-note conn rid :supervise))))))

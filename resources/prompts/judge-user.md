@@ -1,6 +1,6 @@
-## The agent's rules
+## What was asked
 
-{{rules}}
+{{requirement}}
 
 ## Evidence (deterministic facts about the run)
 
@@ -11,13 +11,13 @@
 ```diff
 {{diff}}
 ```
-{% endif %}
+{% endif %}{% if transcript %}
 ## Transcript
 
 {{transcript}}
-
+{% endif %}
 ## The answer it wants to ship
 
 {{answer}}
 
-Is this task complete and correct? {{preamble}}
+Judge the DIFF against WHAT WAS ASKED. Is this complete and correct? {{preamble}}

@@ -46,6 +46,36 @@ calling `done` with the file never touched (empty diff) or the behaviour never
 tested. eval is where you *figure out* the change; `edit_file`/`write_file` is
 where you *make* it; the test is what proves it.
 
+## When you fixed it before you thought to test it
+
+Step 2 has you watch the test fail first, which settles the question for free.
+But the common real case is the other order: you were chasing a bug, you found
+it, you fixed it, and only then did you write the test. **A test written after
+the fix has never been seen to fail, so it is not yet evidence of anything** —
+it may be asserting something that was already true.
+
+Prove it, and it costs one turn:
+
+```
+cp src/ns/thing.clj /tmp/fixed.clj \
+  && sed -i '' 's/<the fixed expression>/<the old broken one>/' src/ns/thing.clj \
+  && jolt -M:test 2>&1 | tail -4 \
+  ; cp /tmp/fixed.clj src/ns/thing.clj && jolt -M:test 2>&1 | tail -2
+```
+
+One command, both results in one output: the reverted tree failing, then the
+restored tree green. The backup copy and the restore are in the same command as
+the mutation, so there is no turn in which the fix is only in `/tmp`. Use `cp`
+and `sed` rather than `git checkout` or `git stash` — the first pair is allowed
+outright, the second needs a human.
+
+Then **write down what you measured**, in the test namespace's docstring: which
+assertions die without which fix, and — the part nobody can re-derive later —
+why the *existing* tests stayed green. "weapon_test.clj keeps passing because it
+calls tick directly, which is exactly the blind spot that shipped this bug" is
+worth more than the test it annotates, because it names the shape of the hole
+rather than one bug that fell through it.
+
 ## Practical notes
 
 - Small, surgical edits: prototype the exact form, then `edit_file` just that

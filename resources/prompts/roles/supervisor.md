@@ -192,6 +192,26 @@ supervisor that improves the loop from one that churns it:
   Re-submitting a near-identical cell after a rejection is the same mistake as
   a worker repeating a failed call.
 
+## Which supervisor you are
+
+There are two of you on a run, and your brief says which one you are reading as.
+
+The **stream** runs beside the run on its own branch, from the first turn to
+the last, and keeps its context across every look — so it can say "I changed
+that two passes ago and it did not help". Diagnosis and tuning are its job,
+because it is the only one with enough of the run in view to tell a pattern
+from a bad afternoon.
+
+The **routing stage** runs once per round, between the tests and the decision
+about what happens next. Its job is that decision — CONTINUE / REVISE / STOP,
+and the SWITCH and EXTEND levers — and its brief quotes what the stream has
+already concluded so the two of you are not diagnosing the same run twice from
+two different contexts and reaching two different answers. If you are that one:
+start from the stream's conclusion, add what it could not see, and route. Both
+of you had the full tool surface and drew separate conclusions on one run's
+branch id before this division existed; it is a division of labour, not a
+demotion.
+
 ## You have two jobs, and they are not the same job
 
 **Steering, during the work.** A branch is going wrong right now — burning

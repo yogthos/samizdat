@@ -74,6 +74,25 @@
     (journal/note! conn id :run-started {:data {:problem problem :model model}})
     id))
 
+(def terminal-statuses
+  "Every status that means the run is OVER.
+
+  Enumerated once, here, because it was enumerated twice and one copy was
+  wrong: api.control listed completed/aborted/failed and missed `interrupted`
+  (written by startup reconciliation) and `exhausted`, so a directive against
+  such a run was accepted and sat `pending` forever — the intervention that
+  never resolves, which is the exact defect blt.38 was filed for.
+
+  NOT the same question as `resumable?` in agent.resume, which excludes only
+  completed and aborted. A run that ran out of budget is over AND resumable;
+  those are different facts and deliberately keep different lists."
+  #{"completed" "aborted" "failed" "interrupted" "exhausted"})
+
+(defn terminal?
+  "Whether this run row has ended, whatever ended it."
+  [run]
+  (contains? terminal-statuses (str (:status run))))
+
 (defn finish-run!
   "Terminal only from 'running', decided by the ROW rather than the caller
   (provenance R2-4): abort!'s transient window could overwrite a run that completed

@@ -243,8 +243,7 @@
        :body {:error {:message "a grant intervention needs payload.pattern — the shell glob to allow"
                      :run_id run-id}}})
     (if-let [run (let [r (runs/get-run conn run-id)]
-                   (when (or (nil? r)
-                             (contains? #{"completed" "aborted" "failed"} (:status r)))
+                   (when (or (nil? r) (runs/terminal? r))
                      (or r ::absent)))]
       ;; A directive against a run that does not exist or has ended would sit
       ;; `pending` forever — the UI showing an intervention that will never

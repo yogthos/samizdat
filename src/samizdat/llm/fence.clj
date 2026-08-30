@@ -402,7 +402,21 @@
   #"(?s)<invoke\s+name=\"([^\"]+)\"[^>]*>(.*?)</invoke>")
 
 (def ^:private parameter-re
-  #"(?s)<parameter\s+name=\"([^\"]+)\"[^>]*>(.*?)</parameter>")
+  ;; The close is `</parameter` plus ANYTHING up to the `>`, not the exact tag.
+  ;;
+  ;; A model that opened with `<parameter name="path">` mirrors the `name=`
+  ;; into the close and writes `</parameter-name>`. With an exact-tag pattern
+  ;; the value does not stop there — it runs on to the NEXT parameter's close,
+  ;; so `path` swallowed `</parameter-name>\n<parameter name="content">(ns …`
+  ;; and `content` disappeared entirely. Live in run c377260b: the model's one
+  ;; correct write in 300 turns, a complete boundary test, was destroyed here
+  ;; and then reported back to it as "write_file needs `content`".
+  ;;
+  ;; Tolerating the drift costs nothing — no legitimate parameter value
+  ;; contains a literal `</parameter` — and silently merging two parameters is
+  ;; the worst available failure: it produces a call that looks well-formed and
+  ;; is wrong.
+  #"(?s)<parameter\s+name=\"([^\"]+)\"[^>]*>(.*?)</param(?:eter)?[^>]*>")
 
 (defn- xml-value
   "A parameter's value. Verbatim, except that something which is entirely a
@@ -491,7 +505,7 @@
     (str prefill response)
     (str response)))
 
-(declare parse-tool-call* strip-think)
+(declare parse-tool-call* strip-think reasoning-of)
 
 (defn parse-tool-call
   "Parse a model response into a tool call.
@@ -516,8 +530,48 @@
   blindly would produce two openers whose first fence body is empty."
   ([response] (parse-tool-call response nil))
   ([response {:keys [prefill]}]
-   (parse-tool-call* (strip-think
-                      (if (seq prefill) (reattach response prefill) response)))))
+   (let [whole (if (seq prefill) (reattach response prefill) response)
+         parsed (parse-tool-call* (strip-think whole))]
+     ;; SCAVENGE, and only as a fallback. `strip-think` drops the reasoning
+     ;; before parsing for a good reason — after a prefilled opener the
+     ;; thinking lands INSIDE the fence and its stray quotes corrupt the JSON —
+     ;; but a reasoning model sometimes puts the call itself in there and
+     ;; emits nothing outside, and stripping then destroys the only call the
+     ;; turn produced.
+     ;;
+     ;; The two needs conflict and the resolution is an ORDER, not a choice
+     ;; (dirge scavenge.rs): parse normally first, so nothing that works today
+     ;; changes, and look inside the reasoning only when that found NOTHING.
+     ;; This can corrupt no call it did not already lose — every input it sees
+     ;; is one the harness was about to answer with "No ```tool-call block in
+     ;; your response".
+     ;;
+     ;; Measured across runs a3566c73 and f2014821: 10 no-call turns whose
+     ;; text contained a fence, `parse_error` empty and lengths well under the
+     ;; token cap, so neither a parse failure nor a truncation. The harness
+     ;; had already learned this lesson once for unfenced JSON — see the note
+     ;; in parse-tool-call* about 23 of 34 turns lost to punctuation.
+     (if (some? parsed)
+       parsed
+       (some-> (parse-tool-call* (reasoning-of whole))
+               (assoc :scavenged? true))))))
+
+(def ^:private think-open-re #"(?s)<think>(.*?)</think>")
+(def ^:private think-open-unclosed-re #"(?s)<think>(.*)\z")
+
+(defn reasoning-of
+  "The text INSIDE the reasoning blocks, concatenated — the inverse of
+  `strip-think`.
+
+  Both shapes, because a reply cut off mid-thought carries an opener whose
+  closer never came, and that is exactly the reply most likely to have spent
+  its whole budget reasoning."
+  [s]
+  (let [t (str s)
+        closed (map second (re-seq think-open-re t))
+        open (when (empty? closed)
+               (some-> (re-find think-open-unclosed-re t) second vector))]
+    (str/join "\n" (or (seq closed) open []))))
 
 (def ^:private think-re #"(?s)<think>.*?</think>")
 
@@ -656,4 +710,10 @@
      :truncated truncated
      :parse-error (= "__parse_error__" (:name parsed))
      :auto-repaired (boolean (:auto-repaired? parsed))
+     ;; The call was recovered from INSIDE the reasoning. Its own signal, not
+     ;; folded into :auto-repaired: a repair fixed text the model got slightly
+     ;; wrong, this recovered a call it put somewhere the parser does not look.
+     ;; A run where this is common wants the PROMPT changed — the model is
+     ;; reasoning its way into the fence — not the parser loosened further.
+     :scavenged (boolean (:scavenged? parsed))
      :multiple-fences (> (or (:fences parsed) 0) 1)}))

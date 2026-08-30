@@ -116,8 +116,26 @@
 (defn- prompt [name]
   (sp/prompt name))
 
-(defn- fired-count [branch gate]
-  (count (filter #(= gate (:gate %)) (:gate-history branch))))
+(defn- fired-count
+  "How often `gate` has fired on this branch SINCE ITS LAST MET SETTLEMENT.
+
+  Since, not ever. A budget exists so one episode of nagging cannot become the
+  thing the model answers instead of the work — that is a bound on the
+  EPISODE, and counting from the start of the run made it a bound on the
+  gate's whole lifetime. Live in run bd56a286: :no-edits spent its three on an
+  early stall, was obeyed once, and was then silent while the branch went 143
+  turns without writing a file.
+
+  A met settlement is the episode boundary because it is exactly the statement
+  that the condition cleared — the branch did the thing the gate asked for.
+  Firings before it belong to a stall that is over (karamazov-gez)."
+  [branch gate]
+  (let [mine (filter #(= gate (:gate %)) (:gate-history branch))
+        after-met (->> mine
+                       reverse
+                       (take-while #(not= :met (:settled %)))
+                       reverse)]
+    (count after-met)))
 
 
 
@@ -165,7 +183,24 @@
   every other prompt seam."
   [{:keys [message-file message-suffix]}]
   (fn [{:keys [branch max-turns]}]
-    (let [ctx {:turn-count (state/turn-count branch) :max-turns max-turns}]
+    ;; `goal` is in EVERY gate's render context, so any message template can
+    ;; re-anchor the branch to what it said it was doing. Eighteen of nineteen
+    ;; gates used to steer without it — "you are doing badly" with no "at
+    ;; WHAT" — and a model cannot compare an outcome against an intention it
+    ;; is expected to remember. Opt-in per template rather than appended
+    ;; everywhere: a gate that does not need it should not carry it.
+    (let [f (state/last-failure branch)
+          ctx {:turn-count (state/turn-count branch)
+               :max-turns max-turns
+               ;; THE TWO THINGS A DECISION NEEDS, in every gate's context so
+               ;; any template can use them: what this branch said it is doing,
+               ;; and — when it is being steered because something broke —
+               ;; what broke, in the failure's own words, with the turn number
+               ;; that makes it fetchable.
+               :goal (state/stated-goal branch)
+               :failed-tool (:tool f)
+               :failed-error (:error f)
+               :failed-turn (:turn f)}]
       (str (some-> message-file sp/prompt (sp/render-str ctx))
            (some-> message-suffix (sp/render-str ctx))))))
 
