@@ -302,12 +302,40 @@
   ;; did), a knowledge row is a claim extracted as worth keeping — content is
   ;; the searchable text, kind separates notes from other kinds later. Recall
   ;; is a LIKE scan, so content is the index and needs no extra one.
+  ;;
+  ;; A ROW IS A VERSION OF A BELIEF, NOT THE BELIEF. `restate!` used to
+  ;; UPDATE content in place, and you cannot retract what you overwrote: once
+  ;; the previous wording was gone nothing could ask what we believed or what
+  ;; made us believe it, so a premise that turned out false left no trace and
+  ;; everything downstream of it kept standing (karamazov-oov). That is the
+  ;; 238-turn run — every re-read CONFIRMED the code was fine, which is
+  ;; exactly why it read again.
+  ;;
+  ;; `lineage_id` is the subject; `current` says which version speaks for it
+  ;; now. A FLAG rather than MAX(version), because max-version cannot express
+  ;; "retracted with no replacement" and that is the shape a disproven belief
+  ;; has — the run needed its premise withdrawn, not edited into another one.
+  ;; A lineage with no current row is a retraction.
+  ;;
+  ;; `cause` is why the row was written. The model can only act on what it
+  ;; knows about, so "this is false" is a dead end where "this is false, and
+  ;; here is what made us believe it" is a lead. Nullable like
+  ;; userspace.rationale: most writes have nothing to say about their origin,
+  ;; and inventing text would make the history lie.
   ["CREATE TABLE IF NOT EXISTS knowledge (
-      id         TEXT PRIMARY KEY,
-      content    TEXT NOT NULL,
-      kind       TEXT NOT NULL DEFAULT 'note',
-      created_at TEXT NOT NULL
-    )"])
+      id             TEXT PRIMARY KEY,
+      content        TEXT NOT NULL,
+      kind           TEXT NOT NULL DEFAULT 'note',
+      created_at     TEXT NOT NULL,
+      lineage_id     TEXT,
+      current        INTEGER NOT NULL DEFAULT 1,
+      cause          TEXT,
+      supersedes     TEXT,
+      retired_at     TEXT,
+      retired_reason TEXT
+    )"
+   "CREATE INDEX IF NOT EXISTS idx_knowledge_lineage ON knowledge(lineage_id)"
+   "CREATE INDEX IF NOT EXISTS idx_knowledge_current ON knowledge(current)"])
 
 (def ^:private v10
   ;; Agent mailbox: durable messages between branches working one feature.
@@ -556,39 +584,6 @@
    "ALTER TABLE userspace ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0"
    "ALTER TABLE userspace ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0"])
 
-(def ^:private v20
-  ;; A memory that turned out to be wrong is EVIDENCE. `restate!` used to
-  ;; UPDATE the content in place and delete the old FTS row, which is what
-  ;; karamazov-1sy's own design forbids — and the consequence is that you
-  ;; cannot retract what you overwrote. Once the previous wording is gone
-  ;; nothing can ask what we believed, what made us believe it, or what was
-  ;; concluded from it, so a disproven premise leaves no trace and everything
-  ;; downstream of it keeps standing (karamazov-oov).
-  ;;
-  ;; A LINEAGE PLUS A FLAG, not userspace's MAX(version). Max-version cannot
-  ;; express "retracted with no replacement", and that is precisely the shape a
-  ;; disproven belief has: the 238-turn run needed "the defect is in src/" to
-  ;; become false with nothing taking its place, not to be edited into
-  ;; something else.
-  ;;
-  ;; `cause` is why the row was written. The model can only act on what it
-  ;; knows about, so "this is false" is a dead end where "this is false, and
-  ;; here is what made us believe it" is a lead. Nullable for the same reason
-  ;; userspace.rationale is: most writes have nothing to say about their
-  ;; origin, and inventing text would make the history lie.
-  ["ALTER TABLE knowledge ADD COLUMN lineage_id TEXT"
-   "ALTER TABLE knowledge ADD COLUMN current INTEGER NOT NULL DEFAULT 1"
-   "ALTER TABLE knowledge ADD COLUMN cause TEXT"
-   "ALTER TABLE knowledge ADD COLUMN supersedes TEXT"
-   "ALTER TABLE knowledge ADD COLUMN retired_at TEXT"
-   "ALTER TABLE knowledge ADD COLUMN retired_reason TEXT"
-   ;; Every existing row is its own lineage and is current — which is exactly
-   ;; what it was before this migration, so nothing that was recallable stops
-   ;; being recallable.
-   "UPDATE knowledge SET lineage_id = id WHERE lineage_id IS NULL"
-   "CREATE INDEX IF NOT EXISTS idx_knowledge_lineage ON knowledge(lineage_id)"
-   "CREATE INDEX IF NOT EXISTS idx_knowledge_current ON knowledge(current)"])
-
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20])
+  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19])
