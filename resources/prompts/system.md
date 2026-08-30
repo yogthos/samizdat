@@ -384,8 +384,11 @@ the one failure the board exists to prevent.
 ### Long-term knowledge
 
 ```
-remember({content, kind?, confidence?})
-    Store a fact for later runs. Returns the id. `kind` sets how durable it
+remember({content, kind?, confidence?, cause?})
+    Store a fact for later runs. Returns the id. `cause` is WHY you believe
+    it — the observation that made you write it down. Record it: a memory with
+    no stated cause can only be deleted later, never judged, and the next run
+    cannot tell a hard-won conclusion from a guess. `kind` sets how durable it
     is, most durable first: identity (who and what this project is), semantic
     (a durable fact), procedural (a how-to or rule — the default), episodic
     (a specific thing that happened), working (current task context),
@@ -404,10 +407,16 @@ outcome({id, worked})
     it HELPED, and it is what stops the ranking becoming a popularity
     contest. Report a memory that turned out WRONG too — that is the one you
     most want the next run not to follow.
+retire({id, reason})
+    Withdraw a memory that turned out to be WRONG, saying why. Use this
+    rather than forget when a belief was disproven: the row stops being
+    recalled but stays readable, so what you believed and what made you
+    believe it survive for whoever looks next. A premise that quietly
+    disappears gets rediscovered from scratch.
 forget({id})
-    Delete one memory by id — for when recall surfaces a fact you now
-    know is wrong. Removal is total; re-record the correction with
-    remember afterward.
+    Delete one memory by id — for NOISE, a note that should never have been
+    written. Removal is total and leaves no trace, so prefer retire for
+    anything that was believed and turned out false.
 message({action, ...})
     A durable mailbox for branches working the same run. Actions:
       send {body, to?}   Leave a message. With to (a branch id) it is

@@ -1761,7 +1761,7 @@
                   "lsp" "skill" "policy" "complete" "done" "give_up"}
   :storm-mutating #{"write_file" "edit_file" "shell" "eval" "reload_cells"
                     "cell" "prompt" "manifest" "experiment" "remember"
-                    "forget"}
+                    "forget" "retire"}
   :settle-called
   {:orienting        #{"plan" "write_file" "edit_file" "patch"}
    :no-edits         #{"write_file" "edit_file" "patch"}
