@@ -154,14 +154,21 @@
 (defn compile-turn-loop
   "Load the named manifest and compile BOTH forms: the whole-run definition
   (for provenance and for `iterating?`) and its per-turn slice, which is what
-  the beam drives. Returns {:name :version :definition :iterating? :compiled}."
-  [conn name]
-  (let [{:keys [version definition]} (load-loop! conn name)]
-    {:name name
-     :version version
-     :definition definition
-     :iterating? (iterating? definition)
-     :compiled (compile-loop (turn-manifest definition))}))
+  the beam drives. Returns {:name :version :definition :iterating? :compiled}.
+
+  `opts` passes through to the compile — the beam hands it the run's
+  `:on-trace` tracer, which is how the implementer's every step reaches the
+  supervisor's stream (RFC-012). Compiled once per run and driven for every
+  branch, so the tracer closes over the run and reads the branch out of each
+  event rather than being bound to one."
+  ([conn name] (compile-turn-loop conn name nil))
+  ([conn name opts]
+   (let [{:keys [version definition]} (load-loop! conn name)]
+     {:name name
+      :version version
+      :definition definition
+      :iterating? (iterating? definition)
+      :compiled (compile-loop (turn-manifest definition) opts)})))
 
 (def compiled-manifest manifests/compiled-manifest)
 

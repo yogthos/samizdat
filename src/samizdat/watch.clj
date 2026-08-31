@@ -61,6 +61,7 @@
   judge whether its change helped."
   (:require [clojure.tools.logging :as log]
             [samizdat.agent.gates :as gates]
+            [samizdat.events :as events]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
@@ -68,6 +69,19 @@
             [samizdat.store.journal :as journal]))
 
 (defn- policy [] (lexicon/policy :watch))
+
+(defn- steps-since
+  "The implementer's steps that have arrived on `ch` since the last look,
+  narrowed to this run.
+
+  The bus is process-wide and two runs in one process publish onto the same
+  one, so filtering by run is not tidiness. `:kind :step` excludes the journal
+  appends that have always been published there — a watcher wants the graph
+  advancing, not the record of it being written."
+  [ch run-id]
+  (when ch
+    (filterv #(and (= :step (:kind %)) (= run-id (:run-id %)))
+             (events/collect ch))))
 
 (defn- actionable
   "The findings this pass should react to: severe enough to be worth a turn,
@@ -111,19 +125,33 @@
   Exposed separately from the loop so a test can drive it a step at a time —
   a watcher that can only be tested by waiting on a thread is a watcher nobody
   tests."
-  [{:keys [conn run-id]} seen]
+  ;; `ch` rather than destructuring into a local named `events` — that would
+  ;; shadow the samizdat.events alias and every events/… call here would
+  ;; resolve against the local instead.
+  [{:keys [conn run-id] ch :event-ch} seen]
   (let [p (policy)
-        ;; Evaluated over THIS RUN, not the whole session. A watcher is asking
-        ;; `is this going wrong now`, and a rate over every run the process has
-        ;; done answers a different question — one that says no for a long time
-        ;; after the answer became yes.
-        fresh (actionable (session/findings (session/run-window run-id)) @seen p)
-        room (- (:max-interventions p) (count @seen))
-        raising (take (max 0 room) fresh)]
-    (doseq [f raising]
-      (react! conn run-id f)
-      (swap! seen conj (:kind f)))
-    (vec raising)))
+        ;; THE IMPLEMENTER'S STEPS, pushed (RFC-012). mycelium hands every
+        ;; completed cell to :on-trace and the tracer publishes it; this reads
+        ;; what has arrived. The supervisor now looks BECAUSE the state graph
+        ;; advanced, rather than re-deriving session/findings on a clock
+        ;; whether or not the implementer had moved.
+        steps (steps-since ch run-id)]
+    (if (and ch (empty? steps))
+      ;; Nothing advanced, so there is nothing new to judge. The findings are
+      ;; derived from what turns did; re-deriving them over an unchanged run
+      ;; is the work this change exists to stop doing.
+      []
+      (let [;; Evaluated over THIS RUN, not the whole session. A watcher is
+            ;; asking `is this going wrong now`, and a rate over every run the
+            ;; process has done answers a different question — one that says
+            ;; no for a long time after the answer became yes.
+            fresh (actionable (session/findings (session/run-window run-id)) @seen p)
+            room (- (:max-interventions p) (count @seen))
+            raising (take (max 0 room) fresh)]
+        (doseq [f raising]
+          (react! conn run-id f)
+          (swap! seen conj (:kind f)))
+        (vec raising)))))
 
 (defn start!
   "Begin watching `run-id`. Returns a function that stops the watcher.
@@ -136,9 +164,24 @@
     (constantly nil)
     (let [running (atom true)
           seen (atom #{})
+          ;; Subscribed BEFORE the loop starts, so no step that arrives while
+          ;; the watcher is getting going is missed. The hub's tap has a
+          ;; sliding buffer, so a watcher that falls behind loses the oldest
+          ;; steps rather than applying backpressure to the turn producing
+          ;; them — which is the right trade here for the same reason the bus
+          ;; makes it everywhere else.
+          ch (events/subscribe)
+          ctx (assoc ctx :event-ch ch)
           f (future
               (while @running
                 (try
+                  ;; The interval the CONSUMER wakes on, not a poll of the
+                  ;; implementer: the steps are already queued, pushed by
+                  ;; :on-trace as each cell completed. This only bounds how
+                  ;; long a step waits to be seen. It is its own thread
+                  ;; because :on-trace runs synchronously inside the turn, so
+                  ;; thinking about an event there would stall the turn being
+                  ;; watched.
                   (Thread/sleep (:poll-ms (policy)))
                   (when @running (pass! ctx seen))
                   (catch Throwable e
@@ -156,4 +199,8 @@
       (fn stop []
         (reset! running false)
         (future-cancel f)
+        ;; Release the tap. A subscription nobody reads keeps consuming a
+        ;; slot on the hub's mult for the life of the process, which on a
+        ;; serve process is every run that ever ran.
+        (try (events/unsubscribe! ch) (catch Throwable _ nil))
         nil))))

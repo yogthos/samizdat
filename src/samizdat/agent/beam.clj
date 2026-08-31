@@ -69,6 +69,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.select :as select]
+            [samizdat.events :as events]
             [samizdat.agent.state :as state]
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
@@ -909,8 +910,15 @@
                                 :llm-config llm-config}
                                problem)
         loop-nm (workflow/active-loop-name config selected)
+        ;; THE IMPLEMENTER'S STREAM (RFC-012). Every cell that completes is
+        ;; published as a step, onto the same bus the journal already uses.
+        ;; The id is an atom because this compile happens BEFORE the run row
+        ;; exists — the row records a width this compile decides — and
+        ;; :on-trace is only accepted here.
+        run-id* (atom nil)
         {loop-version :version turn-wf :compiled iterating? :iterating?}
-        (workflow/compile-turn-loop conn loop-nm)
+        (workflow/compile-turn-loop conn loop-nm
+                                    {:on-trace (events/tracer run-id*)})
         ;; A non-iterating manifest (team, feature, decompose) is a whole-run
         ;; workflow: one "turn" is the branch's entire job, and it fans out
         ;; internally. Running five of those concurrently would multiply the
@@ -929,6 +937,9 @@
                                       :max-turns max-turns
                                       :beam-width width
                                       :prompt-digest (branch-loop/prompt-digest)})
+        ;; The tracer's steps can now say which run they belong to; the bus is
+        ;; process-wide and the watcher filters on it.
+        _ (reset! run-id* run-id)
         ;; Seeded before any branch opens, so the first context block a
         ;; branch ever sees can already carry inherited lemmas.
         ;; `quarantine` drops named claims from the inheritance: a row still

@@ -392,43 +392,53 @@
   load-stringed a CANDIDATE into the live image, and `compile-loop`'s
   registry reload would replace the candidate with the stored cells — so the
   validate would check the loop against the code it is about to stop
-  running. A caller that has not touched the registry wants `compile-loop`."
-  [definition]
-  (when-not (seq (:cells definition))
-    (throw (ex-info (str "not a workflow definition: no :cells"
-                         (when (nil? definition) " (the definition is nil)"))
-                    {:definition definition})))
-  ;; Register any composed sub-loops as cells before the parent references them.
-  (register-subworkflows! definition)
-  (check-requires! definition)
-  (let [compiled (myc/pre-compile
-                  (assoc definition :constraints (enforced-constraints definition))
-                  ;; Baked in HERE because mycelium reads :validate at compile
-                  ;; time, into the interceptors it builds — there is no
-                  ;; per-run override later. A manifest compiled fresh per run
-                  ;; (which every driver does) therefore picks up a policy edit
-                  ;; on the next run, like every other gates.edn value.
-                  {:validate (validate-mode)
-                   :on-error on-error})]
-    (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
-      (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
-    compiled))
+  running. A caller that has not touched the registry wants `compile-loop`.
+
+  `opts` may carry `:on-trace`, mycelium's per-cell callback — how a driver
+  puts the implementer's stream in front of the supervisor (RFC-012). It is a
+  COMPILE-time opt because mycelium bakes it into the interceptors, which is
+  also why it takes the run's tracer rather than reading anything at run time."
+  ([definition] (compile-definition definition nil))
+  ([definition opts]
+   (when-not (seq (:cells definition))
+     (throw (ex-info (str "not a workflow definition: no :cells"
+                          (when (nil? definition) " (the definition is nil)"))
+                     {:definition definition})))
+   ;; Register any composed sub-loops as cells before the parent references them.
+   (register-subworkflows! definition)
+   (check-requires! definition)
+   (let [compiled (myc/pre-compile
+                   (assoc definition :constraints (enforced-constraints definition))
+                   ;; Baked in HERE because mycelium reads :validate at compile
+                   ;; time, into the interceptors it builds — there is no
+                   ;; per-run override later. A manifest compiled fresh per run
+                   ;; (which every driver does) therefore picks up a policy edit
+                   ;; on the next run, like every other gates.edn value.
+                   (cond-> {:validate (validate-mode)
+                            :on-error on-error}
+                     (:on-trace opts) (assoc :on-trace (:on-trace opts))))]
+     (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
+       (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
+     compiled)))
 
 (defn compile-loop
   "Compile a loop definition through mycelium's full static checking:
   structure, dispatch coverage, reachability, and the :constraints that make
   the loop's invariants compile-time errors. Throws on any violation —
   which is the mutation protocol's first line of defense. Logs, and returns
-  compiled with, any :mycelium/compile-warnings (undeclared cell effects)."
-  [definition]
+  compiled with, any :mycelium/compile-warnings (undeclared cell effects).
+
+  `opts` passes through to compile-definition — notably `:on-trace`."
+  ([definition] (compile-loop definition nil))
+  ([definition opts]
   ;; Load the cells before every compile. The cell registry is global mutable
   ;; state, and a non-empty registry is not proof the LOOP's cells are present
   ;; (a test or another workflow may have registered different ones) — so this
   ;; always loads rather than guarding on emptiness. Idempotent, cheap, and it
   ;; picks up any edited cell, which is the hot-reload the mutation protocol
   ;; builds on.
-  (cells/load-cells!)
-  (compile-definition definition))
+   (cells/load-cells!)
+   (compile-definition definition opts)))
 
 ;; --- the per-turn slice ------------------------------------------------------
 
