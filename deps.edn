@@ -50,6 +50,14 @@
         metosin/malli {:mvn/version "0.17.0"}
         org.clojure/test.check {:mvn/version "1.1.1"}
 
+        ;; src/samizdat/symbolic — the rule layer's substrate (RFC/karamazov-41a).
+        ;; Runs unmodified: 423 tests, 658 assertions, 0 failures under jolt.
+        ;; No fork and no jolt port — the Maven artifact ships the .clj sources
+        ;; jolt compiles, and the pom's only non-provided dep is clojure itself
+        ;; (clojurescript is <scope>provided</scope>, so it does not ride along).
+        ;; Requiring core.logic + fd + pldb + unifier costs ~40ms of boot.
+        org.clojure/core.logic {:mvn/version "1.1.1"}
+
         ;; clojure.tools.logging ported to jolt (stderr backend, :info+ default)
         org.clojure/tools.logging
         {:git/url "https://github.com/jolt-lang/logging"
