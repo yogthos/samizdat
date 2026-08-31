@@ -38,6 +38,7 @@
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
             [mycelium.dev :as dev]
+            [malli.core :as m]
             [samizdat.cells :as cells]
             [samizdat.lexicon :as lexicon]
             [samizdat.manifests :as manifests]))
@@ -215,3 +216,53 @@
         (with-redefs [lexicon/policy (fn [_] {:mode mode})]
           (is (thrown? Exception (manifests/compile-definition broken))
               (str "under " mode " a manifest with a broken chain compiled")))))))
+
+;; --- the map a run STARTS from (karamazov-6y7.4) ------------------------------
+
+(def ^:private entry-data
+  "What each driver actually hands its manifest, by manifest. The point of
+  :input-schema is that this table and the manifests agree; the test below is
+  what makes disagreeing fail here rather than six cells into a run.
+
+  Four shapes, because there are four kinds of entry point: the loop family
+  (every driver that advances a branch), the beam's own scheduler round, the
+  oversight stream, and the repair ladder."
+  (let [branch {:id "B1" :problem "p" :messages []}]
+    {:beam      {:branches [] :turn 1}
+     :oversight {:oversight/carry nil}
+     :repair    {:body "{}"}
+     :default   {:branch branch :turn 1}}))
+
+(defn- entry-for [nm]
+  (get entry-data (keyword nm) (:default entry-data)))
+
+(deftest every-shipped-manifest-declares-what-it-starts-from
+  (doseq [nm manifests/shipped-manifests]
+    (testing nm
+      (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))]
+        (is (some? (:input-schema d))
+            (str nm " declares no :input-schema, so the map a run starts from"
+                 " is never checked — myc/pre-compile compiles nil and"
+                 " check-input-schema returns nil for anything"))))))
+
+(deftest the-drivers-satisfy-the-schemas-they-run-under
+  ;; THE HALF THAT MATTERS. A schema no caller satisfies is not a contract,
+  ;; it is an outage waiting for the first real run — and every one of these
+  ;; entry points is reached only by a driver, never by a test that would
+  ;; notice. Same reasoning manifests/ctx-keys is checked from both ends.
+  (doseq [nm manifests/shipped-manifests]
+    (testing nm
+      (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))]
+        (is (m/validate (:input-schema d) (entry-for nm))
+            (str nm " refuses the map its own driver hands it: "
+                 (pr-str (m/explain (:input-schema d) (entry-for nm)))))))))
+
+(deftest a-malformed-start-is-refused-before-any-cell-runs
+  (cells/load-cells!)
+  (let [compiled (manifests/compiled-manifest "loop")
+        out (myc/run-compiled compiled {} {:branch {:id "B1"} :turn "one"})]
+    (is (some? (:mycelium/input-error out))
+        "a :turn that is not an int reached the cells")
+    (is (= [:turn] (:in (first (:errors (:mycelium/input-error out)))))
+        (str "the error names the bad key rather than failing later: "
+             (pr-str (:mycelium/input-error out))))))

@@ -16,6 +16,12 @@
 ;; several agents editing it at once with no owner for any of it. Select with
 ;; config :run :loop "board".
 {:description "Work a board of owned tasks one at a time: claim a task, implement it, have a critic review the diff that task produced, close it, take the next. A task that is really several is split by its owner. The default for feature work — clear ownership, review per change."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start  :board/plan
          :next   :board/next
          :work   :board/work

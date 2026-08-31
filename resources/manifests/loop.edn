@@ -9,6 +9,12 @@
 ;; data map, the predicate only reads it, so the routing logic stays visible
 ;; here where it can be edited.
 {:description "The factory loop: a single branch iterating a turn at a time until it ships or gives up. The simplest driver — no fan-out, no critic, no supervisor. The baseline every other workflow specializes."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start          :loop/assemble
          ;; THE CONTEXT-BUDGET LADDER, as nodes. Compaction used to be a
          ;; side effect of building the request — invisible to every

@@ -7,6 +7,12 @@
 ;; :done branch to a critic before finishing. Running it standalone is the same
 ;; as the flat loop up to the point it would finish.
 {:description "The worker sub-loop: one branch doing the actual per-turn work, returning its verdict to whatever composed it. Not usually run on its own — it is the implementor unit the team, feature, and decompose loops build on."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start          :loop/assemble
          ;; THE CONTEXT-BUDGET LADDER, as nodes. Compaction used to be a
          ;; side effect of building the request — invisible to every

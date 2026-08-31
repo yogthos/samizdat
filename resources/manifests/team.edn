@@ -13,6 +13,14 @@
 ;; run to completion and coordinate between-turn via the mailbox. Live per-turn
 ;; steering (the actor model) is a later step.
 {:description "A team: split the problem into parts and fan out one implementor per part in parallel, coordinating through a shared working tree, a mailbox, and a per-turn view of which files the others have changed, then join and re-task any part that didn't land. Good when a feature has several parts one agent each can own."
+ :input-schema
+ ;; :subtasks is optional and is what makes this a TEAM run: config
+ ;; :run :subtasks arrives pre-split, and :team/plan produces it otherwise.
+ ;; Malli maps are open, so the single-branch loops that ignore the key are
+ ;; unaffected by it being declared here.
+ [:map [:branch :map] [:turn :int]
+  [:subtasks {:optional true} [:sequential :string]]]
+
  :cells {:start      :loop/assemble
          :plan       :team/plan
          :team       :team/fan-out

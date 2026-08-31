@@ -14,6 +14,12 @@
 ;; This decides what a pass IS, so both halves stay editable at runtime.
 {:description "The supervisor's parallel stream: one pass gathers the run's health, reasons about it as the supervisor role, and applies whatever it decided — a steer into the running run, a tuning change for the next one, or nothing. Runs beside a run rather than inside it, so a stalled implementer cannot starve it."
 
+ :input-schema
+ ;; :oversight/carry is the supervisor's branch from the previous pass, so
+ ;; the stream continues one conversation rather than starting a new one each
+ ;; time. Absent on the first pass, and nil on any pass that stayed quiet.
+ [:map [:oversight/carry {:optional true} :any]]
+
  :cells {:start   :oversight/gather
          :reason  :oversight/reason
          :apply   :oversight/apply

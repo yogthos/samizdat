@@ -36,6 +36,14 @@
 ;; :run :loop "feature". Pass config :run :subtasks with strategy `team` to skip
 ;; planning.
 {:description "Build a feature end to end, supervised: a board of owned tasks (each implemented by one owner and reviewed on its own diff) -> review -> critique -> run the tests -> a supervisor that watches and steers. The default for a normal feature."
+ :input-schema
+ ;; :subtasks is optional and is what makes this a TEAM run: config
+ ;; :run :subtasks arrives pre-split, and :team/plan produces it otherwise.
+ ;; Malli maps are open, so the single-branch loops that ignore the key are
+ ;; unaffected by it being declared here.
+ [:map [:branch :map] [:turn :int]
+  [:subtasks {:optional true} [:sequential :string]]]
+
  :cells {:start     :loop/assemble
          :redispatch :feature/redispatch
          :plan      :team/plan
