@@ -45,16 +45,23 @@
 (defn- loop-def []
   (edn/read-string (slurp (io/resource "manifests/loop.edn"))))
 
-(def ^:private round-1
-  "The manifests whose every cell declares a schema. Grows a manifest at a
-  time; the general form — every cell any shipped manifest references — is
-  what this becomes when the rollout finishes (karamazov-6y7.3)."
-  ["loop"])
-
-(deftest round-1-cells-declare-their-shape
+(deftest every-cell-a-shipped-manifest-reaches-declares-its-shape
+  ;; The general form. This began as a list of one manifest and grew a
+  ;; manifest at a time through karamazov-6y7.3; it is now every shipped
+  ;; manifest, which is the whole registry, because beam-test separately pins
+  ;; that no cell is registered which no manifest reaches.
+  ;;
+  ;; A cell added without a shape is caught HERE rather than by the manifest
+  ;; that first suffers for it — and an agent-authored cell goes through the
+  ;; same defcell, so the rule holds for cells this suite never sees.
   (cells/load-cells!)
-  (doseq [nm round-1]
-    (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))]
+  (doseq [nm manifests/shipped-manifests]
+    (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))
+          ;; What a compile does. A composed sub-workflow cell (orchestrator's
+          ;; :loop/worker) exists only once its child has been registered, so
+          ;; without this it is absent from the registry rather than
+          ;; shapeless — a different complaint with the same symptom.
+          _ (manifests/register-subworkflows! d)]
       (doseq [[node cell-id] (sort-by key (:cells d))]
         (testing (str nm " " node " (" cell-id ")")
           (let [spec (cell/get-cell cell-id)]

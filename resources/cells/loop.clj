@@ -231,12 +231,16 @@
         to when the budget ran out."
    :effects [:db]
    :requires [:conn :run-id]
-   ;; :verdict IS what the `case` dispatches on, and it is still optional —
-   ;; deliberately, and temporarily. feature, team, decompose and orchestrator
-   ;; all reach :loop/finish without :loop/route, from routers of their own
-   ;; that are not schema'd yet; requiring it here refuses four manifests for
-   ;; a key they do produce and have not yet declared. Tighten to required in
-   ;; karamazov-6y7.3, when those cells declare their outputs.
+   ;; :verdict IS what the `case` dispatches on, and it is STILL optional —
+   ;; but for one reason now rather than four. feature, team and decompose
+   ;; declare it: :feature/route on its :ship transition, :team/supervise
+   ;; either way, :decompose/run always. What remains is orchestrator, whose
+   ;; :finish is fed by :loop/worker — a COMPOSED cell, and mycelium infers a
+   ;; composed cell's output from its child's END-REACHING cells only. The
+   ;; worker's :verdict is written mid-graph by :loop/route, so it is present
+   ;; in the data the composed cell actually returns and absent from the
+   ;; schema inferred for it. Requiring :verdict here would refuse
+   ;; orchestrator for a key it demonstrably has. See karamazov-6y7.6.
    :input  [:map [:branch :map] [:turn :int]
             [:verdict {:optional true} :keyword]]
    :output [:map [:status :keyword]

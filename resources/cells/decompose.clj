@@ -113,7 +113,12 @@
         then assemble. Landed => the manager branch ships the tree; failed =>
         abandoned honestly."
    :effects [:net :db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   :input  [:map [:branch :map]]
+   ;; :verdict is the key :loop/finish routes on. This cell is one of the
+   ;; four routers that produce it outside :loop/route — declaring it here is
+   ;; part of what lets :loop/finish require it (karamazov-6y7.3).
+   :output [:map [:verdict :keyword] [:branch :map]]}
   (fn [{:keys [conn run-id] :as ctx} {:keys [branch] :as data}]
     (let [worker (wf/worker-compiled)
           root {:id "T" :problem (:problem branch)}

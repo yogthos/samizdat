@@ -17,7 +17,10 @@
 ;;     only ever makes a parse possible, and repairs that could fabricate
 ;;     content — closing an unterminated string — are refused in the rung).
 ;;   - the data map carries :body and nothing else is touched, so a rung a
-;;     project adds composes without knowing its neighbours.
+;;     project adds composes without knowing its neighbours. Every rung
+;;     declares exactly that shape, so the second rule is now checked at
+;;     compile time rather than trusted: a rung that reached for another key
+;;     would have to say so, and the manifest would refuse it.
 (ns cells.repair
   (:require [mycelium.cell :as cell]
             [samizdat.llm.fence :as fence]))
@@ -28,7 +31,9 @@
         multi-line code. First, so every later rung sees intact string
         boundaries."
    :pure true
-   :requires []}
+   :requires []
+   :input  [:map [:body :string]]
+   :output [:map [:body :string]]}
   (fn [_ data] (update data :body fence/repair-control-chars)))
 
 (cell/defcell :repair/trailing-commas
@@ -36,7 +41,9 @@
         interior ones too, since a mid-body trailing comma survives any
         repair that only looks at the tail."
    :pure true
-   :requires []}
+   :requires []
+   :input  [:map [:body :string]]
+   :output [:map [:body :string]]}
   (fn [_ data] (update data :body fence/strip-trailing-commas)))
 
 (cell/defcell :repair/dangling-key
@@ -46,7 +53,9 @@
         string — that is the truncation shape, and half a file written as a
         success costs the work."
    :pure true
-   :requires []}
+   :requires []
+   :input  [:map [:body :string]]
+   :output [:map [:body :string]]}
   (fn [_ data] (update data :body fence/fill-dangling-key)))
 
 (cell/defcell :repair/close-unbalanced
@@ -55,5 +64,7 @@
         object mid-entry. Only ever adds; a body ending inside a string is
         left for the parse error to report."
    :pure true
-   :requires []}
+   :requires []
+   :input  [:map [:body :string]]
+   :output [:map [:body :string]]}
   (fn [_ data] (update data :body fence/close-unbalanced)))

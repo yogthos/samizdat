@@ -149,7 +149,12 @@
         LLM call proposes at most :max-subtasks parts; fail-soft to a single
         worker on the whole problem when the call fails or yields no list."
    :effects [:net :db]
-   :requires [:config :conn :run-id]}
+   :requires [:config :conn :run-id]
+   ;; :subtasks optional in and guaranteed out — that IS the cell. It arrives
+   ;; already set (config :run :subtasks) and passes through, or it does not
+   ;; and one call produces it; either way what leaves has it.
+   :input  [:map [:branch :map] [:subtasks {:optional true} :any]]
+   :output [:map [:subtasks :any]]}
   (fn [{:keys [conn run-id config] :as ctx}
        {:keys [branch subtasks] :as data}]
     (if (seq subtasks)
@@ -175,7 +180,18 @@
         answers into the manager branch and finish. A dataflow join, not a live
         actor: workers run to completion."
    :effects [:net :db]
-   :requires [:config :conn :run-id]}
+   :requires [:config :conn :run-id]
+   ;; :subtasks stays optional even though :team/plan always produces it —
+   ;; the handler falls back to the whole problem, and a manifest is free to
+   ;; wire this cell without a planner in front of it.
+   ;; :revise/guidance and :feature/revisions arrive only on a feature loop's
+   ;; second and later rounds, which is why neither is required.
+   :input  [:map [:branch :map]
+            [:subtasks {:optional true} :any]
+            [:revise/guidance {:optional true} :any]
+            [:feature/revisions {:optional true} :int]]
+   :output [:map [:subtasks :any] [:results :any]
+            [:team/epic :any] [:team/task-ids :any] [:branch :map]]}
   (fn [{:keys [conn run-id] :as ctx} {:keys [branch subtasks] :as data}]
     (let [tasks (vec (if (seq subtasks) subtasks [(:problem branch)]))
           worker (wf/worker-compiled)
@@ -261,7 +277,15 @@
         better. A bounded re-task, not an open loop — the supervisor's job is to
         catch a stalled part, not to grind. Re-joins the answers after."
    :effects [:net :db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   ;; :results is REQUIRED and is the point — this cell exists to re-task the
+   ;; parts that did not land, so a manifest wiring it without a fan-out in
+   ;; front has nothing to supervise.
+   :input  [:map [:branch :map] [:results :any] [:subtasks :any]]
+   ;; :verdict either way, decided AFTER the retries from what actually
+   ;; landed. It is what :loop/finish routes on, and declaring it here is part
+   ;; of what lets that input become required.
+   :output [:map [:results :any] [:verdict :keyword] [:branch :map]]}
   (fn [{:keys [conn run-id] :as ctx} {:keys [branch results subtasks] :as data}]
     (let [tasks (vec subtasks)
           worker (wf/worker-compiled)

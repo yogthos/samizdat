@@ -26,7 +26,12 @@
         from — read the failing assertion and the code it calls, and decide
         which of the two is lying."
    :pure true
-   :requires []}
+   :requires []
+   ;; The entry node, so it requires only what the driver seeds. Every cell in
+   ;; this file writes :repl/step — the session's position, which the phases
+   ;; refusals read — and each adds the one fact its own step establishes.
+   :input  [:map [:branch :map]]
+   :output [:map [:repl/step :keyword] [:repl/may-eval? :boolean]]}
   (fn [_ data]
     (assoc data :repl/step :orient
                 :repl/may-eval? false)))
@@ -47,7 +52,13 @@
         previous declaration rather than adding to it: the contract is commit
         to a hypothesis, not never change your mind."
    :pure true
-   :requires []}
+   :requires []
+   :input  [:map [:branch :map]]
+   ;; :repl/planned? is what the manifest dispatches on — :planned to the
+   ;; REPL, :empty back to :start. The cell writes the key and the edge reads
+   ;; it, which is the rule the manifests are held to.
+   :output [:map [:repl/step :keyword] [:repl/planned? :boolean]
+            [:repl/plan :any]]}
   (fn [_ {:keys [branch] :as data}]
     (assoc data :repl/step :declare
                 :repl/planned? (state/planned? branch)
@@ -59,7 +70,9 @@
         work, and a branch exploring against nothing is the failure this
         workflow was built after."
    :pure true
-   :requires []}
+   :requires []
+   :input  [:map [:branch :map]]
+   :output [:map [:repl/step :keyword] [:repl/may-eval? :boolean]]}
   (fn [_ {:keys [branch] :as data}]
     (assoc data :repl/step :explore
                 :repl/may-eval? (state/planned? branch))))
@@ -73,7 +86,12 @@
         promised to change is not changing it. The REPL dies with the branch;
         only a file survives it."
    :pure true
-   :requires []}
+   :requires []
+   :input  [:map [:branch :map]]
+   ;; :repl/complete? is the exit condition the manifest loops :land on until
+   ;; it goes true — the debt is empty and the session may end.
+   :output [:map [:repl/step :keyword] [:repl/unwritten :any]
+            [:repl/complete? :boolean]]}
   (fn [_ {:keys [branch] :as data}]
     (let [owed (state/unwritten branch)]
       (assoc data :repl/step :land

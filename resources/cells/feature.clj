@@ -148,7 +148,12 @@
         single-branch driver the tests use carries data across that edge, so
         only a beam-driven run sees it."
    :pure true
-   :requires []}
+   :requires []
+   ;; A pass-through: the EDGES are the whole cell, so it requires nothing
+   ;; beyond the branch and promises nothing new. The dispatch it re-runs
+   ;; reads :implement-strategy, which the supervisor may have just changed.
+   :input  [:map [:branch :map]]
+   :output [:map]}
   (fn [_ data] data))
 
 (cell/defcell :feature/board
@@ -164,7 +169,20 @@
         that landed stay closed, so a second round is the work that is left
         rather than the work again."
    :effects [:net :db]
-   :requires [:config :conn :run-id :root]}
+   :requires [:config :conn :run-id :root]
+   :input  [:map [:branch :map]
+            [:feature/turn-budget {:optional true} :any]]
+   ;; :results in the FAN-OUT's vocabulary, deliberately — the docstring says
+   ;; so, and it is what lets every downstream stage work unchanged whichever
+   ;; strategy implemented the round. The three shapes agreeing on :results is
+   ;; the contract; declaring it here is what makes that checkable.
+   ;;
+   ;; The safely fallback only touches :branch, so :board/* and :results are
+   ;; optional: a stage that crashed still routes on to the supervisor.
+   :output [:map [:branch :map]
+            [:board/landed {:optional true} :any]
+            [:board/left {:optional true} :any]
+            [:results {:optional true} :any]]}
   (fn [{:keys [conn run-id] :as ctx} {:keys [branch] :as data}]
     (safely conn run-id :board data
       (fn []
@@ -210,7 +228,14 @@
         (on its own branch R<rev>) and read back PASS or REVISE. Fail-open to
         :pass on a reviewer error/abstention."
    :effects [:net :db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   :input  [:map [:branch :map]
+            [:board/landed {:optional true} :any]
+            [:board/left {:optional true} :any]]
+   ;; Both keys on every path, fallback included — that is what fail-open
+   ;; means here, and a downstream :feature/verify reads :review/decision
+   ;; unconditionally.
+   :output [:map [:review/decision :keyword] [:review/findings :any]]}
   (fn [{:keys [conn run-id] :as ctx} {:keys [branch] :as data}]
     (safely conn run-id :review data
       (fn []
@@ -247,7 +272,13 @@
         — but WITHOUT the single-branch critic's branch surgery. Sets
         :critic/decision :ship or :revise. Fail-open (a judge that errors ships)."
    :effects [:net :db]
-   :requires [:conn :git-baseline :root :run-id]}
+   :requires [:conn :git-baseline :root :run-id]
+   :input  [:map [:branch :map]]
+   ;; :critique/findings, not :critic/findings — the decision key is
+   ;; :critic/* and the findings key is :critique/*, which is a trap worth
+   ;; naming rather than tidying: :feature/route reads :critic/decision and
+   ;; the digest reads :critique/findings.
+   :output [:map [:critic/decision :keyword] [:critique/findings :any]]}
   (fn [{:keys [conn run-id root git-baseline] :as ctx}
        {:keys [branch] :as data}]
     (safely conn run-id :critique data
@@ -334,7 +365,15 @@
         or a revise verdict means the loop is going back anyway. No :verify-cmd
         configured -> not applicable, passes."
    :effects [:proc :db]
-   :requires [:config :conn :git-baseline :root :run-id]}
+   :requires [:config :conn :git-baseline :root :run-id]
+   ;; Reads gate 1's verdicts to decide whether to pay for a test run at all,
+   ;; so both are required — a manifest wiring verify without a review and a
+   ;; critique in front of it would short-circuit on nils and pass by default,
+   ;; which is the wrong direction for a gate.
+   :input  [:map [:review/decision :keyword] [:critic/decision :keyword]]
+   ;; Both keys on every branch of the cond, the note carrying WHY on the
+   ;; paths where nothing ran.
+   :output [:map [:verify/passed? :boolean] [:verify/note :any]]}
   (fn [{:keys [conn run-id root config] :as ctx} data]
     (let [cmd (get-in config [:run :verify-cmd])]
       (cond
@@ -377,7 +416,32 @@
 
         Fails SAFE to :continue so it can never wedge the loop."
    :effects [:net :db]
-   :requires [:config :conn :run-id]}
+   :requires [:config :conn :run-id]
+   ;; The round it is routing on: what was implemented, and how the two gates
+   ;; judged it. Those are the brief.
+   ;; :results is OPTIONAL, and the chain check is what established why. Two
+   ;; of the three implement strategies write it — :team/fan-out always,
+   ;; :feature/board deliberately, in the fan-out's vocabulary so every
+   ;; downstream stage works unchanged — and :decompose/run does not. So on
+   ;; the decompose path this cell supervises a round it cannot see the
+   ;; shipping outcome of. It degrades rather than lies: telemetry guards the
+   ;; count with (pos? total), so the :nobody-shipped signal stays silent
+   ;; instead of firing falsely. Filed as karamazov-u5uy.
+   :input  [:map [:review/decision :keyword]
+            [:critic/decision :keyword] [:verify/passed? :boolean]
+            [:results {:optional true} :any]
+            [:feature/errors {:optional true} :any]
+            [:feature/tried {:optional true} :any]]
+   ;; Only :supervisor/notes is unconditional. The LEVERS are conditional by
+   ;; construction — a round where the supervisor neither switched strategy,
+   ;; nor extended the budget, nor escalated, nor stopped writes none of them,
+   ;; and that is the common case rather than an edge one. The safely fallback
+   ;; writes nothing at all.
+   :output [:map [:supervisor/notes {:optional true} :any]
+            [:implement-strategy {:optional true} :any]
+            [:feature/turn-budget {:optional true} :any]
+            [:feature/escalate {:optional true} :boolean]
+            [:feature/stop {:optional true} :boolean]]}
   (fn [{:keys [conn run-id config] :as ctx} {:keys [results] :as data}]
     (safely conn run-id :supervise data
       (fn []
@@ -530,7 +594,23 @@
         safety net, but by default there is none. Abandoning is honest, not a
         hollow ship: the run reports it did not solve the task."
    :effects [:db]
-   :requires [:config :conn :run-id]}
+   :requires [:config :conn :run-id]
+   :input  [:map [:branch :map]
+            [:review/decision :keyword] [:critic/decision :keyword]
+            [:verify/passed? :boolean]
+            [:feature/revisions {:optional true} :int]
+            [:feature/stop {:optional true} :boolean]
+            [:feature/escalate {:optional true} :boolean]]
+   ;; PER-TRANSITION, and this is the one that earns it. :verdict is written
+   ;; on :ship and only on :ship — which is exactly right, because :ship is
+   ;; the edge to :finish and :revise goes back to :redispatch. Declaring
+   ;; :verdict unconditionally here would tell :loop/finish it may rely on a
+   ;; key the revise round never writes.
+   :output [:per-transition
+            {:ship   [:map [:feature/decision :keyword] [:verdict :keyword]
+                      [:branch :map]]
+             :revise [:map [:feature/decision :keyword]
+                      [:feature/revisions :int] [:revise/guidance :any]]}]}
   (fn [{:keys [conn run-id config] :as ctx} data]
     (let [rev (revision data)
           soft-cap (or (get-in config [:run :max-revisions]) 6)

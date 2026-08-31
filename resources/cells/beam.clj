@@ -314,7 +314,15 @@
 
         Reads the abort flag, so not pure."
    :effects [:db]
-   :requires [:abort]}
+   :requires [:abort]
+   ;; The ROUND's shape. Every beam cell reads and writes the same working
+   ;; set, so these declarations are the round's data flow written down: what
+   ;; each stage needs to have happened before it, and what it leaves for the
+   ;; next. The order the manifest wires them in is the order these inputs
+   ;; force.
+   :input  [:map [:branches :any] [:turn :int]]
+   :output [:map [:active :any] [:done-branch :any]
+            [:multi-candidate? :boolean]]}
   (fn [{:keys [abort] :as ctx} {:keys [branches turn] :as data}]
     ;; A paused run waits HERE, at the top of the round, before anything is
     ;; scheduled — which is what `pause` promises: no new turns, and whatever
@@ -351,7 +359,13 @@
         check reads). Both persist across the back edge because :beam/tick
         drops only the per-round products."
    :effects [:db]
-   :requires []}
+   :requires []
+   :input  [:map [:active :any] [:turn :int] [:branches :any]]
+   ;; :paused-by-directive? and a raised :max-turns are conditional — most
+   ;; rounds drain no directives at all.
+   :output [:map [:active :any] [:branches :any]
+            [:paused-by-directive? {:optional true} :any]
+            [:max-turns {:optional true} :any]]}
   (fn [ctx {:keys [active turn] :as data}]
     (let [{:keys [conn run-id]} ctx
           pending (interventions/pending conn run-id)
@@ -389,7 +403,9 @@
         deadline. A branch that throws is abandoned rather than taking the beam
         down with it; a branch that hangs loses only its own turn."
    :effects [:net :db :fs :proc]
-   :requires [:live-branches]}
+   :requires [:live-branches]
+   :input  [:map [:active :any] [:branches :any] [:turn :int]]
+   :output [:map [:advanced :any]]}
   (fn [ctx {:keys [active branches turn] :as data}]
     ;; The turn slice and its gates read (:max-turns ctx); an `extend` lives
     ;; in the round's data map. Without this, every turn past the ORIGINAL
@@ -413,7 +429,9 @@
         because that pass reads them and stale scores would decide a live
         branch's fate on last round's evidence."
    :effects [:net :db]
-   :requires []}
+   :requires []
+   :input  [:map [:advanced :any] [:turn :int]]
+   :output [:map [:advanced :any]]}
   (fn [ctx {:keys [advanced turn] :as data}]
     (assoc data :advanced (beam/ensure-scored ctx advanced turn))))
 
@@ -426,7 +444,9 @@
         branch standing is never culled, so whether THIS branch survives
         depends on what happened to the ones before it."
    :effects [:db]
-   :requires []}
+   :requires []
+   :input  [:map [:advanced :any] [:turn :int]]
+   :output [:map [:culled :any]]}
   (fn [ctx {:keys [advanced turn] :as data}]
     ;; Only ACTIVE branches face the rule, and only they count as survivors.
     ;; `advanced` also holds branches that went done/abandoned during this
@@ -474,7 +494,9 @@
         Before repopulation, so a slot freed this round is visible to the
         refill that happens in the same round."
    :effects [:db]
-   :requires []}
+   :requires []
+   :input  [:map [:branches :any] [:culled :any]]
+   :output [:map [:inactive :any] [:all-now :any]]}
   (fn [ctx {:keys [branches culled] :as data}]
     (beam/record-inactive! ctx culled)
     (let [inactive (filterv (complement state/active?) branches)]
@@ -488,7 +510,9 @@
         which reads the mark — so the invitation has a prediction and shows up
         in the gate tally rather than being an untracked second harness voice."
    :effects [:db]
-   :requires []}
+   :requires []
+   :input  [:map [:culled :any] [:all-now :any] [:turn :int]]
+   :output [:map [:culled :any]]}
   (fn [ctx {:keys [culled all-now turn] :as data}]
     (assoc data :culled (repopulate ctx culled (count all-now) turn))))
 
@@ -497,7 +521,9 @@
         total cap. After the cull, so a branch that died this round does not
         spend the budget on children."
    :effects [:db]
-   :requires []}
+   :requires []
+   :input  [:map [:culled :any] [:all-now :any] [:turn :int]]
+   :output [:map [:children :any] [:updated :any]]}
   (fn [ctx {:keys [culled all-now turn] :as data}]
     (let [[children updated]
           (reduce (fn [[acc bs] b]
@@ -542,7 +568,14 @@
         of this manifest would have clobbered the record the driver's finally
         reads (karamazov-blt.35)."
    :effects [:db]
-   :requires [:live-branches]}
+   :requires [:live-branches]
+   :input  [:map [:inactive :any] [:updated :any] [:children :any]]
+   ;; It also CLEARS the round products, merging them back to nil, which
+   ;; mycelium does not model — it tracks what a cell adds and never what it
+   ;; drops. Safe here only because :tick edges back to :start, which the
+   ;; chain walk has already visited, so no downstream cell is told a cleared
+   ;; key is still available. The same caveat :loop/route carries.
+   :output [:map [:branches :any] [:turn :int]]}
   (fn [ctx {:keys [inactive updated children] :as data}]
     (let [next-branches (into (into (vec inactive) updated) children)]
       (when-let [live (:live-branches ctx)] (reset! live next-branches))
@@ -558,7 +591,9 @@
   {:doc "The run was stopped from outside. Every still-active branch is closed
         as abandoned; no answer is claimed."
    :effects [:db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   :input  [:map [:branches :any] [:active :any]]
+   :output [:map [:status :keyword] [:result :any]]}
   (fn [{:keys [conn run-id]} {:keys [branches active] :as data}]
     (doseq [b active]
       (runs/close-branch! conn run-id (:id b) :abandoned "aborted"))
@@ -571,7 +606,13 @@
         more than one branch had shipped and the rubric chose, 'superseded by'
         when only one had."
    :effects [:db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   ;; :done-branch and :multi-candidate? come from :beam/round-open, which is
+   ;; the only node that edges here — this ending exists because that node
+   ;; found a finished branch.
+   :input  [:map [:branches :any] [:done-branch :any]
+            [:multi-candidate? :boolean]]
+   :output [:map [:status :keyword]]}
   (fn [{:keys [conn run-id]} {:keys [branches done-branch multi-candidate?] :as data}]
     (doseq [b branches
             :when (and (state/active? b) (not= (:id b) (:id done-branch)))]
@@ -590,7 +631,11 @@
         what it believed it was close to when the budget ran out, so a resume
         does not re-derive scope from the transcript."
    :effects [:db]
-   :requires [:conn :max-turns :run-id]}
+   :requires [:conn :max-turns :run-id]
+   :input  [:map [:branches :any] [:active :any]]
+   ;; A last look for a finished branch, so this ending may still report
+   ;; :completed with a winner — hence :done-branch on the way out.
+   :output [:map [:status :keyword] [:done-branch {:optional true} :any]]}
   (fn [{:keys [conn run-id max-turns] :as ctx} {:keys [branches active] :as data}]
     ;; A branch may have SHIPPED rounds ago while :stop-on-first-done? kept
     ;; the beam exploring. The cap expiring is not a failure then: the banked
