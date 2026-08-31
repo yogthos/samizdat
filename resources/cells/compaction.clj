@@ -71,7 +71,14 @@
         A model with no recorded context window routes :none. Every rung is a
         fraction of that number, so guessing it would be guessing the policy."
    :pure true
-   :requires [:llm-config]}
+   :requires [:llm-config]
+   :input  [:map [:branch :map]]
+   ;; One output rather than per-transition: both edges leave with the same
+   ;; keys and only :compaction/route differs in VALUE, which is the whole
+   ;; design — measure writes the key, the manifest dispatches on it.
+   ;; :compaction/tier is nil when no window is recorded, hence :any.
+   :output [:map [:compaction/tier :any] [:compaction/ratio :any]
+            [:compaction/before :any] [:compaction/route :keyword]]}
   (fn [{:keys [llm-config]} {:keys [branch] :as data}]
     (let [p (policy)
           window (window-of llm-config)
@@ -103,7 +110,16 @@
         That check never excuses an aggressive tier, which is how a branch
         reaches 0.9 having never folded."
    :effects [:db]
-   :requires [:conn :run-id :llm-config]}
+   :requires [:conn :run-id :llm-config]
+   ;; The three :compaction/* keys are REQUIRED, and that is the ladder's own
+   ;; contract: this rung reads the pressure the previous one measured. A
+   ;; manifest that edges straight to :cap without :measure is a cap sizing its
+   ;; clip from nil, which is exactly the rewiring the file header invites and
+   ;; the one shape of it that does not work.
+   :input  [:map [:branch :map] [:compaction/tier :any]
+            [:compaction/ratio :any] [:compaction/before :any]]
+   :output [:map [:branch :map] [:compaction/freed :any]
+            [:compaction/route :keyword]]}
   (fn [{:keys [conn run-id llm-config]} {:keys [branch] :as data}]
     (let [p (policy)
           window (window-of llm-config)
@@ -149,7 +165,11 @@
         Its own node so a project can stop here: edge :prune to :infer and the
         loop prunes without ever paying for a summarizer call."
    :pure true
-   :requires []}
+   :requires []
+   ;; Reads the branch and policy only — no :compaction/* input, which is what
+   ;; makes the "edge :prune to :infer" rewiring in the docstring legal.
+   :input  [:map [:branch :map]]
+   :output [:map [:branch :map] [:compaction/route :keyword]]}
   (fn [_ {:keys [branch] :as data}]
     (let [p (policy)]
       (assoc data
@@ -237,7 +257,16 @@
         changes nothing must not rewrite anything, or a branch whose
         unfoldable overhead alone clears a threshold folds every turn forever."
    :effects [:net :db]
-   :requires [:conn :run-id :llm-adapter :llm-config]}
+   :requires [:conn :run-id :llm-adapter :llm-config]
+   ;; :compaction/before is required because the no-progress check compares
+   ;; against it: a fold that cannot tell whether it shrank anything is the
+   ;; every-turn-forever loop the docstring ends on.
+   :input  [:map [:branch :map] [:compaction/before :any]
+            [:compaction/tier :any]]
+   ;; Every failure path returns `data` unchanged, so :branch is all this may
+   ;; promise — and it promises it because the success path replaces the
+   ;; messages in place.
+   :output [:map [:branch :map]]}
   (fn [{:keys [conn run-id llm-adapter llm-config]} {:keys [branch] :as data}]
     (try
       (let [p (policy)

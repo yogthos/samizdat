@@ -81,6 +81,24 @@
   [edn-text]
   (edn/read-string edn-text))
 
+(defn- child-input-schema
+  "The `:input` a composed sub-workflow cell declares: whatever its child's
+  START cell requires, since that is the cell the composed handler feeds first.
+
+  mycelium already infers the composed cell's `:output` from the child's
+  end-reaching cells (compose/infer-workflow-output-schema); `:input` it takes
+  verbatim from what it is handed, and this used to hand it `{}`. The effect
+  was not cosmetic: mycelium's schema chain seeds `available` from the START
+  cell's input keys, so a parent whose entry node is a composed cell began its
+  walk with nothing available and refused the first downstream cell that
+  required anything — orchestrator, whose :start is the whole worker loop.
+
+  nil when the child's start cell is unregistered or declares no input, which
+  is the pre-schema state and the same `{}` as before."
+  [child]
+  (when-let [in (some-> (:start (:cells child)) cell/get-cell (get-in [:schema :input]))]
+    {:input in}))
+
 (defn register-subworkflows!
   "A manifest can compose sub-loops: `:subworkflows {cell-id manifest-name}`
   registers each named manifest as a workflow-cell (mycelium.compose) under
@@ -95,8 +113,8 @@
   could not be composed (karamazov-blt.3/.6)."
   [definition]
   (doseq [[cell-id mname] (:subworkflows definition)]
-    (compose/register-workflow-cell!
-     cell-id (read-definition (manifest-body! mname)) {})))
+    (let [child (read-definition (manifest-body! mname))]
+      (compose/register-workflow-cell! cell-id child (child-input-schema child)))))
 
 (def ctx-keys
   "The run-scoped resources every driver hands a cell, as a set.
