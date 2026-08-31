@@ -1,4 +1,9 @@
-{:paths ["src" "vendor" "resources"]
+{;; jolt.ffi/write takes the value BEFORE the offset as of jolt 0.8.0, and the
+ ;; two spellings are both integers — an older runtime writes to the wrong
+ ;; place rather than failing. Declare the floor so it refuses instead.
+ :jolt/min-version "0.8.0"
+
+ :paths ["src" "vendor" "resources"]
 
  ;; Git deps are fetched into ~/.jolt/gitlibs by jolt. Full SHAs only —
  ;; `git fetch` can't resolve short ones.
