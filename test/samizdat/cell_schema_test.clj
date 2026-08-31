@@ -152,25 +152,61 @@
             (is (contains? (set (:missing (:key-diff w))) :y)
                 (str "no :missing #{:y} in " (pr-str w)))))))))
 
-(deftest strict-mode-stops-the-drift
-  ;; AND IT STOPS IT BY THROWING, which is the thing to know before anyone
-  ;; makes :strict the default. mycelium installs an ::fsm/error handler only
-  ;; when :on-error is passed to pre-compile, and nothing here passes one, so
-  ;; maestro's default-on-error runs — and it throws. The drivers all read
-  ;; (myc/error? data) after run-compiled; for a schema violation that branch
-  ;; is unreachable, and what arrives instead is "execution error" carrying
-  ;; the whole fsm map. Pinned as the real contract rather than the assumed
-  ;; one, and karamazov-6y7.5 is the fix that has to land before the flip.
+(deftest bare-mycelium-throws-a-strict-violation
+  ;; What mycelium does on its own, kept because it is the reason
+  ;; manifests/on-error exists: an ::fsm/error state is installed only when a
+  ;; compile is handed an :on-error, so without one maestro's throwing default
+  ;; runs. Compiled here directly rather than through the loader, which is the
+  ;; difference the next test is about.
   (with-drifting-cell
     (fn [wf]
       (let [e (try (myc/run-compiled (myc/pre-compile wf {:validate :strict})
                                      {} {:x 1})
                    nil
                    (catch Throwable t t))]
-        (is (some? e)
-            "strict let a cell through whose output does not match its schema")
+        (is (some? e))
         (is (some? (get-in (ex-data e) [:data :mycelium/schema-error]))
-            "and the schema error is in the ex-data, not only in the message")))))
+            "the schema error is in the ex-data, not only in the message")))))
+
+(deftest the-loader-returns-a-strict-violation-as-data
+  ;; karamazov-6y7.5. Every driver reads (myc/error? data) after run-compiled
+  ;; — run-turn, run! and beam/advance alike — and for a schema violation that
+  ;; branch used to be unreachable, because the throw went past it. The beam
+  ;; could not abandon one branch with a reason, and what surfaced was a page
+  ;; of FSM internals instead of the message naming the cell and the keys.
+  (cells/load-cells!)
+  (with-drifting-cell
+    (fn [wf]
+      (with-redefs [lexicon/policy (fn [_] {:mode :strict})]
+        (let [data (myc/run-compiled (manifests/compile-definition wf) {} {:x 1})
+              err (myc/workflow-error data)]
+          (is (myc/error? data) "the violation came back as data, not a throw")
+          (is (= :schema/output (:error-type err))
+              (str "and kept its own error type rather than becoming a generic"
+                   " handler failure: " (pr-str err)))
+          (is (= :schema-test/drift (:cell-id err)) "naming the cell")
+          (is (contains? (set (:missing (:key-diff err))) :y)
+              "and the key, which is what makes it actionable"))))))
+
+(deftest a-handler-that-throws-still-throws
+  ;; The other half of on-error, and the reason it is surgical. feature's
+  ;; `safely` catches a throwing stage to record it and fall through to a safe
+  ;; default; the beam's unwrap-round-error digs the real cause out of the
+  ;; nested ex-data. Turning every crash into data would leave both looking at
+  ;; a nil verdict nothing notices — a loud failure traded for a silent one.
+  (cells/load-cells!)
+  (cell/defcell :schema-test/boom
+    {:doc "Throws. Deliberately."
+     :pure true
+     :input [:map] :output [:map]}
+    (fn [_ _] (throw (ex-info "boom" {}))))
+  (try
+    (is (thrown? Exception
+                 (myc/run-compiled
+                  (manifests/compile-definition '{:cells {:start :schema-test/boom}
+                                                  :edges {:start :end}})
+                  {} {})))
+    (finally (cell/remove-cell! :schema-test/boom))))
 
 (deftest the-validate-mode-is-policy-rather-than-a-constant
   (testing "the shipped default"
@@ -195,8 +231,8 @@
     (fn [wf]
       (testing "strict"
         (with-redefs [lexicon/policy (fn [_] {:mode :strict})]
-          (is (thrown? Exception
-                       (myc/run-compiled (manifests/compile-definition wf) {} {:x 1})))))
+          (is (myc/error? (myc/run-compiled (manifests/compile-definition wf)
+                                            {} {:x 1})))))
       (testing "warn"
         (with-redefs [lexicon/policy (fn [_] {:mode :warn})]
           (let [data (myc/run-compiled (manifests/compile-definition wf) {} {:x 1})]
@@ -266,3 +302,33 @@
     (is (= [:turn] (:in (first (:errors (:mycelium/input-error out)))))
         (str "the error names the bad key rather than failing later: "
              (pr-str (:mycelium/input-error out))))))
+
+(deftest a-composed-cell-declares-what-its-child-guarantees
+  ;; karamazov-6y7.6. mycelium infers a composed cell's output from the
+  ;; child's END-REACHING cells, while the handler returns the child's whole
+  ;; final data map — so a key written mid-graph was delivered and not
+  ;; declared. orchestrator dispatches on :verdict, which the worker's
+  ;; :loop/route writes, and :loop/route does not edge to :end.
+  ;;
+  ;; samizdat derives the output instead: the union, over cells lying on EVERY
+  ;; path from :start to :end, of the keys each guarantees on every
+  ;; transition. Both halves are what make it safe to require :verdict at
+  ;; :loop/finish rather than merely plausible.
+  (cells/load-cells!)
+  (let [d (edn/read-string (slurp (io/resource "manifests/orchestrator.edn")))]
+    (manifests/register-subworkflows! d)
+    (let [out (get-in (cell/get-cell :loop/worker) [:schema :output])
+          ;; mycelium wraps a composed cell's output as
+          ;; [:per-transition {:success [:map ...] :failure [:map ...]}],
+          ;; so what samizdat derived is the :success arm.
+          ks (set (map first (rest (:success (second out)))))]
+      (is (contains? ks :verdict)
+          (str ":loop/worker does not promise :verdict, so :loop/finish cannot"
+               " require it: " (pr-str out)))
+      (testing "and does not promise what only some paths write"
+        ;; :parsed is written on two of :llm/parse's three transitions and on
+        ;; none of the provider-error path. A union over all the child's cells
+        ;; would declare it, and a parent reading it would get nil.
+        (is (not (contains? ks :parsed))
+            (str "a key only some paths write leaked into the promise: "
+                 (pr-str ks)))))))

@@ -34,9 +34,11 @@
   samizdat.userspace: the project's newest version, seeding the factory
   template on the way past (RFC-001)."
   (:require [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [maestro.core :as fsm]
             [mycelium.cell :as cell]
             [mycelium.compose :as compose]
             [mycelium.core :as myc]
@@ -100,6 +102,73 @@
   (when-let [in (some-> (:start (:cells child)) cell/get-cell (get-in [:schema :input]))]
     {:input in}))
 
+(defn- edge-targets [edge-def]
+  (cond (keyword? edge-def) #{edge-def}
+        (map? edge-def) (set (vals edge-def))
+        :else #{}))
+
+(defn- reaches-end?
+  "Whether :end is reachable from :start through `edges`, with `skip` removed.
+
+  `:start` written out rather than `start-node`, which is defined further down
+  with the per-turn slice — same as `child-input-schema` above."
+  [edges skip]
+  (loop [queue [:start] seen #{}]
+    (if-let [node (first queue)]
+      (cond
+        (= :end node) true
+        (or (seen node) (= skip node)) (recur (rest queue) seen)
+        :else (recur (into (vec (rest queue)) (edge-targets (get edges node)))
+                     (conj seen node)))
+      false)))
+
+(defn- guaranteed-output-keys
+  "The keys a cell writes on EVERY transition, optional ones excluded.
+
+  A per-transition output is intersected across its transitions, which is
+  what makes this safe: :llm/parse promises the parse products on two of its
+  three edges and nothing on the provider-error edge, so it guarantees
+  nothing at all."
+  [cell-id]
+  (let [output (:output (:schema (cell/get-cell cell-id)))
+        keys-of (fn [m] (when (and (vector? m) (= :map (first m)))
+                          (set (keep (fn [e]
+                                       (when (and (vector? e)
+                                                  (not (:optional (second e))))
+                                         (first e)))
+                                     (rest m)))))]
+    (cond
+      (and (vector? output) (= :per-transition (first output)))
+      (let [per (vals (second output))]
+        (if (seq per) (reduce set/intersection (map #(or (keys-of %) #{}) per)) #{}))
+
+      :else (or (keys-of output) #{}))))
+
+(defn- child-output-schema
+  "The `:output` a composed sub-workflow cell may promise: what the child
+  writes on every path it can take.
+
+  mycelium infers this from the child's END-REACHING cells only — the ones
+  whose edges go to :end — while the composed handler returns the child's
+  whole final data map. So a key written mid-graph is delivered and not
+  declared, and orchestrator is where that bit: it dispatches on :verdict,
+  which the worker's :loop/route writes, and :loop/route is not an
+  end-reaching cell. :loop/finish therefore could not require :verdict.
+
+  Computed as the union over cells that lie on EVERY path from :start to
+  :end — a cell whose removal disconnects them — of the keys each guarantees
+  on every transition. Both halves matter for safety. Unioning all the
+  child's cells would declare keys written only on paths a run may not take,
+  which is the failure that produces false confidence rather than false
+  refusals: a parent compiles, then reads nil."
+  [child]
+  (let [edges (:edges child)
+        on-every-path (filter #(not (reaches-end? edges %)) (keys (:cells child)))
+        ks (reduce into #{} (map #(guaranteed-output-keys (get (:cells child) %))
+                                 on-every-path))]
+    (when (seq ks)
+      {:output (into [:map] (map (fn [k] [k :any])) (sort ks))})))
+
 (defn register-subworkflows!
   "A manifest can compose sub-loops: `:subworkflows {cell-id manifest-name}`
   registers each named manifest as a workflow-cell (mycelium.compose) under
@@ -115,7 +184,9 @@
   [definition]
   (doseq [[cell-id mname] (:subworkflows definition)]
     (let [child (read-definition (manifest-body! mname))]
-      (compose/register-workflow-cell! cell-id child (child-input-schema child)))))
+      (compose/register-workflow-cell!
+       cell-id child (merge (child-input-schema child)
+                            (child-output-schema child))))))
 
 (def ctx-keys
   "The run-scoped resources every driver hands a cell, as a set.
@@ -233,6 +304,29 @@
   []
   (or (:mode (lexicon/policy :schema-validation)) default-validate-mode))
 
+(defn- on-error
+  "A SCHEMA violation comes back as data; everything else still throws.
+
+  mycelium installs an ::fsm/error state only when a compile is handed an
+  :on-error, so without one maestro's default runs and throws ex-info
+  \"execution error\" carrying the whole FSM map. Every driver here is written
+  for the other contract — run-turn, run! and beam/advance all read
+  (myc/error? data) — so under :schema-validation :strict that branch was
+  unreachable, the beam could not abandon one branch with a reason, and what
+  surfaced was a page of FSM internals instead of mycelium's own message
+  naming the cell and the missing keys.
+
+  SURGICAL, and deliberately so. Handler exceptions keep maestro's behaviour,
+  because things downstream are built on it: feature's `safely` catches a
+  throwing stage to record it and fall through to a safe default, and the
+  beam's unwrap-round-error digs the real cause out of the nested ex-data. A
+  blanket on-error would turn every nested crash into a nil verdict that
+  nothing notices — trading a loud failure for a silent one."
+  [resources fsm-state]
+  (if (get-in fsm-state [:data :mycelium/schema-error])
+    (:data fsm-state)
+    (fsm/default-on-error resources fsm-state)))
+
 (defn compile-definition
   "The full static check WITHOUT reloading the cell registry: structure,
   dispatch coverage, reachability, sub-workflow registration, ctx-key
@@ -259,7 +353,8 @@
                   ;; per-run override later. A manifest compiled fresh per run
                   ;; (which every driver does) therefore picks up a policy edit
                   ;; on the next run, like every other gates.edn value.
-                  {:validate (validate-mode)})]
+                  {:validate (validate-mode)
+                   :on-error on-error})]
     (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
       (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
     compiled))
