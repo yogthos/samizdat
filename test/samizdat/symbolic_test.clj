@@ -24,7 +24,9 @@
   open-world subset, a vector is closed and positional, a repeated ?var means
   the same value in both places. Everything downstream — dispatch patterns,
   manifest invariants, policy rules — is written against exactly these rules."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
+            [jolt.fs :as fs]
             [samizdat.symbolic :as sym]))
 
 ;;; ---------------------------------------------------------------- patterns
@@ -228,6 +230,40 @@
          (:result (sym/first-match [(sym/rule '{:when {:xs ?xs} :then [:got ?xs]})]
                                    {:xs #{7}})))
       "and it survives substitution into :then"))
+
+(deftest core-logic-stays-confined-to-this-namespace
+  ;; THE RATCHET behind the set bug. samizdat.symbolic is careful to keep user
+  ;; data out of reified position, but that care lives in ONE function. The
+  ;; moment another namespace calls core.logic's run directly — 41a.6's everyg
+  ;; over paths and 41a.8's fd are both reaching for it — the hang comes back,
+  ;; and it comes back as a harness that silently stops rather than an error.
+  ;;
+  ;; If a later round genuinely needs core.logic elsewhere, that is a decision
+  ;; to make deliberately: add the file here, and make sure whatever it reifies
+  ;; cannot contain a set.
+  (let [users (->> (fs/glob "src/samizdat" "**.clj")
+                   (map str)
+                   (filter #(str/includes? (slurp %) "core.logic"))
+                   sort)]
+    (is (= ["src/samizdat/symbolic.clj"] users)
+        (str "core.logic is reachable from a namespace that has not thought "
+             "about set reification: " (pr-str users)))))
+
+(deftest a-set-with-a-var-is-refused-with-the-idiom-that-works
+  ;; #{?t} is the natural way to write "any of these", so this refusal is one
+  ;; the model WILL hit. A message that only says what is wrong sends it
+  ;; looking for a structural pattern that cannot exist: set membership is a
+  ;; guard, not a shape. Naming the working form is the whole value.
+  (try (sym/rule '{:when {:tools #{?t}}})
+       (is false "should have thrown")
+       (catch Exception e
+         (is (str/includes? (ex-message e) ":in")
+             "the refusal names the guard that expresses membership")
+         (is (some? (:instead (ex-data e)))
+             "and carries a worked rule shape as data, for a renderer to use")))
+  ;; The idiom it points at has to actually work.
+  (is (some? (sym/match (sym/rule '{:when {:tools ?ts} :if [:in :read ?ts]})
+                        {:tools #{:read :write}}))))
 
 (deftest the-guard-catalog-is-enumerable
   ;; Discoverability: a supervisor writing a rule has to be able to ask what

@@ -134,12 +134,24 @@
     (or (set? pattern) (seq? pattern))
     (let [vs (pattern-vars pattern)]
       (when (seq vs)
+        ;; The advice has to name the idiom that DOES work, not just the one
+        ;; that does not. #{?t} is the natural way to write "any of these", so
+        ;; a refusal saying only "use a map or a vector" sends the author
+        ;; looking for a structural pattern that cannot exist — membership is
+        ;; a guard, not a shape.
         (throw (ex-info (str (if (set? pattern) "set" "list")
                              " pattern matches as a literal, so "
                              (str/join ", " (sort vs))
-                             " can never bind — use a map or a vector")
+                             " can never bind"
+                             (if (set? pattern)
+                               " — bind the set and test it with a guard: {:k ?v} :if [:in <item> ?v]"
+                               " — use a vector to match positionally"))
                         {:error :var-in-literal-collection
-                         :pattern pattern :vars (vec (sort vs))}))))
+                         :pattern pattern
+                         :vars (vec (sort vs))
+                         :instead (if (set? pattern)
+                                    '{:when {:k ?v} :if [:in <item> ?v]}
+                                    '{:when [?a ?b]})}))))
 
     :else nil))
 
