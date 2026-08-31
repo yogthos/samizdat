@@ -81,6 +81,34 @@
   [branch result]
   {:result result :category :mechanics :progress? false :branch branch})
 
+(defn rejected
+  "A well-formed self-edit the harness validated and declined: a manifest that
+  does not compile, a cell that fails the soak, a policy body that breaks the
+  table it belongs to, a prompt that will not render.
+
+  NOT a failure, for the reason `malformed` and `refusal` give and this is the
+  seventh place it applies: the branch produced no claim and tested nothing,
+  so there is no evidence here about its line of inquiry. It wrote something
+  that did not hold together and was told exactly why, before anything was
+  stored. Charging that to `:consecutive-failures` is the vf-jki mistake —
+  and the sting is that it taxes the one loop the whole mutation protocol
+  exists to invite. A supervisor that writes a manifest, is told it does not
+  compile, fixes it and saves again has done the right thing twice and been
+  billed two failures for it.
+
+  Distinct from `malformed`, which is about the shape of the ARGUMENTS: a
+  rejected edit's arguments were all present and well-formed, and what failed
+  was the thing they carried. Distinct from `refusal`, which is policy
+  declining a call the harness could have made; here the harness tried and the
+  content did not survive.
+
+  `:mechanics` rather than `:neutral`, deliberately and for the same reason
+  `malformed` is: the count is still kept in :consecutive-mechanics-failures,
+  which still bounds a branch looping on edits that never compile. Repetition
+  is the signal worth escalating. One fix-up round is not."
+  [branch result]
+  {:result result :category :mechanics :progress? false :branch branch})
+
 (defn unavailable
   "An external capability could not be reached. Not the branch's fault, so not
   its failure: the failure counter neither rises nor resets, and

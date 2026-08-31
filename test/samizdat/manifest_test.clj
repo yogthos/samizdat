@@ -32,6 +32,7 @@
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.manifest]
             [samizdat.store.db :as db]
+            [samizdat.agent.state :as state]
             [samizdat.store.userspace :as us]
             [samizdat.userspace :as userspace]
             [samizdat.workflow :as wf]))
@@ -174,7 +175,10 @@
                                   :args {:action "save" :name "bad"
                                          :edn "{:cells {:x :no-such-cell}}"
                                          :rationale "a bad save on purpose"}})]
-            (is (= :failure (:category r)))
+            ;; :mechanics since karamazov-gn64 — a refused edit is correctable,
+            ;; not evidence about the branch's line of inquiry. What this test
+            ;; is actually about is the second assertion.
+            (is (= :mechanics (:category r)))
             (is (nil? (us/load-latest conn :manifest "bad")) "nothing broken was stored")))))))
 
 (deftest a-composed-manifest-registers-and-compiles-its-sub-loops
@@ -259,7 +263,8 @@
               r (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
                                 :args {:action "save" :name "badreq" :edn bad
                                        :rationale "a bad require on purpose"}})]
-          (is (= :failure (:category r)))
+          ;; :mechanics since karamazov-gn64, like every other refused edit.
+          (is (= :mechanics (:category r)))
           (is (str/includes? (str (:result r)) "ctx key")
               "the refusal names the loader check that would have thrown")
           (is (nil? (us/load-latest conn :manifest "badreq")) "nothing was stored"))
@@ -350,3 +355,52 @@
           (str "a beam-driven feature run reached a real ending, not a crash: "
                (pr-str (:status r))))
       (is (some? (:run-id r))))))
+
+(deftest a-refused-edit-is-not-charged-to-the-branch
+  ;; karamazov-gn64. A manifest that does not compile is a CORRECTABLE edit:
+  ;; the branch produced no claim and tested nothing about its line of
+  ;; inquiry, it wrote something that did not hold together and was told
+  ;; exactly why, before anything was stored. Charging that to
+  ;; :consecutive-failures is the vf-jki mistake — base/refusal's docstring
+  ;; counts five earlier places, and this is the seventh.
+  ;;
+  ;; What made it sting here: the edit-fix cycle is the one the whole mutation
+  ;; protocol exists to invite. A supervisor that writes a manifest, is told
+  ;; it does not compile, fixes it and saves again had done the right thing
+  ;; twice and been billed two failures for it — enough to trip the stuck gate
+  ;; on its third round of honest work.
+  (with-db
+    (fn [conn]
+      (let [refused (base/run-tool {:branch {:id "B1"} :conn conn
+                                    :tool-name "manifest"
+                                    :args {:action "save" :name "bad"
+                                           :edn "{:cells {:x :no-such-cell}}"
+                                           :rationale "a bad save on purpose"}})]
+        (is (= :mechanics (:category refused))
+            "a manifest that does not compile is mechanics, not failure")
+        (is (str/includes? (str (:result refused)) "no-such-cell")
+            "and it names the actual fault, so the next attempt can fix it
+             rather than guess — a refusal the model cannot act on is a
+             failure whatever it is scored as")
+        (is (nil? (us/load-latest conn :manifest "bad"))))
+
+      (testing "the counters agree: mechanics is bounded, failures untouched"
+        ;; The count is still KEPT — a branch looping on edits that never
+        ;; compile is still spending turns, and :consecutive-mechanics-failures
+        ;; bounds exactly that. What changed is which counter, and therefore
+        ;; whether the stuck gate reads it as evidence about the branch's work.
+        (let [b (state/new-branch {:id "B1" :problem "p"})
+              after (state/record-outcome b {:category :mechanics :tool "manifest"})]
+          (is (= 1 (:consecutive-mechanics-failures after)))
+          (is (zero? (or (:consecutive-failures after) 0))
+              "a refused edit did not move the counter that decides whether the
+               branch lives")))
+
+      (testing "a manifest that DOES compile is still progress"
+        (let [ok (base/run-tool {:branch {:id "B1"} :conn conn
+                                 :tool-name "manifest"
+                                 :args {:action "save" :name "fine"
+                                        :edn (slurp (io/resource "manifests/loop.edn"))
+                                        :rationale "a good save"}})]
+          (is (= :neutral (:category ok)))
+          (is (:progress? ok)))))))

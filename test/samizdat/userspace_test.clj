@@ -549,7 +549,11 @@
                                   :args {:action "save" :name "gates"
                                          :edn (pr-str bad)
                                          :rationale "a broken gate on purpose"}})]
-          (is (= :failure (:category r2)))
+          ;; :mechanics since karamazov-gn64. The table was rolled back and the
+          ;; harness is where it started, so this is a correctable edit rather
+          ;; than evidence about the branch's work — what the test is about is
+          ;; the rollback below.
+          (is (= :mechanics (:category r2)))
           (is (= 42 (gates/threshold :cull-threshold))
               "the broken save rolled back; the previous policy is live again"))
         (let [lst (tools/run-tool {:tool-name "policy" :branch {:id "B1"}
