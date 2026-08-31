@@ -500,7 +500,8 @@
   driver and wrong for one branch of five."
   [ctx b turn]
   (if-let [wf (:turn-workflow ctx)]
-    (let [data (myc/run-compiled wf ctx {:branch b :turn turn})
+    (let [data (workflow/note-schema-warnings!
+                ctx (myc/run-compiled wf ctx {:branch b :turn turn}))
           fail (fn [why]
                  (log/warn "branch" (:id b) "turn" turn "loop workflow failed:" why)
                  (assoc b :status :abandoned

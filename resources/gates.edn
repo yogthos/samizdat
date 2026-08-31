@@ -1039,6 +1039,38 @@
         Not capability-tunable: the tier under observation should not widen
         the set of machinery it may be driven by."}
 
+ :schema-validation
+ {:value {:mode :warn}
+  :kind :policy :capability-tunable? false
+  :doc "WHAT A CELL WHOSE DATA DOES NOT MATCH ITS DECLARED SHAPE COSTS AT RUN
+        TIME.
+
+        :warn   record it on :mycelium/warnings and run on
+        :strict  halt the workflow with the schema error
+        :off     do not check
+
+        THIS IS THE RUNTIME KNOB ONLY. mycelium checks the schema CHAIN — does
+        every cell's required input get produced by something upstream on every
+        path — inside validate-workflow, unconditionally, and this mode does
+        not reach it. An edit that breaks the graph is still refused at
+        `manifest save` and inside propose-cell! whatever this says, which is
+        the half that must never be switchable by the thing being validated.
+
+        :warn is the shipped default because the cells only began declaring
+        their shapes in karamazov-6y7 and a declaration is a guess until a run
+        has exercised it. A schema that is merely imprecise should cost a line
+        in the journal, not a dead run. The warnings carry :key-diff
+        {:missing :extra} and :failed-keys, which is the part worth reading —
+        it names the rename rather than reporting that something did not match.
+
+        Move to :strict once the warnings stop arriving on a real run. That is
+        the point of the staging: :warn measures whether the declarations are
+        right, and :strict is only worth having once they are. Going straight
+        to :strict makes every imprecise declaration an outage.
+
+        Not capability-tunable: a tier under observation should not be able to
+        stop its own shapes being checked."}
+
  :project-facts
  {:value
   {:cmd-works   "In this project `{{cmd}}` works."

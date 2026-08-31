@@ -41,6 +41,7 @@
             [mycelium.compose :as compose]
             [mycelium.core :as myc]
             [samizdat.cells :as cells]
+            [samizdat.lexicon :as lexicon]
             [samizdat.store.userspace :as us]
             [samizdat.userspace :as userspace]))
 
@@ -208,6 +209,30 @@
   [definition]
   (vec (remove :enforced (:invariants definition))))
 
+(def ^:private default-validate-mode
+  "What a schema mismatch costs when gates.edn has nothing to say — during a
+  test that stubbed the policy out, or before a project has a store bound.
+
+  :warn rather than :strict, and rather than :off. :off would let a missing
+  policy silently switch off checking, which is the failure mode where nobody
+  finds out; :strict would let it halt a run over a declaration the rollout
+  has not finished making precise."
+  :warn)
+
+(defn validate-mode
+  "What a cell whose data does not match its declared shape costs at RUN time:
+  :warn, :strict or :off, from gates.edn :schema-validation.
+
+  Read through `lexicon`, not `gates`: `gates` requires state and supervisor,
+  and this namespace is required by everything, including them.
+
+  It does NOT reach the schema CHAIN check. mycelium walks the graph inside
+  validate-workflow whatever this returns, so an edit that breaks the wiring
+  is refused at `manifest save` regardless — the half the validated thing must
+  not be able to switch off."
+  []
+  (or (:mode (lexicon/policy :schema-validation)) default-validate-mode))
+
 (defn compile-definition
   "The full static check WITHOUT reloading the cell registry: structure,
   dispatch coverage, reachability, sub-workflow registration, ctx-key
@@ -228,7 +253,13 @@
   (register-subworkflows! definition)
   (check-requires! definition)
   (let [compiled (myc/pre-compile
-                  (assoc definition :constraints (enforced-constraints definition)))]
+                  (assoc definition :constraints (enforced-constraints definition))
+                  ;; Baked in HERE because mycelium reads :validate at compile
+                  ;; time, into the interceptors it builds — there is no
+                  ;; per-run override later. A manifest compiled fresh per run
+                  ;; (which every driver does) therefore picks up a policy edit
+                  ;; on the next run, like every other gates.edn value.
+                  {:validate (validate-mode)})]
     (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
       (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
     compiled))

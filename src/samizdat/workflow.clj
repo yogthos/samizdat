@@ -222,6 +222,32 @@
         (assoc ctx :llm-adapter (registry/adapter-for provider) :llm-config llm))
       ctx)))
 
+(defn note-schema-warnings!
+  "Record any :mycelium/warnings the pass accumulated, and return `data`.
+
+  Under gates.edn :schema-validation :warn a cell whose data does not match
+  its declared shape leaves a warning on the data map and the run carries on.
+  That is the right cost while the declarations are still being tightened, and
+  it is worthless if nobody ever reads them — a warning nothing records is the
+  same as :off with extra steps.
+
+  Each warning carries :key-diff {:missing :extra}, which is what makes the
+  row worth keeping: it names the rename rather than reporting that something
+  somewhere did not match.
+
+  Best effort and returns its input either way, so it can sit in a threading
+  position on the run path. A journal that refuses must not fail a run that
+  otherwise worked — the same rule compaction's note! follows."
+  [{:keys [conn run-id]} data]
+  (when-let [warnings (seq (:mycelium/warnings data))]
+    (log/warn "schema warnings this pass:" (pr-str warnings))
+    (when (and conn run-id)
+      (try
+        (journal/note! conn run-id :schema-warning {:data {:warnings (vec warnings)}})
+        (catch Throwable e
+          (log/warn "recording the schema warnings failed:" (ex-message e))))))
+  data)
+
 (defn run-turn
   "Advance one branch by one turn, through the manifest.
 
@@ -251,7 +277,8 @@
    (let [wf (compile-loop
              (turn-manifest
               (read-definition (manifests/manifest-body! manifest-name))))
-         data (myc/run-compiled wf ctx {:branch branch :turn turn})]
+         data (note-schema-warnings!
+               ctx (myc/run-compiled wf ctx {:branch branch :turn turn}))]
      (when (myc/error? data)
        (throw (ex-info "the turn manifest failed structurally"
                        {:error (myc/workflow-error data)})))
@@ -321,13 +348,15 @@
                    {:data {:name loop-nm :version version}})
     (let [stop-watch (watch/start! ctx)]
      (try
-      (let [data (myc/run-compiled compiled ctx
+      (let [data (note-schema-warnings!
+                  ctx
+                  (myc/run-compiled compiled ctx
                                    (cond-> {:branch branch :turn 1}
                                      ;; A team workflow fans out over these — one
                                      ;; worker per sub-task. The single-branch
                                      ;; loops ignore the key.
                                      (seq (get-in config [:run :subtasks]))
-                                     (assoc :subtasks (get-in config [:run :subtasks]))))]
+                                     (assoc :subtasks (get-in config [:run :subtasks])))))]
         (when (myc/error? data)
           ;; A structural failure mid-run is a harness bug, not a branch
           ;; outcome; surface it rather than shipping a half-closed run.

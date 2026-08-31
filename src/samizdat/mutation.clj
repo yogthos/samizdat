@@ -40,6 +40,7 @@
             [mycelium.core :as myc]
             [samizdat.agent.gates :as gates]
             [samizdat.cells :as cells]
+            [samizdat.manifests :as manifests]
             [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
             [samizdat.store.userspace :as store]
@@ -113,7 +114,11 @@
                     spec (cell/get-cell cell-id)]
               :when (and spec (not (cell/pure? spec)))]
         (cell/register-spec! cell-id (assoc spec :handler (fn [_ d] d))))
-      (let [compiled (myc/pre-compile loop-def)
+      ;; Under the SAME :validate mode production runs under. The soak asks
+      ;; "does this cell throw when actually run"; holding it to a stricter
+      ;; standard than the run it is standing in for would reject an edit that
+      ;; works, over a declaration the rollout has not finished tightening.
+      (let [compiled (myc/pre-compile loop-def {:validate (manifests/validate-mode)})
             fut (future
                   (try {:result (myc/run-compiled compiled {:max-turns 1}
                                                   (or soak-input {}))}
