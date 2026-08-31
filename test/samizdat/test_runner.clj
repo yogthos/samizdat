@@ -105,6 +105,7 @@
             [samizdat.lisp-test]
             [samizdat.lsp-test]
             [samizdat.cells-test]
+            [samizdat.park-test]
             [samizdat.cell-schema-test]
             [samizdat.mutation-test]
             [samizdat.ratelimit-test]
@@ -245,6 +246,7 @@
     samizdat.lisp-test
     samizdat.lsp-test
     samizdat.cells-test
+    samizdat.park-test
     samizdat.cell-schema-test
     samizdat.mutation-test
     samizdat.ratelimit-test

@@ -371,7 +371,15 @@
   nothing notices — trading a loud failure for a silent one."
   [resources fsm-state]
   (if (get-in fsm-state [:data :mycelium/schema-error])
-    (:data fsm-state)
+    ;; PARKED, not ended. :mycelium/resume names the state to re-enter and
+    ;; mycelium's resume-compiled takes it from there, so the failure is a
+    ;; place the run stopped rather than the end of it. `:last-state-id` is
+    ;; the cell that failed, which is deliberately where a resume re-enters:
+    ;; the supervisor fixes that cell and the fix is RETRIED rather than
+    ;; skipped past.
+    (-> (:data fsm-state)
+        (assoc :mycelium/halt true
+               :mycelium/resume (:last-state-id fsm-state)))
     (fsm/default-on-error resources fsm-state)))
 
 (defn compile-definition
