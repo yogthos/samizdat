@@ -205,6 +205,15 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/symbolic.clj"
+   {:threshold {100 "The rewrite step bound: a runaway backstop, not a tunable.
+                     A ruleset that terminates converges in a handful of steps,
+                     so raising this cannot express a different policy — only
+                     postpone the error a cycling ruleset was always going to
+                     raise. A caller that genuinely wants a different bound
+                     passes one to the 3-arity, the same seam api/runs.clj uses
+                     for page sizes."}}
+
    "src/samizdat/agent/tournament.clj"
    {:threshold {1103515245 "The LCG multiplier — a PRNG's algorithm constants,
                             like a hash function's primes. Retuning them at
