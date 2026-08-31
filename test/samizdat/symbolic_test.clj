@@ -24,7 +24,9 @@
   open-world subset, a vector is closed and positional, a repeated ?var means
   the same value in both places. Everything downstream — dispatch patterns,
   manifest invariants, policy rules — is written against exactly these rules."
-  (:require [clojure.string :as str]
+  (:require [clojure.core.logic :as l]
+            [clojure.core.logic.protocols :as lp]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [jolt.fs :as fs]
             [samizdat.symbolic :as sym]))
@@ -230,6 +232,44 @@
          (:result (sym/first-match [(sym/rule '{:when {:xs ?xs} :then [:got ?xs]})]
                                    {:xs #{7}})))
       "and it survives substitution into :then"))
+
+(deftest core-logic-can-reify-a-set-now
+  ;; LOGIC-173, open upstream since 2019 and still unfixed in 1.1.1, the
+  ;; newest release on Central. core.logic's IWalkTerm has no set case, so
+  ;; walk* recurses through the Object case forever. samizdat.symbolic
+  ;; extends it.
+  ;;
+  ;; TESTING A HANG IS AWKWARD, because the failure is not a wrong answer but
+  ;; NO ANSWER: written the obvious way, a regression here would hang the
+  ;; suite rather than fail it, and a hung suite reports nothing at all.
+  ;; (samizdat.repl bounds eval on a future and that does rescue this
+  ;; computation — but the test suite is not running through eval, so nothing
+  ;; would rescue it here.)
+  ;;
+  ;; So the guard is structural and TOTAL: walk-term on a set must map the
+  ;; ELEMENTS, where the Object fallback hands the whole set to f and returns
+  ;; it unchanged (verified — it yields #{1} where this wants #{2}). That
+  ;; discriminates the extension from its absence in a call that always
+  ;; returns.
+  (let [extended? (= #{2} (lp/walk-term #{1} (fn [x] (if (= x 1) 2 x))))]
+    (is extended? "walk-term does not descend into a set — the extension is gone")
+    ;; Only now is driving the real reifier safe: without the extension this
+    ;; would hang the suite rather than fail it, so it is gated on the check
+    ;; above rather than written as a peer assertion.
+    (when extended?
+      (is (= '(#{3}) (l/run 1 [q] (l/== q #{3})))
+          "a ground set reifies")
+      (is (= '({:xs #{1 2}}) (l/run 1 [q] (l/== q {:xs #{1 2}})))
+          "including nested inside a map")
+      (is (= '(#{7}) (l/run* [q] (l/fresh [a] (l/== q #{a}) (l/== a 7))))
+          "and the reported LOGIC-173 case: a set holding an unbound lvar"))))
+
+(deftest matching-a-set-bearing-term-does-not-depend-on-that-extension
+  ;; The second, independent reason the hang cannot reach a run: match reifies
+  ;; only `true` and reads bindings out of the original term, so this path is
+  ;; safe even with the extension deleted. Asserted separately so that losing
+  ;; one protection does not silently leave the other carrying everything.
+  (is (= '{?xs #{1 2 3}} (sym/match (sym/rule '{:when {:xs ?xs}}) {:xs #{1 2 3}}))))
 
 (deftest core-logic-stays-confined-to-this-namespace
   ;; THE RATCHET behind the set bug. samizdat.symbolic is careful to keep user

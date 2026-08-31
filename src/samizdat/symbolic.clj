@@ -85,7 +85,38 @@
   followed: guards do not macro-expand host code, and there is no pattern
   protocol of our own, because core.logic's IUnifyTerms already is one."
   (:require [clojure.core.logic :as l]
+            [clojure.core.logic.protocols :as lp]
             [clojure.string :as str]))
+
+;;; ------------------------------------------------- making sets terms at all
+
+;; core.logic CANNOT REIFY A SET, and the failure is not a graceful one:
+;; walk* (logic.clj:235) hands the term to walk-term, whose Object case is
+;; `(f v)`, and f re-enters walk* whenever tree-term? holds — so a set
+;; recurses until the stack goes. On the JVM that is a StackOverflowError in
+;; Substitutions/walk; under jolt it is an UNBOUNDED HANG, which is worse,
+;; because a harness that stops without saying anything looks like a slow
+;; provider. This is upstream and open: LOGIC-173, reported 2019, still
+;; unfixed in 1.1.1, which is the newest release on Central.
+;;
+;; The gap is deliberate in origin — "Unification with sets no longer
+;; supported: LOGIC-54 through 56" (CHANGES.md, 0.8-alpha1 to alpha2) — but
+;; that removal was about UNIFYING sets, which needs an ordering a set does
+;; not have. This extends WALKING one, which reification needs and which has
+;; no such problem. Unification is untouched: sets still compare as opaque
+;; values through the Object path, which is exactly what this pattern
+;; language wants from them.
+;;
+;; Extending a third-party protocol is a global act, so the justification has
+;; to be that it cannot break a correct program: there is no core.logic code
+;; that depends on reifying a set, because reifying a set does not currently
+;; return. We are defining behaviour where there was only a hang. samizdat
+;; keeps core.logic confined to this namespace (see the ratchet in
+;; symbolic-test), so anything else that reaches for it inherits this by
+;; requiring us.
+(extend-protocol lp/IWalkTerm
+  clojure.lang.IPersistentSet
+  (walk-term [v f] (into #{} (map #(lp/walk-term (f %) f)) v)))
 
 ;;; ------------------------------------------------------------------ syntax
 
@@ -345,15 +376,13 @@
   vars write the same value twice, unification having already required them
   to be equal.
 
-  This exists because core.logic CANNOT REIFY A SET. walk* calls walk-term,
-  whose Object case re-enters walk*, and IWalkTerm has no set case — so a set
-  recurses forever. On the JVM that is a StackOverflowError in
-  Substitutions/walk; under jolt it is an unbounded hang, which is worse.
-  Verified against core.logic 1.1.1 on both. Unification with a set is fine
-  (sets are compared as opaque literals, which is exactly what this pattern
-  language wants), so the fix is to never put user data in reified position:
-  the goal answers yes or no, and the bindings come from here. See
-  karamazov-41a."
+  Reading the term rather than reifying the lvars is also what keeps user
+  data out of core.logic's reifier entirely. The IWalkTerm extension at the
+  top of this namespace means a set would now survive being reified, but the
+  main path does not depend on that: it never reifies anything but `true`.
+  Two independent reasons the LOGIC-173 hang cannot reach a run — and this
+  one costs nothing, since reification would only rebuild structure the
+  caller already has."
   [pattern term acc]
   (cond
     (pvar? pattern) (assoc acc pattern term)
