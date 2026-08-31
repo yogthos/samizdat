@@ -81,7 +81,12 @@
    form))
 
 (defn- src-files []
-  (sort (map str (fs/glob "src" "**.clj"))))
+  ;; src/samizdat, not src. The vendored trees (mycelium, maestro, ring_chez)
+  ;; moved under src/ and are not ours to hold to this rule — it is about
+  ;; samizdat's own discipline of keeping model-facing prose out of compiled
+  ;; code, and a vendored library's docstrings are neither prose we wrote nor
+  ;; prose the model reads.
+  (sort (map str (fs/glob "src/samizdat" "**.clj"))))
 
 (defn- forms-of [file]
   ;; Read rather than grep. The reader knows which characters are inside a
@@ -280,15 +285,13 @@
                   is a security control (see the secrets.clj note)."}}
 
    "src/samizdat/repl/guard.clj"
-   {:vocabulary {"(^|/)(src|vendor)/"
-                 "Which trees ARE the kernel, for the guard that refuses a
-                  supervisor's eval from patching them (karamazov-zrq.9). The
-                  same reason this whole namespace is in src/ and not in
-                  gates.edn, stated in its own docstring: a guard the guarded
-                  thing can edit is not a guard. resources/ is deliberately
-                  absent from the pattern, which is what keeps the supervisor's
-                  actual editing surface open."
-                 "samizdat"
+   ;; The kernel-path pattern used to need an allowance: it read
+   ;; `(^|/)(src|vendor)/`, and "vendor" is a run of four letters, so the
+   ;; vocabulary rule counted it as a pattern deciding on words somebody
+   ;; chose. The vendored trees now live under src/, the pattern is `src/`
+   ;; alone, and three letters is not a vocabulary — it is structure, which
+   ;; is what the rule means to let through. No entry, by the rule's own test.
+   {:vocabulary {"samizdat"
                  "How the guard recognises a HARNESS namespace in a
                   `(require … :reload)` — the hot-load half of the same
                   escape. Same reasoning; a run that could edit this could

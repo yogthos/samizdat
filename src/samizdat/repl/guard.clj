@@ -93,10 +93,11 @@
 (def ^:private kernel-path-re
   "A string argument naming harness SOURCE rather than userspace.
 
-  `src/` and `vendor/` only. resources/ is deliberately absent: cells,
-  manifests and prompts ARE the supervisor's editing surface, and refusing
-  those would refuse the whole point of the role."
-  #"(^|/)(src|vendor)/")
+  `src/` only — the vendored trees (mycelium, maestro, ring_chez) live under
+  it now, so one arm covers the whole kernel. resources/ is deliberately
+  absent: cells, manifests and prompts ARE the supervisor's editing surface,
+  and refusing those would refuse the whole point of the role."
+  #"(^|/)src/")
 
 (defn kernel-write?
   "Whether `form` writes to harness source, or hot-loads a harness namespace

@@ -34,7 +34,7 @@
 
 (deftest patching-harness-source-is-a-kernel-write
   (is (guard/kernel-write? (f "(spit \"src/samizdat/agent/tools/introspect.clj\" patched)")))
-  (is (guard/kernel-write? (f "(spit \"vendor/ring_chez/adapter.clj\" x)")))
+  (is (guard/kernel-write? (f "(spit \"src/ring_chez/adapter.clj\" x)")))
   (testing "including through a nested or threaded form"
     (is (guard/kernel-write? (f "(when true (spit \"src/samizdat/repl.clj\" x))")))))
 
