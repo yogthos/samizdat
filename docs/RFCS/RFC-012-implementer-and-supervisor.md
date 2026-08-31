@@ -125,9 +125,26 @@ queue and honours RFC-006's boundary rule; mechanism 1 writes a message
 straight onto the branch. Both are defensible alone. Together they mean there
 is no single answer to "what has been said to this branch and by whom".
 
-**F6 — No event stream.** The supervisor learns what the implementer did by
-polling the journal. There is no stream of turn events, so phase 1 cannot be
-event-driven and phase 2 cannot be boundary-triggered without inventing one.
+**F6 — No event stream, and the seam for one is sitting unused.** The
+supervisor learns what the implementer did by polling: `samizdat.watch`
+recomputes `session/findings` every `:poll-ms`, which is derived state the turn
+itself already updated. Meanwhile mycelium's `pre-compile` takes
+`:on-trace` — "callback (fn [trace-entry]) called after each cell completes",
+which is precisely the implementer advancing through its state graph, pushed —
+and samizdat passes it nowhere.
+
+The apparent reason a clock is still needed is **absence**: a hung provider
+call or a looping cell emits no event, so nothing fires. But mycelium's
+per-cell `:timeouts` turn a stall into a *transition*, and no manifest declares
+one. With `:on-trace` wired and timeouts declared on the cells that can hang,
+`samizdat.watch` has no remaining justification — every pattern it detects is
+derivable from the stream, and the case a stream cannot express becomes a
+stream event.
+
+One constraint survives the change: `on-trace` fires **synchronously** in the
+implementer's thread, so a supervisor doing work there stalls the turn it is
+watching. The callback must enqueue and return. `watch`'s thread provides that
+decoupling for free today, and an event stream has to provide it deliberately.
 
 ### What is already right
 
@@ -181,7 +198,9 @@ The pattern every supervisory mechanism must follow:
 ## Known gaps
 
 - F1–F6 above; none is yet fixed.
-- No turn-event stream exists, which blocks the protocol's first rule.
+- No turn-event stream exists, which blocks the protocol's first rule —
+  though F6 shows the seam is already there (`:on-trace`) and unused, so this
+  is smaller than it looks (karamazov-ts3o.1).
 - The GA's selection metric and the supervisor's evaluation metric are not the
   same number, and this RFC does not yet say what that number should be.
 - A parked supervisor stream is a deadlock: if the failing cell is one
