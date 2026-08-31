@@ -113,13 +113,20 @@
             (str/blank? (str edn-text)) (base/malformed branch (base/missing ctx :edn))
             (nil? why) (base/malformed branch (base/missing ctx :rationale))
             :else
-            ;; The validation refusal is caught HERE rather than by the outer
-            ;; handler, so "this manifest does not compile" — a correctable
-            ;; edit, and the loop this tool exists to invite — stays distinct
-            ;; from a db write that failed, which is a real failure. The outer
-            ;; catch swallowed both and billed the branch for each.
+            ;; The refusal is caught HERE rather than by the outer handler, so
+            ;; a manifest that does not compile — a correctable edit, and the
+            ;; loop this tool exists to invite — is not billed to the branch's
+            ;; failure counter. The outer catch is left for what happens AFTER
+            ;; this point, notably the store write.
+            ;;
+            ;; `(or (ex-message e) (str e))`, not `(ex-message e)`: a bare
+            ;; NullPointerException or RuntimeException has a nil message, and
+            ;; a nil complaint would take the else branch and STORE the broken
+            ;; manifest — the invariant this tool exists for, inverted by the
+            ;; one throwable that says nothing. mutation.clj uses the same
+            ;; idiom in both its rollback paths.
             (if-let [complaint (try (validate! edn-text) nil
-                                    (catch Throwable e (ex-message e)))]
+                                    (catch Throwable e (or (ex-message e) (str e))))]
               ;; The complaint plus `usage`, which already says a save
               ;; validates before it stores — no new sentence in src/.
               (base/rejected branch

@@ -104,6 +104,8 @@
     :summary "Score a branch's trajectory from the journal on the A-T letter scale, steps-so-far only — the offline validation entry point. Run it over a completed and an exhausted run and compare curves before wiring anything to the number."}
    {:name samizdat.agent.gates/trajectory-policy
     :summary "The trajectory-scoring policy from gates.edn: repeats, stride, criteria, and the not-yet-consulted abandon threshold."}
+   {:name samizdat.manifests/validate-mode
+    :summary "What a cell whose data does not match its declared shape costs at RUN time, from gates.edn :schema-validation :mode — :warn (record it on :mycelium/warnings and carry on), :strict (stop with the schema error), :off. Every cell declares :input/:output and every manifest an :input-schema, so mycelium checks the shapes each pass; this decides the cost. It does NOT reach the schema CHAIN check, which refuses a manifest whose wiring does not hold together whatever this says — that half is not yours to switch off."}
    {:name samizdat.prompt/render
     :summary "Render a prompt resource through selmer. Every harness message the model sees comes through here."}]}
 

@@ -232,8 +232,12 @@
    :effects [:db]
    :requires [:conn :run-id]
    ;; :verdict is REQUIRED, which is the whole point of this cell: the `case`
-   ;; below dispatches on it, and a nil verdict falls off the end of the case
-   ;; and returns nil for the data map — a run that closed nothing.
+   ;; below dispatches on it and has no default clause, so a verdict outside
+   ;; #{:done :abandoned :exhausted} — a nil, or a :continue leaking through —
+   ;; THROWS "No matching clause". Worth being exact about, because a throw
+   ;; and a nil are handled very differently downstream: feature's `safely`
+   ;; catches the first and the beam's unwrap-round-error digs into it, while
+   ;; a nil would travel on as a run that quietly closed nothing.
    ;;
    ;; It took the rest of the rollout to get here. Five different cells
    ;; produce it — :loop/route, :decompose/run, :team/supervise,

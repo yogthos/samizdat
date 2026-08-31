@@ -34,14 +34,19 @@
   path with the effectful cells stubbed to identity — and reaches a run."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
             [mycelium.dev :as dev]
             [malli.core :as m]
+            [samizdat.agent.tools.base :as base]
+            [samizdat.agent.tools.manifest]
             [samizdat.cells :as cells]
             [samizdat.lexicon :as lexicon]
-            [samizdat.manifests :as manifests]))
+            [samizdat.manifests :as manifests]
+            [samizdat.store.db :as db]
+            [samizdat.store.userspace :as us]))
 
 (defn- loop-def []
   (edn/read-string (slurp (io/resource "manifests/loop.edn"))))
@@ -332,3 +337,56 @@
         (is (not (contains? ks :parsed))
             (str "a key only some paths write leaked into the promise: "
                  (pr-str ks)))))))
+
+;; --- what the review of this epic found (198a677e..HEAD) ---------------------
+
+(deftest a-validation-throwable-with-no-message-still-refuses-the-save
+  ;; `(ex-message (RuntimeException.))` is nil, and the save path read the
+  ;; complaint straight out of it — so a nil message took the "it compiled"
+  ;; branch and STORED the manifest. The invariant the tool exists for,
+  ;; inverted by the one throwable that says nothing about itself. A bare
+  ;; NPE or RuntimeException out of mycelium, malli or the userspace read is
+  ;; enough to get there.
+  (let [conn (db/open! ":memory:")]
+    (with-redefs [manifests/compile-loop (fn [_] (throw (RuntimeException.)))]
+      (let [r (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                              :args {:action "save" :name "nilmsg"
+                                     :edn "{:cells {:start :loop/assemble}
+                                            :edges {:start :end}}"
+                                     :rationale "a message-less throwable"}})]
+        (is (nil? (us/load-latest conn :manifest "nilmsg"))
+            "a manifest whose validation threw was stored anyway")
+        (is (str/includes? (str (:result r)) "refused"))))))
+
+(deftest a-composed-child-written-with-map-cell-refs-still-declares-itself
+  ;; mycelium accepts both `:ns/id` and `{:id :ns/id}` in :cells, and
+  ;; cell/get-cell returns nil for the map form. Every shipped manifest here
+  ;; uses the bare form, so the derivations read fine — and an agent-authored
+  ;; child using the map form would have silently declared nothing, which is
+  ;; the bug child-input-schema was added to fix, one level further down.
+  (cells/load-cells!)
+  (with-redefs [manifests/manifest-body
+                (fn [nm]
+                  (when (= nm "mapref-child")
+                    (pr-str '{:cells {:start {:id :loop/assemble}
+                                      :route {:id :loop/route}}
+                              :edges {:start :route
+                                      :route {:continue :end :done :end
+                                              :abandoned :end :exhausted :end}}
+                              :dispatches
+                              {:route [[:continue (fn [d] true)]
+                                       [:done (fn [d] false)]
+                                       [:abandoned (fn [d] false)]
+                                       [:exhausted (fn [d] false)]]}})))]
+    (manifests/register-subworkflows! '{:subworkflows {:test/mapref "mapref-child"}})
+    (try
+      (let [spec (cell/get-cell :test/mapref)
+            in (get-in spec [:schema :input])
+            out (get-in spec [:schema :output])]
+        (is (some? in)
+            "the composed cell declares no :input, so a parent entering through
+             it starts its chain walk with nothing available")
+        (is (contains? (set (map first (rest in))) :branch))
+        (is (contains? (set (map first (rest (:success (second out))))) :verdict)
+            "and the derived output missed what the child guarantees"))
+      (finally (cell/remove-cell! :test/mapref)))))

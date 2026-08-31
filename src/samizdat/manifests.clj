@@ -42,6 +42,7 @@
             [mycelium.cell :as cell]
             [mycelium.compose :as compose]
             [mycelium.core :as myc]
+            [mycelium.schema :as schema]
             [samizdat.cells :as cells]
             [samizdat.lexicon :as lexicon]
             [samizdat.store.userspace :as us]
@@ -84,6 +85,18 @@
   [edn-text]
   (edn/read-string edn-text))
 
+(defn- cell-ref-id
+  "The cell id out of a manifest's `:cells` value.
+
+  mycelium accepts two forms — a bare `:ns/id` and a map `{:id :ns/id ...}`
+  carrying params — and every shipped manifest here uses the bare one. The map
+  form still has to be unwrapped: `cell/get-cell` returns nil for a map, so a
+  composed child written that way would silently declare nothing, which is the
+  bug `child-input-schema` exists to fix, reintroduced one level down. Both
+  mutation.clj and tools/mutate.clj already unwrap it the same way."
+  [cell-ref]
+  (if (map? cell-ref) (:id cell-ref) cell-ref))
+
 (defn- child-input-schema
   "The `:input` a composed sub-workflow cell declares: whatever its child's
   START cell requires, since that is the cell the composed handler feeds first.
@@ -99,27 +112,37 @@
   nil when the child's start cell is unregistered or declares no input, which
   is the pre-schema state and the same `{}` as before."
   [child]
-  (when-let [in (some-> (:start (:cells child)) cell/get-cell (get-in [:schema :input]))]
+  (when-let [in (some-> (cell-ref-id (:start (:cells child)))
+                        cell/get-cell
+                        (get-in [:schema :input]))]
     {:input in}))
 
 (defn- edge-targets [edge-def]
   (cond (keyword? edge-def) #{edge-def}
-        (map? edge-def) (set (vals edge-def))
+        ;; nil targets removed: a malformed edge must not make :end look
+        ;; unreachable, which would make reaches-end? call every node a cut
+        ;; vertex — see its docstring.
+        (map? edge-def) (into #{} (remove nil?) (vals edge-def))
         :else #{}))
 
 (defn- reaches-end?
   "Whether :end is reachable from :start through `edges`, with `skip` removed.
 
   `:start` written out rather than `start-node`, which is defined further down
-  with the per-turn slice — same as `child-input-schema` above."
+  with the per-turn slice — same as `child-input-schema` above.
+
+  `(seq queue)` rather than `if-let` on its head: a nil sitting IN the queue
+  would otherwise read as an empty queue and end the walk early, reporting
+  unreachable with work still to do."
   [edges skip]
   (loop [queue [:start] seen #{}]
-    (if-let [node (first queue)]
-      (cond
-        (= :end node) true
-        (or (seen node) (= skip node)) (recur (rest queue) seen)
-        :else (recur (into (vec (rest queue)) (edge-targets (get edges node)))
-                     (conj seen node)))
+    (if (seq queue)
+      (let [node (first queue)]
+        (cond
+          (= :end node) true
+          (or (nil? node) (seen node) (= skip node)) (recur (vec (rest queue)) seen)
+          :else (recur (into (vec (rest queue)) (edge-targets (get edges node)))
+                       (conj seen node))))
       false)))
 
 (defn- guaranteed-output-keys
@@ -128,18 +151,31 @@
   A per-transition output is intersected across its transitions, which is
   what makes this safe: :llm/parse promises the parse products on two of its
   three edges and nothing on the provider-error edge, so it guarantees
-  nothing at all."
+  nothing at all.
+
+  Per-transition detection goes through mycelium's own `per-transition?` and
+  `transitions-map` rather than matching the vector by hand, so a malformed
+  declaration is rejected by the same predicate mycelium uses instead of
+  reaching `vals` and throwing a ClassCastException that names no cell.
+
+  Lite schemas count: mycelium accepts `{:x :int}` for `[:map [:x :int]]`, and
+  a cell written that way promised nothing here while delivering everything."
   [cell-id]
   (let [output (:output (:schema (cell/get-cell cell-id)))
-        keys-of (fn [m] (when (and (vector? m) (= :map (first m)))
-                          (set (keep (fn [e]
-                                       (when (and (vector? e)
-                                                  (not (:optional (second e))))
-                                         (first e)))
-                                     (rest m)))))]
+        keys-of (fn [m]
+                  (cond
+                    (map? m) (set (keys m))
+                    (and (vector? m) (= :map (first m)))
+                    (set (keep (fn [e]
+                                 (when (and (vector? e)
+                                            (not (:optional (second e))))
+                                   (first e)))
+                               (rest m)))))]
     (cond
-      (and (vector? output) (= :per-transition (first output)))
-      (let [per (vals (second output))]
+      (nil? output) #{}
+
+      (schema/per-transition? output)
+      (let [per (vals (schema/transitions-map output))]
         (if (seq per) (reduce set/intersection (map #(or (keys-of %) #{}) per)) #{}))
 
       :else (or (keys-of output) #{}))))
@@ -163,9 +199,20 @@
   refusals: a parent compiles, then reads nil."
   [child]
   (let [edges (:edges child)
-        on-every-path (filter #(not (reaches-end? edges %)) (keys (:cells child)))
-        ks (reduce into #{} (map #(guaranteed-output-keys (get (:cells child) %))
-                                 on-every-path))]
+        ;; A child whose :end is unreachable at all would make EVERY node look
+        ;; like a cut vertex, and the union of everything is exactly the
+        ;; over-approximation the paragraph above rules out. mycelium refuses
+        ;; such a graph at compile, so this only guards the order in which the
+        ;; two run — but promising more than a child delivers is the failure
+        ;; that compiles and then reads nil, so it is worth not being able to
+        ;; reach.
+        reachable? (reaches-end? edges nil)
+        on-every-path (when reachable?
+                        (filter #(not (reaches-end? edges %)) (keys (:cells child))))
+        ks (reduce into #{}
+                   (map #(guaranteed-output-keys
+                          (cell-ref-id (get (:cells child) %)))
+                        on-every-path))]
     (when (seq ks)
       {:output (into [:map] (map (fn [k] [k :any])) (sort ks))})))
 

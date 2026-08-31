@@ -321,8 +321,11 @@
    ;; next. The order the manifest wires them in is the order these inputs
    ;; force.
    :input  [:map [:branches :any] [:turn :int]]
+   ;; :verdict as well, and it is the one that matters: beam.edn's :start
+   ;; dispatches the entire round on it, four ways. Omitting it left the
+   ;; scheduler's single routing key the one thing the chain could not see.
    :output [:map [:active :any] [:done-branch :any]
-            [:multi-candidate? :boolean]]}
+            [:multi-candidate? :boolean] [:verdict :keyword]]}
   (fn [{:keys [abort] :as ctx} {:keys [branches turn] :as data}]
     ;; A paused run waits HERE, at the top of the round, before anything is
     ;; scheduled — which is what `pause` promises: no new turns, and whatever
@@ -612,7 +615,10 @@
    ;; found a finished branch.
    :input  [:map [:branches :any] [:done-branch :any]
             [:multi-candidate? :boolean]]
-   :output [:map [:status :keyword]]}
+   ;; :result is the beam's actual product — run-rounds reads it and throws
+   ;; "the beam scheduler ended without a result" without it. All three
+   ;; endings write it and all three now say so.
+   :output [:map [:status :keyword] [:result :any]]}
   (fn [{:keys [conn run-id]} {:keys [branches done-branch multi-candidate?] :as data}]
     (doseq [b branches
             :when (and (state/active? b) (not= (:id b) (:id done-branch)))]
@@ -635,7 +641,8 @@
    :input  [:map [:branches :any] [:active :any]]
    ;; A last look for a finished branch, so this ending may still report
    ;; :completed with a winner — hence :done-branch on the way out.
-   :output [:map [:status :keyword] [:done-branch {:optional true} :any]]}
+   :output [:map [:status :keyword] [:result :any]
+            [:done-branch {:optional true} :any]]}
   (fn [{:keys [conn run-id max-turns] :as ctx} {:keys [branches active] :as data}]
     ;; A branch may have SHIPPED rounds ago while :stop-on-first-done? kept
     ;; the beam exploring. The cap expiring is not a failure then: the banked

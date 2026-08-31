@@ -105,9 +105,16 @@
   `:mechanics` rather than `:neutral`, deliberately and for the same reason
   `malformed` is: the count is still kept in :consecutive-mechanics-failures,
   which still bounds a branch looping on edits that never compile. Repetition
-  is the signal worth escalating. One fix-up round is not."
+  is the signal worth escalating. One fix-up round is not.
+
+  `:edit-rejected?` carries the distinction into the result, the way `refusal`
+  carries `:policy-refusal?`. Without it this returns a map byte-identical to
+  `malformed`, and every claim the paragraphs above make would be true only in
+  prose — nothing reading a turn could tell an edit that did not compile from
+  a call with bad arguments, so nothing could ever count them apart."
   [branch result]
-  {:result result :category :mechanics :progress? false :branch branch})
+  {:result result :category :mechanics :progress? false
+   :edit-rejected? true :branch branch})
 
 (defn unavailable
   "An external capability could not be reached. Not the branch's fault, so not

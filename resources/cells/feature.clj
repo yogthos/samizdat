@@ -609,8 +609,16 @@
    :output [:per-transition
             {:ship   [:map [:feature/decision :keyword] [:verdict :keyword]
                       [:branch :map]]
+             ;; :implement-strategy is the one that was missed and the one
+             ;; that matters: feature.edn's :redispatch dispatches on it, so
+             ;; the whole point of a revise round — carrying the possibly
+             ;; auto-advanced strategy forward — was written undeclared and
+             ;; read undeclared. A rename on either side compiled clean and
+             ;; every revise round fell to the default branch.
              :revise [:map [:feature/decision :keyword]
-                      [:feature/revisions :int] [:revise/guidance :any]]}]}
+                      [:feature/revisions :int] [:revise/guidance :any]
+                      [:implement-strategy :any] [:feature/escalate :boolean]
+                      [:feature/tried :any]]}]}
   (fn [{:keys [conn run-id config] :as ctx} data]
     (let [rev (revision data)
           soft-cap (or (get-in config [:run :max-revisions]) 6)

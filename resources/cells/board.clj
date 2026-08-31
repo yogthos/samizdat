@@ -149,6 +149,7 @@
    ;; :board/guidance arrives only on a revise round from the outer feature
    ;; loop, so it is optional; the board's own rounds carry it forward.
    :input  [:map [:branch :map]
+            [:subtasks {:optional true} :any]
             [:board/guidance {:optional true} :any]]
    :output [:map [:board/planned :int]]}
   (fn [{:keys [conn config run-id]} {:keys [branch] :as data}]
@@ -220,7 +221,12 @@
    :requires [:conn :run-id :root]
    ;; Everything it reads is its own bookkeeping from an earlier lap, so all
    ;; of it is optional: the first pass through the board has none of it.
-   :input  [:map [:board/left {:optional true} :any]
+   ;; :branch is REQUIRED and was missed: the handler destructures it and
+   ;; writes (assoc branch :task ...) on the claim path, so without one it
+   ;; would build a fresh {:task ...} map in the branch's place — silently,
+   ;; which is the nil-six-cells-downstream failure this epic exists to refuse.
+   :input  [:map [:branch :map]
+            [:board/left {:optional true} :any]
             [:board/worked {:optional true} :int]
             [:board/round {:optional true} :int]]
    ;; PER-TRANSITION. Claiming a task stamps the whole working set — the id,
@@ -233,7 +239,8 @@
                      [:board/branch-id :any] [:board/problem :any]
                      [:board/attempts :int] [:board/findings :any]
                      [:board/outcome :any] [:board/decision :any]
-                     [:board/answer :any] [:board/baseline :any]]
+                     [:board/answer :any] [:board/baseline :any]
+                     [:branch :map]]
              :empty [:map [:board/verdict :keyword]]}]}
   (fn [{:keys [conn run-id root]} {:keys [branch] :as data}]
     (release-stale-claims! conn run-id)
