@@ -24,11 +24,17 @@
   conclusion cannot distinguish a change it made from one it merely considered,
   which is most of what supervising is. The carry is that memory.
 
-  It is a peer of `samizdat.watch`, not a replacement. The watcher is a REFLEX:
+  It has TWO PHASES, and `reflex!` below is the first. The reflex is cheap:
   rule-based, cheap, every few seconds, steering only. This is DELIBERATION:
   a model call, rare, and permitted to tune the harness as well as steer it.
   Different costs, so different evidence bars and different cadences."
-  (:require [clojure.tools.logging :as log]))
+  (:require [clojure.tools.logging :as log]
+            [samizdat.events :as events]
+            [samizdat.session :as session]
+            [samizdat.store.interventions :as interventions]
+            [samizdat.prompt :as prompt]
+            [samizdat.lexicon :as lexicon]
+            [samizdat.store.journal :as journal]))
 
 (defn due?
   "Whether a pass should run now.
@@ -92,6 +98,142 @@
       (log/warn "oversight pass failed:" (ex-message e))))
   nil)
 
+;; --- phase 1: the reflex ----------------------------------------------------
+;;
+;; Cheap, rule-based, steering only. IT STEERS; IT DOES NOT TUNE, and that
+;; split is not tidiness: a nudge is wrong for one turn and the branch reads
+;; the next one, while a userspace edit is wrong for every run until somebody
+;; changes it back. So they have different evidence bars. The reflex may act on
+;; what a single run shows; tuning waits for phase 2, which has the run's
+;; history and the experiment machinery to judge whether its change helped.
+
+(defn- watch-policy [] (lexicon/policy :watch))
+
+(defn- steps-since
+  "The implementer's steps that have arrived on `ch` since the last look,
+  narrowed to this run.
+
+  The bus is process-wide and two runs in one process publish onto the same
+  one, so filtering by run is not tidiness. `:kind :step` excludes the journal
+  appends that have always been published there — a watcher wants the graph
+  advancing, not the record of it being written."
+  [ch run-id]
+  (when ch
+    (filterv #(and (= :step (:kind %)) (= run-id (:run-id %)))
+             (events/collect ch))))
+
+(defn- actionable
+  "The findings this pass should react to: severe enough to be worth a turn,
+  and not already raised.
+
+  Severity is the filter rather than novelty alone, because most findings are
+  worth SEEING and only some are worth interrupting for. A supervisor reading
+  a block can weigh a medium finding; a branch mid-task being handed one is
+  just distracted."
+  [findings seen p]
+  (let [wanted (set (map keyword (:severities p)))]
+    (remove #(or (contains? seen (:kind %))
+                 (not (contains? wanted (keyword (name (:severity %))))))
+            findings)))
+
+(defn- actionable
+  "The findings this pass should react to: severe enough to be worth a turn,
+  and not already raised.
+
+  Severity is the filter rather than novelty alone, because most findings are
+  worth SEEING and only some are worth interrupting for. A supervisor reading
+  a block can weigh a medium finding; a branch mid-task being handed one is
+  just distracted."
+  [findings seen p]
+  (let [wanted (set (map keyword (:severities p)))]
+    (remove #(or (contains? seen (:kind %))
+                 (not (contains? wanted (keyword (name (:severity %))))))
+            findings)))
+
+(defn- react!
+  "Say something about one finding, through the human channel.
+
+  A `message` directive, not a `cull` or a `pause`: the watcher observes and
+  advises, and deciding that a run should stop is a judgement with a cost that
+  belongs to a person or to the supervisor role, not to a threshold that fired.
+  The message names the finding and what it rules out — a branch told only
+  that turns are being wasted will reword something, which is the expensive
+  wrong move."
+  [conn run-id {:keys [kind detail evidence]}]
+  (interventions/submit!
+   conn run-id
+   {:kind "message"
+    :issued-by "watch"
+    :payload {:text (prompt/render "watch-intervention"
+                                   {:kind (name kind)
+                                    :detail detail
+                                    :evidence (pr-str evidence)})}})
+  (journal/note! conn run-id :watch-intervention
+                 {:data {:finding kind :evidence evidence}})
+  (log/info "watch: raised" kind "-" detail))
+
+;; Findings already raised, per run. The reflex must not repeat itself — an
+;; observer that says the same thing every few seconds is noise a branch learns
+;; to ignore, which is worse than silence — and the stream's driver keeps no
+;; per-run state to hang this on. `defonce` so a reload does not re-raise
+;; everything a live run has already been told.
+(defonce ^:private seen-by-run (atom {}))
+
+(defn forget-run!
+  "Drop a finished run's raised-findings set, so a long-lived serve process
+  does not accumulate one per run it has ever driven."
+  [run-id]
+  (swap! seen-by-run dissoc run-id)
+  nil)
+
+(defn reflex!
+  "PHASE 1 of the supervisor (RFC-012): one cheap, rule-based look at what the
+  implementer has just done, and at most a nudge.
+
+  Returns the findings it reacted to. Exposed separately from the stream so a
+  test can drive it a step at a time — a supervisor that can only be tested by
+  waiting on a thread is one nobody tests.
+
+  This was samizdat.watch, a second supervisory thread of its own. Its argument
+  for existing was right — a NODE in the implementer's graph runs only when the
+  graph reaches it, which is exactly when a stuck turn does not — but that is
+  an argument against being a node, not for being a separate stream. It is the
+  supervisor's cheap phase, so it runs on the supervisor's stream."
+  ;; `ch` rather than destructuring into a local named `events` — that would
+  ;; shadow the samizdat.events alias and every events/… call here would
+  ;; resolve against the local instead.
+  ([{:keys [run-id] :as ctx}]
+   ;; The stream calls this arity every poll and keeps no per-run state of its
+   ;; own, so the already-raised set lives here, keyed by run.
+   (reflex! ctx (or (get @seen-by-run run-id)
+                    (get (swap! seen-by-run update run-id #(or % (atom #{})))
+                         run-id))))
+  ([{:keys [conn run-id] ch :event-ch} seen]
+  (let [p (watch-policy)
+        ;; THE IMPLEMENTER'S STEPS, pushed (RFC-012). mycelium hands every
+        ;; completed cell to :on-trace and the tracer publishes it; this reads
+        ;; what has arrived. The supervisor now looks BECAUSE the state graph
+        ;; advanced, rather than re-deriving session/findings on a clock
+        ;; whether or not the implementer had moved.
+        steps (steps-since ch run-id)]
+    (if (and ch (empty? steps))
+      ;; Nothing advanced, so there is nothing new to judge. The findings are
+      ;; derived from what turns did; re-deriving them over an unchanged run
+      ;; is the work this change exists to stop doing.
+      []
+      (let [;; Evaluated over THIS RUN, not the whole session. A watcher is
+            ;; asking `is this going wrong now`, and a rate over every run the
+            ;; process has done answers a different question — one that says
+            ;; no for a long time after the answer became yes.
+            fresh (actionable (session/findings (session/run-window run-id)) @seen p)
+            room (- (:max-interventions p) (count @seen))
+            raising (take (max 0 room) fresh)]
+        (doseq [f raising]
+          (react! conn run-id f)
+          (swap! seen conj (:kind f)))
+        (vec raising))))))
+
+
 (defn start!
   "Begin a stream. Returns an idempotent stop function.
 
@@ -102,7 +244,8 @@
 
   Disabled returns a stop function too, so a caller's teardown never has to
   ask whether the stream was ever running."
-  [{:keys [enabled? every-ms budget poll-ms now-fn signal-fn] :as ctx} pass-fn]
+  [{:keys [enabled? every-ms budget poll-ms now-fn signal-fn reflex-fn] :as ctx}
+   pass-fn]
   (if-not enabled?
     (constantly nil)
     (let [running (atom true)
@@ -112,6 +255,21 @@
               (while @running
                 (try
                   (Thread/sleep (long poll-ms))
+                  ;; PHASE 1, every poll and unbudgeted (RFC-012). The reflex
+                  ;; is rule-based and cheap — it reads what the implementer
+                  ;; has done and may nudge — so it is not what :every-ms and
+                  ;; :budget exist to ration. Those bound MODEL CALLS, which
+                  ;; is phase 2 below. This used to be a second thread of its
+                  ;; own (samizdat.watch), which made two supervisors where
+                  ;; the design calls for one with two phases.
+                  (when (and @running reflex-fn)
+                    (try (reflex-fn ctx)
+                         (catch Throwable e
+                           ;; The reflex must never cost the stream its
+                           ;; reasoning pass, nor the run anything at all.
+                           (when @running
+                             (log/warn "oversight reflex:" (ex-message e))))))
+                  ;; PHASE 2, on the pass cadence and against the budget.
                   (when (and @running
                              (due? @state {:now (now)
                                            :every-ms every-ms

@@ -72,7 +72,7 @@
             [samizdat.select-test]
             [samizdat.session-test]
             [samizdat.reflect-test]
-            [samizdat.watch-test]
+            [samizdat.reflex-test]
             [samizdat.tasks-test]
             [samizdat.kernel-write-test]
             [samizdat.knowledge-test]
@@ -214,7 +214,7 @@
     samizdat.select-test
     samizdat.session-test
     samizdat.reflect-test
-    samizdat.watch-test
+    samizdat.reflex-test
     samizdat.tasks-test
     samizdat.kernel-write-test
     samizdat.knowledge-test

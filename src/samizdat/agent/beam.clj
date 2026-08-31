@@ -73,7 +73,6 @@
             [samizdat.agent.state :as state]
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
-            [samizdat.watch :as watch]
             [samizdat.lexicon :as lexicon]
             [samizdat.agent.oversight :as oversight]
             [samizdat.repl :as repl]
@@ -742,7 +741,14 @@
       (constantly nil)
       (oversight/start!
        (assoc ctx :enabled? true
-              :every-ms (:every-ms p) :budget (:budget p) :poll-ms (:poll-ms p))
+              :every-ms (:every-ms p) :budget (:budget p) :poll-ms (:poll-ms p)
+              ;; PHASE 1 (RFC-012), on this stream rather than a second one.
+              ;; The reflex reads the implementer's steps off the bus and may
+              ;; nudge; it runs every poll and spends none of the budget,
+              ;; which rations model calls. It subscribes here so no step that
+              ;; arrives while the stream is starting is missed.
+              :event-ch (events/subscribe)
+              :reflex-fn oversight/reflex!)
        (fn [pass-ctx]
          (let [out (myc/run-compiled (workflow/compiled-manifest "oversight")
                                      pass-ctx {:oversight/carry (:carry pass-ctx)})]
@@ -784,13 +790,8 @@
   re-granting the N turns before it. Returns {:status :run-id :branches …}."
   [{:keys [conn run-id config repl-session] :as ctx} branches start-turn]
   (let [live-branches (atom branches)
-        ;; The watcher starts with the round and stops in the finally below,
-        ;; however the run ends. It observes and submits directives through the
-        ;; interventions queue; it never touches a branch, so it cannot race
-        ;; the round it is watching.
         ctx (assoc ctx :live-branches live-branches)
         _ (session/mark-run! run-id)
-        ctx (assoc ctx :stop-watch (watch/start! ctx))
         ;; THE SUPERVISOR STREAM, beside the run rather than inside it. The
         ;; watcher above is the reflex — rule-based, cheap, steering only. This
         ;; is the deliberate one: it runs the supervisor role over the run's
@@ -833,10 +834,14 @@
           ;; were written against the branch's own exception.
           (throw throwable)))
       (finally
-        ;; The watcher stops with the run, however the run ended.
-        (when-let [stop (:stop-watch ctx)] (stop))
         ;; The supervisor stream stops with the run, however the run ended.
+        ;; One stream now, with both phases on it: the reflex that used to be
+        ;; samizdat.watch's own thread runs on this one (RFC-012).
         (when-let [stop (:stop-oversight ctx)] (stop))
+        ;; Release the reflex's tap and its per-run memory; on a serve process
+        ;; neither would otherwise be reclaimed for the life of the process.
+        (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
+        (oversight/forget-run! run-id)
         ;; SHORT-TERM BECOMES LONG-TERM. The session tally dies with the
         ;; process; a pattern that held across the run is a candidate for
         ;; something the next run should start out knowing, and this is the

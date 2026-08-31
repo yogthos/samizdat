@@ -55,7 +55,6 @@
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
             [samizdat.session :as session]
-            [samizdat.watch :as watch]
             [samizdat.userspace :as userspace]
             [samizdat.agent.state :as state]
             [samizdat.store.journal :as journal]
@@ -347,13 +346,21 @@
     ;; The window findings are evaluated over.
     (session/mark-run! run-id)
     ;; The single-branch driver drains the same interventions queue the beam
-    ;; does (loop/drain-directives!), so the watcher works here unchanged.
+    ;; does (loop/drain-directives!), so a directive reaches a branch here
+    ;; exactly as it does under the beam.
+    ;;
+    ;; NO SUPERVISOR ON THIS DRIVER. It used to start samizdat.watch, which
+    ;; was the only supervision it had; the reflex now lives on the
+    ;; supervisor's stream (RFC-012) and only the beam runs that stream. This
+    ;; is the single-branch driver a role's sub-loop uses and the benches
+    ;; drive — a nested reviewer loop being separately supervised was never
+    ;; the design, and the outer run's stream watches the whole thing anyway.
 
     ;; Which loop drove this run, durably: an agent reading a surprising run
     ;; back needs to know which version of itself produced it.
     (journal/note! conn run-id :loop-workflow
                    {:data {:name loop-nm :version version}})
-    (let [stop-watch (watch/start! ctx)]
+    (let [stop-watch (constantly nil)]
      (try
       (let [data (note-schema-warnings!
                   ctx
