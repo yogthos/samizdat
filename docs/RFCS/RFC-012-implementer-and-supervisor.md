@@ -125,13 +125,15 @@ queue and honours RFC-006's boundary rule; mechanism 1 writes a message
 straight onto the branch. Both are defensible alone. Together they mean there
 is no single answer to "what has been said to this branch and by whom".
 
-**F6 — No event stream, and the seam for one is sitting unused.** The
-supervisor learns what the implementer did by polling: `samizdat.watch`
-recomputes `session/findings` every `:poll-ms`, which is derived state the turn
-itself already updated. Meanwhile mycelium's `pre-compile` takes
-`:on-trace` — "callback (fn [trace-entry]) called after each cell completes",
-which is precisely the implementer advancing through its state graph, pushed —
-and samizdat passes it nowhere.
+**F6 — The event bus exists and carried the wrong grain.** *(Largely fixed;
+see below.)* `samizdat.events` has always been here — core.async, sliding
+buffer, `publish!`/`subscribe`/`collect` — and every journal append publishes
+to it. But it carried only turn-level records, after the fact, and nothing
+subscribed. Meanwhile mycelium's `pre-compile` takes `:on-trace` — "callback
+(fn [trace-entry]) called after each cell completes", the implementer
+advancing through its state graph — and samizdat passed it nowhere, so the
+supervisor re-derived what it wanted instead: `samizdat.watch` recomputed
+`session/findings` on a timer.
 
 The apparent reason a clock is still needed is **absence**: a hung provider
 call or a looping cell emits no event, so nothing fires. But mycelium's
