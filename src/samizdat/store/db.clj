@@ -26,6 +26,10 @@
   question; readers open their own connections."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [samizdat.store.migrations :as migrations]))
 
@@ -108,8 +112,12 @@
   ([conn q] (with-conn (jdbc/execute! conn q)))
   ([conn q opts] (with-conn (jdbc/execute! conn q opts))))
 
-(defn last-insert-id [conn]
-  (with-conn (jdbc/last-insert-id conn)))
+(defn last-insert-id
+  "clojure.jdbc has no last-insert-id — it was jolt-lang/db's own helper, and it
+  called sqlite's last_insert_rowid(). Asking for that directly keeps every call
+  site here meaning what it said."
+  [conn]
+  (with-conn (:id (jdbc/fetch-one conn "select last_insert_rowid() as id"))))
 
 (defn now
   "An ISO-8601 timestamp. One function so every table sorts the same way."

@@ -42,14 +42,14 @@
 ;; make-sockaddr (macOS wants sin_len in byte 0, Linux starts at the family).
 (defn- sockaddr [port]
   (let [sa (ffi/alloc 16)]
-    (dotimes [i 16] (ffi/write sa :uint8 i 0))
+    (dotimes [i 16] (ffi/write sa :uint8 0 i))
     (if macos?
-      (do (ffi/write sa :uint8 0 16) (ffi/write sa :uint8 1 af-inet))
-      (ffi/write sa :uint8 0 af-inet))
-    (ffi/write sa :uint8 2 (bit-and (bit-shift-right port 8) 0xff))
-    (ffi/write sa :uint8 3 (bit-and port 0xff))
-    (ffi/write sa :uint8 4 127) (ffi/write sa :uint8 5 0)
-    (ffi/write sa :uint8 6 0)   (ffi/write sa :uint8 7 1)
+      (do (ffi/write sa :uint8 16 0) (ffi/write sa :uint8 af-inet 1))
+      (ffi/write sa :uint8 af-inet 0))
+    (ffi/write sa :uint8 (bit-and (bit-shift-right port 8) 0xff) 2)
+    (ffi/write sa :uint8 (bit-and port 0xff) 3)
+    (ffi/write sa :uint8 127 4) (ffi/write sa :uint8 0 5)
+    (ffi/write sa :uint8 0 6)   (ffi/write sa :uint8 1 7)
     sa))
 
 (defn- connect!
@@ -64,8 +64,8 @@
         (throw (ex-info "connect() failed" {})))
       (ffi/free sa))
     (let [tv (ffi/alloc 16)]
-      (ffi/write tv :int64 0 5)
-      (ffi/write tv :int64 8 0)
+      (ffi/write tv :int64 5 0)
+      (ffi/write tv :int64 0 8)
       (adapter/c-setsockopt fd sol-socket so-rcvtimeo tv 16)
       (ffi/free tv))
     fd))

@@ -27,6 +27,10 @@
   as skipped when the toolchain is absent, since only Phase 5 needs it."
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [jolt.http-client :as http]
             [jolt.process :as p]

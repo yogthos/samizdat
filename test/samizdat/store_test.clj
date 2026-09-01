@@ -26,6 +26,10 @@
   failure mode stays loud."
   (:require [clojure.test :refer [deftest testing is]]
             [clojure.string :as str]
+            ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
+            ;; points connection construction at the native driver; it has to load
+            ;; before jdbc.core.
+            [db.jdbc]
             [jdbc.core :as jdbc]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.loop :as branch-loop]
