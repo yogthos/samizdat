@@ -34,7 +34,7 @@ protocol.
 
   turn: assemble → infer → parse        phase 1  WATCH
         → dispatch → journal            per turn, while the turn runs.
-        → arbiter → route               Is it progressing? Is it stuck?
+        → settle → arbiter → route      Is it progressing? Is it stuck?
            │                            Nudge, through the one write path.
            ├── events ────────────────► 
            │                            phase 2  EVALUATE

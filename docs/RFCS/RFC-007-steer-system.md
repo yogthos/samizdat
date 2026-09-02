@@ -193,10 +193,12 @@ on first *use* rather than at namespace load, the caller could be anything.
 ## Protocol
 
 ```
-loop/steer-step
-  ├─ settle-predictions!            close what this turn resolved, FIRST —
-  │                                 so a gate cannot be credited with an
-  │                                 outcome that preceded it
+loop/settle-step                    :gate/settle — its own node, so the
+  └─ settle-predictions!            order below is a compiled constraint:
+                                    close what this turn resolved FIRST, so
+                                    a gate cannot be credited with an
+                                    outcome that preceded it
+loop/steer-step                     :gate/arbiter — requires what settle wrote
   ├─ drain-directives!              a human directive outranks every machine gate
   ├─ arbiter/decide ctx             at most one
   ├─ apply-effects                  the gate's :effect → a state fn

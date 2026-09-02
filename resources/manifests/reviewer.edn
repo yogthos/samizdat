@@ -33,6 +33,7 @@
          :no-call        :loop/no-call
          :dispatch       :tool/dispatch
          :journal        :journal/record
+         :settle         :gate/settle
          :arbiter        :gate/arbiter
          :route          :loop/route
          ;; Task reflection on every ending (blt.26).
@@ -56,7 +57,8 @@
          :provider-error :route
          :no-call        :route
          :dispatch       :journal
-         :journal        :arbiter
+         :journal        :settle
+         :settle         :arbiter
          :arbiter        :route
          :route          {:continue  :start
                           :done      :distil
@@ -93,6 +95,12 @@
   {:type :must-precede :cell :dispatch :before :arbiter :enforced true
    :protects "The arbiter reads what the turn DID; a gate deciding before the
               tool ran would steer on the previous turn's state."}
+
+  {:type :must-precede :cell :settle :before :arbiter :enforced true
+   :protects "A gate cannot be credited with an outcome that preceded it:
+              :gate/settle closes this turn's open predictions BEFORE the
+              arbiter chooses, so a resolution closes against the gate that
+              asked for it and not the one about to."}
 
   {:type :must-precede :cell :parse :before :dispatch :enforced true
    :protects "Nothing is dispatched that was not parsed out of a reply."}]}

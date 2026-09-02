@@ -107,9 +107,11 @@
   (let [def (workflow/read-definition (slurp (clojure.java.io/resource "manifests/loop.edn")))
         ;; Route the tool path around the journal while keeping :journal
         ;; reachable from the no-call path, so the unreachable check cannot
-        ;; catch it first — only the constraint can.
+        ;; catch it first — only the constraint can. Around the journal ONLY:
+        ;; skipping :settle as well would be caught earlier by the schema
+        ;; chain, since the arbiter requires what settle writes.
         broken (-> def
-                   (assoc-in [:edges :dispatch] :arbiter)
+                   (assoc-in [:edges :dispatch] :settle)
                    (assoc-in [:edges :no-call] :journal))]
     (is (thrown-with-msg? Exception #"must-follow"
                           (workflow/compile-loop broken)))))

@@ -94,9 +94,10 @@
           ":verdict is what :finish routes on"))))
 
 (deftest a-cell-reading-a-key-nothing-produces-is-refused
-  ;; The check earning its keep. :gate/arbiter reads :before, which only
-  ;; :loop/assemble writes; a manifest that routes around assemble is a
-  ;; manifest whose arbiter steers on nil. Compiled through the loader's own
+  ;; The check earning its keep. :gate/arbiter reads :settled, which only
+  ;; :gate/settle writes, and settle reads :before, which only :loop/assemble
+  ;; writes; a manifest that routes around either is a manifest whose
+  ;; arbiter steers on nil. Compiled through the loader's own
   ;; pipeline, so this is the error an agent-authored manifest would get from
   ;; `manifest save`.
   (cells/load-cells!)
@@ -422,12 +423,40 @@
         u (first (:unsatisfied r))]
     (is (= :data (:kind u)))
     (is (= :arbiter (:node u)))
-    (is (contains? (:missing u) :before))
+    (is (contains? (:missing u) :settled))
     (is (= [:start :arbiter] (:path u)))
     (testing "and the compile refusal quotes the same path"
       (let [e (try (manifests/compile-definition broken) nil
                    (catch Throwable t t))]
         (is (re-find #"\[:start :arbiter\]" (str (ex-message e))))))))
+
+(deftest an-arbiter-reached-before-settle-is-refused-at-compile
+  ;; karamazov-aqsr.2: settle-before-fire was the one invariant declared
+  ;; :enforced false, because it ordered two steps inside one cell. It is
+  ;; two nodes now — :gate/settle writes :settled, :gate/arbiter requires
+  ;; it, and every turn-shaped manifest declares :must-precede — so a
+  ;; manifest that fires before it settles, or never settles, is refused
+  ;; when it is compiled rather than discovered when a gate is credited
+  ;; with an outcome that preceded it.
+  (cells/load-cells!)
+  (let [def (shipped-definition "loop")
+        fire-first (-> def
+                       (assoc-in [:edges :journal] :arbiter)
+                       (assoc-in [:edges :arbiter] :settle)
+                       (assoc-in [:edges :settle] :route))
+        never (-> def
+                  (update :cells dissoc :settle)
+                  (assoc-in [:edges :journal] :arbiter)
+                  (update :edges dissoc :settle))]
+    (is (some? (manifests/compile-definition def)) "the shipped loop compiles")
+    (doseq [[label broken] [["fire before settle" fire-first]
+                            ["never settle" never]]]
+      (testing label
+        (let [e (try (manifests/compile-definition broken) nil
+                     (catch Throwable t t))]
+          (is (some? e) "compiled a manifest whose arbiter fires unsettled")
+          (is (re-find #"(?i)settle" (str (ex-message e)))
+              (str "the refusal names settle: " (ex-message e))))))))
 
 (deftest a-ctx-key-no-driver-provides-is-an-unsatisfied-precondition-too
   (cell/register-spec! :test/wants-ctx

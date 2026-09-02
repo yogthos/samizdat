@@ -149,7 +149,7 @@
   ;; whole loop. This is the acceptance — the kernel is cell-agnostic.
   (cells/load-cells!)
   (doseq [id [:loop/assemble :llm/infer :llm/parse :tool/dispatch
-              :journal/record :gate/arbiter :loop/route :loop/finish]]
+              :journal/record :gate/settle :gate/arbiter :loop/route :loop/finish]]
     (is (some? (cell/get-cell id)) (str id " loaded from resources")))
   (testing "every loaded loop cell declares its effects (pure or a set)"
     (doseq [id (keys (cells/loaded))]

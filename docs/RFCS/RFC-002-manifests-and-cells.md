@@ -77,7 +77,7 @@ time and is opaque to the analysis.
 manifests/beam.edn         the ROUND    advance · score · cull · settle ·
                                         repopulate · spawn · tick · back edge
   └─ manifests/loop.edn    the TURN     assemble · infer · parse · dispatch ·
-     (per-turn slice)                   journal · arbiter · route
+     (per-turn slice)                   journal · settle · arbiter · route
 ```
 
 `turn-manifest` **derives** the per-turn slice from a whole-run manifest by
@@ -199,22 +199,25 @@ workflow/compile-loop
 |---|---|---|
 | `loop` | `dispatch → journal` | a dispatched call is always recorded |
 | `loop` | `journal → arbiter` | a recorded turn always faces a gate |
+| `loop` | `settle → arbiter` | a gate is credited only with outcomes after it fired |
 | `beam` | `score → cull` | retention reads fresh critic scores, not last round's |
 | `beam` | `settle → repopulate` | a branch is written down before its slot is refilled |
 
 ## Known gaps
 
-- **Settle before fire is a convention, not a constraint.** Every ordering
-  rule a manifest claims is declared in its `:invariants`, each saying what it
-  `:protects` and whether it is `:enforced`; the enforced ones are DERIVED into
-  the `:constraints` the compiler checks (`must-follow`, `must-precede`), and
-  `beam_test` pins that every enforced invariant reaches the compiler and every
-  unenforced one says why. The beam's four and the turn's five are all
-  enforced except one: settle before fire orders two steps INSIDE
-  `:gate/arbiter`, so a path-based checker has nothing to look at. Enforcing
-  it means splitting the cell into a settle node and a fire node, which
-  `loop.edn` names as the route; until that is worth doing it stays declared
-  `:enforced false` with that reason (karamazov-41a.7).
+- **Every declared invariant is enforced.** Every ordering rule a manifest
+  claims is declared in its `:invariants`, each saying what it `:protects`
+  and whether it is `:enforced`; the enforced ones are DERIVED into the
+  `:constraints` the compiler checks (`must-follow`, `must-precede`), and
+  `beam_test` pins that every enforced invariant reaches the compiler and
+  every unenforced one says why. The last unenforced one, settle before fire,
+  ordered two steps inside `:gate/arbiter` where a path-based checker had
+  nothing to look at; the cell is now `:gate/settle` then `:gate/arbiter`,
+  the arbiter requires the `:settled` key only settle writes, and every
+  turn-shaped manifest declares `:must-precede :settle :before :arbiter`
+  (karamazov-aqsr.2). A stored manifest that wires the arbiter without the
+  settle node is refused by the schema chain at its next compile, naming the
+  path — the same refusal a manifest routing around `:loop/assemble` gets.
 - A cell's `ctx` keys are checked at compile against `manifests/ctx-keys`
   (`check-requires!`), and `manifests/preconditions` reports per node what it
   requires from the driver and from upstream and what holds on every path in;

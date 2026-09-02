@@ -903,14 +903,28 @@
     (state/begin-reframe turn
                          (:last-failed-claim branch))))
 
+(defn settle-step
+  "Close out the predictions this turn resolved, BEFORE anything chooses a
+  new steer: settling compares the branch as it entered the turn against the
+  branch now, so a resolution closes against the gate that asked for it and
+  not the one about to. Its own step, and its own node in every turn-shaped
+  manifest, so that order is a constraint the compiler checks rather than a
+  convention inside one cell (karamazov-aqsr.2). Returns {:branch :closed},
+  the count being how many predictions this turn closed."
+  [{:keys [conn]} before branch turn {:keys [parsed]}]
+  (let [open (count (:open-predictions branch))
+        branch (settle-predictions! conn branch turn [(:name parsed)] before branch)]
+    {:branch branch
+     :closed (- open (count (:open-predictions branch)))}))
+
 (defn steer-step
-  "Predictions settle, pending human directives drain, then the single
-  boundary: at most one steer, chosen in priority (a human directive outranks
-  every machine gate), plus the context block. Returns the branch ready for its
-  next turn (or carrying the final answer when the turn shipped)."
-  [{:keys [conn run-id max-turns] :as ctx} before branch turn {:keys [parsed result]}]
+  "Pending human directives drain, then the single boundary: at most one
+  steer, chosen in priority (a human directive outranks every machine gate),
+  plus the context block. Runs on a branch settle-step has already closed
+  this turn's predictions on. Returns the branch ready for its next turn (or
+  carrying the final answer when the turn shipped)."
+  [{:keys [conn run-id max-turns] :as ctx} branch turn {:keys [parsed result]}]
   (let [tool (:name parsed)
-        branch (settle-predictions! conn branch turn [tool] before branch)
         ;; Not on a done turn: the done path renders no steer, so a directive
         ;; drained here was resolved "applied" and never shown (blt.38). Left
         ;; pending, it reaches whoever can still act — another branch, or the

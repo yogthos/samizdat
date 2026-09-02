@@ -2332,3 +2332,34 @@
           "and IS recent when the run is actually at turn 9")))
   (is (= 7 (:current-turn (aloop/phase-valve (state/new-branch {:id "B" :problem "p"}) 7)))
       "phase-valve is where the stamp lands, at the top of every turn"))
+
+;; --- settle is its own step (karamazov-aqsr.2) -------------------------------
+
+(deftest settle-step-closes-what-the-turn-resolved-and-says-how-many
+  ;; Settling used to be the first thing steer-step did, which made
+  ;; settle-before-fire a convention inside one cell. It is a node now, and
+  ;; its product — the branch with its predictions closed, and the count —
+  ;; is what :gate/arbiter's schema requires, so the order is compiled.
+  (let [c (db/open! ":memory:")]
+    (try
+      (db/migrate! c)
+      (let [rid (runs/start-run! c {:problem "p" :beam-width 1})
+            _ (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+            fid (journal/record-gate! c rid {:branch-id "B1" :turn 1
+                                             :gate :stuck :priority 1
+                                             :message "m" :prediction "p"
+                                             :window 3})
+            before (state/new-branch {:id "B1" :problem "p"})
+            open {:id fid :gate :stuck :prediction "p" :window 3 :turn 1}
+            b (assoc before :open-predictions [open])]
+        (testing "a prediction whose window has passed is closed and counted"
+          (let [{:keys [branch closed]}
+                (aloop/settle-step {:conn c} before b 10 {:parsed {:name "read_file"}})]
+            (is (= 1 closed))
+            (is (empty? (:open-predictions branch)))))
+        (testing "one still inside its window stays open, and the count says so"
+          (let [{:keys [branch closed]}
+                (aloop/settle-step {:conn c} before b 2 {:parsed {:name "read_file"}})]
+            (is (= 0 closed))
+            (is (= [open] (:open-predictions branch))))))
+      (finally (db/close c)))))
