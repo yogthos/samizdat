@@ -1,0 +1,83 @@
+name: linux sandbox
+
+# The Linux confinement of the project image (samizdat.security.sandbox:
+# bubblewrap mounts + a seccomp filter), verified on a real x86_64 kernel. It
+# cannot be verified on an Apple Silicon developer machine: jolt ships no
+# aarch64 Linux build, and x86_64 under Rosetta or qemu refuses every seccomp
+# filter (dev/linux-sandbox/verify.sh measures the rest there). This is the
+# battery karamazov-zrq.8 asked for before :auto may pick the backend.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  battery:
+    name: bubblewrap + seccomp escape battery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        # Ubuntu 24.04 restricts unprivileged user namespaces through
+        # AppArmor, and bwrap needs one. The runner is ours for the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --version
+
+      - name: Install jolt
+        # Same fetch as tests.yml: authenticated API first, raw fallback,
+        # never feeding a rate-limit page to bash.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fetch() {
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw+json" \
+              https://api.github.com/repos/jolt-lang/jolt/contents/install?ref=main \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            return 1
+          }
+          for i in 1 2 3 4 5; do
+            fetch && break
+            echo "installer fetch attempt $i failed; retrying in $((i * 8))s" >&2
+            sleep $((i * 8))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          head -1 /tmp/jolt-install | grep -q '^#!' \
+            || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
+
+      - name: Fetch dependencies
+        run: jolt -P
+
+      - name: Escape battery
+        # sandbox-test is the pure parts; image-test starts a real project
+        # image under bwrap + the filter and tries to leave it: write to
+        # $HOME, spawn a shell, read the harness's own source.
+        run: |
+          jolt -A:test -e '(require (quote clojure.test) (quote samizdat.sandbox-test) (quote samizdat.image-test))
+            (let [r (clojure.test/run-tests (quote samizdat.sandbox-test) (quote samizdat.image-test))]
+              (println r)
+              (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1)))'

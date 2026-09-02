@@ -2,12 +2,13 @@
 # verified on a real kernel: bubblewrap + seccomp on Ubuntu 24.04, run by
 # dev/linux-sandbox/verify.sh under a privileged container. jolt ships only an
 # x86_64 Linux build, so on Apple Silicon this image runs under Rosetta or
-# qemu — which is the case the dual-arch seccomp filter exists for.
-FROM --platform=linux/amd64 ubuntu:24.04
+# qemu — which is the case the dual-arch seccomp filter exists for. The
+# platform is pinned by verify.sh's build command, not here.
+FROM ubuntu:24.04
 ARG JOLT_VERSION=0.8.0
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bubblewrap ca-certificates curl git libsqlite3-0 \
+      bubblewrap ca-certificates curl git libsqlite3-0 unzip \
  && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL "https://github.com/jolt-lang/jolt/releases/download/v${JOLT_VERSION}/jolt-v${JOLT_VERSION}-x86_64-linux.tar.gz" \
       | tar -xz -C /opt \
