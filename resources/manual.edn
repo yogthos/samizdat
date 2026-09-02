@@ -71,6 +71,8 @@
     :summary "The safety around a cell edit: install, validate against every manifest, soak, commit a project version or roll back."}
    {:name samizdat.workflow/catalog
     :summary "Every workflow available to select or adapt, with its description."}
+   {:name samizdat.manifests/preconditions
+    :summary "Every node's preconditions as one report — the ctx keys and data keys it requires, what holds on every path in, and what is unsatisfied with the path that fails — before an edit rather than as the refusal after."}
    {:name samizdat.workflow/compile-loop
     :summary "Compile a workflow definition through mycelium's static checks. Throws on any violation."}
    {:name samizdat.workflow/turn-manifest
@@ -92,6 +94,8 @@
     :summary "Whether every term one pattern matches the other matches too — the specificity order the dispatch check uses."}
    {:name samizdat.symbolic.dispatch/analyse
     :summary "A dispatch table's shadowed branches (refused at save) and order-dependent pairs (reported), over the order that runs."}
+   {:name samizdat.symbolic/widest-beam
+    :summary "The widest beam one turn deadline can carry against a provider that serves N calls at a time, in core.logic.fd; gates.edn :beam-contention feeds it."}
    {:name samizdat.repl.guard/rules
     :summary "The eval guard's rules — what an eval may not do in the live image — with the clauses that decide each. Enumerable, not editable: a guard the guarded thing can edit is not a guard."}
    {:name samizdat.security.policy/rules

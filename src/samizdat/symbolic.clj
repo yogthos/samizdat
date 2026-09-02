@@ -107,6 +107,7 @@
   followed: guards do not macro-expand host code, and there is no pattern
   protocol of our own, because core.logic's IUnifyTerms already is one."
   (:require [clojure.core.logic :as l]
+            [clojure.core.logic.fd :as fd]
             [clojure.core.logic.pldb :as pldb]
             [clojure.core.logic.protocols :as lp]
             [clojure.string :as str]))
@@ -692,3 +693,43 @@
               b ((:run r) db)
               :when (or (nil? (:guard r)) ((:guard r) b))]
           {:rule (:name r) :bindings b})))
+
+;;; -------------------------------------------------------------- contention
+
+(defn widest-beam
+  "The widest beam `requested` or narrower that one turn deadline can carry,
+  given a provider that serves `concurrency` calls at once and a turn that
+  takes `turn-ms`: {:width w :rounds r}, or {:width 1 :infeasible? true}
+  when even one branch's turn outlasts the deadline, or {:width requested}
+  when either number is unknown — an unknown provider is not a constraint.
+
+  The model, in core.logic.fd (Tier 2, karamazov-41a.8): a round of w turns
+  takes r = ceil(w / concurrency) turn-times of wall clock, and r * turn-ms
+  must be within deadline-ms. ceil is the pair of constraints
+  (r-1)*c < w <= r*c. One integer variable and four products — nothing a
+  solver is needed for, which is the point: fd is in process, and this is
+  the seam the token dimension joins when there is a run-level budget to
+  join it to. Measured ~40ms a solve, once per run start."
+  [{:keys [requested concurrency turn-ms deadline-ms]}]
+  (if-not (and concurrency turn-ms deadline-ms
+               (pos? concurrency) (pos? turn-ms) (pos? requested))
+    {:width requested}
+    (let [fits (l/run* [q]
+                 (l/fresh [w r rp rc rpc rt]
+                   (fd/in w r rp (fd/interval 0 requested))
+                   (fd/>= w 1)
+                   (fd/>= r 1)
+                   (fd/in rc rpc (fd/interval 0 (* requested concurrency)))
+                   (fd/in rt (fd/interval 0 deadline-ms))
+                   (fd/* r concurrency rc)
+                   (fd/<= w rc)
+                   (fd/+ rp 1 r)
+                   (fd/* rp concurrency rpc)
+                   (fd/< rpc w)
+                   (fd/* r turn-ms rt)
+                   (fd/<= rt deadline-ms)
+                   (l/== q [w r])))]
+      (if (seq fits)
+        (let [[w r] (apply max-key first fits)]
+          {:width w :rounds r})
+        {:width 1 :infeasible? true}))))

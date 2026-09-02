@@ -43,6 +43,7 @@
             [mycelium.compose :as compose]
             [mycelium.core :as myc]
             [mycelium.schema :as schema]
+            [mycelium.workflow :as wf]
             [samizdat.cells :as cells]
             [samizdat.lexicon :as lexicon]
             [samizdat.store.userspace :as us]
@@ -285,6 +286,51 @@
                    ". Either the key belongs in manifests/ctx-keys and the"
                    " drivers must set it, or the cell should not be asking.")
               {:wanted wanted :provided (sort ctx-keys)})))))
+
+(defn preconditions
+  "Every node's preconditions as ONE report, and whether each holds
+  (karamazov-41a.6): {:nodes {node {:cell :ctx-requires :ctx-missing
+  :data-requires :established}} :unsatisfied [...]}.
+
+  Two checks already refuse a manifest at compile, each by throwing:
+  `check-requires!` for the ctx keys a cell reads that no driver provides,
+  and mycelium's schema chain for a data key a cell requires that nothing
+  upstream produces on some path. This is the same two facts as data, per
+  node, BEFORE an edit rather than as the refusal after it: what a node
+  requires from the driver and from upstream, and `:established` — what
+  holds on EVERY path that reaches it, the intersection over paths, which is
+  the only sense in which a key can be relied on.
+
+  An `:unsatisfied` entry is {:kind :ctx|:data :node :cell :missing}, and a
+  :data one carries the `:path` that reaches the node lacking the key — the
+  edge to fix is on it. Composed sub-loops are registered first, as
+  `compile-definition` does, so a parent reading a child's outputs resolves.
+
+  Pure Clojure, no solver: matching a required set against an established
+  set needs no search. That is Tier 1; the numeric questions are Tier 2
+  (`samizdat.symbolic/widest-beam`)."
+  [definition]
+  (register-subworkflows! definition)
+  (let [cells (:cells definition)
+        ctx-of (fn [cell-id] (cell-requires cell-id))
+        ctx-missing (fn [cell-id] (set (remove ctx-keys (ctx-of cell-id))))
+        {:keys [errors requires established]} (wf/schema-chain-report definition)
+        nodes (into {}
+                    (for [[node cell-ref] cells
+                          :let [cell-id (if (map? cell-ref) (:id cell-ref) cell-ref)]]
+                      [node {:cell cell-id
+                             :ctx-requires (ctx-of cell-id)
+                             :ctx-missing (ctx-missing cell-id)
+                             :data-requires (get requires node #{})
+                             :established (get established node #{})}]))
+        unsatisfied (concat
+                     (for [[node {:keys [cell ctx-missing]}] nodes
+                           :when (seq ctx-missing)]
+                       {:kind :ctx :node node :cell cell :missing ctx-missing})
+                     (for [{:keys [cell-name cell-id missing-keys path]} errors]
+                       {:kind :data :node cell-name :cell cell-id
+                        :missing missing-keys :path path}))]
+    {:nodes nodes :unsatisfied (vec unsatisfied)}))
 
 (defn invariants
   "Every ordering rule a manifest CLAIMS, enforced or not.

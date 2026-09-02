@@ -74,6 +74,7 @@
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
             [samizdat.lexicon :as lexicon]
+            [samizdat.symbolic :as sym]
             [samizdat.agent.oversight :as oversight]
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
@@ -258,6 +259,23 @@
   []
   (or (some-> (System/getenv "HARNESS_TURN_DEADLINE_MS") parse-long)
       (gates/threshold :turn-deadline-ms)))
+
+(defn contended-width
+  "The beam width the provider can actually serve under the turn deadline,
+  from gates.edn :beam-contention — {:provider-concurrency :expected-turn-ms}
+  — or `width` unchanged when the policy names no provider.
+
+  A local endpoint that answers one call at a time turns five concurrent
+  branches into a queue, and the turn deadline then abandons whichever are
+  still waiting: the run learns it oversubscribed by failing the tail of
+  every round. Narrowed HERE, before the first branch opens, so the run row
+  records the width that will actually run. A turn that cannot fit at all
+  runs at width one rather than not at all; the log says so."
+  [width {:keys [provider-concurrency expected-turn-ms]} deadline-ms]
+  (:width (sym/widest-beam {:requested width
+                            :concurrency provider-concurrency
+                            :turn-ms expected-turn-ms
+                            :deadline-ms deadline-ms})))
 
 (defn round-max-turns
   "The turn cap this round compares against: the run's, plus whatever `extend`
@@ -930,7 +948,11 @@
         ;; whole job rather than explore five lines of one, so the beam is
         ;; width 1 there regardless of what was asked for.
         requested-width (or beam-width (get-in config [:run :beam-width]) 5)
-        width (if iterating? requested-width 1)
+        forced-width (if iterating? requested-width 1)
+        ;; ...and no wider than the provider can serve under the deadline
+        ;; (gates.edn :beam-contention; Tier 2 of karamazov-41a).
+        contention (lexicon/policy :beam-contention)
+        width (contended-width forced-width contention (turn-deadline-ms))
         ;; Seeding forces sharing on for this run regardless of the config
         ;; flag: seeds enter through the shared log's context blocks, and
         ;; seeds nobody reads would be dead rows.
@@ -1014,9 +1036,15 @@
                                             :else "default")
                            :beam-width width
                            :requested-beam-width requested-width}})
-    (when (not= width requested-width)
+    (when (not= forced-width requested-width)
       (log/info "loop" loop-nm "is a whole-run workflow; beam width forced to 1"
                 "(asked for" (str requested-width ")")))
+    (when (< width forced-width)
+      (log/info "beam width narrowed from" forced-width "to" width
+                "- the provider serves" (:provider-concurrency contention)
+                "call(s) at a time and a turn takes ~" (:expected-turn-ms contention)
+                "ms against a" (turn-deadline-ms) "ms turn deadline"
+                "(gates.edn :beam-contention)"))
     (let [initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))
           result (try (run-rounds ctx initial 1)
                       (catch Throwable e

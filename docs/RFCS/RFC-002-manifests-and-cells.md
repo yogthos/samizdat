@@ -204,12 +204,20 @@ workflow/compile-loop
 
 ## Known gaps
 
-- **Constraint coverage is partial and uneven.** The beam's other two ordering
-  rules (directives before advance, cull before spawn) and the turn's
-  (tool before arbiter, settle before fire) are documented in cell docstrings
-  only, because mycelium's constraint vocabulary does not express them cleanly
-  and a false compile error is worse than a comment. **There is no way to tell
-  from a manifest which of its invariants the compiler will catch** — an editor
-  cannot know what is defended.
-- A cell's `ctx` keys are conventional, not schema'd. A cell reading a key the
-  driver does not set gets `nil` at run time.
+- **Settle before fire is a convention, not a constraint.** Every ordering
+  rule a manifest claims is declared in its `:invariants`, each saying what it
+  `:protects` and whether it is `:enforced`; the enforced ones are DERIVED into
+  the `:constraints` the compiler checks (`must-follow`, `must-precede`), and
+  `beam_test` pins that every enforced invariant reaches the compiler and every
+  unenforced one says why. The beam's four and the turn's five are all
+  enforced except one: settle before fire orders two steps INSIDE
+  `:gate/arbiter`, so a path-based checker has nothing to look at. Enforcing
+  it means splitting the cell into a settle node and a fire node, which
+  `loop.edn` names as the route; until that is worth doing it stays declared
+  `:enforced false` with that reason (karamazov-41a.7).
+- A cell's `ctx` keys are checked at compile against `manifests/ctx-keys`
+  (`check-requires!`), and `manifests/preconditions` reports per node what it
+  requires from the driver and from upstream and what holds on every path in;
+  a schema-chain refusal names the path that reaches the node lacking the key.
+  What is not checked is the driver's side at run time, beyond `beam_test`
+  asserting that the production ctx carries every declared key.

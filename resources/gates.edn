@@ -1039,6 +1039,28 @@
         Not capability-tunable: the tier under observation should not widen
         the set of machinery it may be driven by."}
 
+ :beam-contention
+ {:value {:provider-concurrency nil :expected-turn-ms nil}
+  :kind :policy :capability-tunable? false
+  :doc "WHAT THE PROVIDER CAN SERVE AT ONCE, so the beam is no wider than one
+        turn deadline can carry.
+
+        A local llama-server answers one call at a time; five branches then
+        queue, a round takes five turn-times of wall clock, and the turn
+        deadline abandons whichever branches are still waiting — the run
+        finds out it oversubscribed by failing the tail of every round. With
+        both numbers set, beam/run! narrows the width to the widest that
+        fits: ceil(width / concurrency) turn-times within :turn-deadline-ms,
+        solved by samizdat.symbolic/widest-beam in core.logic.fd, in process,
+        once per run start. Either nil means unknown, and an unknown provider
+        is not a constraint: the requested width stands.
+
+        :provider-concurrency  calls the endpoint serves concurrently
+        :expected-turn-ms      a typical turn's wall time against it, which
+                               the events table can tell you for a past run
+
+        Not capability-tunable: it describes the provider, not the branch."}
+
  :schema-validation
  {:value {:mode :warn}
   :kind :policy :capability-tunable? false
