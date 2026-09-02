@@ -7,9 +7,11 @@ name: linux sandbox
 # filter (dev/linux-sandbox/verify.sh measures the rest there). This is the
 # battery karamazov-zrq.8 asked for before :auto may pick the backend.
 
+# Every push, not only main: the battery is three minutes, and the point of
+# it is to know BEFORE a merge whether a change to the confinement still
+# confines.
 on:
   push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
