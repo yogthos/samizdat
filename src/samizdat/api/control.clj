@@ -82,6 +82,7 @@
   (let [problem (or (:problem body) (get body "problem"))
         max-turns (or (:max_turns body) (:max-turns body))
         beam-width (or (:beam_width body) (:beam-width body))
+        token-budget (or (:token_budget body) (:token-budget body))
         seed-run (or (:seed_run body) (:seed-run body))
         quarantine (or (:quarantine body) (get body "quarantine"))]
   ;; A {} body used to start a REAL run on a nil problem — a selection model
@@ -102,6 +103,7 @@
                                     :problem problem
                                     :max-turns max-turns
                                     :beam-width beam-width
+                                    :token-budget token-budget
                                     :seed-run seed-run
                                     :quarantine quarantine
                                      :abort abort
@@ -134,7 +136,8 @@
       ;; success and the refusal and neither has to be special-cased.
       {:body {:run_id run-id :status "running"
               :beam_width (or beam-width (get-in config [:run :beam-width]))
-              :max_turns (or max-turns (get-in config [:run :max-turns]))}}
+              :max_turns (or max-turns (get-in config [:run :max-turns]))
+              :token_budget (or token-budget (get-in config [:run :token-budget]))}}
       ;; 503, not 200: the request was well formed and the server could not
       ;; service it. Answering 200 with an error body made a caller that checks
       ;; the status code read this as a started run, which is why gui.api's

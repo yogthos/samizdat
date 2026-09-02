@@ -17,6 +17,7 @@
             [samizdat.cells :as cells]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
             [samizdat.agent.resume :as resume]
             [samizdat.store.runs :as runs]
             [samizdat.workflow :as workflow]))
@@ -364,15 +365,57 @@
   ;; provider serves at once and how long a turn takes; the width is clamped
   ;; to what fits one turn deadline, before the first branch opens, instead
   ;; of the deadline abandoning the tail of every round.
-  (is (= 4 (beam/contended-width 5 {:provider-concurrency 1 :expected-turn-ms 200000}
-                                 900000)))
-  (is (= 5 (beam/contended-width 5 {:provider-concurrency 2 :expected-turn-ms 200000}
-                                 900000)))
-  (testing "no policy, or a policy that names no provider, changes nothing"
-    (is (= 5 (beam/contended-width 5 nil 900000)))
-    (is (= 5 (beam/contended-width 5 {} 900000)))
-    (is (= 5 (beam/contended-width 5 {:provider-concurrency nil :expected-turn-ms nil}
-                                   900000))))
-  (testing "a turn that cannot fit at all runs at width one rather than not at all"
-    (is (= 1 (beam/contended-width 5 {:provider-concurrency 1 :expected-turn-ms 2000000}
-                                   900000)))))
+  (let [width (fn [w contention limits] (:width (beam/contended-width w contention limits)))
+        deadline {:deadline-ms 900000}]
+    (is (= 4 (width 5 {:provider-concurrency 1 :expected-turn-ms 200000} deadline)))
+    (is (= 5 (width 5 {:provider-concurrency 2 :expected-turn-ms 200000} deadline)))
+    (testing "no policy, or a policy that names no provider, changes nothing"
+      (is (= 5 (width 5 nil deadline)))
+      (is (= 5 (width 5 {} deadline)))
+      (is (= 5 (width 5 {:provider-concurrency nil :expected-turn-ms nil} deadline))))
+    (testing "a turn that cannot fit at all runs at width one rather than not at all"
+      (is (= 1 (width 5 {:provider-concurrency 1 :expected-turn-ms 2000000} deadline))))
+    (testing "and the token budget narrows it too, saying which limit bound
+              (karamazov-aqsr.3)"
+      (is (= {:width 3 :bound #{:budget}}
+             (beam/contended-width 5 {:expected-turn-tokens 5000}
+                                   {:max-turns 40 :token-budget 700000})))
+      (is (= 5 (width 5 {:expected-turn-tokens 5000} {:max-turns 40}))
+          "no budget, no limit")
+      (is (= 5 (width 5 {} {:max-turns 40 :token-budget 700000}))
+          "a budget with no turn cost estimate sizes nothing; it is still enforced"))))
+
+(deftest the-token-budget-exhausts-the-run-and-says-so
+  ;; karamazov-aqsr.3. Enforced against what the journal says was spent —
+  ;; summed total_tokens — at the top of every round, not projected from an
+  ;; estimate; the estimate only sizes the beam. Two turns of 600 tokens
+  ;; against a budget of 1000: the first round after that is refused.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p" :token-budget 1000})]
+    (try
+      (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+      (doseq [t [1 2]]
+        (journal/record-turn! c rid {:branch-id "B1" :turn t :tool-name "read_file"
+                                     :category :neutral
+                                     :usage {:total-tokens 600}}))
+      (is (= 1200 (:total-tokens (journal/run-usage c rid))))
+      (let [r (drive c rid (fn [bs _turn] bs) :token-budget 1000 :max-turns 40)]
+        (is (= :exhausted (:status r)))
+        (is (= "exhausted" (:status (runs/get-run c rid))))
+        (testing "the branch's close reason and the run's record name the budget"
+          (is (every? #(re-find #"token budget of 1000" (str (:inactive_reason %)))
+                      (runs/branches c rid)))
+          (is (= {:reason "token-budget" :spent 1200 :budget 1000}
+                 (journal/last-note c rid :run-exhausted))))
+        (testing "and the row carries the budget, so a resume enforces the same one"
+          (is (= 1000 (:token_budget (runs/get-run c rid))))))
+      (testing "without a budget the same spend is not a limit"
+        (let [rid2 (runs/start-run! c {:problem "p"})]
+          (runs/open-branch! c rid2 {:branch-id "B1" :created-at-turn 0})
+          (journal/record-turn! c rid2 {:branch-id "B1" :turn 1 :tool-name "read_file"
+                                        :category :neutral :usage {:total-tokens 600000}})
+          (is (nil? (:token_budget (runs/get-run c rid2))))
+          (is (= "turn cap of 3 reached"
+                 (do (drive c rid2 (fn [bs _turn] bs) :token-budget nil)
+                     (:inactive_reason (first (runs/branches c rid2))))))))
+      (finally (db/close c)))))

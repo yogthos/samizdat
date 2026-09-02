@@ -1040,10 +1040,11 @@
         the set of machinery it may be driven by."}
 
  :beam-contention
- {:value {:provider-concurrency nil :expected-turn-ms nil}
+ {:value {:provider-concurrency nil :expected-turn-ms nil :expected-turn-tokens nil}
   :kind :policy :capability-tunable? false
-  :doc "WHAT THE PROVIDER CAN SERVE AT ONCE, so the beam is no wider than one
-        turn deadline can carry.
+  :doc "WHAT THE PROVIDER CAN SERVE AT ONCE, and what a turn costs, so the
+        beam is no wider than one turn deadline can carry or the run's token
+        budget could ever pay for.
 
         A local llama-server answers one call at a time; five branches then
         queue, a round takes five turn-times of wall clock, and the turn
@@ -1055,9 +1056,21 @@
         once per run start. Either nil means unknown, and an unknown provider
         is not a constraint: the requested width stands.
 
+        The token budget is the second limit (karamazov-aqsr.3). A run
+        started with a budget (config :run :token-budget, HARNESS_TOKEN_BUDGET,
+        or token_budget on POST /v1/runs) is ended :exhausted by the beam once
+        the journal's summed usage crosses it — that is the enforcement, and
+        it needs no estimate. With :expected-turn-tokens set as well, the
+        width is ALSO narrowed at start to what width * max-turns *
+        expected-turn-tokens keeps within the budget: a projection at the
+        cap, so the beam never opens wider than the budget could carry if
+        every branch ran to it.
+
         :provider-concurrency  calls the endpoint serves concurrently
         :expected-turn-ms      a typical turn's wall time against it, which
                                the events table can tell you for a past run
+        :expected-turn-tokens  a typical turn's total_tokens, which the turns
+                               table can tell you for a past run
 
         Not capability-tunable: it describes the provider, not the branch."}
 

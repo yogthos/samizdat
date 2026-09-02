@@ -95,7 +95,7 @@
    {:name samizdat.symbolic.dispatch/analyse
     :summary "A dispatch table's shadowed branches (refused at save) and order-dependent pairs (reported), over the order that runs."}
    {:name samizdat.symbolic/widest-beam
-    :summary "The widest beam one turn deadline can carry against a provider that serves N calls at a time, in core.logic.fd; gates.edn :beam-contention feeds it."}
+    :summary "The widest beam that fits one turn deadline against a provider serving N calls at a time, and the run's token budget at the turn cap, in core.logic.fd; gates.edn :beam-contention and :run :token-budget feed it."}
    {:name samizdat.repl.guard/rules
     :summary "The eval guard's rules — what an eval may not do in the live image — with the clauses that decide each. Enumerable, not editable: a guard the guarded thing can edit is not a guard."}
    {:name samizdat.security.policy/rules

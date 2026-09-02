@@ -296,6 +296,10 @@
                   :root       root
                   :max-turns  (or (env-long "HARNESS_MAX_TURNS") 1000)
                   :beam-width (or (env-long "HARNESS_BEAM_WIDTH") 5)
+                  ;; Tokens the whole run may spend, summed over every turn's
+                  ;; total_tokens; nil is unbounded. The beam ends the run
+                  ;; :exhausted when it is crossed (karamazov-aqsr.3).
+                  :token-budget (env-long "HARNESS_TOKEN_BUDGET")
                   ;; Which loop manifest drives a run. The workflows table holds
                   ;; many named, versioned manifests; this picks one by name (its
                   ;; latest version). nil means the factory "loop". A project can

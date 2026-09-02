@@ -261,9 +261,12 @@
       (gates/threshold :turn-deadline-ms)))
 
 (defn contended-width
-  "The beam width the provider can actually serve under the turn deadline,
-  from gates.edn :beam-contention — {:provider-concurrency :expected-turn-ms}
-  — or `width` unchanged when the policy names no provider.
+  "The beam width the run can actually carry: what the provider serves under
+  the turn deadline, and what the token budget could pay for if every branch
+  ran to the cap. From gates.edn :beam-contention — {:provider-concurrency
+  :expected-turn-ms :expected-turn-tokens} — against the run's limits
+  {:deadline-ms :max-turns :token-budget}; a limit any of whose numbers is
+  unknown does not apply. Returns widest-beam's answer, {:width :bound ...}.
 
   A local endpoint that answers one call at a time turns five concurrent
   branches into a queue, and the turn deadline then abandons whichever are
@@ -271,11 +274,23 @@
   every round. Narrowed HERE, before the first branch opens, so the run row
   records the width that will actually run. A turn that cannot fit at all
   runs at width one rather than not at all; the log says so."
-  [width {:keys [provider-concurrency expected-turn-ms]} deadline-ms]
-  (:width (sym/widest-beam {:requested width
-                            :concurrency provider-concurrency
-                            :turn-ms expected-turn-ms
-                            :deadline-ms deadline-ms})))
+  [width {:keys [provider-concurrency expected-turn-ms expected-turn-tokens]}
+   {:keys [deadline-ms max-turns token-budget]}]
+  (sym/widest-beam {:requested width
+                    :concurrency provider-concurrency
+                    :turn-ms expected-turn-ms
+                    :deadline-ms deadline-ms
+                    :turns max-turns
+                    :turn-tokens expected-turn-tokens
+                    :token-budget token-budget}))
+
+(defn spent-tokens
+  "What the run has spent against its token budget, or nil when it has none
+  — a run without a budget pays for no query. Summed from the journal, so
+  the number is what was actually billed rather than a projection."
+  [{:keys [conn run-id token-budget]}]
+  (when token-budget
+    (:total-tokens (journal/run-usage conn run-id))))
 
 (defn round-max-turns
   "The turn cap this round compares against: the run's, plus whatever `extend`
@@ -915,8 +930,11 @@
   land a `done` wins and the rest are abandoned, since paying for four more
   provider calls after the answer exists is pure waste."
   [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
-           abort on-start seed-run quarantine] :as opts}]
+           token-budget abort on-start seed-run quarantine] :as opts}]
   (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
+        ;; Tokens the whole run may spend; nil is unbounded. Enforced by
+        ;; :beam/round-open against the journal, sized against below.
+        token-budget (or token-budget (get-in config [:run :token-budget]))
         ;; Which loop drives this run, compiled to its per-turn slice. Before
         ;; on-start, and so before POST /v1/runs returns, because the run row
         ;; records the width this decides and a compile failure must refuse
@@ -949,10 +967,15 @@
         ;; width 1 there regardless of what was asked for.
         requested-width (or beam-width (get-in config [:run :beam-width]) 5)
         forced-width (if iterating? requested-width 1)
-        ;; ...and no wider than the provider can serve under the deadline
-        ;; (gates.edn :beam-contention; Tier 2 of karamazov-41a).
+        ;; ...and no wider than the provider can serve under the deadline,
+        ;; or the token budget could pay for at the cap (gates.edn
+        ;; :beam-contention; Tier 2 of karamazov-41a).
         contention (lexicon/policy :beam-contention)
-        width (contended-width forced-width contention (turn-deadline-ms))
+        {width :width bound :bound}
+        (contended-width forced-width contention
+                         {:deadline-ms (turn-deadline-ms)
+                          :max-turns max-turns
+                          :token-budget token-budget})
         ;; Seeding forces sharing on for this run regardless of the config
         ;; flag: seeds enter through the shared log's context blocks, and
         ;; seeds nobody reads would be dead rows.
@@ -963,6 +986,7 @@
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width width
+                                      :token-budget token-budget
                                       :prompt-digest (branch-loop/prompt-digest)})
         ;; The tracer's steps can now say which run they belong to; the bus is
         ;; process-wide and the watcher filters on it.
@@ -991,6 +1015,7 @@
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
              :max-turns max-turns :beam? (> width 1) :beam-width width
+             :token-budget token-budget
              :root root
              ;; The compiled per-turn manifest advance-branch drives, and
              ;; whether it is a per-turn loop at all (which decides the turn
@@ -1041,10 +1066,13 @@
                 "(asked for" (str requested-width ")")))
     (when (< width forced-width)
       (log/info "beam width narrowed from" forced-width "to" width
+                "by" (str/join " and " (map name (sort bound)))
                 "- the provider serves" (:provider-concurrency contention)
-                "call(s) at a time and a turn takes ~" (:expected-turn-ms contention)
-                "ms against a" (turn-deadline-ms) "ms turn deadline"
-                "(gates.edn :beam-contention)"))
+                "call(s) at a time, a turn takes ~" (:expected-turn-ms contention)
+                "ms and ~" (:expected-turn-tokens contention) "tokens, against a"
+                (turn-deadline-ms) "ms turn deadline and a token budget of"
+                token-budget "over" max-turns "turns"
+                "(gates.edn :beam-contention, config :run :token-budget)"))
     (let [initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))
           result (try (run-rounds ctx initial 1)
                       (catch Throwable e

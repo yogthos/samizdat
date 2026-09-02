@@ -255,6 +255,8 @@
   project should do with it."
   #{;; RFC-002's documented set
     :conn :run-id :config :llm-adapter :llm-config :root :max-turns :abort
+    ;; The run's token budget, nil when unbounded (karamazov-aqsr.3)
+    :token-budget
     ;; What the beam driver adds
     :problem :beam? :beam-width :turn-workflow :iterating-loop? :git-baseline
     :repl-session :live-branches :in-flight})

@@ -306,6 +306,9 @@
           ctx {:conn conn :run-id run-id :config config :problem (:problem run)
                :llm-adapter llm-adapter :llm-config llm-config
                :max-turns max-turns :beam? (> width 1) :beam-width width
+               ;; The budget the run STARTED under, like max-turns: a resume
+               ;; continues the same bound, it does not re-grant it.
+               :token-budget (:token_budget run)
                :root root
                :turn-workflow turn-wf
                :iterating-loop? iterating?

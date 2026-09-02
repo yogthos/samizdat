@@ -117,6 +117,22 @@
   (emit! conn run-id :turn {:branch-id branch-id :turn turn
                             :data {:tool tool-name :category category}}))
 
+(defn run-usage
+  "What a run has spent so far, summed over its turn rows: {:turns
+  :prompt-tokens :completion-tokens :total-tokens}. A row with no usage — a
+  provider error — counts as a turn and costs nothing. This is what the beam
+  holds a run's token budget against (karamazov-aqsr.3)."
+  [conn run-id]
+  (let [r (first (db/fetch conn ["SELECT count(*) AS turns,
+                                         coalesce(sum(prompt_tokens), 0) AS prompt_tokens,
+                                         coalesce(sum(completion_tokens), 0) AS completion_tokens,
+                                         coalesce(sum(total_tokens), 0) AS total_tokens
+                                    FROM turns WHERE run_id = ?" run-id]))]
+    {:turns (:turns r)
+     :prompt-tokens (:prompt_tokens r)
+     :completion-tokens (:completion_tokens r)
+     :total-tokens (:total_tokens r)}))
+
 (defn turns
   "Every turn of a run, whole rows. `assistant_text` comes back with them, so
   this is what resume replays from — and it is why nothing that merely

@@ -41,6 +41,7 @@
   {:runs (mapv (fn [r]
                  {:id (:id r) :problem (:problem r) :status (:status r)
                   :model (:model r) :beam_width (:beam_width r)
+                  :token_budget (:token_budget r)
                   :started_at (:started_at r) :ended_at (:ended_at r)})
                ;; provenance R3-12: a negative limit went into SQL LIMIT, where
                ;; -1 means no limit — a tighter-looking ask that answered
@@ -93,7 +94,11 @@
                      ;; reported the config value while a seeded run shared
                      ;; freely — it once said sharing was off during a run that
                      ;; had served 91 shared artifacts.
-                     :share_artifacts (seeded? conn run-id)))
+                     :share_artifacts (seeded? conn run-id)
+                     ;; What the run has spent, beside the budget the row
+                     ;; carries, so an operator watching a metered provider
+                     ;; can see the one against the other (karamazov-aqsr.3).
+                     :usage (journal/run-usage conn run-id)))
        ;; Reuses the rows already read for the active count above.
        :branches (mapv #(update % :thesis parse-json) branches)
        :artifacts (mapv #(update % :witness parse-json)

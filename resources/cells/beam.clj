@@ -309,12 +309,15 @@
         Four verdicts. :aborted — the abort flag is set; checked FIRST and at
         the top, because a stop must not need the run's cooperation. :completed
         — a branch shipped and the campaign policy says that ends the run.
-        :exhausted — nobody is left to explore, or the turn cap is spent.
+        :exhausted — nobody is left to explore, the turn cap is spent, or
+        the token budget is: the journal's summed usage has crossed
+        :token-budget, checked here at the top of every round because this
+        is the one place a round can be refused before it costs anything.
         :continue — do the round.
 
-        Reads the abort flag, so not pure."
+        Reads the abort flag and the journal, so not pure."
    :effects [:db]
-   :requires [:abort]
+   :requires [:abort :conn :run-id :token-budget]
    ;; The ROUND's shape. Every beam cell reads and writes the same working
    ;; set, so these declarations are the round's data flow written down: what
    ;; each stage needs to have happened before it, and what it leaves for the
@@ -324,9 +327,12 @@
    ;; :verdict as well, and it is the one that matters: beam.edn's :start
    ;; dispatches the entire round on it, four ways. Omitting it left the
    ;; scheduler's single routing key the one thing the chain could not see.
+   ;; :exhausted-because travels with an :exhausted verdict only: which limit
+   ;; ended the run, for the branch close reasons and the run's record.
    :output [:map [:active :any] [:done-branch :any]
-            [:multi-candidate? :boolean] [:verdict :keyword]]}
-  (fn [{:keys [abort] :as ctx} {:keys [branches turn] :as data}]
+            [:multi-candidate? :boolean] [:verdict :keyword]
+            [:exhausted-because {:optional true} :any]]}
+  (fn [{:keys [abort token-budget] :as ctx} {:keys [branches turn] :as data}]
     ;; A paused run waits HERE, at the top of the round, before anything is
     ;; scheduled — which is what `pause` promises: no new turns, and whatever
     ;; is in flight finishes (it already has, a round ago). The wait polls the
@@ -336,16 +342,25 @@
     (let [cap (beam/round-max-turns ctx data)
           active (filterv state/active? branches)
           candidates (filterv :final-answer branches)
-          done (beam/finish-now? ctx (beam/select-done-branch ctx candidates) branches)]
-      (assoc data
-             :active active
-             :done-branch done
-             :multi-candidate? (< 1 (count candidates))
-             :verdict (cond
-                        (and abort @abort) :aborted
-                        done :completed
-                        (or (empty? active) (> turn cap)) :exhausted
-                        :else :continue)))))
+          done (beam/finish-now? ctx (beam/select-done-branch ctx candidates) branches)
+          spent (beam/spent-tokens ctx)
+          over-budget? (boolean (and spent (>= spent token-budget)))
+          verdict (cond
+                    (and abort @abort) :aborted
+                    done :completed
+                    (or (empty? active) (> turn cap) over-budget?) :exhausted
+                    :else :continue)]
+      (cond-> (assoc data
+                     :active active
+                     :done-branch done
+                     :multi-candidate? (< 1 (count candidates))
+                     :verdict verdict)
+        (= verdict :exhausted)
+        (assoc :exhausted-because
+               (cond over-budget? {:reason :token-budget
+                                   :spent spent :budget token-budget}
+                     (> turn cap) {:reason :turn-cap :cap cap}
+                     :else {:reason :nobody-active}))))))
 
 ;; --- the round --------------------------------------------------------------
 
@@ -632,26 +647,34 @@
                     :run-id run-id :branches branches})))
 
 (cell/defcell :beam/exhaust
-  {:doc "Nobody is left to explore, or the turn cap is spent. Every active
-        branch is closed as exhausted and each branch's RESIDUAL is journalled:
-        what it believed it was close to when the budget ran out, so a resume
-        does not re-derive scope from the transcript."
+  {:doc "Nobody is left to explore, or the turn cap or the token budget is
+        spent. Every active branch is closed as exhausted, naming which, and
+        each branch's RESIDUAL is journalled: what it believed it was close
+        to when the budget ran out, so a resume does not re-derive scope
+        from the transcript."
    :effects [:db]
    :requires [:conn :max-turns :run-id]
-   :input  [:map [:branches :any] [:active :any]]
+   :input  [:map [:branches :any] [:active :any]
+            [:exhausted-because {:optional true} :any]]
    ;; A last look for a finished branch, so this ending may still report
    ;; :completed with a winner — hence :done-branch on the way out.
    :output [:map [:status :keyword] [:result :any]
             [:done-branch {:optional true} :any]]}
-  (fn [{:keys [conn run-id max-turns] :as ctx} {:keys [branches active] :as data}]
+  (fn [{:keys [conn run-id max-turns] :as ctx}
+       {:keys [branches active exhausted-because] :as data}]
     ;; A branch may have SHIPPED rounds ago while :stop-on-first-done? kept
     ;; the beam exploring. The cap expiring is not a failure then: the banked
     ;; answer ends the run, ranked by the same rubric :beam/complete uses.
     ;; finish-run! :failed nil here discarded it (karamazov-blt.20).
-    (let [winner (beam/select-done-branch ctx (filterv :final-answer branches))]
+    (let [winner (beam/select-done-branch ctx (filterv :final-answer branches))
+          {:keys [reason spent budget]} exhausted-because
+          why (if (= :token-budget reason)
+                (str "token budget of " budget " spent (" spent " tokens)")
+                (str "turn cap of " max-turns " reached"))]
+      (when exhausted-because
+        (journal/note! conn run-id :run-exhausted {:data exhausted-because}))
       (doseq [b active]
-        (runs/close-branch! conn run-id (:id b) :exhausted
-                            (str "turn cap of " max-turns " reached")))
+        (runs/close-branch! conn run-id (:id b) :exhausted why))
       (if winner
         (do (runs/finish-run! conn run-id :completed (:final-answer winner))
             (assoc data :status :completed :done-branch winner

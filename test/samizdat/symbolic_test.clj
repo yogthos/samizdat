@@ -565,25 +565,65 @@
   ;; round of `width` turns takes ceil(width / concurrency) turn-times of
   ;; wall clock, and the turn deadline abandons whatever is still waiting.
   ;; fd finds the widest width whose round fits.
-  (is (= {:width 4 :rounds 4}
+  (is (= {:width 4 :rounds 4 :bound #{:deadline}}
          (sym/widest-beam {:requested 5 :concurrency 1
                            :turn-ms 200000 :deadline-ms 900000})))
-  (is (= {:width 5 :rounds 3}
+  (is (= {:width 5 :rounds 3 :bound #{}}
          (sym/widest-beam {:requested 5 :concurrency 2
                            :turn-ms 200000 :deadline-ms 900000})))
-  (is (= {:width 3 :rounds 3}
+  (is (= {:width 3 :rounds 3 :bound #{:deadline}}
          (sym/widest-beam {:requested 5 :concurrency 1
                            :turn-ms 300000 :deadline-ms 900000})))
-  (is (= {:width 1 :rounds 1}
+  (is (= {:width 1 :rounds 1 :bound #{}}
          (sym/widest-beam {:requested 1 :concurrency 1
                            :turn-ms 200000 :deadline-ms 900000}))))
 
 (deftest a-turn-longer-than-the-deadline-fits-no-width-at-all
   ;; Not zero — a beam of nothing is not a beam — but one, flagged, so the
   ;; caller can say the run will spend its turns being abandoned.
-  (is (= {:width 1 :infeasible? true}
+  (is (= {:width 1 :infeasible? true :bound #{:deadline}}
          (sym/widest-beam {:requested 5 :concurrency 1
                            :turn-ms 1000000 :deadline-ms 900000}))))
+
+(deftest the-widest-beam-the-token-budget-could-pay-for-at-the-cap
+  ;; karamazov-aqsr.3, the dimension 41a.8 left out for want of a budget to
+  ;; solve against. w branches each running max-turns turns at turn-tokens
+  ;; a turn must fit the budget — a projection at the cap, since the beam
+  ;; enforces the budget as it is actually spent; this only keeps the beam
+  ;; from opening wider than the budget could ever carry.
+  (testing "budget alone: 3 branches * 40 turns * 5000 tokens = 600k fits 700k, 4 does not"
+    (is (= {:width 3 :bound #{:budget}}
+           (sym/widest-beam {:requested 5 :turns 40 :turn-tokens 5000
+                             :token-budget 700000}))))
+  (testing "a budget wide enough binds nothing"
+    (is (= {:width 5 :bound #{}}
+           (sym/widest-beam {:requested 5 :turns 40 :turn-tokens 5000
+                             :token-budget 10000000}))))
+  (testing "both limits: the narrower wins and the answer says which"
+    (is (= {:width 3 :rounds 3 :bound #{:budget}}
+           (sym/widest-beam {:requested 5 :concurrency 1
+                             :turn-ms 200000 :deadline-ms 900000
+                             :turns 40 :turn-tokens 5000 :token-budget 700000}))
+        "the deadline allows 4, the budget 3")
+    (is (= {:width 2 :rounds 2 :bound #{:deadline :budget}}
+           (sym/widest-beam {:requested 5 :concurrency 1
+                             :turn-ms 400000 :deadline-ms 900000
+                             :turns 40 :turn-tokens 5000 :token-budget 500000}))
+        "both refuse a third branch"))
+  (testing "one branch at the cap already outruns the budget: width one, flagged"
+    (is (= {:width 1 :infeasible? true :bound #{:budget}}
+           (sym/widest-beam {:requested 5 :turns 1000 :turn-tokens 20000
+                             :token-budget 5000000}))))
+  (testing "an unknown budget, cap or turn cost is not a constraint"
+    (is (= {:width 5} (sym/widest-beam {:requested 5 :turns 40 :turn-tokens 5000})))
+    (is (= {:width 5} (sym/widest-beam {:requested 5 :turns 40 :token-budget 700000})))
+    (is (= {:width 5} (sym/widest-beam {:requested 5 :turn-tokens 5000 :token-budget 700000}))))
+  (testing "and it stays cheap enough to run at every run start"
+    (let [t0 (System/nanoTime)]
+      (sym/widest-beam {:requested 5 :concurrency 1 :turn-ms 200000
+                        :deadline-ms 900000 :turns 1000 :turn-tokens 20000
+                        :token-budget 50000000})
+      (is (< (/ (- (System/nanoTime) t0) 1e6) 2000)))))
 
 (deftest an-unknown-provider-leaves-the-width-alone
   ;; No concurrency or no turn estimate is not a constraint; it is the

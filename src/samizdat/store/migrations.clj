@@ -584,6 +584,13 @@
    "ALTER TABLE userspace ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0"
    "ALTER TABLE userspace ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0"])
 
+(def ^:private v20
+  ;; The run's token budget, so a resume enforces the same bound the run
+  ;; started under — max_turns is on the row for exactly that reason. NULL
+  ;; is unbounded, which is what every run before this column was
+  ;; (karamazov-aqsr.3).
+  ["ALTER TABLE runs ADD COLUMN token_budget INTEGER"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19])
+  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20])

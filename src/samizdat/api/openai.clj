@@ -110,7 +110,9 @@
                             :max-turns (or (:max_turns body) (:max-turns body)
                                            (get-in config [:run :max-turns]))
                             :beam-width (or (:beam_width body) (:beam-width body)
-                                            (get-in config [:run :beam-width]))})
+                                            (get-in config [:run :beam-width]))
+                            :token-budget (or (:token_budget body) (:token-budget body)
+                                              (get-in config [:run :token-budget]))})
                 (finally
                   (when-let [rid @run-id*]
                     (swap! api-control/active dissoc rid))))
