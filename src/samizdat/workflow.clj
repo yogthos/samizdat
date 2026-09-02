@@ -55,7 +55,6 @@
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
             [samizdat.session :as session]
-            [samizdat.watch :as watch]
             [samizdat.userspace :as userspace]
             [samizdat.agent.state :as state]
             [samizdat.store.journal :as journal]
@@ -154,14 +153,21 @@
 (defn compile-turn-loop
   "Load the named manifest and compile BOTH forms: the whole-run definition
   (for provenance and for `iterating?`) and its per-turn slice, which is what
-  the beam drives. Returns {:name :version :definition :iterating? :compiled}."
-  [conn name]
-  (let [{:keys [version definition]} (load-loop! conn name)]
-    {:name name
-     :version version
-     :definition definition
-     :iterating? (iterating? definition)
-     :compiled (compile-loop (turn-manifest definition))}))
+  the beam drives. Returns {:name :version :definition :iterating? :compiled}.
+
+  `opts` passes through to the compile — the beam hands it the run's
+  `:on-trace` tracer, which is how the implementer's every step reaches the
+  supervisor's stream (RFC-012). Compiled once per run and driven for every
+  branch, so the tracer closes over the run and reads the branch out of each
+  event rather than being bound to one."
+  ([conn name] (compile-turn-loop conn name nil))
+  ([conn name opts]
+   (let [{:keys [version definition]} (load-loop! conn name)]
+     {:name name
+      :version version
+      :definition definition
+      :iterating? (iterating? definition)
+      :compiled (compile-loop (turn-manifest definition) opts)})))
 
 (def compiled-manifest manifests/compiled-manifest)
 
@@ -222,6 +228,32 @@
         (assoc ctx :llm-adapter (registry/adapter-for provider) :llm-config llm))
       ctx)))
 
+(defn note-schema-warnings!
+  "Record any :mycelium/warnings the pass accumulated, and return `data`.
+
+  Under gates.edn :schema-validation :warn a cell whose data does not match
+  its declared shape leaves a warning on the data map and the run carries on.
+  That is the right cost while the declarations are still being tightened, and
+  it is worthless if nobody ever reads them — a warning nothing records is the
+  same as :off with extra steps.
+
+  Each warning carries :key-diff {:missing :extra}, which is what makes the
+  row worth keeping: it names the rename rather than reporting that something
+  somewhere did not match.
+
+  Best effort and returns its input either way, so it can sit in a threading
+  position on the run path. A journal that refuses must not fail a run that
+  otherwise worked — the same rule compaction's note! follows."
+  [{:keys [conn run-id]} data]
+  (when-let [warnings (seq (:mycelium/warnings data))]
+    (log/warn "schema warnings this pass:" (pr-str warnings))
+    (when (and conn run-id)
+      (try
+        (journal/note! conn run-id :schema-warning {:data {:warnings (vec warnings)}})
+        (catch Throwable e
+          (log/warn "recording the schema warnings failed:" (ex-message e))))))
+  data)
+
 (defn run-turn
   "Advance one branch by one turn, through the manifest.
 
@@ -251,7 +283,8 @@
    (let [wf (compile-loop
              (turn-manifest
               (read-definition (manifests/manifest-body! manifest-name))))
-         data (myc/run-compiled wf ctx {:branch branch :turn turn})]
+         data (note-schema-warnings!
+               ctx (myc/run-compiled wf ctx {:branch branch :turn turn}))]
      (when (myc/error? data)
        (throw (ex-info "the turn manifest failed structurally"
                        {:error (myc/workflow-error data)})))
@@ -313,21 +346,31 @@
     ;; The window findings are evaluated over.
     (session/mark-run! run-id)
     ;; The single-branch driver drains the same interventions queue the beam
-    ;; does (loop/drain-directives!), so the watcher works here unchanged.
+    ;; does (loop/drain-directives!), so a directive reaches a branch here
+    ;; exactly as it does under the beam.
+    ;;
+    ;; NO SUPERVISOR ON THIS DRIVER. It used to start samizdat.watch, which
+    ;; was the only supervision it had; the reflex now lives on the
+    ;; supervisor's stream (RFC-012) and only the beam runs that stream. This
+    ;; is the single-branch driver a role's sub-loop uses and the benches
+    ;; drive — a nested reviewer loop being separately supervised was never
+    ;; the design, and the outer run's stream watches the whole thing anyway.
 
     ;; Which loop drove this run, durably: an agent reading a surprising run
     ;; back needs to know which version of itself produced it.
     (journal/note! conn run-id :loop-workflow
                    {:data {:name loop-nm :version version}})
-    (let [stop-watch (watch/start! ctx)]
+    (let [stop-watch (constantly nil)]
      (try
-      (let [data (myc/run-compiled compiled ctx
+      (let [data (note-schema-warnings!
+                  ctx
+                  (myc/run-compiled compiled ctx
                                    (cond-> {:branch branch :turn 1}
                                      ;; A team workflow fans out over these — one
                                      ;; worker per sub-task. The single-branch
                                      ;; loops ignore the key.
                                      (seq (get-in config [:run :subtasks]))
-                                     (assoc :subtasks (get-in config [:run :subtasks]))))]
+                                     (assoc :subtasks (get-in config [:run :subtasks])))))]
         (when (myc/error? data)
           ;; A structural failure mid-run is a harness bug, not a branch
           ;; outcome; surface it rather than shipping a half-closed run.

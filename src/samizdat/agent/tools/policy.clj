@@ -172,8 +172,10 @@
             (let [parsed (try {:ok (edn/read-string (str body))}
                               (catch Throwable e {:error (ex-message e)}))]
               (if (:error parsed)
-                (base/fail branch (msg {:bad-edn true :name name
-                                        :complaint (:error parsed)}))
+                ;; A body that does not read is a rejected edit, not a branch
+                ;; failure: nothing was stored and the complaint says where.
+                (base/rejected branch (msg {:bad-edn true :name name
+                                            :complaint (:error parsed)}))
                 ;; Warm the cache so the seed exists and the version we might
                 ;; roll back to is real, then store and recompile.
                 (do (userspace/body :policy name)
@@ -186,9 +188,11 @@
                                    :progress? true)
                           (catch Throwable e
                             (rollback! name v)
-                            (base/fail branch
-                                       (msg {:rolled-back true :name name
-                                             :complaint (ex-message e)})))))))))))
+                            ;; Rolled back to the prior version, so the harness
+                            ;; is where it started — a rejected edit.
+                            (base/rejected branch
+                                           (msg {:rolled-back true :name name
+                                                 :complaint (ex-message e)})))))))))))
 
         "revert"
         (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)

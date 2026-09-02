@@ -72,7 +72,9 @@
             [samizdat.select-test]
             [samizdat.session-test]
             [samizdat.reflect-test]
-            [samizdat.watch-test]
+            [samizdat.reflex-test]
+            [samizdat.symbolic-test]
+            [samizdat.symbolic.dispatch-test]
             [samizdat.tasks-test]
             [samizdat.kernel-write-test]
             [samizdat.knowledge-test]
@@ -105,9 +107,14 @@
             [samizdat.lisp-test]
             [samizdat.lsp-test]
             [samizdat.cells-test]
+            [samizdat.park-test]
+            [samizdat.events-test]
+            [samizdat.cell-schema-test]
             [samizdat.mutation-test]
             [samizdat.ratelimit-test]
             [samizdat.repl-confinement-test]
+            [samizdat.retire-test]
+            [samizdat.schemacheck-test]
             [samizdat.repl-guard-test]
             [samizdat.repl-test]
             [samizdat.roles-test]
@@ -209,7 +216,9 @@
     samizdat.select-test
     samizdat.session-test
     samizdat.reflect-test
-    samizdat.watch-test
+    samizdat.reflex-test
+    samizdat.symbolic-test
+    samizdat.symbolic.dispatch-test
     samizdat.tasks-test
     samizdat.kernel-write-test
     samizdat.knowledge-test
@@ -242,9 +251,14 @@
     samizdat.lisp-test
     samizdat.lsp-test
     samizdat.cells-test
+    samizdat.park-test
+    samizdat.events-test
+    samizdat.cell-schema-test
     samizdat.mutation-test
     samizdat.ratelimit-test
     samizdat.repl-confinement-test
+    samizdat.retire-test
+    samizdat.schemacheck-test
     samizdat.repl-guard-test
     samizdat.repl-test
     samizdat.roles-test

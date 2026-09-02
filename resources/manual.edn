@@ -71,6 +71,8 @@
     :summary "The safety around a cell edit: install, validate against every manifest, soak, commit a project version or roll back."}
    {:name samizdat.workflow/catalog
     :summary "Every workflow available to select or adapt, with its description."}
+   {:name samizdat.manifests/preconditions
+    :summary "Every node's preconditions as one report — the ctx keys and data keys it requires, what holds on every path in, and what is unsatisfied with the path that fails — before an edit rather than as the refusal after."}
    {:name samizdat.workflow/compile-loop
     :summary "Compile a workflow definition through mycelium's static checks. Throws on any violation."}
    {:name samizdat.workflow/turn-manifest
@@ -79,6 +81,27 @@
     :summary "Whether the project under work IS a samizdat checkout. What the system prompt gates its sections about cells, manifests and src-vs-resources on: all of it is load-bearing here and standing instruction about the wrong codebase anywhere else."}
    {:name samizdat.agent.files/reference-roots
     :summary "The READ-ONLY roots a project declared beside its own (.samizdat/config.edn :run :reference-paths). read_file and grep resolve against them; writes stay confined to the root."}]}
+
+ {:group "Patterns: dispatch tables and rules"
+  :entries
+  [{:name samizdat.symbolic/rule
+    :summary "Compile {:when pattern :if guard :then template}. A map is an open subset (extra keys ignored, a named key must be present), a vector is closed and positional, ?x binds and repeats as equal, _ matches anything, sets and lists are literals."}
+   {:name samizdat.symbolic/first-match
+    :summary "The first rule that matches a term, with its bindings and result — a manifest dispatch table is this over the data map."}
+   {:name samizdat.symbolic/guard-catalog
+    :summary "Every guard a rule or a dispatch entry may name, with its arity and meaning. Nothing outside this list evaluates."}
+   {:name samizdat.symbolic/subsumes?
+    :summary "Whether every term one pattern matches the other matches too — the specificity order the dispatch check uses."}
+   {:name samizdat.symbolic.dispatch/analyse
+    :summary "A dispatch table's shadowed branches (refused at save) and order-dependent pairs (reported), over the order that runs."}
+   {:name samizdat.symbolic/widest-beam
+    :summary "The widest beam one turn deadline can carry against a provider that serves N calls at a time, in core.logic.fd; gates.edn :beam-contention feeds it."}
+   {:name samizdat.repl.guard/rules
+    :summary "The eval guard's rules — what an eval may not do in the live image — with the clauses that decide each. Enumerable, not editable: a guard the guarded thing can edit is not a guard."}
+   {:name samizdat.security.policy/rules
+    :summary "The shell policy as data: the structural rules, most authoritative first, and the allow/deny table. Every refusal names the one that made it."}
+   {:name samizdat.security.policy/shell-split
+    :summary "How the policy reads a command's shell structure — statements, separators, redirection — through a POSIX-subset grammar; a string the shell would refuse comes back with the position it stopped at."}]}
 
  {:group "Policy as data"
   :entries
@@ -104,6 +127,8 @@
     :summary "Score a branch's trajectory from the journal on the A-T letter scale, steps-so-far only — the offline validation entry point. Run it over a completed and an exhausted run and compare curves before wiring anything to the number."}
    {:name samizdat.agent.gates/trajectory-policy
     :summary "The trajectory-scoring policy from gates.edn: repeats, stride, criteria, and the not-yet-consulted abandon threshold."}
+   {:name samizdat.manifests/validate-mode
+    :summary "What a cell whose data does not match its declared shape costs at RUN time, from gates.edn :schema-validation :mode — :warn (record it on :mycelium/warnings and carry on), :strict (stop with the schema error), :off. Every cell declares :input/:output and every manifest an :input-schema, so mycelium checks the shapes each pass; this decides the cost. It does NOT reach the schema CHAIN check, which refuses a manifest whose wiring does not hold together whatever this says — that half is not yours to switch off."}
    {:name samizdat.prompt/render
     :summary "Render a prompt resource through selmer. Every harness message the model sees comes through here."}]}
 

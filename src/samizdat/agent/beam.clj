@@ -69,11 +69,12 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.select :as select]
+            [samizdat.events :as events]
             [samizdat.agent.state :as state]
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
-            [samizdat.watch :as watch]
             [samizdat.lexicon :as lexicon]
+            [samizdat.symbolic :as sym]
             [samizdat.agent.oversight :as oversight]
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
@@ -258,6 +259,23 @@
   []
   (or (some-> (System/getenv "HARNESS_TURN_DEADLINE_MS") parse-long)
       (gates/threshold :turn-deadline-ms)))
+
+(defn contended-width
+  "The beam width the provider can actually serve under the turn deadline,
+  from gates.edn :beam-contention — {:provider-concurrency :expected-turn-ms}
+  — or `width` unchanged when the policy names no provider.
+
+  A local endpoint that answers one call at a time turns five concurrent
+  branches into a queue, and the turn deadline then abandons whichever are
+  still waiting: the run learns it oversubscribed by failing the tail of
+  every round. Narrowed HERE, before the first branch opens, so the run row
+  records the width that will actually run. A turn that cannot fit at all
+  runs at width one rather than not at all; the log says so."
+  [width {:keys [provider-concurrency expected-turn-ms]} deadline-ms]
+  (:width (sym/widest-beam {:requested width
+                            :concurrency provider-concurrency
+                            :turn-ms expected-turn-ms
+                            :deadline-ms deadline-ms})))
 
 (defn round-max-turns
   "The turn cap this round compares against: the run's, plus whatever `extend`
@@ -500,7 +518,8 @@
   driver and wrong for one branch of five."
   [ctx b turn]
   (if-let [wf (:turn-workflow ctx)]
-    (let [data (myc/run-compiled wf ctx {:branch b :turn turn})
+    (let [data (workflow/note-schema-warnings!
+                ctx (myc/run-compiled wf ctx {:branch b :turn turn}))
           fail (fn [why]
                  (log/warn "branch" (:id b) "turn" turn "loop workflow failed:" why)
                  (assoc b :status :abandoned
@@ -740,7 +759,14 @@
       (constantly nil)
       (oversight/start!
        (assoc ctx :enabled? true
-              :every-ms (:every-ms p) :budget (:budget p) :poll-ms (:poll-ms p))
+              :every-ms (:every-ms p) :budget (:budget p) :poll-ms (:poll-ms p)
+              ;; PHASE 1 (RFC-012), on this stream rather than a second one.
+              ;; The reflex reads the implementer's steps off the bus and may
+              ;; nudge; it runs every poll and spends none of the budget,
+              ;; which rations model calls. It subscribes here so no step that
+              ;; arrives while the stream is starting is missed.
+              :event-ch (events/subscribe)
+              :reflex-fn oversight/reflex!)
        (fn [pass-ctx]
          (let [out (myc/run-compiled (workflow/compiled-manifest "oversight")
                                      pass-ctx {:oversight/carry (:carry pass-ctx)})]
@@ -782,13 +808,8 @@
   re-granting the N turns before it. Returns {:status :run-id :branches …}."
   [{:keys [conn run-id config repl-session] :as ctx} branches start-turn]
   (let [live-branches (atom branches)
-        ;; The watcher starts with the round and stops in the finally below,
-        ;; however the run ends. It observes and submits directives through the
-        ;; interventions queue; it never touches a branch, so it cannot race
-        ;; the round it is watching.
         ctx (assoc ctx :live-branches live-branches)
         _ (session/mark-run! run-id)
-        ctx (assoc ctx :stop-watch (watch/start! ctx))
         ;; THE SUPERVISOR STREAM, beside the run rather than inside it. The
         ;; watcher above is the reflex — rule-based, cheap, steering only. This
         ;; is the deliberate one: it runs the supervisor role over the run's
@@ -831,10 +852,14 @@
           ;; were written against the branch's own exception.
           (throw throwable)))
       (finally
-        ;; The watcher stops with the run, however the run ended.
-        (when-let [stop (:stop-watch ctx)] (stop))
         ;; The supervisor stream stops with the run, however the run ended.
+        ;; One stream now, with both phases on it: the reflex that used to be
+        ;; samizdat.watch's own thread runs on this one (RFC-012).
         (when-let [stop (:stop-oversight ctx)] (stop))
+        ;; Release the reflex's tap and its per-run memory; on a serve process
+        ;; neither would otherwise be reclaimed for the life of the process.
+        (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
+        (oversight/forget-run! run-id)
         ;; SHORT-TERM BECOMES LONG-TERM. The session tally dies with the
         ;; process; a pattern that held across the run is a candidate for
         ;; something the next run should start out knowing, and this is the
@@ -908,15 +933,26 @@
                                 :llm-config llm-config}
                                problem)
         loop-nm (workflow/active-loop-name config selected)
+        ;; THE IMPLEMENTER'S STREAM (RFC-012). Every cell that completes is
+        ;; published as a step, onto the same bus the journal already uses.
+        ;; The id is an atom because this compile happens BEFORE the run row
+        ;; exists — the row records a width this compile decides — and
+        ;; :on-trace is only accepted here.
+        run-id* (atom nil)
         {loop-version :version turn-wf :compiled iterating? :iterating?}
-        (workflow/compile-turn-loop conn loop-nm)
+        (workflow/compile-turn-loop conn loop-nm
+                                    {:on-trace (events/tracer run-id*)})
         ;; A non-iterating manifest (team, feature, decompose) is a whole-run
         ;; workflow: one "turn" is the branch's entire job, and it fans out
         ;; internally. Running five of those concurrently would multiply the
         ;; whole job rather than explore five lines of one, so the beam is
         ;; width 1 there regardless of what was asked for.
         requested-width (or beam-width (get-in config [:run :beam-width]) 5)
-        width (if iterating? requested-width 1)
+        forced-width (if iterating? requested-width 1)
+        ;; ...and no wider than the provider can serve under the deadline
+        ;; (gates.edn :beam-contention; Tier 2 of karamazov-41a).
+        contention (lexicon/policy :beam-contention)
+        width (contended-width forced-width contention (turn-deadline-ms))
         ;; Seeding forces sharing on for this run regardless of the config
         ;; flag: seeds enter through the shared log's context blocks, and
         ;; seeds nobody reads would be dead rows.
@@ -928,6 +964,9 @@
                                       :max-turns max-turns
                                       :beam-width width
                                       :prompt-digest (branch-loop/prompt-digest)})
+        ;; The tracer's steps can now say which run they belong to; the bus is
+        ;; process-wide and the watcher filters on it.
+        _ (reset! run-id* run-id)
         ;; Seeded before any branch opens, so the first context block a
         ;; branch ever sees can already carry inherited lemmas.
         ;; `quarantine` drops named claims from the inheritance: a row still
@@ -997,9 +1036,15 @@
                                             :else "default")
                            :beam-width width
                            :requested-beam-width requested-width}})
-    (when (not= width requested-width)
+    (when (not= forced-width requested-width)
       (log/info "loop" loop-nm "is a whole-run workflow; beam width forced to 1"
                 "(asked for" (str requested-width ")")))
+    (when (< width forced-width)
+      (log/info "beam width narrowed from" forced-width "to" width
+                "- the provider serves" (:provider-concurrency contention)
+                "call(s) at a time and a turn takes ~" (:expected-turn-ms contention)
+                "ms against a" (turn-deadline-ms) "ms turn deadline"
+                "(gates.edn :beam-contention)"))
     (let [initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))
           result (try (run-rounds ctx initial 1)
                       (catch Throwable e

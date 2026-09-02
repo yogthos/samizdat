@@ -34,13 +34,18 @@
   samizdat.userspace: the project's newest version, seeding the factory
   template on the way past (RFC-001)."
   (:require [clojure.edn :as edn]
+            [clojure.set :as set]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [maestro.core :as fsm]
             [mycelium.cell :as cell]
             [mycelium.compose :as compose]
             [mycelium.core :as myc]
+            [mycelium.schema :as schema]
+            [mycelium.workflow :as wf]
             [samizdat.cells :as cells]
+            [samizdat.lexicon :as lexicon]
             [samizdat.store.userspace :as us]
             [samizdat.userspace :as userspace]))
 
@@ -81,6 +86,137 @@
   [edn-text]
   (edn/read-string edn-text))
 
+(defn- cell-ref-id
+  "The cell id out of a manifest's `:cells` value.
+
+  mycelium accepts two forms — a bare `:ns/id` and a map `{:id :ns/id ...}`
+  carrying params — and every shipped manifest here uses the bare one. The map
+  form still has to be unwrapped: `cell/get-cell` returns nil for a map, so a
+  composed child written that way would silently declare nothing, which is the
+  bug `child-input-schema` exists to fix, reintroduced one level down. Both
+  mutation.clj and tools/mutate.clj already unwrap it the same way."
+  [cell-ref]
+  (if (map? cell-ref) (:id cell-ref) cell-ref))
+
+(defn- child-input-schema
+  "The `:input` a composed sub-workflow cell declares: whatever its child's
+  START cell requires, since that is the cell the composed handler feeds first.
+
+  mycelium already infers the composed cell's `:output` from the child's
+  end-reaching cells (compose/infer-workflow-output-schema); `:input` it takes
+  verbatim from what it is handed, and this used to hand it `{}`. The effect
+  was not cosmetic: mycelium's schema chain seeds `available` from the START
+  cell's input keys, so a parent whose entry node is a composed cell began its
+  walk with nothing available and refused the first downstream cell that
+  required anything — orchestrator, whose :start is the whole worker loop.
+
+  nil when the child's start cell is unregistered or declares no input, which
+  is the pre-schema state and the same `{}` as before."
+  [child]
+  (when-let [in (some-> (cell-ref-id (:start (:cells child)))
+                        cell/get-cell
+                        (get-in [:schema :input]))]
+    {:input in}))
+
+(defn- edge-targets [edge-def]
+  (cond (keyword? edge-def) #{edge-def}
+        ;; nil targets removed: a malformed edge must not make :end look
+        ;; unreachable, which would make reaches-end? call every node a cut
+        ;; vertex — see its docstring.
+        (map? edge-def) (into #{} (remove nil?) (vals edge-def))
+        :else #{}))
+
+(defn- reaches-end?
+  "Whether :end is reachable from :start through `edges`, with `skip` removed.
+
+  `:start` written out rather than `start-node`, which is defined further down
+  with the per-turn slice — same as `child-input-schema` above.
+
+  `(seq queue)` rather than `if-let` on its head: a nil sitting IN the queue
+  would otherwise read as an empty queue and end the walk early, reporting
+  unreachable with work still to do."
+  [edges skip]
+  (loop [queue [:start] seen #{}]
+    (if (seq queue)
+      (let [node (first queue)]
+        (cond
+          (= :end node) true
+          (or (nil? node) (seen node) (= skip node)) (recur (vec (rest queue)) seen)
+          :else (recur (into (vec (rest queue)) (edge-targets (get edges node)))
+                       (conj seen node))))
+      false)))
+
+(defn- guaranteed-output-keys
+  "The keys a cell writes on EVERY transition, optional ones excluded.
+
+  A per-transition output is intersected across its transitions, which is
+  what makes this safe: :llm/parse promises the parse products on two of its
+  three edges and nothing on the provider-error edge, so it guarantees
+  nothing at all.
+
+  Per-transition detection goes through mycelium's own `per-transition?` and
+  `transitions-map` rather than matching the vector by hand, so a malformed
+  declaration is rejected by the same predicate mycelium uses instead of
+  reaching `vals` and throwing a ClassCastException that names no cell.
+
+  Lite schemas count: mycelium accepts `{:x :int}` for `[:map [:x :int]]`, and
+  a cell written that way promised nothing here while delivering everything."
+  [cell-id]
+  (let [output (:output (:schema (cell/get-cell cell-id)))
+        keys-of (fn [m]
+                  (cond
+                    (map? m) (set (keys m))
+                    (and (vector? m) (= :map (first m)))
+                    (set (keep (fn [e]
+                                 (when (and (vector? e)
+                                            (not (:optional (second e))))
+                                   (first e)))
+                               (rest m)))))]
+    (cond
+      (nil? output) #{}
+
+      (schema/per-transition? output)
+      (let [per (vals (schema/transitions-map output))]
+        (if (seq per) (reduce set/intersection (map #(or (keys-of %) #{}) per)) #{}))
+
+      :else (or (keys-of output) #{}))))
+
+(defn- child-output-schema
+  "The `:output` a composed sub-workflow cell may promise: what the child
+  writes on every path it can take.
+
+  mycelium infers this from the child's END-REACHING cells only — the ones
+  whose edges go to :end — while the composed handler returns the child's
+  whole final data map. So a key written mid-graph is delivered and not
+  declared, and orchestrator is where that bit: it dispatches on :verdict,
+  which the worker's :loop/route writes, and :loop/route is not an
+  end-reaching cell. :loop/finish therefore could not require :verdict.
+
+  Computed as the union over cells that lie on EVERY path from :start to
+  :end — a cell whose removal disconnects them — of the keys each guarantees
+  on every transition. Both halves matter for safety. Unioning all the
+  child's cells would declare keys written only on paths a run may not take,
+  which is the failure that produces false confidence rather than false
+  refusals: a parent compiles, then reads nil."
+  [child]
+  (let [edges (:edges child)
+        ;; A child whose :end is unreachable at all would make EVERY node look
+        ;; like a cut vertex, and the union of everything is exactly the
+        ;; over-approximation the paragraph above rules out. mycelium refuses
+        ;; such a graph at compile, so this only guards the order in which the
+        ;; two run — but promising more than a child delivers is the failure
+        ;; that compiles and then reads nil, so it is worth not being able to
+        ;; reach.
+        reachable? (reaches-end? edges nil)
+        on-every-path (when reachable?
+                        (filter #(not (reaches-end? edges %)) (keys (:cells child))))
+        ks (reduce into #{}
+                   (map #(guaranteed-output-keys
+                          (cell-ref-id (get (:cells child) %)))
+                        on-every-path))]
+    (when (seq ks)
+      {:output (into [:map] (map (fn [k] [k :any])) (sort ks))})))
+
 (defn register-subworkflows!
   "A manifest can compose sub-loops: `:subworkflows {cell-id manifest-name}`
   registers each named manifest as a workflow-cell (mycelium.compose) under
@@ -95,8 +231,10 @@
   could not be composed (karamazov-blt.3/.6)."
   [definition]
   (doseq [[cell-id mname] (:subworkflows definition)]
-    (compose/register-workflow-cell!
-     cell-id (read-definition (manifest-body! mname)) {})))
+    (let [child (read-definition (manifest-body! mname))]
+      (compose/register-workflow-cell!
+       cell-id child (merge (child-input-schema child)
+                            (child-output-schema child))))))
 
 (def ctx-keys
   "The run-scoped resources every driver hands a cell, as a set.
@@ -149,6 +287,51 @@
                    " drivers must set it, or the cell should not be asking.")
               {:wanted wanted :provided (sort ctx-keys)})))))
 
+(defn preconditions
+  "Every node's preconditions as ONE report, and whether each holds
+  (karamazov-41a.6): {:nodes {node {:cell :ctx-requires :ctx-missing
+  :data-requires :established}} :unsatisfied [...]}.
+
+  Two checks already refuse a manifest at compile, each by throwing:
+  `check-requires!` for the ctx keys a cell reads that no driver provides,
+  and mycelium's schema chain for a data key a cell requires that nothing
+  upstream produces on some path. This is the same two facts as data, per
+  node, BEFORE an edit rather than as the refusal after it: what a node
+  requires from the driver and from upstream, and `:established` — what
+  holds on EVERY path that reaches it, the intersection over paths, which is
+  the only sense in which a key can be relied on.
+
+  An `:unsatisfied` entry is {:kind :ctx|:data :node :cell :missing}, and a
+  :data one carries the `:path` that reaches the node lacking the key — the
+  edge to fix is on it. Composed sub-loops are registered first, as
+  `compile-definition` does, so a parent reading a child's outputs resolves.
+
+  Pure Clojure, no solver: matching a required set against an established
+  set needs no search. That is Tier 1; the numeric questions are Tier 2
+  (`samizdat.symbolic/widest-beam`)."
+  [definition]
+  (register-subworkflows! definition)
+  (let [cells (:cells definition)
+        ctx-of (fn [cell-id] (cell-requires cell-id))
+        ctx-missing (fn [cell-id] (set (remove ctx-keys (ctx-of cell-id))))
+        {:keys [errors requires established]} (wf/schema-chain-report definition)
+        nodes (into {}
+                    (for [[node cell-ref] cells
+                          :let [cell-id (if (map? cell-ref) (:id cell-ref) cell-ref)]]
+                      [node {:cell cell-id
+                             :ctx-requires (ctx-of cell-id)
+                             :ctx-missing (ctx-missing cell-id)
+                             :data-requires (get requires node #{})
+                             :established (get established node #{})}]))
+        unsatisfied (concat
+                     (for [[node {:keys [cell ctx-missing]}] nodes
+                           :when (seq ctx-missing)]
+                       {:kind :ctx :node node :cell cell :missing ctx-missing})
+                     (for [{:keys [cell-name cell-id missing-keys path]} errors]
+                       {:kind :data :node cell-name :cell cell-id
+                        :missing missing-keys :path path}))]
+    {:nodes nodes :unsatisfied (vec unsatisfied)}))
+
 (defn invariants
   "Every ordering rule a manifest CLAIMS, enforced or not.
 
@@ -190,6 +373,61 @@
   [definition]
   (vec (remove :enforced (:invariants definition))))
 
+(def ^:private default-validate-mode
+  "What a schema mismatch costs when gates.edn has nothing to say — during a
+  test that stubbed the policy out, or before a project has a store bound.
+
+  :warn rather than :strict, and rather than :off. :off would let a missing
+  policy silently switch off checking, which is the failure mode where nobody
+  finds out; :strict would let it halt a run over a declaration the rollout
+  has not finished making precise."
+  :warn)
+
+(defn validate-mode
+  "What a cell whose data does not match its declared shape costs at RUN time:
+  :warn, :strict or :off, from gates.edn :schema-validation.
+
+  Read through `lexicon`, not `gates`: `gates` requires state and supervisor,
+  and this namespace is required by everything, including them.
+
+  It does NOT reach the schema CHAIN check. mycelium walks the graph inside
+  validate-workflow whatever this returns, so an edit that breaks the wiring
+  is refused at `manifest save` regardless — the half the validated thing must
+  not be able to switch off."
+  []
+  (or (:mode (lexicon/policy :schema-validation)) default-validate-mode))
+
+(defn- on-error
+  "A SCHEMA violation comes back as data; everything else still throws.
+
+  mycelium installs an ::fsm/error state only when a compile is handed an
+  :on-error, so without one maestro's default runs and throws ex-info
+  \"execution error\" carrying the whole FSM map. Every driver here is written
+  for the other contract — run-turn, run! and beam/advance all read
+  (myc/error? data) — so under :schema-validation :strict that branch was
+  unreachable, the beam could not abandon one branch with a reason, and what
+  surfaced was a page of FSM internals instead of mycelium's own message
+  naming the cell and the missing keys.
+
+  SURGICAL, and deliberately so. Handler exceptions keep maestro's behaviour,
+  because things downstream are built on it: feature's `safely` catches a
+  throwing stage to record it and fall through to a safe default, and the
+  beam's unwrap-round-error digs the real cause out of the nested ex-data. A
+  blanket on-error would turn every nested crash into a nil verdict that
+  nothing notices — trading a loud failure for a silent one."
+  [resources fsm-state]
+  (if (get-in fsm-state [:data :mycelium/schema-error])
+    ;; PARKED, not ended. :mycelium/resume names the state to re-enter and
+    ;; mycelium's resume-compiled takes it from there, so the failure is a
+    ;; place the run stopped rather than the end of it. `:last-state-id` is
+    ;; the cell that failed, which is deliberately where a resume re-enters:
+    ;; the supervisor fixes that cell and the fix is RETRIED rather than
+    ;; skipped past.
+    (-> (:data fsm-state)
+        (assoc :mycelium/halt true
+               :mycelium/resume (:last-state-id fsm-state)))
+    (fsm/default-on-error resources fsm-state)))
+
 (defn compile-definition
   "The full static check WITHOUT reloading the cell registry: structure,
   dispatch coverage, reachability, sub-workflow registration, ctx-key
@@ -200,36 +438,53 @@
   load-stringed a CANDIDATE into the live image, and `compile-loop`'s
   registry reload would replace the candidate with the stored cells — so the
   validate would check the loop against the code it is about to stop
-  running. A caller that has not touched the registry wants `compile-loop`."
-  [definition]
-  (when-not (seq (:cells definition))
-    (throw (ex-info (str "not a workflow definition: no :cells"
-                         (when (nil? definition) " (the definition is nil)"))
-                    {:definition definition})))
-  ;; Register any composed sub-loops as cells before the parent references them.
-  (register-subworkflows! definition)
-  (check-requires! definition)
-  (let [compiled (myc/pre-compile
-                  (assoc definition :constraints (enforced-constraints definition)))]
-    (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
-      (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
-    compiled))
+  running. A caller that has not touched the registry wants `compile-loop`.
+
+  `opts` may carry `:on-trace`, mycelium's per-cell callback — how a driver
+  puts the implementer's stream in front of the supervisor (RFC-012). It is a
+  COMPILE-time opt because mycelium bakes it into the interceptors, which is
+  also why it takes the run's tracer rather than reading anything at run time."
+  ([definition] (compile-definition definition nil))
+  ([definition opts]
+   (when-not (seq (:cells definition))
+     (throw (ex-info (str "not a workflow definition: no :cells"
+                          (when (nil? definition) " (the definition is nil)"))
+                     {:definition definition})))
+   ;; Register any composed sub-loops as cells before the parent references them.
+   (register-subworkflows! definition)
+   (check-requires! definition)
+   (let [compiled (myc/pre-compile
+                   (assoc definition :constraints (enforced-constraints definition))
+                   ;; Baked in HERE because mycelium reads :validate at compile
+                   ;; time, into the interceptors it builds — there is no
+                   ;; per-run override later. A manifest compiled fresh per run
+                   ;; (which every driver does) therefore picks up a policy edit
+                   ;; on the next run, like every other gates.edn value.
+                   (cond-> {:validate (validate-mode)
+                            :on-error on-error}
+                     (:on-trace opts) (assoc :on-trace (:on-trace opts))))]
+     (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
+       (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
+     compiled)))
 
 (defn compile-loop
   "Compile a loop definition through mycelium's full static checking:
   structure, dispatch coverage, reachability, and the :constraints that make
   the loop's invariants compile-time errors. Throws on any violation —
   which is the mutation protocol's first line of defense. Logs, and returns
-  compiled with, any :mycelium/compile-warnings (undeclared cell effects)."
-  [definition]
+  compiled with, any :mycelium/compile-warnings (undeclared cell effects).
+
+  `opts` passes through to compile-definition — notably `:on-trace`."
+  ([definition] (compile-loop definition nil))
+  ([definition opts]
   ;; Load the cells before every compile. The cell registry is global mutable
   ;; state, and a non-empty registry is not proof the LOOP's cells are present
   ;; (a test or another workflow may have registered different ones) — so this
   ;; always loads rather than guarding on emptiness. Idempotent, cheap, and it
   ;; picks up any edited cell, which is the hot-reload the mutation protocol
   ;; builds on.
-  (cells/load-cells!)
-  (compile-definition definition))
+   (cells/load-cells!)
+   (compile-definition definition opts)))
 
 ;; --- the per-turn slice ------------------------------------------------------
 

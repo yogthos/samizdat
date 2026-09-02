@@ -358,3 +358,21 @@
     (doseq [n names]
       (is (contains? listed n) (str n " is not in the catalogue the supervisor reads"))
       (is (some? (workflow/compiled-manifest n)) (str n " does not compile")))))
+
+(deftest the-beam-narrows-to-what-the-provider-can-serve-under-the-deadline
+  ;; karamazov-41a.8. gates.edn :beam-contention says how many calls the
+  ;; provider serves at once and how long a turn takes; the width is clamped
+  ;; to what fits one turn deadline, before the first branch opens, instead
+  ;; of the deadline abandoning the tail of every round.
+  (is (= 4 (beam/contended-width 5 {:provider-concurrency 1 :expected-turn-ms 200000}
+                                 900000)))
+  (is (= 5 (beam/contended-width 5 {:provider-concurrency 2 :expected-turn-ms 200000}
+                                 900000)))
+  (testing "no policy, or a policy that names no provider, changes nothing"
+    (is (= 5 (beam/contended-width 5 nil 900000)))
+    (is (= 5 (beam/contended-width 5 {} 900000)))
+    (is (= 5 (beam/contended-width 5 {:provider-concurrency nil :expected-turn-ms nil}
+                                   900000))))
+  (testing "a turn that cannot fit at all runs at width one rather than not at all"
+    (is (= 1 (beam/contended-width 5 {:provider-concurrency 1 :expected-turn-ms 2000000}
+                                   900000)))))

@@ -9,6 +9,12 @@
 ;; This seeds version 1 of the "critic" workflow; after that the db rows win.
 ;; The agent can tune it or fork a new manifest with the `manifest` tool.
 {:description "The worker loop with a finalization critic: on a done, a judge reviews the run's diff and either ships it or sends it back. Use when correctness matters more than speed and a single branch is enough."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start          :loop/assemble
          :infer          :llm/infer
          :parse          :llm/parse

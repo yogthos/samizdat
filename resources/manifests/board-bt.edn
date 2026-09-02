@@ -25,6 +25,12 @@
 ;; carries the argument. Select with config :run :loop "board-bt", or as the
 ;; feature loop's implement stage with :run :board-manifest "board-bt".
 {:description "The board loop in behavior-tree shape: same owned tasks and per-diff review as board, but the loop's position is re-derived from the board's actual state every tick instead of remembered by the machine. An A/B variant for the loop-guard epic — prefer board until it has been measured against it."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start  :board/plan
          :sense  :board/sense
          :next   :board/next

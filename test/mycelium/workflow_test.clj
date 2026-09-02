@@ -656,3 +656,84 @@
                  {:cells {:start    :test/parse-body
                           :validate :test/validate-envelope}
                   :edges {:start :validate :validate :end}})))))
+
+;; ===== Pattern dispatch =====
+
+(deftest compile-edges-with-pattern-dispatch-test
+  (testing "compile-edges accepts a pattern wherever it accepts a predicate"
+    (let [dispatches (wf/compile-edges {:success :validate, :failure :error}
+                                       '[[:success {:a-done true}]
+                                         [:failure _]])
+          [[_ ok] [_ fail]] dispatches]
+      (is (= 2 (count dispatches)))
+      (is (true? (ok {:a-done true})))
+      (is (false? (ok {:a-done false})))
+      (is (true? (fail {:whatever 1}))))))
+
+(deftest compile-workflow-refuses-a-shadowed-pattern-branch-test
+  (testing "A branch no data can reach is a compile error, like an unreachable cell"
+    (register-cells!)
+    (is (thrown-with-msg? Exception #"can never fire"
+          (wf/compile-workflow
+           {:cells {:start :test/cell-a :b :test/cell-b :d :test/cell-d}
+            :edges {:start {:b :b :d :d} :b :end :d :end}
+            :dispatches '{:start [[:b _]
+                                  [:d {:a-done true}]]}})))))
+
+;; ===== Schema chain: the path, and what each node can rely on =====
+
+(deftest schema-chain-error-names-the-path-that-fails-test
+  (testing "A key missing on ONE path names that path, not just the node"
+    ;; :start produces :a-val on :next and nothing on :skip; :step-2 needs
+    ;; :a-val, and is reached both ways. Per-transition outputs are what make
+    ;; the walk path-sensitive rather than a union, and the path is what the
+    ;; author has to see to fix the right edge.
+    (defmethod cell/cell-spec :test/branching-producer [_]
+      {:id :test/branching-producer
+       :handler (fn [_ data] data)
+       :schema {:input [:map [:x :int]]
+                :output [:per-transition {:next [:map [:a-val :int]]
+                                          :skip [:map]}]}})
+    (defmethod cell/cell-spec :test/needs-a-val [_]
+      {:id :test/needs-a-val
+       :handler (fn [_ data] data)
+       :schema {:input [:map [:a-val :int]]
+                :output [:map [:a-val :int]]}})
+    (defmethod cell/cell-spec :test/passthrough [_]
+      {:id :test/passthrough
+       :handler (fn [_ data] data)
+       :schema {:input [:map] :output [:map]}})
+    (let [workflow {:cells {:start :test/branching-producer
+                            :hop :test/passthrough
+                            :step-2 :test/needs-a-val}
+                    :edges {:start {:next :step-2 :skip :hop}
+                            :hop {:on :step-2}
+                            :step-2 {:ok :end}}
+                    :dispatches {:start [[:next (fn [d] (:go d))]
+                                         [:skip (constantly true)]]
+                                 :hop [[:on (constantly true)]]
+                                 :step-2 [[:ok (constantly true)]]}}
+          report (wf/schema-chain-report workflow)]
+      (is (= [[:start :hop :step-2]] (map :path (:errors report)))
+          "the failing path is the one through :hop, where :skip produced nothing")
+      (is (= #{:a-val} (:missing-keys (first (:errors report)))))
+      (is (= #{:x} (get-in report [:established :step-2]))
+          "established is what holds on EVERY path in: :a-val does not")
+      (is (thrown-with-msg? Exception #"\[:start :hop :step-2\]"
+            (wf/compile-workflow workflow))
+          "and the refusal quotes the path"))))
+
+(deftest schema-chain-report-says-what-each-node-can-rely-on-test
+  (register-cells!)
+  (let [report (wf/schema-chain-report
+                {:cells {:start :test/cell-a :step-b :test/cell-b :step-c :test/cell-c}
+                 :edges {:start {:success :step-b :failure :error}
+                         :step-b {:success :step-c}
+                         :step-c {:done :end}}
+                 :dispatches {:start [[:success (fn [d] (:a-done d))]
+                                      [:failure (fn [d] (not (:a-done d)))]]
+                              :step-b [[:success (constantly true)]]
+                              :step-c [[:done (constantly true)]]}})]
+    (is (= [] (:errors report)))
+    (is (= #{:x :a-done} (get-in report [:established :step-b])))
+    (is (= #{:x :a-done :b-done} (get-in report [:established :step-c])))))

@@ -129,7 +129,10 @@
             (nil? why) (base/malformed branch (base/missing ctx :rationale))
             :else
             (if-let [complaint (render-check (str body))]
-              (base/fail branch (msg {:bad-render true :name name :complaint complaint}))
+              ;; The render check is this surface's whole validation, so a
+              ;; body that fails it is a rejected edit — nothing was stored.
+              (base/rejected branch (msg {:bad-render true :name name
+                                          :complaint complaint}))
               (if-let [v (userspace/save! :prompt name (str body) why)]
                 (base/ok branch (msg {:saved true :name name :version v})
                          :progress? true)

@@ -34,7 +34,7 @@
 
 (deftest patching-harness-source-is-a-kernel-write
   (is (guard/kernel-write? (f "(spit \"src/samizdat/agent/tools/introspect.clj\" patched)")))
-  (is (guard/kernel-write? (f "(spit \"vendor/ring_chez/adapter.clj\" x)")))
+  (is (guard/kernel-write? (f "(spit \"src/ring_chez/adapter.clj\" x)")))
   (testing "including through a nested or threaded form"
     (is (guard/kernel-write? (f "(when true (spit \"src/samizdat/repl.clj\" x))")))))
 
@@ -76,3 +76,18 @@
   (let [r (route/eval-for {:root "/tmp/whatever" :role :supervisor} "(+ 1 2)" nil 5000)]
     (is (:ok r))
     (is (= "3" (:value r)))))
+
+(deftest a-kernel-write-finding-names-the-rule-and-what-it-fired-on
+  (let [[hit] (guard/findings (f "(spit \"src/samizdat/repl.clj\" x)"))]
+    (is (= :kernel-source-write (:rule hit)))
+    (is (= 'spit (get-in hit [:bindings '?head])))
+    (is (= "src/samizdat/repl.clj" (get-in hit [:bindings '?path]))))
+  (let [[hit] (guard/findings (f "(require 'samizdat.repl :reload)"))]
+    (is (= :harness-reload (:rule hit)))))
+
+(deftest the-refusal-names-the-rule-that-fired
+  (let [r (route/eval-for {:root "/tmp/whatever" :role :supervisor}
+                          "(spit \"src/samizdat/repl.clj\" \"x\")" nil 5000)]
+    (is (str/includes? (str (:error r)) "kernel-source-write"))
+    (is (str/includes? (str (:error r)) "src/samizdat/repl.clj")
+        "and what it fired on")))

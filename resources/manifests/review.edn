@@ -7,6 +7,12 @@
 {:description "A review workflow: the base loop with review guidance injected at the start, so the run reviews existing work rather than building new. Use to audit or review a change, not to implement one."
  :prompt "review"
 
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start          :loop/assemble
          :infer          :llm/infer
          :parse          :llm/parse

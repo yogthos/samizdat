@@ -55,6 +55,49 @@
   (async/close! ch)
   nil)
 
+(defn step
+  "One mycelium trace entry as a STEP event: the implementer advancing through
+  its state graph, for the supervisor to watch (RFC-012).
+
+  Until this existed the bus carried only journal appends — turn-level, after
+  the fact — so a supervisor wanting to know what the implementer was doing
+  mid-turn had to re-derive it. mycelium hands every completed cell to
+  `:on-trace`; this is that, published.
+
+  `:data` is deliberately dropped. A trace entry holds the WHOLE data map at
+  that cell, branch and message history included, so a bus of raw entries is a
+  bus of copies of the branch — and this one has a sliding buffer, so it would
+  be 256 of them. The shape of the step is what a watcher needs; a value it
+  actually wants is one `fetch_turn` away."
+  [run-id entry]
+  (let [d (:data entry)]
+    (cond-> {:kind :step
+             :run-id run-id
+             :branch-id (get-in d [:branch :id])
+             :turn (:turn d)
+             :node (:cell entry)
+             :cell (:cell-id entry)
+             :transition (:transition entry)
+             :ms (:duration-ms entry)}
+      (:error entry) (assoc :failed true))))
+
+(defn tracer
+  "The `:on-trace` callback to hand mycelium, publishing a step per cell.
+
+  `run-id*` is derefable rather than a value because the turn manifest is
+  compiled BEFORE the run row exists — the row records a width the compile
+  decides — so the id is not known at the only moment mycelium will accept a
+  callback.
+
+  Never throws. :on-trace runs synchronously inside the implementer's turn, so
+  a bus that could fail would be a bus that can break the run it observes."
+  [run-id*]
+  (fn [entry]
+    (try (publish! (step (if (instance? clojure.lang.IDeref run-id*)
+                           @run-id* run-id*)
+                         entry))
+         (catch Throwable _ nil))))
+
 (defn collect
   "Drain whatever is currently buffered on `ch`. For tests and for a polling
   client that would rather not block."

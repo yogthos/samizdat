@@ -1,5 +1,5 @@
-Refused: that would write harness source, or reload it into the process you are
-running in.
+Refused (rule `{{rule}}`, on `{{on}}`): that would write harness source, or
+reload it into the process you are running in.
 
 Editing the kernel from `eval` puts model-written code into the live harness
 with no checkpoint, no validation, no soak, and no version for rollback to

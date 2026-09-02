@@ -131,10 +131,16 @@
                                     (str/lower-case (str/replace line #"[^A-Za-z0-9]+" "-"))))
                          existing (knowledge/by-pattern conn key)]]
                (if existing
-                 (do (knowledge/corroborate! conn (:id existing) run-id)
-                     (when (= "OVERVIEW" section)
-                       (knowledge/restate! conn (:id existing) line))
-                     {:id (:id existing) :kind kind :repeat? true})
+                 ;; Corroborate BEFORE restating, and report whichever row is
+                 ;; live afterwards. Restating retires the old version and
+                 ;; opens a new one (karamazov-oov), so a count recorded after
+                 ;; it lands on the retired row, and handing the old id back
+                 ;; would aim every later outcome at a memory nothing can
+                 ;; recall. `restate!` carries the record across the lineage.
+                 (let [_ (knowledge/corroborate! conn (:id existing) run-id)
+                       restated (when (= "OVERVIEW" section)
+                                  (knowledge/restate! conn (:id existing) line))]
+                   {:id (or restated (:id existing)) :kind kind :repeat? true})
                  {:id (knowledge/remember! conn {:content line :kind kind
                                                  :run-id run-id :pattern-key key
                                                  :confidence 0.7})

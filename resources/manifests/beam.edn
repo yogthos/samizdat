@@ -15,6 +15,11 @@
 ;; data map, the predicate only reads it.
 {:description "The beam scheduler: one round advances every active branch once, then scores, culls, settles, repopulates and spawns against the settled set. A barrier rather than a pipeline, because a branch deciding whether to fork needs the whole beam's last round rather than whenever its sibling happened to finish."
 
+ :input-schema
+ ;; The SCHEDULER's entry, which is a different shape from every other
+ ;; manifest here: the round works over the whole beam, not one branch.
+ [:map [:branches :any] [:turn :int]]
+
  :cells {:start      :beam/round-open
          :directives :beam/directives
          :advance    :beam/advance

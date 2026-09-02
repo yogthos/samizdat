@@ -73,7 +73,21 @@
         been handed to it, so a stalled implementer that hands nothing to
         anybody cannot starve it."
    :effects [:db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   ;; Nothing. That is the docstring's claim made checkable: the stream reads
+   ;; the journal, so it depends on nothing having been handed to it, and a
+   ;; cell declaring no input is a cell no stalled stage can starve.
+   :input  [:map]
+   ;; PER-TRANSITION, because the two edges leave with genuinely different
+   ;; maps. The :quiet side is also the fallback's shape — a gather that threw
+   ;; still routes, carrying only the decision not to look further — so
+   ;; declaring the telemetry on both would promise :oversight/quiet keys that
+   ;; a failed gather never wrote.
+   :output [:per-transition
+            {:reason [:map [:oversight/turns :any] [:oversight/firings :any]
+                      [:oversight/findings :any] [:oversight/unmet :any]
+                      [:oversight/idle :any] [:oversight/worth-a-look? :boolean]]
+             :quiet  [:map [:oversight/worth-a-look? :boolean]]}]}
   (fn [{:keys [conn run-id]} data]
     (safely :gather
      (fn []
@@ -132,7 +146,17 @@
         and the stage overwriting each other's turn numbers, and a record that
         cannot say which supervisor said what is a record of neither."
    :effects [:net :db]
-   :requires [:conn :run-id :config]}
+   :requires [:conn :run-id :config]
+   ;; The telemetry gather produced, which only reaches here on the :reason
+   ;; edge — the manifest's :must-follow constraint and this input are the two
+   ;; halves of the same claim.
+   :input  [:map [:oversight/turns :any] [:oversight/firings :any]
+            [:oversight/unmet :any] [:oversight/idle :any]
+            [:oversight/carry {:optional true} :any]]
+   ;; :oversight/branch only on the path that ran — the fallback records a
+   ;; verdict and an explanation, and there is no branch to carry.
+   :output [:map [:oversight/verdict :keyword] [:oversight/answer :any]
+            [:oversight/branch {:optional true} :any]]}
   (fn [{:keys [conn run-id] :as ctx} data]
     (safely :reason
      (fn []
@@ -190,7 +214,12 @@
         operator and `:feature/supervise`, which quotes the stream's last
         conclusion rather than deriving a second one of its own."
    :effects [:db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   :input  [:map [:oversight/verdict :keyword] [:oversight/answer :any]
+            [:oversight/idle {:optional true} :any]
+            [:oversight/unmet {:optional true} :any]]
+   ;; Returns `data`: the record is the effect, and the row is the product.
+   :output [:map]}
   (fn [{:keys [conn run-id]} data]
     (safely :apply
      (fn []
@@ -215,7 +244,14 @@
         whole of knowing whether the harness is watching itself. It is one
         cheap row against a run's thousands."
    :effects [:db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   ;; Both OPTIONAL, which the chain check is what established. The :quiet
+   ;; edge is also the one a gather that THREW takes, and that path wrote
+   ;; neither key — so the heartbeat row is empty in exactly the case where
+   ;; something went wrong. It still fires, which is the point of it.
+   :input  [:map [:oversight/idle {:optional true} :any]
+            [:oversight/unmet {:optional true} :any]]
+   :output [:map]}
   (fn [{:keys [conn run-id]} data]
     (safely :quiet
      (fn []

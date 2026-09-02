@@ -10,6 +10,12 @@
 ;; without touching how implementors work. Today it mirrors `worker`; it is free
 ;; to diverge.
 {:description "The reviewer role loop: reads the implementors' finished work and returns PASS or REVISE. A component of the feature loop, not usually run standalone."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start          :loop/assemble
          ;; THE CONTEXT-BUDGET LADDER, as nodes. Compaction used to be a
          ;; side effect of building the request — invisible to every
