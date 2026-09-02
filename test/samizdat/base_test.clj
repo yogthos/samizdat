@@ -384,7 +384,12 @@
                   samizdat's vocabulary."}}
 
    "src/samizdat/llm/fence.clj"
-   {:vocabulary {:all "The tool-call fence is the ABI between the harness and
+   {:threshold {40 "How many characters of the model's own text a parse
+                    error quotes on each side of the failure. The width of a
+                    quotation, not a decision: the model recognises its text
+                    at any width past a few words, and a project has nothing
+                    to gain by retuning it."}
+    :vocabulary {:all "The tool-call fence is the ABI between the harness and
                        the model — the one format the base must be able to
                        read before any resource has been loaded. It is
                        documented to the model in prompts/system.md, and the

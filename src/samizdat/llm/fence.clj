@@ -37,6 +37,8 @@
   adjust repair budgets and may never relax a verification gate."
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
+            [instaparse.combinators :as c]
+            [instaparse.core :as insta]
             [samizdat.prompt :as prompt]))
 
 ;; Any opener paired with any closer.
@@ -265,6 +267,54 @@
 
 (defn- parse-error [msg extra]
   (merge {:name "__parse_error__" :args {} :parse-error msg} extra))
+
+;; --- locating a JSON failure ------------------------------------------------
+;;
+;; data.json under jolt reports a failure's KIND — "(end-of-file inside
+;; string)", "(missing `:` in object)" — and nothing about where. The model
+;; was told what category of mistake it made and left to find the character
+;; in a body that can run to thousands of them. This grammar exists only to
+;; answer WHERE. It is not the parser of record: data.json and the repair
+;; pass decide whether a body parses, and the grammar runs after both have
+;; said no, against the text the model wrote, so the excerpt it quotes is
+;; text the model can recognise (karamazov-aqsr.1).
+
+(def ^:private json-grammar
+  {:doc    (c/cat (c/hide (c/regexp #"\s*")) (c/nt :value) (c/hide (c/regexp #"\s*")))
+   :value  (c/hide-tag (c/ord (c/nt :object) (c/nt :array) (c/nt :string)
+                              (c/nt :number) (c/nt :true) (c/nt :false) (c/nt :null)))
+   :object (c/cat (c/hide (c/regexp #"\{\s*"))
+                  (c/opt (c/cat (c/nt :pair)
+                                (c/star (c/cat (c/hide (c/regexp #"\s*,\s*")) (c/nt :pair)))))
+                  (c/hide (c/regexp #"\s*\}")))
+   :pair   (c/cat (c/nt :string) (c/hide (c/regexp #"\s*:\s*")) (c/nt :value))
+   :array  (c/cat (c/hide (c/regexp #"\[\s*"))
+                  (c/opt (c/cat (c/nt :value)
+                                (c/star (c/cat (c/hide (c/regexp #"\s*,\s*")) (c/nt :value)))))
+                  (c/hide (c/regexp #"\s*\]")))
+   :string (c/regexp #"\"(?:[^\"\\\x00-\x1f]|\\[\"\\/bfnrt]|\\u[0-9a-fA-F]{4})*\"")
+   :number (c/regexp #"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
+   :true   (c/string "true")
+   :false  (c/string "false")
+   :null   (c/string "null")})
+
+(def ^:private json-parser (insta/parser json-grammar :start :doc))
+
+(def ^:private excerpt-chars 40)
+
+(defn locate-json-failure
+  "Where `s` stops being JSON: {:index :line :column :before :after}, or nil
+  when it parses. :before is the text just before the failure and :after the
+  text from it on, each cut to a few dozen characters — enough to find the
+  spot in what the model wrote, not enough to echo a whole file back."
+  [^String s]
+  (let [tree (json-parser s)]
+    (when (insta/failure? tree)
+      (let [{:keys [index line column]} (insta/get-failure tree)
+            index (min (or index 0) (count s))]
+        {:index index :line line :column column
+         :before (subs s (max 0 (- index excerpt-chars)) index)
+         :after (subs s index (min (count s) (+ index excerpt-chars)))}))))
 
 (defn- read-json [s]
   (try
@@ -672,20 +722,27 @@
           ;; it; reading that as broken JSON looped the recovery on its own
           ;; advice. Tried only where the JSON path has already failed, so a
           ;; well-formed JSON fence never reaches it.
-          (let [fail (fn [msg]
+          ;; WHERE, against the body the model wrote — never the repaired
+          ;; one, whose positions have drifted by every character the repair
+          ;; inserted. The same location serves both complaints below, which
+          ;; is why it is computed once here.
+          (let [where (locate-json-failure body)
+                complaint (merge {:error (:error first-try)} where)
+                fail (fn [msg]
                        (if-let [x (or (some-> (tagged-call body)
                                               (assoc :tagged-call? true))
                                       (some-> (xml-call body)
                                               (assoc :xml-call? true)))]
                          (merge base x)
-                         (parse-error msg base)))]
+                         (parse-error msg (cond-> base
+                                            where (assoc :position where)))))]
           (if-not needed-repair?
             (fail
-             (prompt/render "parse-error-causes" {:error (:error first-try)}))
+             (prompt/render "parse-error-causes" complaint))
             (let [second-try (read-json repaired)]
               (if-not (:ok second-try)
                 (fail
-                 (prompt/render "parse-error-repaired" {:error (:error first-try)}))
+                 (prompt/render "parse-error-repaired" complaint))
                 (let [parsed (:value second-try)]
                   (if (and (map? parsed)
                            (string? (:name parsed))

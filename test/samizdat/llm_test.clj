@@ -1306,6 +1306,59 @@
     (is (str/includes? (:parse-error parsed) "brace")
         "the complaint names the missing-closer cause alongside the others")))
 
+(deftest a-json-failure-is-located-in-the-body-the-model-wrote
+  ;; karamazov-aqsr.1. Under jolt, data.json says "JSON error (end-of-file
+  ;; inside string)" and nothing else — no index — so the model was told
+  ;; the category of its mistake and left to find the character in a body
+  ;; that can run to thousands. The grammar runs only on the failure path
+  ;; and only to say WHERE.
+  (testing "valid JSON has no failure to locate"
+    (is (nil? (fence/locate-json-failure "{\"name\": \"x\", \"args\": {}}"))))
+  (testing "an unescaped quote: the failure is at the text after it"
+    (let [loc (fence/locate-json-failure
+               "{\"name\": \"x\", \"args\": {\"a\": \"un\"escaped\"}}")]
+      (is (= {:index 32 :line 1 :column 33}
+             (select-keys loc [:index :line :column])))
+      (is (str/starts-with? (:after loc) "escaped"))
+      (is (str/ends-with? (:before loc) "\"un\""))))
+  (testing "a string that never closes: the failure is at its opening quote, on its line"
+    (let [loc (fence/locate-json-failure
+               "{\"name\": \"x\",\n \"args\": {\"cmd\": \"ls}")]
+      (is (= 2 (:line loc)))
+      (is (str/starts-with? (:after loc) "\"ls}"))))
+  (testing "a missing colon"
+    (is (= 7 (:index (fence/locate-json-failure "{\"name\" \"x\"}")))))
+  (testing "the excerpt is bounded, so a huge body does not come back whole"
+    (let [big (str "{\"name\": \"x\", \"args\": {\"c\": \""
+                   (apply str (repeat 500 "a")) "\""
+                   (apply str (repeat 500 "b")) "\"}}")
+          loc (fence/locate-json-failure big)]
+      (is (some? loc))
+      (is (<= (count (:before loc)) 60))
+      (is (<= (count (:after loc)) 60)))))
+
+(deftest the-parse-error-the-model-reads-names-the-position
+  (testing "an unrepairable body: line, column and the text at the failure"
+    (let [p (fence/parse-tool-call
+             (fenced "{\"name\": \"x\", \"args\": {\"a\": \"un\"escaped\"}}"))]
+      (is (= "__parse_error__" (:name p)))
+      (is (= {:index 32 :line 1 :column 33}
+             (select-keys (:position p) [:index :line :column])))
+      (is (str/includes? (:parse-error p) "line 1"))
+      (is (str/includes? (:parse-error p) "column 33"))
+      (is (str/includes? (:parse-error p) "escaped"))))
+  (testing "a body the repair could not save: the position is in the body the
+            model wrote, not in the repaired one"
+    (let [p (fence/parse-tool-call (fenced "{\"name\": \"x\", \"args\": {\"c\": \"a\nb"))]
+      (is (= "__parse_error__" (:name p)))
+      (is (:auto-repaired? p))
+      (is (= 1 (get-in p [:position :line])))
+      (is (str/starts-with? (get-in p [:position :after]) "\"a\n")
+          "the string that never closes, as the model wrote it")
+      (is (str/includes? (:parse-error p) "line 1"))))
+  (testing "a shape error is not a JSON failure and carries no position"
+    (is (nil? (:position (fence/parse-tool-call (fenced "[1, 2, 3]")))))))
+
 
 ;; --- a drifted closing tag must not swallow the next parameter --------------
 ;; Run c377260b turn 300: the model wrote a complete, correct boundary_test.clj
