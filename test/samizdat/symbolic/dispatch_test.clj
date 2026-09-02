@@ -24,6 +24,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.test :refer [deftest testing is]]
+            [samizdat.manifests :as manifests]
             [samizdat.symbolic.dispatch :as d]))
 
 (defn- ex-data-of [thunk]
@@ -206,3 +207,18 @@
             {:cell :parse :labels [:provider-error :no-call]
              :patterns '[{:call {:ok false}} {:parsed {:name "__parse_error__"}}]}]
            (d/report tables)))))
+
+(deftest no-shipped-manifest-dispatches-on-a-form
+  ;; karamazov-aqsr.4: every shipped dispatch table is patterns now, so every
+  ;; one of them is checked for a branch nothing can reach, and `manifest
+  ;; show` reports where only the order decides. A form is still accepted —
+  ;; a project may need one — but the factory manifests set the example the
+  ;; model copies from, and a form there would be a branch the analysis
+  ;; cannot see.
+  (doseq [n manifests/shipped-manifests
+          :let [res (io/resource (manifests/manifest-resource n))]
+          :when res
+          [cell table] (:dispatches (manifests/read-definition (slurp res)))
+          [label spec :as entry] table]
+    (is (d/pattern-entry? spec)
+        (str n " " cell " " label " dispatches on a form: " (pr-str entry)))))

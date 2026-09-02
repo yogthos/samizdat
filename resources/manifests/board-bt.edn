@@ -48,10 +48,10 @@
          :review :sense
          :finish :end}
 
- :dispatches {:sense [[:review-due (fn [d] (= :review-due (:board/sense d)))]
-                      [:work-due   (fn [d] (= :work-due (:board/sense d)))]
-                      [:claim-due  (fn [d] (= :claim-due (:board/sense d)))]
-                      [:done       (fn [d] true)]]}
+ :dispatches {:sense [[:review-due {:board/sense :review-due}]
+                      [:work-due   {:board/sense :work-due}]
+                      [:claim-due  {:board/sense :claim-due}]
+                      [:done       _]]}
 
  :invariants
  [{:type :must-follow :if :work :then :sense :enforced true

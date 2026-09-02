@@ -35,10 +35,10 @@
          :land     {:complete :end
                     :owing    :land}}
 
- :dispatches {:declare [[:planned (fn [d] (boolean (:repl/planned? d)))]
-                        [:empty   (fn [d] true)]]
-              :land    [[:complete (fn [d] (boolean (:repl/complete? d)))]
-                        [:owing    (fn [d] true)]]}
+ :dispatches {:declare [[:planned {:repl/planned? true}]
+                        [:empty   _]]
+              :land    [[:complete {:repl/complete? true}]
+                        [:owing    _]]}
 
  :invariants
  [{:type :must-precede :cell :declare :before :explore :enforced true

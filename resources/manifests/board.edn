@@ -37,11 +37,11 @@
                   :give-up :next}
          :finish :end}
 
- :dispatches {:next   [[:task  (fn [d] (= :task (:board/verdict d)))]
-                       [:empty (fn [d] true)]]
-              :review [[:pass    (fn [d] (= :pass (:board/decision d)))]
-                       [:revise  (fn [d] (= :revise (:board/decision d)))]
-                       [:give-up (fn [d] true)]]}
+ :dispatches {:next   [[:task  {:board/verdict :task}]
+                       [:empty _]]
+              :review [[:pass    {:board/decision :pass}]
+                       [:revise  {:board/decision :revise}]
+                       [:give-up _]]}
 
  :invariants
  [{:type :must-follow :if :work :then :review :enforced true

@@ -87,11 +87,14 @@
                      :revise :redispatch}
          :finish    :end}
 
- :dispatches {:start [[:decompose (fn [d] (= "decompose" (:implement-strategy d)))]
-                      [:plan      (fn [d] (contains? #{"team" "fanout"} (:implement-strategy d)))]
-                      [:board     (fn [d] true)]]
-              :redispatch [[:decompose (fn [d] (= "decompose" (:implement-strategy d)))]
-                           [:plan      (fn [d] (contains? #{"team" "fanout"} (:implement-strategy d)))]
-                           [:board     (fn [d] true)]]
-              :route [[:ship   (fn [d] (= :ship   (:feature/decision d)))]
-                      [:revise (fn [d] (= :revise (:feature/decision d)))]]}}
+ ;; Membership is a guard, not a shape: {:k ?s} binds the strategy and
+ ;; [:in ?s #{...}] tests it, because a set inside a pattern matches as a
+ ;; literal.
+ :dispatches {:start [[:decompose {:implement-strategy "decompose"}]
+                      [:plan      {:implement-strategy ?s} [:in ?s #{"team" "fanout"}]]
+                      [:board     _]]
+              :redispatch [[:decompose {:implement-strategy "decompose"}]
+                           [:plan      {:implement-strategy ?s} [:in ?s #{"team" "fanout"}]]
+                           [:board     _]]
+              :route [[:ship   {:feature/decision :ship}]
+                      [:revise {:feature/decision :revise}]]}}

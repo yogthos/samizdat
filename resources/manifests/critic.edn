@@ -54,17 +54,19 @@
          :distil         :finish
          :finish         :end}
 
- :dispatches {:parse [[:provider-error (fn [d] (not (:ok (:call d))))]
-                      [:no-call (fn [d] (let [p (:parsed d)]
-                                          (or (nil? p)
-                                              (= "__parse_error__" (:name p)))))]
-                      [:tool (fn [d] true)]]
-              :route [[:continue  (fn [d] (= :continue (:verdict d)))]
-                      [:done      (fn [d] (= :done (:verdict d)))]
-                      [:abandoned (fn [d] (= :abandoned (:verdict d)))]
-                      [:exhausted (fn [d] (= :exhausted (:verdict d)))]]
-              :critic [[:ship   (fn [d] (= :ship (:critic/decision d)))]
-                       [:revise (fn [d] (= :revise (:critic/decision d)))]]}
+ ;; ORDER MATTERS in :parse, as in loop.edn: a provider failure passes the
+ ;; data through with :parsed ABSENT, and a map pattern needs its key present,
+ ;; so :provider-error is tried first.
+ :dispatches {:parse [[:provider-error {:call {:ok false}}]
+                      [:no-call {:parsed nil}]
+                      [:no-call {:parsed {:name "__parse_error__"}}]
+                      [:tool _]]
+              :route [[:continue  {:verdict :continue}]
+                      [:done      {:verdict :done}]
+                      [:abandoned {:verdict :abandoned}]
+                      [:exhausted {:verdict :exhausted}]]
+              :critic [[:ship   {:critic/decision :ship}]
+                       [:revise {:critic/decision :revise}]]}
 
  ;; EVERY ordering rule this turn claims, and which of them the compiler
  ;; catches. `:constraints` is DERIVED from the `:enforced true` entries

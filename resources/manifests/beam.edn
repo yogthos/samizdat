@@ -53,10 +53,10 @@
          :completed  :end
          :exhausted  :end}
 
- :dispatches {:start [[:aborted   (fn [d] (= :aborted (:verdict d)))]
-                      [:completed (fn [d] (= :completed (:verdict d)))]
-                      [:exhausted (fn [d] (= :exhausted (:verdict d)))]
-                      [:continue  (fn [d] true)]]}
+ :dispatches {:start [[:aborted   {:verdict :aborted}]
+                      [:completed {:verdict :completed}]
+                      [:exhausted {:verdict :exhausted}]
+                      [:continue  _]]}
 
  ;; EVERY ordering rule this round claims, and which of them the compiler
  ;; catches. `:constraints` is DERIVED from the `:enforced true` entries, so

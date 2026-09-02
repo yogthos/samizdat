@@ -67,19 +67,21 @@
                           :exhausted :distil}
          :distil         :end}
 
- :dispatches {:measure [[:cap  (fn [d] (= :cap (:compaction/route d)))]
-                        [:none (fn [d] true)]]
-              :cap     [[:prune (fn [d] (= :prune (:compaction/route d)))]
-                        [:none  (fn [d] true)]]
-              :parse [[:provider-error (fn [d] (not (:ok (:call d))))]
-                      [:no-call (fn [d] (let [p (:parsed d)]
-                                          (or (nil? p)
-                                              (= "__parse_error__" (:name p)))))]
-                      [:tool (fn [d] true)]]
-              :route [[:continue  (fn [d] (= :continue (:verdict d)))]
-                      [:done      (fn [d] (= :done (:verdict d)))]
-                      [:abandoned (fn [d] (= :abandoned (:verdict d)))]
-                      [:exhausted (fn [d] (= :exhausted (:verdict d)))]]}
+ :dispatches {:measure [[:cap  {:compaction/route :cap}]
+                        [:none _]]
+              :cap     [[:prune {:compaction/route :prune}]
+                        [:none  _]]
+              ;; ORDER MATTERS here, as in loop.edn: a provider failure passes
+              ;; the data through with :parsed ABSENT, and a map pattern needs
+              ;; its key present, so :provider-error is tried first.
+              :parse [[:provider-error {:call {:ok false}}]
+                      [:no-call {:parsed nil}]
+                      [:no-call {:parsed {:name "__parse_error__"}}]
+                      [:tool _]]
+              :route [[:continue  {:verdict :continue}]
+                      [:done      {:verdict :done}]
+                      [:abandoned {:verdict :abandoned}]
+                      [:exhausted {:verdict :exhausted}]]}
 
  ;; EVERY ordering rule this turn claims, and which of them the compiler
  ;; catches. `:constraints` is DERIVED from the `:enforced true` entries
