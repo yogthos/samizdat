@@ -74,6 +74,7 @@
             [samizdat.reflect-test]
             [samizdat.reflex-test]
             [samizdat.symbolic-test]
+            [samizdat.symbolic.dispatch-test]
             [samizdat.tasks-test]
             [samizdat.kernel-write-test]
             [samizdat.knowledge-test]
@@ -217,6 +218,7 @@
     samizdat.reflect-test
     samizdat.reflex-test
     samizdat.symbolic-test
+    samizdat.symbolic.dispatch-test
     samizdat.tasks-test
     samizdat.kernel-write-test
     samizdat.knowledge-test

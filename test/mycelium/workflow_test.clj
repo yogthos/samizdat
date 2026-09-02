@@ -656,3 +656,26 @@
                  {:cells {:start    :test/parse-body
                           :validate :test/validate-envelope}
                   :edges {:start :validate :validate :end}})))))
+
+;; ===== Pattern dispatch =====
+
+(deftest compile-edges-with-pattern-dispatch-test
+  (testing "compile-edges accepts a pattern wherever it accepts a predicate"
+    (let [dispatches (wf/compile-edges {:success :validate, :failure :error}
+                                       '[[:success {:a-done true}]
+                                         [:failure _]])
+          [[_ ok] [_ fail]] dispatches]
+      (is (= 2 (count dispatches)))
+      (is (true? (ok {:a-done true})))
+      (is (false? (ok {:a-done false})))
+      (is (true? (fail {:whatever 1}))))))
+
+(deftest compile-workflow-refuses-a-shadowed-pattern-branch-test
+  (testing "A branch no data can reach is a compile error, like an unreachable cell"
+    (register-cells!)
+    (is (thrown-with-msg? Exception #"can never fire"
+          (wf/compile-workflow
+           {:cells {:start :test/cell-a :b :test/cell-b :d :test/cell-d}
+            :edges {:start {:b :b :d :d} :b :end :d :end}
+            :dispatches '{:start [[:b _]
+                                  [:d {:a-done true}]]}})))))

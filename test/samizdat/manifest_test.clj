@@ -404,3 +404,45 @@
                                         :rationale "a good save"}})]
           (is (= :neutral (:category ok)))
           (is (:progress? ok)))))))
+
+(deftest a-shadowed-dispatch-branch-is-refused-with-the-pattern-rules
+  ;; Dispatch entries are patterns now (karamazov-41a.3), and a pattern table
+  ;; can be analysed where a table of closures could not: a branch an earlier
+  ;; pattern makes unreachable is refused at save. The refusal names both
+  ;; branches and is rendered from a template that carries the pattern rules,
+  ;; because the author here is the model, and a refusal that only states the
+  ;; error sends it guessing at a language it has never been shown.
+  (with-db
+    (fn [conn]
+      (let [def (manifests/read-definition (slurp (io/resource "manifests/loop.edn")))
+            bad (pr-str (assoc-in def [:dispatches :parse]
+                                  '[[:tool _]
+                                    [:provider-error {:call {:ok false}}]
+                                    [:no-call {:parsed nil}]]))
+            r (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                              :args {:action "save" :name "shadow" :edn bad
+                                     :rationale "a shadowed branch on purpose"}})
+            out (str (:result r))]
+        (is (= :mechanics (:category r)))
+        (is (str/includes? out "can never fire"))
+        (is (str/includes? out ":tool") "names the branch in front")
+        (is (str/includes? out "first match wins") "and the pattern rules, from the template")
+        (is (nil? (us/load-latest conn :manifest "shadow")) "nothing was stored")))))
+
+(deftest saving-and-showing-report-where-branch-order-decides
+  ;; Two branches that overlap with neither more specific are legal — the
+  ;; loop's own :parse table has them — but the order is then the only thing
+  ;; deciding, and the moment to say so is when the author is looking at the
+  ;; table: on save, and on show.
+  (with-db
+    (fn [conn]
+      (let [good (slurp (io/resource "manifests/loop.edn"))
+            saved (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                  :args {:action "save" :name "loop4" :edn good
+                                         :rationale "the factory loop under another name"}})
+            shown (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                  :args {:action "show" :name "loop4"}})]
+        (is (= :neutral (:category saved)))
+        (is (str/includes? (str (:result saved)) "Order-dependent"))
+        (is (str/includes? (str (:result saved)) ":provider-error"))
+        (is (str/includes? (str (:result shown)) "Order-dependent"))))))

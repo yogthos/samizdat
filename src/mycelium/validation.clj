@@ -3,7 +3,8 @@
    Provides schema well-formedness checks, edge target validation,
    BFS reachability, and dispatch coverage verification."
   (:require [clojure.set :as set]
-            [mycelium.schema :as schema]))
+            [mycelium.schema :as schema]
+            [samizdat.symbolic.dispatch :as dispatch]))
 
 ;; ===== Schema well-formedness =====
 
@@ -152,4 +153,7 @@
             (throw (ex-info (str "Cell " cell-name " has dispatch(es) " extra
                                  " that don't match any edge")
                             {:cell-name cell-name :extra extra
-                             :edge-keys edge-keys :dispatch-keys dispatch-keys}))))))))
+                             :edge-keys edge-keys :dispatch-keys dispatch-keys}))))
+        ;; Pattern entries: a malformed one, or a branch an earlier pattern
+        ;; leaves nothing to reach, is refused here like a missing label.
+        (dispatch/check! cell-name dispatch-vec)))))

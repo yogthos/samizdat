@@ -404,3 +404,102 @@
         bomb '(clojure.core/println "evaluated")]
     (is (= {'?p bomb} (sym/match r {:pred bomb}))
         "the form came back as a value")))
+
+;;; ---------------------------------------------------------------- wildcard
+
+(deftest an-underscore-matches-anything-and-binds-nothing
+  ;; The catch-all a dispatch table ends with. It is a symbol rather than a
+  ;; keyword because :_ is a keyword like any other — a LITERAL that a data
+  ;; map never equals — and a catch-all that can never fire is the quietest
+  ;; possible bug.
+  (let [r (sym/rule '{:when {:parsed _}})]
+    (is (= {} (sym/match r {:parsed nil})))
+    (is (= {} (sym/match r {:parsed {:name "x"}})))
+    (is (nil? (sym/match r {})) "the key must still be present"))
+  (is (= {} (sym/match (sym/rule '{:when _}) {:anything 1})))
+  (is (= {} (sym/match (sym/rule '{:when _}) nil)))
+  (is (= '{?a 1} (sym/match (sym/rule '{:when [?a _ _]}) [1 2 3]))
+      "each _ is its own hole; nothing is bound and nothing must agree"))
+
+(deftest an-underscore-inside-a-set-or-list-is-refused-like-a-var
+  (is (thrown-with-msg? Exception #"can never"
+                        (sym/rule '{:when {:tools #{_}}})))
+  (is (thrown-with-msg? Exception #"can never"
+                        (sym/rule '{:when {:tools (_ 1)}}))))
+
+(deftest a-key-mapped-to-nil-needs-the-key-present
+  ;; {:parsed nil} is NOT (nil? (:parsed d)): the fn is true for an absent key
+  ;; and the pattern is not. The loop manifest's :no-call branch was migrated
+  ;; from the one to the other, and this is the difference it had to survive.
+  (let [r (sym/rule '{:when {:parsed nil}})]
+    (is (some? (sym/match r {:parsed nil})))
+    (is (nil? (sym/match r {})))))
+
+;;; ------------------------------------------------------------- specificity
+
+(deftest subsumes-is-the-specificity-order
+  ;; (subsumes? general specific): every term specific matches, general does.
+  (is (sym/subsumes? '_ '{:a 1}))
+  (is (sym/subsumes? '?x '{:a 1}))
+  (is (sym/subsumes? '{:a 1} '{:a 1 :b 2}) "fewer keys is more general")
+  (is (not (sym/subsumes? '{:a 1 :b 2} '{:a 1})))
+  (is (sym/subsumes? '{:a ?x} '{:a 1}))
+  (is (not (sym/subsumes? '{:a 1} '{:a ?x})))
+  (is (sym/subsumes? '{:a {:b ?x}} '{:a {:b 1 :c 2}}) "nested, still open")
+  (is (not (sym/subsumes? '{:a {:b 1}} '{:a ?x})) "a var may be bound to a non-map")
+  (is (sym/subsumes? '[?x ?y] '[1 2]))
+  (is (not (sym/subsumes? '[?x ?y] '[1 2 3])) "vectors are closed")
+  (is (sym/subsumes? '{:a 1} '{:a 1}) "a pattern subsumes itself")
+  (is (not (sym/subsumes? '{:a 1} '{:b 2})) "incomparable")
+  (is (not (sym/subsumes? '{:a 1} '_)) "nothing but a hole subsumes a hole"))
+
+(deftest a-repeated-var-is-more-specific-than-two-vars
+  (is (sym/subsumes? '{:from ?x :to ?y} '{:from ?x :to ?x}))
+  (is (not (sym/subsumes? '{:from ?x :to ?x} '{:from ?a :to ?b})))
+  (is (sym/subsumes? '{:from ?x :to ?x} '{:from 1 :to 1}))
+  (is (not (sym/subsumes? '{:from ?x :to ?x} '{:from 1 :to 2}))))
+
+(def ^:private corpus-terms
+  [{:a 1} {:a 1 :b 2} {:a {:b 1 :c 2}} {:a [1 2]} {:a nil} {:from 1 :to 1}
+   {:from 1 :to 2} {:b 2} {} nil [1 2] [1 2 3] 7])
+
+(def ^:private corpus-patterns
+  '[_ ?x {:a 1} {:a 1 :b 2} {:a ?x} {:a {:b 1}} {:a {:b ?x}} {:a nil} [?x ?y]
+    [?x _] {:from ?x :to ?x} {:from ?x :to ?y} {:b 2} {:b ?v}])
+
+(deftest subsumes-agrees-with-match
+  ;; THE property the shadowing refusal rests on. If the analysis says general
+  ;; subsumes specific, then no term may match specific and miss general —
+  ;; otherwise a branch would be refused as unreachable when it is not, which
+  ;; is the refusal being wrong in the direction that blocks an edit.
+  (doseq [g corpus-patterns
+          s corpus-patterns
+          :when (sym/subsumes? g s)
+          t corpus-terms
+          :when (some? (sym/match (sym/rule {:when s}) t))]
+    (is (some? (sym/match (sym/rule {:when g}) t))
+        (str (pr-str g) " subsumes " (pr-str s) " but misses " (pr-str t)))))
+
+(deftest overlap-is-whether-one-term-can-match-both
+  (is (sym/overlap? '{:a 1} '{:b 2}) "disjoint keys: one map can carry both")
+  (is (not (sym/overlap? '{:a 1} '{:a 2})))
+  (is (sym/overlap? '{:a ?x} '{:a 2}))
+  (is (sym/overlap? '{:a {:b 1}} '{:a {:c 2}}))
+  (is (not (sym/overlap? '{:a nil} '{:a {:c 2}})))
+  (is (not (sym/overlap? '[?x] '[?x ?y])) "vectors are closed")
+  (is (not (sym/overlap? '{:a ?x :b ?x} '{:a 1 :b 2})) "a repeated var must agree")
+  (is (sym/overlap? '{:a ?x :b ?x} '{:a 1 :b 1}))
+  (is (sym/overlap? '_ '{:a 1}))
+  (is (sym/overlap? '{:a ?x} '{:a 1 :b ?x})
+      "the same name in two patterns is two different variables"))
+
+(deftest overlap-agrees-with-match
+  ;; The other direction: if some term matches both patterns, overlap? must
+  ;; say so, or an order-dependent pair would go unreported.
+  (doseq [p corpus-patterns
+          q corpus-patterns
+          t corpus-terms
+          :when (and (some? (sym/match (sym/rule {:when p}) t))
+                     (some? (sym/match (sym/rule {:when q}) t)))]
+    (is (sym/overlap? p q)
+        (str (pr-str t) " matches both " (pr-str p) " and " (pr-str q)))))

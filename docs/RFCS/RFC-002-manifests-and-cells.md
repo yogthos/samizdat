@@ -52,14 +52,24 @@ glob-scoped interceptors match on.
  :cells        {node-kw cell-id}
  :edges        {node-kw next-node          ; unconditional
                 node-kw {branch-kw node}}  ; dispatched
- :dispatches   {node-kw [[branch-kw (fn [data] pred)] …]}   ; ordered, first wins
+ :dispatches   {node-kw [[branch-kw pattern] …]}         ; ordered, first wins
+                                           ; [branch-kw pattern guard], or a (fn [data] pred) form
  :constraints  [{:type :must-follow :if node :then node}]
  :subworkflows {cell-id manifest-name}     ; optional: a nested manifest as one node
  :prompt       "name"}                     ; optional: prompt appended to the base
 ```
 
-`:start` is the entry node and `:end` terminates. Dispatch predicates are EDN
-forms evaluated at **compile** time; their bodies run per pass.
+`:start` is the entry node and `:end` terminates. A dispatch entry is a
+**pattern** over the data map (`samizdat.symbolic`): a map is an open-world
+subset — `{:verdict :done}` matches any data map carrying that key with that
+value, and a named key must be present — `_` matches anything, `?x` binds, and
+a third element is a guard from `samizdat.symbolic/guard-catalog`. Entries are
+tried in order and the first match wins. Because the table is data, compile
+checks it: a branch an earlier pattern makes unreachable is refused, and two
+branches that overlap with neither more specific are reported by `manifest
+save` and `manifest show` as order-dependent. A `(fn [data] pred)` form is
+still accepted where a pattern cannot say it; it is evaluated at **compile**
+time and is opaque to the analysis.
 
 ### The two levels
 

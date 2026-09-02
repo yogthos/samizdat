@@ -4,10 +4,13 @@
 ;; definition carries the routing — which is exactly the part an agent can
 ;; safely rewrite, behind compile-time validation.
 ;;
-;; Dispatch predicates are EDN forms evaluated at compile time. Keep them
-;; trivial readers of explicit keys: the cell computes the decision INTO the
-;; data map, the predicate only reads it, so the routing logic stays visible
-;; here where it can be edited.
+;; Dispatch entries are PATTERNS over the data map — {:verdict :done} matches
+;; any data map carrying that key with that value, `_` matches anything, and
+;; the first entry that matches wins. The cell computes the decision INTO the
+;; data map and the pattern only reads it, so the routing stays visible here
+;; where it can be edited, and a table of patterns can be checked for a
+;; branch nothing can reach. A (fn [d] ...) form is still accepted where a
+;; pattern cannot say it.
 {:description "The factory loop: a single branch iterating a turn at a time until it ships or gives up. The simplest driver — no fan-out, no critic, no supervisor. The baseline every other workflow specializes."
  :input-schema
  ;; What a driver hands this manifest to start a run. mycelium checks it in
@@ -68,19 +71,24 @@
          :distil         :finish
          :finish         :end}
 
- :dispatches {:measure [[:cap  (fn [d] (= :cap (:compaction/route d)))]
-                        [:none (fn [d] true)]]
-              :cap     [[:prune (fn [d] (= :prune (:compaction/route d)))]
-                        [:none  (fn [d] true)]]
-              :parse [[:provider-error (fn [d] (not (:ok (:call d))))]
-                      [:no-call (fn [d] (let [p (:parsed d)]
-                                          (or (nil? p)
-                                              (= "__parse_error__" (:name p)))))]
-                      [:tool (fn [d] true)]]
-              :route [[:continue  (fn [d] (= :continue (:verdict d)))]
-                      [:done      (fn [d] (= :done (:verdict d)))]
-                      [:abandoned (fn [d] (= :abandoned (:verdict d)))]
-                      [:exhausted (fn [d] (= :exhausted (:verdict d)))]]}
+ :dispatches {:measure [[:cap  {:compaction/route :cap}]
+                        [:none _]]
+              :cap     [[:prune {:compaction/route :prune}]
+                        [:none  _]]
+              ;; ORDER MATTERS in this one table. A provider failure passes
+              ;; the data through untouched, so :parsed is then ABSENT, and
+              ;; a map pattern needs its key present: {:parsed nil} would not
+              ;; match that data map, and the data would fall through to :tool.
+              ;; The provider-error branch has to be tried first. `manifest show`
+              ;; reports this table as order-dependent, which is correct.
+              :parse [[:provider-error {:call {:ok false}}]
+                      [:no-call {:parsed nil}]
+                      [:no-call {:parsed {:name "__parse_error__"}}]
+                      [:tool _]]
+              :route [[:continue  {:verdict :continue}]
+                      [:done      {:verdict :done}]
+                      [:abandoned {:verdict :abandoned}]
+                      [:exhausted {:verdict :exhausted}]]}
 
  ;; EVERY ordering rule this turn claims, and which of them the compiler
  ;; catches. `:constraints` is DERIVED from the `:enforced true` entries, so

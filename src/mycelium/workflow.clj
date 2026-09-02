@@ -7,7 +7,8 @@
             [mycelium.resilience :as resilience]
             [mycelium.schema :as schema]
             [mycelium.validation :as v]
-            [maestro.core :as fsm]))
+            [maestro.core :as fsm]
+            [samizdat.symbolic.dispatch :as dispatch]))
 
 ;; ===== Cell reference normalization =====
 
@@ -87,16 +88,17 @@
   [edges dispatch-vec]
   (if (keyword? edges)
     [[(resolve-state-id edges) (constantly true)]]
-    (let [;; Partition into non-default and default, then concat so :default is last
-          {defaults true others false} (group-by #(= :default (first %)) dispatch-vec)
-          ordered (concat others defaults)]
-      (mapv (fn [[label pred]]
-              (let [target (get edges label)]
-                (when-not target
-                  (throw (ex-info (str "No edge target for dispatch label " label)
-                                  {:label label})))
-                [(resolve-state-id target) pred]))
-            ordered))))
+    ;; :default last, by the same reordering the dispatch analysis uses — so
+    ;; what it checks is what runs. A pattern entry compiles to a predicate
+    ;; here; a form is left for maestro's compile-time eval, as before.
+    (mapv (fn [entry]
+            (let [[label pred] (dispatch/compile-entry entry)
+                  target (get edges label)]
+              (when-not target
+                (throw (ex-info (str "No edge target for dispatch label " label)
+                                {:label label})))
+              [(resolve-state-id target) pred]))
+          (dispatch/effective-order dispatch-vec))))
 
 ;; ===== Schema key utilities =====
 

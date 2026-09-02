@@ -35,12 +35,26 @@
                has twenty keys a pattern does not mention, so == would force
                every pattern to enumerate the map and to break whenever a cell
                added a key. core.logic's featurec is exactly this relation.
+               A mentioned key must be PRESENT: {:k nil} matches a present
+               nil and not an absent key, which is where it parts from
+               (nil? (:k d)).
     a vector   is CLOSED and POSITIONAL. Length is part of the term's meaning
                — a guard form, an edge pair — so an extra element is a
                different term, not the same term with more detail.
     ?x         is a logic variable. Repeated, it means the same value in both
                places, by unification rather than by a second comparison.
+    _          is a hole: it matches anything and binds nothing, and every
+               occurrence is its own hole. A symbol and not a keyword, because
+               :_ is a keyword like any other — a literal no data map equals,
+               in a table whose catch-all would then never fire.
     anything   else is a literal, matched by equality.
+
+  Two relations over patterns come with the language, because a SET of
+  patterns can be analysed where a set of closures cannot: `subsumes?` is the
+  specificity order (every term one matches, the other matches too) and
+  `overlap?` asks whether one term could match both. Dispatch tables are
+  checked with them for a branch nothing can reach and for an order that is
+  the only thing deciding.
 
   That is also the whole of the syntactic/semantic rule distinction other
   rewriting systems make explicit: here it falls out of the two collection
@@ -125,6 +139,21 @@
   [x]
   (and (symbol? x) (str/starts-with? (name x) "?")))
 
+(defn wildcard?
+  "Is `x` the hole `_` — matches anything, binds nothing?"
+  [x]
+  (= '_ x))
+
+(defn- any-node?
+  "Does `pred` hold anywhere in `x`, keys included?"
+  [pred x]
+  (boolean
+   (or (pred x)
+       (cond
+         (map? x) (some #(any-node? pred %) (concat (keys x) (vals x)))
+         (coll? x) (some #(any-node? pred %) x)
+         :else false))))
+
 (defn- pattern-vars
   "Every ?var in a pattern or template, KEYS INCLUDED.
 
@@ -163,7 +192,8 @@
     (vector? pattern) (run! check-pattern! pattern)
 
     (or (set? pattern) (seq? pattern))
-    (let [vs (pattern-vars pattern)]
+    (let [vs (cond-> (vec (sort (pattern-vars pattern)))
+               (any-node? wildcard? pattern) (conj '_))]
       (when (seq vs)
         ;; The advice has to name the idiom that DOES work, not just the one
         ;; that does not. #{?t} is the natural way to write "any of these", so
@@ -172,14 +202,14 @@
         ;; a guard, not a shape.
         (throw (ex-info (str (if (set? pattern) "set" "list")
                              " pattern matches as a literal, so "
-                             (str/join ", " (sort vs))
+                             (str/join ", " vs)
                              " can never bind"
                              (if (set? pattern)
                                " — bind the set and test it with a guard: {:k ?v} :if [:in <item> ?v]"
                                " — use a vector to match positionally"))
                         {:error :var-in-literal-collection
                          :pattern pattern
-                         :vars (vec (sort vs))
+                         :vars vs
                          :instead (if (set? pattern)
                                     '{:when {:k ?v} :if [:in <item> ?v]}
                                     '{:when [?a ?b]})}))))
@@ -197,6 +227,9 @@
   (cond
     (pvar? pattern)
     (fn [env t] (l/== t (get env pattern)))
+
+    (wildcard? pattern)
+    (fn [_ _] l/succeed)
 
     (map? pattern)
     (let [ks (vec (keys pattern))
@@ -471,3 +504,87 @@
                                          :rules (vec (distinct (conj fired (:rule h))))}))
            :else (recur t' (inc n) (conj fired (:rule h)))))
        t))))
+
+;;; ------------------------------------------------------------ specificity
+
+(defn- skolemize
+  "The most general TERM a pattern matches: every ?var becomes one constant
+  per var, so a repeated var stays one value, and every _ its own.
+
+  gensym'd symbols rather than fresh objects, so the result is still plain
+  data — and a symbol no author writes, so it equals no literal in the
+  pattern it is then compared against."
+  [pattern]
+  (let [table (atom {})]
+    (letfn [(sk [x]
+              (cond
+                (pvar? x) (or (get @table x)
+                              (let [c (gensym "skolem")]
+                                (swap! table assoc x c)
+                                c))
+                (wildcard? x) (gensym "skolem")
+                (map? x) (into {} (map (fn [[k v]] [k (sk v)])) x)
+                (vector? x) (mapv sk x)
+                :else x))]
+      (sk pattern))))
+
+(defn subsumes?
+  "Does every term `specific` matches also match `general`?
+
+  Decided by the matcher itself: the most general term `specific` matches is
+  built (skolemize) and `general` is matched against it, so the answer
+  cannot drift from what `match` does at run time. A refusal built on this
+  needs exactly that — a branch refused as unreachable had better be
+  unreachable by the code that dispatches."
+  [general specific]
+  (some? (match (rule {:when general}) (skolemize specific))))
+
+(defn- rename-vars
+  "`f` applied to every ?var in `pattern`, in the positions a var can occupy."
+  [pattern f]
+  (cond
+    (pvar? pattern) (f pattern)
+    (map? pattern) (into {} (map (fn [[k v]] [k (rename-vars v f)])) pattern)
+    (vector? pattern) (mapv #(rename-vars % f) pattern)
+    :else pattern))
+
+(defn- walk-binding [s x]
+  (if (and (pvar? x) (contains? s x)) (recur s (get s x)) x))
+
+(defn- unify
+  "Bindings under which patterns `a` and `b` describe one term, or nil.
+
+  Maps are open on both sides, so only the keys they share have to agree;
+  vectors have to agree in length and position; a hole agrees with anything.
+  No occurs check: a cyclic binding would call two patterns compatible that
+  no finite term satisfies, which errs toward reporting an overlap — and an
+  overlap is reported, never refused."
+  [s a b]
+  (when s
+    (let [a (walk-binding s a)
+          b (walk-binding s b)]
+      (cond
+        (or (wildcard? a) (wildcard? b)) s
+        (pvar? a) (if (= a b) s (assoc s a b))
+        (pvar? b) (assoc s b a)
+
+        (and (map? a) (map? b))
+        (reduce (fn [s k] (or (unify s (get a k) (get b k)) (reduced nil)))
+                s
+                (filter #(contains? b %) (keys a)))
+
+        (and (vector? a) (vector? b))
+        (when (= (count a) (count b))
+          (reduce (fn [s i] (or (unify s (nth a i) (nth b i)) (reduced nil)))
+                  s
+                  (range (count a))))
+
+        :else (when (= a b) s)))))
+
+(defn overlap?
+  "Could one term match both `p` and `q`?
+
+  The vars of `q` are renamed apart first: ?x in two patterns is two
+  variables, not one shared one."
+  [p q]
+  (some? (unify {} p (rename-vars q #(symbol "q" (name %))))))

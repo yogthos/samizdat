@@ -7,7 +7,8 @@
             [mycelium.cell :as cell]
             [mycelium.fragment :as fragment]
             [mycelium.schema :as schema]
-            [mycelium.validation :as v]))
+            [mycelium.validation :as v]
+            [samizdat.symbolic.dispatch :as dispatch]))
 
 (defn- resolve-inherit-schemas
   "Resolves :schema :inherit in cell definitions by looking up schemas from cell registry."
@@ -271,8 +272,11 @@
         dispatch-section (when dispatches
                            (str "Dispatch predicates (checked in order, first match wins):\n"
                                 (str/join "\n"
-                                          (map (fn [[label _]]
-                                                 (str "  " (pr-str label) " — predicate evaluates your output"))
+                                          (map (fn [[label spec :as entry]]
+                                                 (str "  " (pr-str label) " — "
+                                                      (if (dispatch/pattern-entry? spec)
+                                                        (str/join " " (map pr-str (rest entry)))
+                                                        "predicate evaluates your output")))
                                                dispatches))
                                 "\n"))
         effects-info (cell/effects-info cell-def)

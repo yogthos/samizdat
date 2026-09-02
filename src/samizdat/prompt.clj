@@ -48,6 +48,8 @@
    "cull-reprieve"
    "directive-refused"
    "directive-rejected"
+   "dispatch-order"
+   "dispatch-refused"
    "emergency-review"
    "eval-calls-main"
    "eval-error"

@@ -80,6 +80,19 @@
    {:name samizdat.agent.files/reference-roots
     :summary "The READ-ONLY roots a project declared beside its own (.samizdat/config.edn :run :reference-paths). read_file and grep resolve against them; writes stay confined to the root."}]}
 
+ {:group "Patterns: dispatch tables and rules"
+  :entries
+  [{:name samizdat.symbolic/rule
+    :summary "Compile {:when pattern :if guard :then template}. A map is an open subset (extra keys ignored, a named key must be present), a vector is closed and positional, ?x binds and repeats as equal, _ matches anything, sets and lists are literals."}
+   {:name samizdat.symbolic/first-match
+    :summary "The first rule that matches a term, with its bindings and result — a manifest dispatch table is this over the data map."}
+   {:name samizdat.symbolic/guard-catalog
+    :summary "Every guard a rule or a dispatch entry may name, with its arity and meaning. Nothing outside this list evaluates."}
+   {:name samizdat.symbolic/subsumes?
+    :summary "Whether every term one pattern matches the other matches too — the specificity order the dispatch check uses."}
+   {:name samizdat.symbolic.dispatch/analyse
+    :summary "A dispatch table's shadowed branches (refused at save) and order-dependent pairs (reported), over the order that runs."}]}
+
  {:group "Policy as data"
   :entries
   [{:name samizdat.agent.gates/threshold
