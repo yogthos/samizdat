@@ -737,14 +737,6 @@
    #{
     " branches have this; it does not need another)"
     }
-   "src/samizdat/store/interventions.clj"
-   #{
-    "Open a sibling branch on a stated thesis."
-    "Raise the run's turn cap."
-    "Stop a branch. Refused if it is the last one running."
-    "Tell a branch to cross-check and ship what it has."
-    "Un-confirm an artifact that was not what it claimed. Payload: {\"artifact_id\": N, \"reason\": \"...\"}."
-    }
    "src/samizdat/store/runs.clj"
    #{
     "no process was running it when the server started"

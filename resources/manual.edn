@@ -152,7 +152,11 @@
   [{:name samizdat.store.journal/note!
     :summary "Append a note to the run's journal. The durable record a later run reads back."}
    {:name samizdat.store.journal/last-note
-    :summary "The most recent note of one kind on a run, parsed back from JSON. How a pipeline stage reads what the supervision STREAM concluded — the stream runs beside the run and hands its output to nobody, so the journal is the only place the two meet."}
+    :summary "The most recent note of one kind on a run, parsed back from JSON. How the supervisor stream reads a round's outcome — the feature loop's :route note carries the revision, the strategy and the soft cap — since the loop hands its facts to nobody and the journal is where the two meet."}
+   {:name samizdat.store.journal/notes
+    :summary "Every note of one kind on a run, oldest first. What the stream reads :stage-error notes with — each is a crash a stage survived, and all of them are the supervisor's to look at."}
+   {:name samizdat.store.interventions/kinds
+    :summary "Every directive that can be queued against a run, with what each does — a person's at the control API, the supervisor's through `intervene`, the reflex's. Three boundaries own them: a branch's steer boundary (message, review), the beam's round top (cull, fork, retract, extend, pause, resume), and the feature loop's directives stage (switch, budget, stop). Each drain leaves alone what it does not own."}
    {:name samizdat.store.journal/artifacts
     :summary "Every artifact this run banked, across all branches."}
    {:name samizdat.store.journal/branch-turns

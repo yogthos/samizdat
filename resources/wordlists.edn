@@ -202,6 +202,27 @@
  {:userspace ["\\bcells[./]" "manifest|prompts?/|gates\\.edn|phases\\.edn"]
   :base ["\\bsamizdat[./]"]}
 
+ :directive-kinds
+ ;; What each directive kind DOES, in the words a person at the control API
+ ;; and the supervisor calling `intervene` are shown. The names are the
+ ;; store's (samizdat.store.interventions/kinds — each has a drain that
+ ;; applies it), the words are here, and a coherence test keeps the two
+ ;; sets equal. Three boundaries own them: a branch's own steer boundary
+ ;; (message, review), the beam's round top (cull, fork, retract, extend,
+ ;; pause, resume), and the feature loop's directives stage (switch, budget,
+ ;; stop) — see RFC-012.
+ {"message" "Inject text into a branch's next turn."
+  "review"  "Tell a branch to cross-check and ship what it has."
+  "cull"    "Stop a branch. Refused if it is the last one running."
+  "fork"    "Open a sibling branch on a stated thesis."
+  "retract" "Un-confirm an artifact that was not what it claimed. Payload: {\"artifact_id\": N, \"reason\": \"...\"}."
+  "extend"  "Raise the run's turn cap by N turns (text: \"N\", or {\"turns\": N})."
+  "pause"   "Stop scheduling new turns; in-flight turns finish."
+  "resume"  "Resume scheduling."
+  "switch"  "Switch the feature loop's implement strategy for its next round: board, team or decompose (text: the name). Lands at the loop's next round boundary."
+  "budget"  "Set the per-owner turn budget the feature loop's following rounds run under (text: \"N\", or {\"turns\": N})."
+  "stop"    "End the run unsolved at the feature loop's next round boundary: the loop has concluded it cannot solve the task. Partial work stays on disk (text: why)."}
+
  :shell-refusal
  ;; How the shell policy phrases a refusal. Read to turn a refused command
  ;; into a durable project fact, which is worth more than it looks: it saves

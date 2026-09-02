@@ -28,6 +28,8 @@
             [samizdat.agent.beam :as beam]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.roles :as roles]
+            [samizdat.lexicon :as lexicon]
+            [clojure.set]
             [samizdat.agent.tools.base :as base]
             [samizdat.control :as control]
             [samizdat.system :as system]
@@ -354,15 +356,35 @@
                     "retract" {:artifact_id 1}
                     "extend" {:turns 5}
                     "pause" {}
-                    "resume" {}}]
-      (doseq [k (keys interventions/kinds)]
+                    "resume" {}
+                    "switch" {:strategy "decompose"}
+                    "budget" {:turns 30}
+                    "stop" {:text "a dead end"}}]
+      (cells/load-cells!)
+      (doseq [k interventions/kinds]
         (interventions/submit! c rid {:kind k :payload (payloads k)})
-        (drain c rid [(branch "B1") (branch "B2")])
+        (if (contains? interventions/workflow-kinds k)
+          ;; The workflow's own boundary — the feature loop's directives
+          ;; stage — is where these land, not the scheduler's.
+          ((:handler (cell/get-cell! :feature/supervise)) {:conn c :run-id rid} {})
+          (drain c rid [(branch "B1") (branch "B2")]))
         (let [d (first (filter #(= k (:kind %)) (interventions/history c rid)))]
           (is (not= "pending" (:status d))
               (str k " reached a boundary and was left pending"))
           (is (not (str/includes? (str (:disposition d)) "not wired"))
               (str k " is advertised to a human and rejected as unwired")))))))
+
+(deftest every-kind-has-words-and-every-word-a-kind
+  ;; The names are mechanism and live in the store; what each does is prose
+  ;; the model reads and lives in wordlists.edn. Two lists drift unless
+  ;; something holds them together.
+  (is (= interventions/kinds (set (keys (lexicon/wordlist :directive-kinds))))
+      "a kind with no description, or a description of no kind")
+  (is (= interventions/kinds
+         (clojure.set/union interventions/branch-kinds interventions/scheduler-kinds
+                            interventions/workflow-kinds))
+      "every kind has exactly one boundary that owns it")
+  (is (empty? (clojure.set/intersection interventions/scheduler-kinds interventions/workflow-kinds))))
 
 (deftest a-pending-resume-ends-the-pause-wait
   ;; blt.9: paused? counts APPLIED rows, and the only code applying a resume
@@ -411,6 +433,51 @@
           (is (= "pending" (:status run-wide))
               "the run-wide message is the beam's to broadcast to every branch")
           (is (= "applied" (:status scoped))))))))
+
+(deftest both-drains-leave-the-workflows-directives-for-the-workflows-boundary
+  ;; RFC-012 F5. `switch`, `budget` and `stop` are about the OUTER loop — the
+  ;; feature loop's next round — and neither the per-turn drain nor the
+  ;; scheduler's has anywhere to put them. They used to be rejected as
+  ;; unknown by whichever boundary came first, which on a feature run was a
+  ;; worker's, long before the round reached the stage that applies them.
+  ;; Symmetric with blt.10: a drain leaves alone what it does not own.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (doseq [[k p] [["switch" {:strategy "decompose"}] ["budget" {:turns 30}]
+                     ["stop" {:text "dead end"}]]]
+        (interventions/submit! c rid {:kind k :payload p :issued-by "supervisor"}))
+      (testing "the per-turn drain, on a single-branch run — where it eats
+                everything else it does not hand to the beam"
+        (#'aloop/drain-directives! {:conn c :run-id rid :beam? false :max-turns 40}
+                                   (branch "B1") 2)
+        (doseq [[_ [d]] (group-by :kind (interventions/history c rid))]
+          (is (= "pending" (:status d)) (str (:kind d) " was eaten by a worker's boundary"))))
+      (testing "and the scheduler's drain at the round top"
+        (drain c rid [(branch "B1") (branch "B2")])
+        (doseq [[_ [d]] (group-by :kind (interventions/history c rid))]
+          (is (= "pending" (:status d)) (str (:kind d) " was eaten by the round top")))))))
+
+(deftest the-supervisors-extend-reaches-the-scheduler
+  ;; The intervene tool sends every structural kind as {"text": ...}, and the
+  ;; drains read the turn count from :turns — so `intervene {kind: "extend",
+  ;; text: "40"}` was refused every time it was tried, with a reason that
+  ;; named a payload shape the tool cannot produce. One parser, both shapes.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (base/run-tool {:conn c :run-id rid :tool-name "intervene"
+                      :branch {:id "SUP"} :args {:kind "extend" :text "40"}})
+      (let [{:keys [max-turns]} (drain c rid [(branch "B1")])
+            [d] (interventions/history c rid)]
+        (is (= 40 max-turns) "the cap moved by what the supervisor asked")
+        (is (= "applied" (:status d)))))
+    (testing "the parser itself, over every shape a directive arrives in"
+      (is (= 5 (interventions/turns-asked {:payload "{\"turns\": 5}"})))
+      (is (= 7 (interventions/turns-asked {:payload "{\"text\": \"7\"}"})))
+      (is (= 9 (interventions/turns-asked {:payload "{\"by\": 9}"})))
+      (is (nil? (interventions/turns-asked {:payload "{\"text\": \"soon\"}"}))
+          "words are not a turn count")
+      (is (nil? (interventions/turns-asked {:payload "{\"turns\": -3}"}))
+          "nor is a negative one"))))
 
 (deftest extend-lands-on-a-single-branch-run
   ;; blt.12: the old arm returned the branch untouched, assuming

@@ -25,7 +25,8 @@
   exactly the one that will never reach another boundary — that is the RAX
   manager pattern, and it is why the stop path does not share machinery with
   the steer path."
-  (:require [clojure.string :as str]
+  (:require [samizdat.lexicon :as lexicon]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.resume :as resume]
@@ -262,7 +263,7 @@
       {:status 400
        :body {:error {:message (str "Unknown intervention kind " (pr-str (:kind body))
                                     "; known: "
-                                    (str/join ", " (sort (keys interventions/kinds))))}
+                                    (str/join ", " (sort interventions/kinds)))}
               :run_id run-id}}
       (let [id (interventions/submit! conn run-id
                                       {:branch-id (:branch_id body)
@@ -276,4 +277,8 @@
           ;; accepted and applied is the thing a UI most easily lies about.
           :note "Queued. It applies at the branch's next turn boundary, not now."}})))))
 
-(defn kinds [] {:kinds interventions/kinds})
+(defn kinds
+  "Every directive kind with what it does — the names from the store, the
+  words from wordlists.edn :directive-kinds."
+  []
+  {:kinds (lexicon/wordlist :directive-kinds)})

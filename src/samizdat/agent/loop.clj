@@ -34,8 +34,7 @@
   fire, so a gate cannot be credited with an outcome that preceded it. Those
   constraints are the manifest's to keep; what this namespace guarantees is
   that each step does one thing and says what it touched."
-  (:require [clojure.data.json :as json]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.arbiter :as arbiter]
@@ -810,17 +809,10 @@
     (runs/set-thesis! conn run-id (:id branch) t))
   nil)
 
-(defn- directive-turns
-  "How many turns an `extend` asks for, from its JSON payload, or nil."
-  [d]
-  (let [payload (or (try (json/read-str (str (:payload d)) :key-fn keyword)
-                         (catch Throwable _ nil))
-                    {})
-        by (or (:turns payload) (:by payload) (:max_turns payload))]
-    (when (and (number? by) (pos? by)) (long by))))
-
 (defn- drain-directives!
-  "Apply the human directives waiting at this branch's boundary.
+  "Apply the directives waiting at this branch's boundary — a person's, the
+  supervisor's or the reflex's; the queue is the one write path and
+  `issued_by` says whose (RFC-012).
 
   TWO DRIVERS, ONE QUEUE, and which drain owns a directive depends on the
   run's shape (karamazov-blt.10):
@@ -841,6 +833,12 @@
   REPL-only, and left the row pending forever), and the scheduler-only kinds
   are rejected with a reason rather than accepted silently.
 
+  The WORKFLOW kinds (`interventions/workflow-kinds`) are left pending in
+  both shapes: they decide a workflow's next round, and the workflow's own
+  directives stage is the boundary that applies them. Eating them here
+  meant a `switch` landed at whichever worker finished a turn first and was
+  refused as unknown, rounds before the stage that wanted it.
+
   Shares the interventions queue with the HTTP control surface, so a REPL
   steer and a UI steer are the same event."
   [{:keys [conn run-id beam?] :as ctx} branch turn]
@@ -857,18 +855,12 @@
                  ;; :payload-text = the parsed human words; the raw column is
                  ;; a JSON blob the gate would render verbatim (blt.38).
                  (assoc b :pending-directive
-                        (assoc d :payload-text
-                               (let [payload (or (try (json/read-str (str (:payload d))
-                                                                     :key-fn keyword)
-                                                      (catch Throwable _ nil))
-                                                 {})]
-                                 (or (:text payload)
-                                     (when (string? payload) payload)))))))
+                        (assoc d :payload-text (interventions/text-of d)))))
 
            "extend"
            (if beam?
              b ;; run-level: the beam drain applies and persists it
-             (if-let [n (directive-turns d)]
+             (if-let [n (interventions/turns-asked d)]
                (let [b' (update b :extended-turns (fnil + 0) n)]
                  (interventions/resolve! conn run-id (:id d) :applied nil turn)
                  ;; The row is what a crash-resume reads its budget from.
@@ -881,8 +873,12 @@
                                            turn)
                    b)))
 
-           (if beam?
-             b ;; scheduler kinds: the beam drain owns them
+           (cond
+             ;; the workflow's own boundary owns these, in either shape
+             (contains? interventions/workflow-kinds (:kind d)) b
+             ;; scheduler kinds: the beam drain owns them
+             beam? b
+             :else
              (do (interventions/resolve! conn run-id (:id d) :rejected
                                          (str (:kind d) " applies to the beam scheduler,"
                                               " not a single-branch run")

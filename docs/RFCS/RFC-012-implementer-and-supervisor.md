@@ -1,7 +1,7 @@
 # RFC-012 — The implementer and the supervisor
 
-**Status:** proposed. The audit below is of the code as it stands; the model is
-what it should converge on.
+**Status:** implemented. The audit below is of the code as it was found; each
+finding carries what was done about it (karamazov-ts3o).
 
 ## Purpose
 
@@ -80,8 +80,8 @@ turn that is going wrong cannot live inside that turn's graph.**
 
 ## Audit: what exists today
 
-Five mechanisms do supervisory work. Three clock domains, two intervention
-paths, no shared contract.
+Five mechanisms did supervisory work when this was written. Three clock
+domains, two intervention paths, no shared contract.
 
 | # | mechanism | kind | clock | acts through |
 |---|---|---|---|---|
@@ -95,17 +95,52 @@ paths, no shared contract.
 pure stall-detection predicates (`over-studying?`) that gates.edn rules call,
 so it belongs to mechanism 1.
 
+What it converged to:
+
+| # | mechanism | is now | clock | acts through |
+|---|---|---|---|---|
+| 1 | `gate/arbiter` | the implementer's own boundary — where every steer, including a queued directive, is rendered and recorded | per turn | the branch, as the one renderer |
+| 2 | `samizdat.watch` | gone; `oversight/reflex!`, phase 1 of the stream | every poll, on the run's events | the interventions queue, as `watch` |
+| 3 | `oversight.edn` + `agent/oversight.clj` | the one supervisor, branch `SUP`, both phases | phase 2 on the turn boundary, spaced by `:every-ms` | the queue (`intervene`) and the mutation tools |
+| 4 | `:feature/supervise` | not a supervisor: the boundary where the stream's outer-loop directives (`switch`, `budget`, `stop`) land | per round | the round's data map, deterministically |
+| 5 | beam cull | selection on the same number evaluation reads (F3) | per round | branch selection |
+
 ### What the audit found
 
-**F1 — Two of the five are nodes inside the implementer's graph.** Mechanisms
-1 and 4 run only when the graph reaches them. `watch` exists precisely because
-that is too late, so the harness already contains both the mistake and its
-refutation.
+**F1 — Two of the five are nodes inside the implementer's graph.** *(Fixed.)*
+Mechanisms 1 and 4 ran only when the graph reached them. `watch` existed
+precisely because that is too late, so the harness already contained both the
+mistake and its refutation.
 
-**F2 — Phase 2 is not triggered by the turn.** The model says evaluation
-happens at the turn boundary. Mechanism 3 fires on a 120-second wall clock
-unrelated to turns; 4 and 5 fire per *round*. Nothing evaluates a turn when the
-turn ends.
+The resolution is different for the two. The **arbiter** stays a node,
+because it is not a supervisor: the model above puts it inside the
+implementer's turn (`settle → arbiter → route`), and what it does is render
+the one steer a boundary gets — including a queued directive, which reaches
+the branch through its `:human-directive` gate. It does not need to act on a
+turn that is going wrong; the stream does. **`:feature/supervise`** stops
+being a supervisor. It no longer runs the supervisor role, opens no branch,
+and makes no model call: it drains the outer-loop directives waiting at the
+round boundary (`switch`, `budget`, `stop`, from `interventions/workflow-kinds`)
+and applies them to the round's data map, resolving each applied or rejected
+with a reason. What the stage used to be handed — the round's outcome, the
+soft cap, the stage crashes — the stream now reads off the journal
+(`:route`, `:review`, `:critique` and `:stage-error` notes) in
+`:oversight/gather`, and the cap and a crash are each reason enough to spend
+a model call. The stream's brief carries the three levers.
+
+**F2 — Phase 2 is not triggered by the turn.** *(Fixed.)* The model says
+evaluation happens at the turn boundary. Mechanism 3 fired on a 120-second
+wall clock unrelated to turns; 4 and 5 fire per *round*. Nothing evaluated a
+turn when the turn ended.
+
+The stream drains the event bus once per poll and both phases read that
+drain. The reflex looks whenever anything of the run arrived — any event, not
+only a traced step, since role sub-loops are compiled without the tracer and
+journal turns instead. The reasoning pass is due when a `:turn` record of the
+run has arrived since the last pass and `:every-ms` have elapsed
+(`oversight/due?`): the clock is a spacing now, not a trigger, and a run that
+is idle buys no passes. The first pass is still immediate. A stream started
+without a bus (a test, a driver with none) keeps the clock, explicitly.
 
 **F3 — Evaluation and selection are separate mechanisms with separate
 metrics.** *(Fixed; see below.)* Mechanism 5 selected branches on critic
@@ -125,16 +160,38 @@ line is not culled while nobody is measurably doing better — and every cull
 reason cites it. The supervisor's digest lists it per branch, so a tuning
 decision and a cull decision read the same scale.
 
-**F4 — Two supervisors have collided.** `:oversight/reason`'s docstring
-records it: the stream opens `SUP` and `:feature/supervise` opens
-`S<revision>`, and "run 498450e1's S0 holds 26 turn rows numbered up to 14, the
-stream and the stage overwriting each other's turn numbers, and a record that
-cannot say which supervisor said what is a record of neither."
+**F4 — Two supervisors have collided.** *(Fixed.)* `:oversight/reason`'s
+docstring records it: the stream opened `SUP` and `:feature/supervise` opened
+`S<revision>`, and "run 498450e1's S0 holds 26 turn rows numbered up to 14,
+the stream and the stage overwriting each other's turn numbers, and a record
+that cannot say which supervisor said what is a record of neither."
 
-**F5 — Two intervention paths.** Mechanism 2 goes through the interventions
-queue and honours RFC-006's boundary rule; mechanism 1 writes a message
-straight onto the branch. Both are defensible alone. Together they mean there
-is no single answer to "what has been said to this branch and by whom".
+Renaming the stream's branch stopped the collision; F1's fix removes the
+second supervisor. One supervisor per run, one identity (`SUP`), one context —
+the stream's carried branch — and the roles/supervisor prompt no longer
+describes two.
+
+**F5 — Two intervention paths.** *(Fixed.)* Mechanism 2 went through the
+interventions queue and honoured RFC-006's boundary rule; mechanism 1 wrote a
+message straight onto the branch. Both were defensible alone. Together they
+meant there was no single answer to "what has been said to this branch and by
+whom".
+
+They are one path. Every supervisory write — the reflex's, the reasoning
+pass's through `intervene`, a person's — is a queued directive; every
+directive is drained into the branch's `:pending-directive` at its boundary
+and rendered by the arbiter's `:human-directive` gate, which records the
+firing like any other steer. So the gate-firings table is the one ledger of
+what was said to a branch. What was wrong with it: the gate's message said
+"a human has intervened" whatever issued the directive, so the ledger
+attributed the harness's own steering to the operator. It names the issuer
+now. Two things found on the way: the `intervene` tool's `extend` was refused
+every time (it sends `{text: N}`, the drains read `:turns`; one parser,
+`interventions/turns-asked`, reads both), and each drain rejected any kind it
+did not own, which would have eaten the new workflow-level kinds at whichever
+worker finished a turn first — both drains now leave `workflow-kinds` for the
+workflow's own stage, symmetric with the per-turn drain leaving the
+scheduler's kinds (karamazov-blt.10).
 
 **F6 — The event bus exists and carried the wrong grain.** *(Largely fixed;
 see below.)* `samizdat.events` has always been here — core.async, sliding
@@ -210,10 +267,17 @@ The pattern every supervisory mechanism must follow:
 
 ## Known gaps
 
-- F1–F6 above; none is yet fixed.
-- No turn-event stream exists, which blocks the protocol's first rule —
-  though F6 shows the seam is already there (`:on-trace`) and unused, so this
-  is smaller than it looks (karamazov-ts3o.1).
+- A directive of a workflow-level kind on a run whose workflow has no
+  directives stage (a plain `loop.edn` beam run) is left pending by both
+  drains and stays pending when the run ends — the "intervention that never
+  resolves" shape of karamazov-blt.38, now reachable by three more kinds. The
+  control API refuses directives against ended runs, so it cannot grow after
+  the fact, but nothing marks it undelivered.
+- A `switch`, `budget` or `stop` lands at the feature loop's NEXT round
+  boundary. The stream cannot get between a round's verify and its route, so
+  a decision made on round N's outcome takes effect after round N+1's
+  implement stage. That is the boundary rule working as specified, and it is
+  a round late by construction.
 - The GA's selection metric and the supervisor's evaluation metric are the
   same number now, session fitness per branch (F3), but the weights behind
   it are one policy table tuned for the supervisor's experiments; whether

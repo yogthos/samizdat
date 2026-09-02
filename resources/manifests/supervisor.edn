@@ -2,7 +2,7 @@
 ;; the per-turn worker graph (assemble -> infer -> parse -> dispatch -> journal
 ;; -> arbiter -> route), because the supervisor works the same way every role
 ;; does: a turn at a time until it decides. What makes it the SUPERVISOR is its
-;; role prompt (prompts/roles/supervisor.md, injected by :feature/supervise) and
+;; role prompt (prompts/roles/supervisor.md, injected by :oversight/reason) and
 ;; that it is handed a run-health digest to introspect on rather than a part to
 ;; build. It has the FULL tool surface on purpose — it must be able to read the
 ;; journal and transcripts to diagnose, and edit manifests / cells / prompts

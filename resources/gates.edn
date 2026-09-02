@@ -839,25 +839,34 @@
  :oversight
  {:value {:enabled? true
           :poll-ms 5000
-          ;; A pass is a model call, so the cadence is minutes and the budget
-          ;; is small. The stream is meant to be the thing that notices, not
-          ;; the thing that runs.
+          ;; A pass may be a model call, so the spacing is minutes and the
+          ;; budget is small. The stream is meant to be the thing that
+          ;; notices, not the thing that runs.
           :every-ms 120000
           :budget 12}
   :kind :policy :capability-tunable? false
   :doc "THE SUPERVISOR STREAM: the harness reasoning about itself, in parallel
-        with the run, in its own context.
+        with the run, in its own context. The ONE supervisor a run has
+        (RFC-012): the feature loop no longer runs a second one as a stage.
 
-        Distinct from :watch, which is a REFLEX — rule-based, every few
-        seconds, steering only, and never a model call. This is DELIBERATION:
-        it runs the supervisor role over the run's health and may tune the
+        Distinct from :watch, which is the stream's REFLEX — rule-based, every
+        poll, steering only, and never a model call. This is DELIBERATION: it
+        runs the supervisor role over the run's health and may tune the
         harness (prompts, thresholds, manifests, cells) as well as steer the
-        run. Different costs, so different cadences and different evidence
+        run — including the feature loop's own levers, `switch`, `budget` and
+        `stop`, through `intervene`. Different costs, so different evidence
         bars: a steer is wrong for one turn, a userspace edit is wrong for
         every run until somebody changes it back.
 
-        :budget bounds the model calls one run may spend supervising itself.
-        Twelve is roughly one look every two minutes across a long run, and it
+        WHEN A PASS RUNS (RFC-012 F2): on the run's TURN BOUNDARY. A pass
+        evaluates the turn that just ended, so it is due when one has — a
+        turn record on the event bus — and not before. :every-ms is the
+        minimum spacing between passes, not a trigger: it used to fire a pass
+        every two minutes whether or not the implementer had done anything.
+        Zero means every turn. The first pass is immediate regardless.
+
+        :budget bounds the model calls one run may spend supervising itself;
+        a pass that looked and found nothing worth a call is free. Twelve
         binds unconditionally — a bound a distress signal can lift is not a
         bound."}
 
@@ -867,20 +876,24 @@
           :severities ["high"]
           :max-interventions 3}
   :kind :policy :capability-tunable? false
-  :doc "THE WATCHER: a thread that observes a run while it runs and speaks when
-        something is going wrong, the way a person watching a coding harness
-        does.
+  :doc "THE REFLEX: the supervisor stream's cheap phase (RFC-012). It looks
+        every poll at what the run's events say the implementer just did and
+        speaks when something is going wrong, the way a person watching a
+        coding harness does — rule-based, no model call, steering only.
 
-        The supervisor ROLE is a manifest node, so it runs between rounds, in
-        sequence, and only in the workflows that wire it. A run losing every
-        turn to empty provider replies reaches no round boundary quickly, and
-        the node never gets a look. This is the other half: continuous
-        observation, reacting while the pattern is still forming.
+        It exists because a supervisor that only reasons on a boundary misses
+        the run that never reaches one: a run losing every turn to empty
+        provider replies. This is the other half: continuous observation,
+        reacting while the pattern is still forming.
 
-        It intervenes through the same interventions queue a human uses, so a
-        directive still lands on a turn boundary and never touches a branch
-        mid-turn. `issued-by` is `watch` instead of `human`; nothing else
-        differs.
+        It intervenes through the same interventions queue a human and the
+        supervisor's reasoning pass use, so a directive still lands on a turn
+        boundary and never touches a branch mid-turn. `issued-by` is `watch`,
+        and the branch is told so; nothing else differs.
+
+        :poll-ms here is unused — the reflex runs on the stream's own poll
+        (:oversight :poll-ms); it is kept so a project that tuned it does not
+        lose the number.
 
         :severities — only these are worth interrupting for. Most findings are
         worth SEEING and only some are worth a turn: a supervisor reading a
@@ -2126,14 +2139,24 @@
   {:gate :human-directive
    :priority 0
    :budget nil
-   :doc "A human told the branch to do something. Outranks every machine gate,
-         which is dirge PR 717's finding arriving as a design property rather
-         than a bug fix."
+   :doc "A directive from the queue reached the branch: a human's, the
+         supervisor's, or the reflex's — the one write path into a run, and
+         this gate is where it lands (RFC-012 F5). Outranks every machine
+         gate, which is dirge PR 717's finding arriving as a design property
+         rather than a bug fix. The message names the ISSUER: the gate
+         firing is the one ledger of what was said to a branch and by whom,
+         and it used to say `a human` whatever wrote the directive."
    :when (some? directive)
    ;; :payload-text is attached by the drains — the payload column is a JSON
    ;; blob ({"text": "..."}), and rendering it raw framed `{"text":"[watch]
-   ;; ..."}` as the human's words (blt.38).
-   :message-form (str "**A human has intervened in this run.**\n\n"
+   ;; ..."}` as the human's words (blt.38). An unattributed directive is the
+   ;; operator's: the REPL path predates issued_by.
+   :message-form (str "**"
+                      (case (str (:issued_by directive))
+                        "supervisor" "The supervisor"
+                        "watch"      "The harness's reflex"
+                        "A human")
+                      " has intervened in this run.**\n\n"
                       (or (:payload-text directive) (:payload directive))
                       "\n\nThis takes precedence over anything the harness has told"
                       " you. Act on it on this turn.")

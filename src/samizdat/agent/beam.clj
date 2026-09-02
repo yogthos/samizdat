@@ -60,8 +60,7 @@
   The width is not treated as justified. The original never measured five
   branches against one branch at five times the turn budget, and
   `samizdat.bench.beam` is the comparison."
-  (:require [clojure.data.json :as json]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [mycelium.core :as myc]
             [samizdat.agent.critic :as critic]
@@ -353,14 +352,6 @@
                           (prompt/render "directive-rejected" reason-ctx)
                           turn))
 
-(defn- directive-payload
-  "A directive's JSON payload as a map, or {} — a payload that will not parse
-  is a malformed request, not a reason to take the round down."
-  [d]
-  (or (try (json/read-str (str (:payload d)) :key-fn keyword)
-           (catch Throwable _ nil))
-      {}))
-
 (defn drain-directives!
   "Apply pending human directives at the boundary, and record what happened to
   each.
@@ -384,7 +375,13 @@
   to go, and rejecting them explicitly beat accepting them silently but left
   the control API promising something the scheduler would not do. `:max-turns`
   and `:paused?` are nil when no directive touched them, so the caller keeps
-  whatever it had."
+  whatever it had.
+
+  The WORKFLOW kinds (`interventions/workflow-kinds`) are left pending: they
+  decide a workflow's next round — the feature loop's implement strategy, its
+  owners' budget, whether it stops — and the workflow's own directives stage
+  is the boundary that applies them. Symmetric with the per-turn drain
+  leaving the scheduler's kinds for this one (karamazov-blt.10)."
   [{:keys [conn run-id]} branches directives turn]
   (reduce
    (fn [{:keys [branches] :as acc} d]
@@ -423,7 +420,7 @@
          ;; boundary like every other directive — a branch mid-turn is holding
          ;; a ledger it read before the change, and rewriting under it would
          ;; make the two disagree for exactly one turn.
-         (let [payload (directive-payload d)
+         (let [payload (interventions/payload d)
                aid (or (:artifact_id payload) (:artifact-id payload))]
            (if (and aid (artifacts/retract! conn run-id aid
                                             (or (:reason payload) "retracted by a human")))
@@ -438,10 +435,7 @@
              ;; at priority zero — above every machine gate. :payload-text is
              ;; the parsed human words; the raw column is a JSON blob and the
              ;; gate rendered it verbatim (blt.38).
-             (let [d' (assoc d :payload-text
-                             (let [payload (directive-payload d)]
-                               (or (:text payload)
-                                   (when (string? payload) payload))))]
+             (let [d' (assoc d :payload-text (interventions/text-of d))]
                (assoc acc :branches
                       (mapv #(if (matches? %) (assoc % :pending-directive d') %) bs))))
 
@@ -452,8 +446,8 @@
          ;; So a human's fork is the same object a branch's own
          ;; `branch_theses` call produces, and it inherits the cap, the
          ;; parent's conversation and the `:forked-at` stamp for free.
-         (let [payload (directive-payload d)
-               thesis (or (:thesis payload) (:goal payload))
+         (let [payload (interventions/payload d)
+               thesis (or (:thesis payload) (:goal payload) (interventions/text-of d))
                parents (filter #(and (matches? %) (state/active? %)) bs)]
            (if-not (and (seq (str thesis)) (seq parents))
              (do (rejected conn run-id d turn
@@ -482,14 +476,16 @@
          ;; scheduler loop compares against, a resume re-reads its budget from
          ;; the control API anyway, and a row that disagreed with the live
          ;; value would be the worse of the two to have.
-         (let [payload (directive-payload d)
-               by (or (:turns payload) (:by payload) (:max_turns payload))
-               n (when (number? by) (long by))]
-           (if-not (and n (pos? n))
+         (let [n (interventions/turns-asked d)]
+           (if-not n
              (do (rejected conn run-id d turn {:extend-no-turns true})
                  acc)
              (do (interventions/resolve! conn run-id (:id d) :applied nil turn)
                  (update acc :max-turns (fnil + 0) n))))
+
+         ("switch" "budget" "stop")
+         ;; The workflow's, not the scheduler's. Left for its own stage.
+         acc
 
          ("pause" "resume")
          ;; Run-level and last-writer-wins: two pauses are one pause, and a
@@ -832,8 +828,8 @@
         ;;
         ;; Started here for the same reason the watcher is: a supervisor wired
         ;; as a node in the workflow it supervises only runs where that
-        ;; workflow puts it, and `:feature/supervise` sits after the implement
-        ;; stage RETURNS. Runs fps5 and fps6 both ended having never reached
+        ;; workflow puts it, and `:feature/supervise` used to sit after the implement
+        ;; stage returned. Runs fps5 and fps6 both ended having never reached
         ;; it, because the implementer stalled and never returned — the
         ;; watchdog was downstream of the thing it watches for.
         ctx (assoc ctx :stop-oversight (oversight-stream ctx))]

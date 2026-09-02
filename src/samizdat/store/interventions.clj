@@ -17,18 +17,29 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (ns samizdat.store.interventions
-  "The human directive queue.
+  "The directive queue: the ONE write path into a running run (RFC-012).
 
-  A directive applies at the next branch boundary, never mid-turn: a branch
-  inside a provider call or a Lean tactic is not in a state anyone should
-  mutate. That means a UI has to show pending versus applied honestly rather
-  than pretending a click took effect, which is why `status` and `disposition`
-  are stored rather than inferred.
+  Three writers share it — a person at the control API, the supervisor's
+  reasoning pass through the `intervene` tool, and the supervisor's reflex —
+  and `issued_by` says which. A directive applies at the next boundary, never
+  mid-turn: a branch inside a provider call or a tool is not in a state anyone
+  should mutate. That means a UI has to show pending versus applied honestly
+  rather than pretending a click took effect, which is why `status` and
+  `disposition` are stored rather than inferred.
+
+  THREE BOUNDARIES OWN THE KINDS, and each drain leaves alone what it does not
+  own rather than rejecting it: a branch's own steer boundary takes what is
+  about that branch, the beam's round top takes what is about the run, and a
+  workflow's own directives stage takes what is about the workflow's next
+  round. A kind rejected at the wrong boundary is a directive that never
+  reached the right one, which is what happened to every scheduler kind before
+  karamazov-blt.10 and would have happened to every workflow kind here.
 
   Abort is the exception and does not come through here. It goes to the
   supervisor, because a run that is wedged is exactly the run that will never
   reach another boundary to drain a queue at."
   (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
             ;; points connection construction at the native driver; it has to load
             ;; before jdbc.core.
@@ -37,17 +48,67 @@
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]))
 
+(def branch-kinds
+  "Applied at a branch's own steer boundary."
+  #{"message" "review"})
+
+(def scheduler-kinds
+  "Applied at the beam's round top: facts about the run or its set of
+  branches."
+  #{"cull" "fork" "retract" "extend" "pause" "resume"})
+
+(def workflow-kinds
+  "Applied at a workflow's own directives stage — the feature loop's, between
+  its verify and its route — because they decide that workflow's NEXT ROUND
+  and nothing at the turn or scheduler level has anywhere to put them."
+  #{"switch" "budget" "stop"})
+
 (def kinds
-  "What a human may ask for. Each is applied by the arbiter or the scheduler at
-  a boundary; nothing here mutates a branch directly."
-  {"message" "Inject text into a branch's next turn."
-   "review" "Tell a branch to cross-check and ship what it has."
-   "cull" "Stop a branch. Refused if it is the last one running."
-   "fork" "Open a sibling branch on a stated thesis."
-   "retract" "Un-confirm an artifact that was not what it claimed. Payload: {\"artifact_id\": N, \"reason\": \"...\"}."
-   "extend" "Raise the run's turn cap."
-   "pause" "Stop scheduling new turns; in-flight turns finish."
-   "resume" "Resume scheduling."})
+  "Every directive kind that may be queued: the NAMES, which are mechanism —
+  each has a drain that applies it. What each one does, in words a person and
+  the supervisor are shown, is `wordlists.edn :directive-kinds`, read by the
+  surfaces that show them (the intervene tool, the control API), because
+  every sentence the model reads has to be editable without a rebuild."
+  (into #{} cat [branch-kinds scheduler-kinds workflow-kinds]))
+
+(defn payload
+  "A directive's JSON payload as a map, or {} — a payload that will not parse
+  is a malformed request, not a reason to take a boundary down."
+  [d]
+  (let [p (:payload d)]
+    (cond
+      (map? p) p
+      :else (or (try (let [v (json/read-str (str p) :key-fn keyword)]
+                       (when (map? v) v))
+                     (catch Throwable _ nil))
+                {}))))
+
+(defn text-of
+  "The words a directive carries: the `text` of its payload, or the payload
+  itself when it is a bare string (`message` and `fork` arrive that way from
+  the intervene tool)."
+  [d]
+  (let [p (:payload d)]
+    (if (and (string? p) (not (str/starts-with? (str/trim p) "{")))
+      p
+      (some-> (payload d) :text str))))
+
+(defn turns-asked
+  "How many turns a directive asks for, or nil.
+
+  One parser for both shapes a directive arrives in. The control API sends
+  {\"turns\": N} (or `by` / `max_turns`); the intervene tool sends every
+  structural kind as {\"text\": \"...\"}, and reading only the first shape
+  meant the supervisor's `extend` was refused every time it was tried — with
+  a reason naming a payload the tool cannot produce."
+  [d]
+  (let [p (payload d)
+        raw (or (:turns p) (:by p) (:max_turns p)
+                (some-> (:text p) str str/trim not-empty))
+        n (cond (number? raw) (long raw)
+                (string? raw) (parse-long raw)
+                :else nil)]
+    (when (and n (pos? n)) n)))
 
 (defn submit!
   [conn run-id {:keys [branch-id kind payload issued-by]}]

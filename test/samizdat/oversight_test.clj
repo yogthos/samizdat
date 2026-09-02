@@ -14,37 +14,64 @@
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.gates :as gates]
             [samizdat.cells :as cells]
+            [samizdat.events :as events]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
+            [samizdat.session :as session]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
             [samizdat.agent.oversight :as ov]))
 
 ;; --- when a pass is due -----------------------------------------------------
 
-(deftest a-pass-is-due-on-cadence-and-on-a-signal
-  (testing "not due before the cadence has elapsed"
-    (is (not (ov/due? {:last-at 100 :passes 0} {:now 150 :every-ms 100}))))
-  (testing "due once it has"
-    (is (ov/due? {:last-at 100 :passes 0} {:now 200 :every-ms 100})))
+(deftest a-pass-is-due-on-a-turn-boundary-and-no-sooner-than-the-spacing
+  ;; RFC-012 F2. Phase 2 EVALUATES A TURN, so it runs when a turn has ended —
+  ;; not on a wall clock that fired every two minutes whether or not the
+  ;; implementer had done anything, which is what it used to do. The clock is
+  ;; now a spacing: a beam of five branches must not buy a pass per turn.
   (testing "the FIRST pass is due immediately — a supervisor that waits out a
             full cadence before its first look is blind through exactly the
             opening stretch where a run picks its approach"
     (is (ov/due? {:last-at nil :passes 0} {:now 0 :every-ms 100})))
-  (testing "a signal makes a pass due early: the stream exists to notice
-            trouble while it is forming, not on the next tick"
-    (is (ov/due? {:last-at 100 :passes 0} {:now 110 :every-ms 100 :signal? true}))))
+  (testing "time passing earns nothing on its own: with no turn ended since
+            the last pass there is nothing to evaluate"
+    (is (not (ov/due? {:last-at 100 :passes 0} {:now 1000 :every-ms 100})))
+    (is (not (ov/due? {:last-at 100 :passes 0} {:now 1000 :every-ms 100 :boundary? false}))))
+  (testing "a boundary inside the spacing waits"
+    (is (not (ov/due? {:last-at 100 :passes 0} {:now 150 :every-ms 100 :boundary? true}))))
+  (testing "a boundary after the spacing is due"
+    (is (ov/due? {:last-at 100 :passes 0} {:now 200 :every-ms 100 :boundary? true}))))
+
+(deftest the-reasoning-pass-fires-when-a-turn-ends-not-when-the-clock-ticks
+  ;; The same claim, driven through the thread: the stream reads the bus, and
+  ;; a :turn journal event of ITS run is the boundary.
+  (let [ch (events/subscribe)
+        passes (atom 0)
+        stop (ov/start! {:enabled? true :poll-ms 5 :every-ms 0 :budget 100
+                         :run-id "R-f2" :event-ch ch}
+                        (fn [_] (swap! passes inc) {:carry nil :spent? true}))]
+    (try
+      (Thread/sleep 80)
+      (is (= 1 @passes) "the first look is immediate; after that the clock alone buys nothing")
+      (events/publish! {:kind :turn :run-id "R-f2" :branch-id "B1" :turn 1})
+      (Thread/sleep 80)
+      (is (= 2 @passes) "a turn of this run ending is what evaluation runs on")
+      (events/publish! {:kind :turn :run-id "someone-else" :branch-id "B1" :turn 1})
+      (events/publish! {:kind :step :run-id "R-f2" :branch-id "B1" :turn 2 :node :infer})
+      (Thread/sleep 80)
+      (is (= 2 @passes) "another run's turn is not this run's boundary, and a step mid-turn is not a boundary")
+      (finally (stop) (events/unsubscribe! ch)))))
 
 (deftest the-stream-is-bounded
   ;; Every pass is a model call. A supervisor that reasons on every tick of a
   ;; 300-turn run costs more than the run it is supervising.
   (testing "under budget, passes continue"
-    (is (ov/due? {:last-at 0 :passes 3} {:now 999 :every-ms 1 :budget 5})))
-  (testing "at budget, nothing is due again — including on a signal, or the
+    (is (ov/due? {:last-at 0 :passes 3} {:now 999 :every-ms 1 :budget 5 :boundary? true})))
+  (testing "at budget, nothing is due again — including on a boundary, or the
             bound would be advisory"
-    (is (not (ov/due? {:last-at 0 :passes 5} {:now 999 :every-ms 1 :budget 5})))
     (is (not (ov/due? {:last-at 0 :passes 5}
-                      {:now 999 :every-ms 1 :budget 5 :signal? true})))))
+                      {:now 999 :every-ms 1 :budget 5 :boundary? true})))))
 
 ;; --- the stream cannot hurt the run ----------------------------------------
 
@@ -108,7 +135,86 @@
       (is (worth-a-look? {:unmet-gates 0 :idle-turns 25 :errors nil} floors)))
     (testing "a stage crashed — a harness bug the loop survived, which recurs
               on the next run if nobody looks"
-      (is (worth-a-look? {:unmet-gates 0 :idle-turns 0 :errors [{:x 1}]} floors)))))
+      (is (worth-a-look? {:unmet-gates 0 :idle-turns 0 :errors [{:x 1}]} floors)))
+    (testing "the outer loop reached its soft cap — a decision the loop hands
+              to the supervisor, and now there is exactly one to hand it to"
+      (is (worth-a-look? {:unmet-gates 0 :idle-turns 0 :errors nil :at-cap? true} floors)))))
+
+;; --- what the stage used to see, the stream now sees (RFC-012 F1/F4) --------
+
+(defn- reasoning-over
+  "Run :oversight/gather then :oversight/reason on `rid` with the model turn
+  stubbed, returning {:gather :prob} — what gather decided and the brief the
+  supervisor would have read."
+  [conn rid]
+  (cells/load-cells!)
+  (let [ctx {:conn conn :run-id rid :config {}}
+        g ((:handler (cell/get-cell! :oversight/gather)) ctx {})
+        prob (atom nil)]
+    (with-redefs [myc/run-compiled (fn [_ _ data]
+                                     (reset! prob (get-in data [:branch :problem]))
+                                     {:branch (assoc (:branch data) :final-answer "ok")})]
+      ((:handler (cell/get-cell! :oversight/reason)) ctx g))
+    {:gather g :prob @prob}))
+
+(deftest a-crashed-stage-reaches-the-one-supervisor
+  ;; The feature loop's stages fail soft and note :stage-error; the stage
+  ;; that used to show those to a supervisor of its own is gone. The stream's
+  ;; gather reads them off the journal, they buy a model call, and the brief
+  ;; names the crash in its own words.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :stage-error
+                   {:data {:stage "critique" :node "judge" :error "boom in the judge"}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (true? (:oversight/worth-a-look? gather)) "a crash is worth a look")
+      (is (= 1 (count (:oversight/crashes gather))))
+      (is (str/includes? (str prob) "STAGE CRASHED"))
+      (is (str/includes? (str prob) "boom in the judge")))))
+
+(deftest the-loops-soft-cap-is-the-supervisors-to-decide
+  ;; The feature loop's route note carries the revision and the soft cap. At
+  ;; the cap the loop keeps solving on its own ladder, and the supervisor is
+  ;; the one who may switch, re-budget or stop it — so reaching it is worth a
+  ;; model call, and the brief says so with the round's own facts.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :route
+                   {:data {:decision "revise" :revision 3 :soft-cap 3 :strategy "board"
+                           :hollow false :tests-passed false}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (true? (:oversight/worth-a-look? gather)))
+      (is (= 3 (get-in gather [:oversight/round :revision])))
+      (is (str/includes? (str prob) "REVISION CAP REACHED"))
+      (is (str/includes? (str prob) "revision 3")))))
+
+(deftest a-round-under-the-cap-with-nothing-else-wrong-is-still-quiet
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :route
+                   {:data {:decision "revise" :revision 1 :soft-cap 6 :strategy "board"}})
+    (cells/load-cells!)
+    (let [g ((:handler (cell/get-cell! :oversight/gather)) {:conn conn :run-id rid :config {}} {})]
+      (is (false? (:oversight/worth-a-look? g))))))
+
+(deftest the-reasoning-pass-reads-the-counters-since-its-last-look
+  ;; RFC-012 protocol rule 4: measure what you changed. The stage used to stamp
+  ;; a mark before each of its looks and show the delta; the stream inherits
+  ;; that, so a pass can tell whether the change it made last pass moved
+  ;; anything.
+  (session/reset!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        mark (str "supervisor:" rid)]
+    (dotimes [_ 5] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+    (is (nil? (session/since mark)) "no mark before the first pass")
+    (let [{:keys [prob]} (reasoning-over conn rid)]
+      (is (str/includes? (str prob) "This session so far")
+          "the session block is in the brief")
+      (dotimes [_ 2] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+      (is (= 2 (:turns (session/since mark)))
+          "and the pass stamped its mark, so the next look measures from here"))
+    (session/reset!)))
 
 (deftest the-stalls-this-project-actually-had-would-all-have-woken-it
   ;; Regression against the record rather than against a number I chose. Every
@@ -321,7 +427,7 @@
         "three quiet passes later the supervisor still knows what it concluded")))
 
 (deftest the-budget-gates-on-spent-passes-only
-  (is (ov/due? {:last-at 0 :passes 0 :looks 99} {:now 999 :every-ms 1 :budget 3})
+  (is (ov/due? {:last-at 0 :passes 0 :looks 99} {:now 999 :every-ms 1 :budget 3 :boundary? true})
       "ninety-nine free looks do not exhaust a budget of three")
-  (is (not (ov/due? {:last-at 0 :passes 3 :looks 3} {:now 999 :every-ms 1 :budget 3}))
+  (is (not (ov/due? {:last-at 0 :passes 3 :looks 3} {:now 999 :every-ms 1 :budget 3 :boundary? true}))
       "three spent passes do"))

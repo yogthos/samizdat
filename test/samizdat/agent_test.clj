@@ -101,6 +101,23 @@
   (testing "a fresh branch is not nudged"
     (is (nil? (arbiter/decide {:branch (branch-with) :max-turns 40})))))
 
+(deftest a-directive-says-who-issued-it
+  ;; RFC-012 F5. Three writers share the queue — a person, the supervisor's
+  ;; reasoning pass, the reflex — and every one of their steers reaches the
+  ;; branch through this gate. Its message used to open "A human has
+  ;; intervened" whatever the issuer, so the one ledger of what was said to a
+  ;; branch attributed the harness's own steering to the operator. The record
+  ;; must say who, and so must the branch reading it.
+  (let [msg (fn [d] ((:message (gates/by-name :human-directive)) {:directive d}))]
+    (is (str/includes? (msg {:payload "ship it" :issued_by "human"}) "**A human has intervened"))
+    (is (str/includes? (msg {:payload "ship it"}) "**A human has intervened")
+        "an unattributed directive is the operator's — the REPL path predates issued_by")
+    (is (str/includes? (msg {:payload "ship it" :issued_by "supervisor"})
+                       "**The supervisor has intervened"))
+    (is (str/includes? (msg {:payload "ship it" :issued_by "watch"})
+                       "**The harness's reflex has intervened"))
+    (is (not (str/includes? (msg {:payload "ship it" :issued_by "supervisor"}) "human")))))
+
 (deftest gates-stay-silent-when-they-should
   (testing "the stall gate arms only after the branch has made progress"
     ;; Exploration is never nudged; the prologue cap covers the other case.

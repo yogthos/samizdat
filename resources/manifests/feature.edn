@@ -21,9 +21,10 @@
 ;;              exists and it passed review.
 ;;   verify     GATE 2 — run the tests (:run :verify-cmd); they must pass
 ;;              (feature/verify). Both gates green = the task is done.
-;;   supervise  watches the role loops and can adjust the outer loop — e.g. on
-;;              an implement round that shipped nothing, force another round
-;;              (feature/supervise)
+;;   supervise  where the SUPERVISOR's directives about this loop land — a
+;;              `switch` of strategy, a per-owner `budget`, a `stop` — applied
+;;              to the next round. Not a supervisor itself: the one supervisor
+;;              is the stream beside the run (RFC-012). (feature/supervise)
 ;;   route      keep solving by default — ship only real, verified work; send it
 ;;              back to implement with the findings as guidance otherwise;
 ;;              abandon (honestly unsolved) only in the extreme, when the
@@ -32,10 +33,11 @@
 ;;
 ;; The hierarchy is explicit: this manifest is the feature; each role has its
 ;; own loop (implementor = worker.edn, reviewer.edn, critic = the judge) and its
-;; own prompt, and owns/tunes its own manifest. Select with config
+;; own prompt, and owns/tunes its own manifest. The supervisor is not a stage
+;; of it — it is oversight.edn, driven beside every run. Select with config
 ;; :run :loop "feature". Pass config :run :subtasks with strategy `team` to skip
 ;; planning.
-{:description "Build a feature end to end, supervised: a board of owned tasks (each implemented by one owner and reviewed on its own diff) -> review -> critique -> run the tests -> a supervisor that watches and steers. The default for a normal feature."
+{:description "Build a feature end to end: a board of owned tasks (each implemented by one owner and reviewed on its own diff) -> review -> critique -> run the tests -> apply the supervisor stream's directives (switch / budget / stop) -> route. The default for a normal feature."
  :input-schema
  ;; :subtasks is optional and is what makes this a TEAM run: config
  ;; :run :subtasks arrives pre-split, and :team/plan produces it otherwise.

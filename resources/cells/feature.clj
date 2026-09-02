@@ -8,9 +8,10 @@
 ;;                      finished work; PASS or REVISE.
 ;;   :feature/critique  the CRITIC role — gate the result with the same judge the
 ;;                      finalization critic uses, without its branch surgery.
-;;   :feature/supervise the SUPERVISOR — watch the role loops and adjust the
-;;                      outer loop (round one: force another round on a hollow
-;;                      implement result).
+;;   :feature/supervise where the SUPERVISOR's directives about the outer loop
+;;                      land — switch the strategy, set the owners' budget,
+;;                      stop. Not a supervisor itself: the one supervisor is
+;;                      the stream beside the run (RFC-012).
 ;;   :feature/route     ship, or send back to implement with findings as
 ;;                      guidance, bounded by :run :max-revisions.
 ;;
@@ -25,13 +26,12 @@
             [samizdat.agent.judge :as judge]
             [samizdat.agent.loop :as turn]
             [samizdat.agent.state :as state]
-            [samizdat.agent.telemetry :as telemetry]
             [samizdat.agent.tools :as tools]
             [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm]
+            [samizdat.prompt :as prompt]
+            [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
-            [samizdat.session :as session]
-            [samizdat.store.knowledge :as knowledge]
             [samizdat.store.runs :as runs]
             [samizdat.workflow :as wf]))
 
@@ -314,44 +314,54 @@
       ;; fail-open: a broken critic ships rather than wedging the loop
       (fn [d] (assoc d :critic/decision :ship :critique/findings "")))))
 
-(defn- parse-switch
-  "A supervisor may switch this run's implement approach with a `SWITCH: <name>`
-  line — the mid-run self-healing lever. Only the switchable implement strategies
-  are honoured: `board` (the default — one owner per task, reviewed per task),
-  `decompose` (the decompose-on-stuck loop) or `team`/`fanout` (the parallel
-  fan-out). Returns the normalized strategy or nil."
-  [answer]
-  (when-let [m (re-find #"(?im)^\s*SWITCH:\s*([A-Za-z-]+)" (str answer))]
-    (let [s (str/lower-case (second m))]
-      (cond (= s "board") "board"
-            (= s "decompose") "decompose"
-            (#{"team" "fanout" "fan-out"} s) "team"
-            :else nil))))
+(defn- normalize-strategy
+  "The implement strategy a `switch` names, or nil for one that does not
+  exist. Only the switchable strategies are honoured: `board` (the default —
+  one owner per task, reviewed per task), `decompose` (the decompose-on-stuck
+  loop) or `team`/`fanout` (the parallel fan-out)."
+  [s]
+  (let [s (str/lower-case (str/trim (str s)))]
+    (cond (= s "board") "board"
+          (= s "decompose") "decompose"
+          (#{"team" "fanout" "fan-out"} s) "team"
+          :else nil)))
 
-(defn- parse-extend
-  "A supervisor may raise the per-owner turn budget for the following rounds
-  with an `EXTEND: <n>` line — the lever for the failure mode where owners keep
-  exhausting mid-task (orient, start the fix, run out). Clamped: an extension
-  below the current default is not an extension, and an unbounded one is a
-  spend policy no single supervisor turn should be able to set. Returns n or
-  nil."
-  [answer]
-  (when-let [m (re-find #"(?im)^\s*EXTEND:\s*(\d{1,4})" (str answer))]
-    (let [n (parse-long (second m))]
-      (when (and n (pos? n)) (min n 200)))))
+(defn- claim-directives!
+  "Drain the outer-loop directives waiting at this round boundary and resolve
+  every one of them.
 
-(defn- supervise-directive
-  "The within-run directive from the supervisor's verdict + answer: STOP (ship
-  and end), REVISE (force another round), or CONTINUE (default). A supervisor
-  that could not finish or said nothing fails SAFE to :continue — it must not be
-  able to wedge or hijack the loop by crashing."
-  [verdict answer]
-  (if (or (not= :done verdict) (str/blank? (str answer)))
-    :continue
-    (let [first-line (-> (str answer) str/split-lines first str str/upper-case)]
-      (cond (str/includes? first-line "STOP")   :stop
-            (str/includes? first-line "REVISE") :revise
-            :else :continue))))
+  Returns {:switch :budget :stop :stop-reason :applied}, the last writer
+  winning per lever — two switches in one round are one switch, the later.
+  A malformed directive is rejected with a reason a person can read, through
+  the same template every other drain uses; it is never dropped and never
+  wedges the round. The budget is clamped: an unbounded one is a spend policy
+  no single directive should be able to set."
+  [conn run-id rev]
+  (reduce
+   (fn [acc d]
+     (let [k (:kind d)
+           asked (or (:strategy (interventions/payload d)) (interventions/text-of d))
+           applied! (fn [acc']
+                      (interventions/resolve! conn run-id (:id d) :applied nil rev)
+                      (update acc' :applied conj {:id (:id d) :kind k
+                                                  :issued-by (or (:issued_by d) "human")}))
+           rejected! (fn [reason-ctx]
+                       (interventions/resolve! conn run-id (:id d) :rejected
+                                               (prompt/render "directive-rejected" reason-ctx)
+                                               rev)
+                       acc)]
+       (case k
+         "switch" (if-let [s (normalize-strategy asked)]
+                    (applied! (assoc acc :switch s))
+                    (rejected! {:switch-unknown true :strategy (str asked)}))
+         "budget" (if-let [n (interventions/turns-asked d)]
+                    (applied! (assoc acc :budget (min n 200)))
+                    (rejected! {:budget-no-turns true}))
+         "stop"   (applied! (assoc acc :stop true :stop-reason (interventions/text-of d)))
+         acc)))
+   {:switch nil :budget nil :stop nil :stop-reason nil :applied []}
+   (filter #(contains? interventions/workflow-kinds (:kind %))
+           (interventions/pending conn run-id))))
 
 (defn- tail [s n]
   (->> (str/split-lines (str s)) (remove str/blank?) (take-last n) (str/join "\n")))
@@ -399,187 +409,49 @@
                                                (tail (str (:out r) "\n" (:err r)) 25)))))))))
 
 (cell/defcell :feature/supervise
-  {:doc "The ROUTING supervisor: one look at the round, one decision about what
-        the outer loop does next — CONTINUE / REVISE / STOP, plus the SWITCH
-        and EXTEND levers. A pipeline decision, which is why it stays a
-        pipeline node.
+  {:doc "Where the supervisor's directives about the OUTER loop land.
 
-        IT NO LONGER OWNS DIAGNOSIS. The supervision STREAM
-        (manifests/oversight.edn) watches the whole run continuously on its
-        own branch and tunes the harness through the mutation protocol; this
-        stage sees one round, at one moment, and a second supervisor deriving
-        its own diagnosis from a different context reaches a different
-        conclusion about the same run and neither knows about the other
-        (karamazov-poe). So the stream's last conclusion is QUOTED into this
-        stage's brief, and this stage is asked to route rather than to
-        re-diagnose.
+        NOT A SUPERVISOR. This used to run the supervisor ROLE on a branch of
+        its own, S<revision>, once per round — a second supervisor beside the
+        stream, with a second identity and a second context, reachable only
+        when the graph reached it, so a run whose implement stage stalled
+        never got its look; and once both existed they overwrote each other's
+        turn rows on one branch id (RFC-012 F1, F4; karamazov-poe). The
+        stream on `SUP` is the one supervisor now. It reads this round's
+        facts off the journal — the :route, :review, :critique and
+        :stage-error notes — and says what it wants through `intervene`, and
+        this stage applies whatever has arrived by the time the round reaches
+        it: `switch` the implement strategy, set the owners' `budget`, or
+        `stop`. Each is resolved applied — or rejected with a reason — so the
+        record says who decided and what became of it (F5).
 
-        Fails SAFE to :continue so it can never wedge the loop."
-   :effects [:net :db]
-   :requires [:config :conn :run-id]
-   ;; The round it is routing on: what was implemented, and how the two gates
-   ;; judged it. Those are the brief.
-   ;; :results is OPTIONAL, and the chain check is what established why. Two
-   ;; of the three implement strategies write it — :team/fan-out always,
-   ;; :feature/board deliberately, in the fan-out's vocabulary so every
-   ;; downstream stage works unchanged — and :decompose/run does not. So on
-   ;; the decompose path this cell supervises a round it cannot see the
-   ;; shipping outcome of. It degrades rather than lies: telemetry guards the
-   ;; count with (pos? total), so the :nobody-shipped signal stays silent
-   ;; instead of firing falsely. Filed as karamazov-u5uy.
-   :input  [:map [:review/decision :keyword]
-            [:critic/decision :keyword] [:verify/passed? :boolean]
-            [:results {:optional true} :any]
-            [:feature/errors {:optional true} :any]
-            [:feature/tried {:optional true} :any]]
-   ;; Only :supervisor/notes is unconditional. The LEVERS are conditional by
-   ;; construction — a round where the supervisor neither switched strategy,
-   ;; nor extended the budget, nor escalated, nor stopped writes none of them,
-   ;; and that is the common case rather than an edge one. The safely fallback
-   ;; writes nothing at all.
-   :output [:map [:supervisor/notes {:optional true} :any]
-            [:implement-strategy {:optional true} :any]
+        Nothing having arrived is the common case, and means: route on the
+        gates. Fails SAFE to that, so it can never wedge the loop."
+   :effects [:db]
+   :requires [:conn :run-id]
+   :input  [:map [:feature/revisions {:optional true} :int]]
+   ;; Every key is conditional by construction — a round where nothing was
+   ;; said writes none of them — and the safely fallback writes nothing at all.
+   :output [:map [:implement-strategy {:optional true} :any]
             [:feature/turn-budget {:optional true} :any]
             [:feature/escalate {:optional true} :boolean]
-            [:feature/stop {:optional true} :boolean]]}
-  (fn [{:keys [conn run-id config] :as ctx} {:keys [results] :as data}]
+            [:feature/stop {:optional true} :boolean]
+            [:feature/stop-reason {:optional true} :any]]}
+  (fn [{:keys [conn run-id]} data]
     (safely conn run-id :supervise data
       (fn []
-        (let [soft-cap (or (get-in config [:run :max-revisions]) 6)
-              rev (revision data)
-              dig (telemetry/digest {:results results
-                                     :review (:review/decision data)
-                                     :critic (:critic/decision data)
-                                     :revision rev
-                                     ;; stage crashes are the first thing the
-                                     ;; supervisor should see and plan around.
-                                     :errors (:feature/errors data)
-                                     ;; ground truth: did the working tree
-                                     ;; actually change, or was done hollow?
-                                     :hollow? (hollow? ctx)
-                                     ;; gate 2 — did the tests pass, and if not why.
-                                     :tests-passed? (:verify/passed? data)
-                                     :verify-note (:verify/note data)
-                                     ;; the soft cap is a notification, not a
-                                     ;; verdict: at it, the supervisor decides.
-                                     :at-cap? (>= rev soft-cap)
-                                     :soft-cap soft-cap}
-                                    (journal/turns conn run-id)
-                                    ;; Per-branch gate outcomes: which steering
-                                    ;; this run is doing and which a branch has
-                                    ;; been ignoring. The rollup the session
-                                    ;; tally keeps is per GATE, which hides a
-                                    ;; gate one branch obeys and another does
-                                    ;; not (karamazov-b9v).
-                                    (journal/gate-firings conn run-id))
-              ;; The mark the supervisor's deltas are measured from. Stamped
-              ;; BEFORE it is shown anything, so `since` covers the interval
-              ;; from its last intervention to now — the interval its last
-              ;; change was in force for. Named per run so two runs in one
-              ;; process do not read each other's deltas.
-              mark (str "supervisor:" run-id)
-              live (session/render mark)
-              _ (session/mark! mark)
-              ;; The stream's last word, so the two supervisors on this run
-              ;; agree or disagree in the open rather than in parallel.
-              stream (journal/last-note conn run-id :oversight)
-              prob (str "Decide what the outer loop does next with this round: "
-                        "CONTINUE, REVISE, or STOP, and whether to SWITCH the "
-                        "implement strategy or EXTEND the turn budget.\n\n"
-                        (if (and stream (seq (str (:notes stream))))
-                          (str "## What the supervision stream already concluded\n"
-                               "A supervisor has been watching this run continuously on its own "
-                               "branch, with the whole run in view rather than one round. Its "
-                               "latest conclusion:\n\n> "
-                               (str/replace (str (:notes stream)) #"\n" "\n> ")
-                               "\n\nStart from that. If you disagree, say what you saw that it "
-                               "did not — do not re-derive the same diagnosis from scratch, and "
-                               "do not tune the harness here: that is the stream's job and it "
-                               "has more context to do it with.\n\n")
-                          (str "No supervision-stream conclusion is on record for this run yet. "
-                               "Route on what the digest below shows.\n\n"))
-                        ;; Claim a crash only when one happened. The
-                        ;; unconditional "a STAGE CRASHED signal is a harness
-                        ;; bug — diagnose it" sentence sent a supervisor with a
-                        ;; healthy run chasing a phantom crash for a whole
-                        ;; branch budget (run e1491f04). Authored BY the
-                        ;; harness's own supervisor via `cell save` — the first
-                        ;; protocol-compliant self-edit — and folded into the
-                        ;; canonical cell here.
-                        (when-let [errs (seq (:feature/errors data))]
-                          (str "A STAGE CRASHED signal appeared this run — a "
-                               "harness bug the loop just survived — diagnose "
-                               "it and, if you can, fix it at the source with "
-                               "your tools.\n\nStage errors:\n- "
-                               (str/join "\n- " (map str errs)) "\n\n"))
-                        ;; Measured, not inferred. The digest says what the
-                        ;; stages produced; this says where the turns actually
-                        ;; went and whether the last change moved anything.
-                        (when (seq (str live)) (str live "\n\n"))
-                        dig
-                        (when-let [tried (seq (:feature/tried data))]
-                          (str "\n\n## Approaches already tried (do NOT repeat a losing one)\n"
-                               (str/join "\n"
-                                         (for [{:keys [round strategy outcome]} tried]
-                                           (str "- round " round ": " strategy " → " outcome)))
-                               "\nIf an approach keeps failing, try a DIFFERENT one — SWITCH the "
-                               "implement strategy, tune a prompt, re-decompose — not the same thing again."))
-                        ;; What this project has LEARNED, ranked by standing.
-                        ;; The supervisor is the role that acts on experience,
-                        ;; and it cannot act on what it is not shown — a memory
-                        ;; store nobody reads is a diary, not a loop.
-                        (when-let [ms (seq (knowledge/standing conn))]
-                          (str "\n\n## What this project has learned\n"
-                               "Ranked by standing: kind, salience, and the record of"
-                               " whether acting on it worked. Report back with"
-                               " `outcome {id, worked}` when you act on one — that is"
-                               " the only signal that separates a memory worth keeping"
-                               " from one that merely gets read.\n"
-                               (str/join "\n"
-                                         (for [m ms]
-                                           (str "- " (:id m) " [" (:kind m) "]"
-                                                (format " s%.2f" (double (or (:salience m) 0.5)))
-                                                (let [w (or (:success_count m) 0)
-                                                      f (or (:failure_count m) 0)]
-                                                  (when (pos? (+ w f)) (str " " w "✓/" f "✗")))
-                                                ;; One run is an observation, not
-                                                ;; a pattern. Marked so acting on
-                                                ;; a single sighting is a
-                                                ;; deliberate choice.
-                                                (let [c (or (:corroborations m) 1)]
-                                                  (if (knowledge/corroborated? m)
-                                                    (str " [seen in " c " runs]")
-                                                    " [ONE RUN ONLY — not yet corroborated]"))
-                                                " " (:content m))))))
-                        "\n\n## Workflows you can switch to, tune, or add to\n"
-                        "When the current approach keeps failing — e.g. the "
-                        "implementors cannot do the task in one shot — a DIFFERENT "
-                        "workflow may fit better. You can point future runs at one of "
-                        "these, tune one, or author a new one with the manifest/cells "
-                        "tools:\n"
-                        ;; auxiliary context — a catalog hiccup must never skip
-                        ;; the supervisor itself.
-                        (try (wf/render-catalog conn) (catch Throwable _ "")))
-              {:keys [verdict answer]}
-              (try (run-role-as :supervisor (wf/role-ctx ctx :supervisor) (wf/compiled-manifest "supervisor")
-                             (str "S" (revision data)) prob
-                             (wf/prompt-text "roles/supervisor"))
-                   (catch Throwable e {:verdict :error :answer (ex-message e)}))
-              directive (supervise-directive verdict answer)
-              ;; The mid-run self-healing levers: switch the implement approach,
-              ;; and/or extend the per-owner turn budget for the rounds that
-              ;; follow. Either implies keep-solving, so both force a revise.
-              switch (parse-switch answer)
-              extend (parse-extend answer)]
+        (let [{:keys [switch budget stop stop-reason applied]}
+              (claim-directives! conn run-id (revision data))]
           (journal/note! conn run-id :supervise
-                         {:data {:directive directive :verdict verdict
-                                 :switch switch :extend extend}})
-          (cond-> (assoc data :supervisor/notes (str answer))
-            switch                (assoc :implement-strategy switch :feature/escalate true)
-            extend                (assoc :feature/turn-budget extend :feature/escalate true)
-            (= directive :revise) (assoc :feature/escalate true)
-            (= directive :stop)   (assoc :feature/stop true))))
-      ;; fail-safe: a broken supervisor lets the loop proceed unchanged
+                         {:data {:applied applied :switch switch :budget budget
+                                 :stop (boolean stop) :reason stop-reason}})
+          ;; A switch or a new budget implies keep-solving, so both force a
+          ;; revise even on a round whose gates were green.
+          (cond-> data
+            switch (assoc :implement-strategy switch :feature/escalate true)
+            budget (assoc :feature/turn-budget budget :feature/escalate true)
+            stop   (assoc :feature/stop true :feature/stop-reason stop-reason))))
+      ;; fail-safe: a broken stage lets the loop proceed unchanged
       (fn [d] d))))
 
 (cell/defcell :feature/route
@@ -600,6 +472,7 @@
             [:verify/passed? :boolean]
             [:feature/revisions {:optional true} :int]
             [:feature/stop {:optional true} :boolean]
+            [:feature/stop-reason {:optional true} :any]
             [:feature/escalate {:optional true} :boolean]]
    ;; PER-TRANSITION, and this is the one that earns it. :verdict is written
    ;; on :ship and only on :ship — which is exactly right, because :ship is
@@ -691,7 +564,9 @@
                               :status :abandoned :final-answer nil
                               :inactive-reason
                               (if give-up?
-                                "supervisor could not find a solution"
+                                (str "stopped by the supervisor"
+                                     (when-let [r (not-empty (str (:feature/stop-reason data)))]
+                                       (str ": " r)))
                                 (str "runaway guard tripped after " rev " revisions"))))
 
         :revise

@@ -496,6 +496,24 @@
     (try (json/read-str (str (:data row)) :key-fn keyword)
          (catch Throwable _ nil))))
 
+(defn notes
+  "Every note of `kind` on this run, oldest first, each parsed back from
+  JSON; one that will not parse is skipped rather than failing the read.
+
+  `last-note`'s plural, for the kinds that accumulate — a run's :stage-error
+  notes are the crashes its stages survived, and the supervisor stream wants
+  all of them, not the latest (RFC-012 F1: the crashes used to be shown to a
+  supervisor stage that no longer exists, so the stream reads them here)."
+  [conn run-id kind]
+  (into []
+        (keep (fn [row]
+                (try (json/read-str (str (:data row)) :key-fn keyword)
+                     (catch Throwable _ nil))))
+        (db/fetch conn ["SELECT data FROM events
+                          WHERE run_id = ? AND kind = ?
+                          ORDER BY id"
+                        run-id (name kind)])))
+
 (def ^:private record-tables
   "The tables holding a run's account of itself, and how each one names its
   run. Ordered so an FTS mirror goes before the rows it indexes — deleted the
