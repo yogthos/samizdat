@@ -16,6 +16,15 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            ;; The java.time.* host shim. selmer.filters imports
+            ;; java.time.format.FormatStyle at load, and under jolt 0.8.1 that
+            ;; class exists only once jolt.time has installed it — 0.8.0 had it
+            ;; implicitly. system.clj loads the shim for tools.logging, which
+            ;; is why every path through `system` was fine and the sandbox
+            ;; battery (sandbox-test -> repl -> prompt, never touching system)
+            ;; was not. The same precedent as db.jdbc before jdbc.core: the
+            ;; shim is required where the library that needs it enters.
+            [jolt.time]
             [selmer.parser :as selmer]
             [selmer.util :as selmer-util]
             [samizdat.userspace :as userspace]))
