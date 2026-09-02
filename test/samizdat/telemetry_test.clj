@@ -165,3 +165,19 @@
                :category "failure" :result "boom"}])]
       (is (str/includes? d "what WORKED"))
       (is (str/includes? d "wrote core.clj")))))
+
+(deftest the-digest-shows-each-branch-the-fitness-the-cull-reads
+  ;; RFC-012 F3: one number for selection and evaluation. The supervisor is
+  ;; shown per branch what the cull reads, on the same scale it judges its
+  ;; own changes by.
+  (let [d (telemetry/digest {:results [{:status :done}] :review :pass
+                             :critic :ship :revision 1
+                             :fitness {"W0" 1.25 "W1" -0.5}}
+                            [(row "W0" 1 "done" "success")
+                             (row "W1" 1 "shell" "failure")])]
+    (is (str/includes? d "W0: 1 turns, 0 thrash, shipped=true, fitness 1.25/turn"))
+    (is (str/includes? d "W1: 1 turns, 0 thrash, shipped=false, fitness -0.50/turn")))
+  (testing "a branch with no measurement shows none rather than a zero"
+    (let [d (telemetry/digest {:results [] :fitness {}} [(row "W0" 1 "shell" "success")])]
+      (is (str/includes? d "W0: 1 turns, 0 thrash, shipped=false"))
+      (is (not (str/includes? d "shipped=false, fitness"))))))

@@ -3,7 +3,7 @@
 Implementors: {{shipped}}/{{total}} shipped. Outcomes: {{outcomes}}
 Reviewer: {{reviewer}}   Critic: {{critic}}
 
-Per branch (turns / mechanics-thrash / shipped?):
+Per branch (turns / mechanics-thrash / shipped? / fitness per turn, the number the cull reads):
 {{per-branch}}
 {% if failures %}
 Failures this run, newest last. Start HERE: read the failure's own words,

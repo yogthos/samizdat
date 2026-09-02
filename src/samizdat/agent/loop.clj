@@ -418,7 +418,8 @@
   that `the provider failed` gives it nothing to act on."
   ([ctx branch turn error] (provider-error-step ctx branch turn error nil))
   ([{:keys [conn run-id]} branch turn error reason]
-   (session/observe! [:provider (or reason :call-failed)])
+   (session/observe! [:provider (or reason :call-failed)]
+                     (when (and run-id (:id branch)) [run-id (:id branch)]))
    (log/warn "branch" (:id branch) "turn" turn "model call failed:" error)
    (journal/record-turn! conn run-id
                          {:branch-id (:id branch) :turn turn
@@ -756,12 +757,16 @@
 
 (defn- observe-turn!
   "Feed the live session tally with what this turn did and how the reply
-  parsed. Never allowed to throw: a counter must not be able to cost a turn."
-  [tool result signals]
+  parsed — for the process and for this branch, whose own tally is the
+  number the cull and the supervisor share (RFC-012 F3). Never allowed to
+  throw: a counter must not be able to cost a turn."
+  [run-id branch tool result signals]
   (try
     (session/observe-turn! {:tool tool
                             :category (:category result)
-                            :signals signals})
+                            :signals signals
+                            :branch (when (and run-id (:id branch))
+                                      [run-id (:id branch)])})
     (catch Throwable _ nil)))
 
 (defn journal-step!
@@ -769,7 +774,7 @@
   into the shared pool when it qualifies), any failure, any thesis. Side
   effects only; returns nil."
   [{:keys [conn run-id] :as ctx} branch turn {:keys [parsed result tool said response signals]}]
-  (observe-turn! tool result (or signals
+  (observe-turn! run-id branch tool result (or signals
                                  ;; A turn that never reached a tool still has
                                  ;; something to say: the parse flags are how
                                  ;; the harness's OWN failure modes get counted,

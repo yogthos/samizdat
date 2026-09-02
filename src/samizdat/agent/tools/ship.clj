@@ -365,10 +365,13 @@
     ;; The live tally, so a supervisor can see the gate being skipped WHILE it
     ;; is happening rather than by reading the journal afterwards.
     (when verify-on?
-      (session/observe! (if vresult
-                          [:verify (if (:green? vresult) :green :red)]
-                          [:verify :skipped]))
-      (when vresult (session/observe! [:verify :ran])))
+      (let [on-branch (when (and (:run-id ctx) (:id branch))
+                        [(:run-id ctx) (:id branch)])]
+        (session/observe! (if vresult
+                            [:verify (if (:green? vresult) :green :red)]
+                            [:verify :skipped])
+                          on-branch)
+        (when vresult (session/observe! [:verify :ran] on-branch))))
     (when (and verify-on? (:conn ctx) (:run-id ctx))
       (journal/note! (:conn ctx) (:run-id ctx) :ship-verify
                      {:branch-id (:id branch) :turn (:turn ctx)

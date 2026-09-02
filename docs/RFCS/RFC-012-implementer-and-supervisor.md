@@ -108,11 +108,22 @@ unrelated to turns; 4 and 5 fire per *round*. Nothing evaluates a turn when the
 turn ends.
 
 **F3 — Evaluation and selection are separate mechanisms with separate
-metrics.** Mechanism 5 selects branches on critic scores and failure counts;
-mechanism 3 tunes manifests on the telemetry digest and session marks. The
-model describes these as one phase. Today a branch can be culled for a
-trajectory the manifest tuner never sees, and a manifest can be tuned on
-evidence the culler never reads.
+metrics.** *(Fixed; see below.)* Mechanism 5 selected branches on critic
+scores and failure counts; mechanism 3 tuned manifests on the telemetry
+digest and session marks. The model describes these as one phase. A branch
+could be culled for a trajectory the manifest tuner never saw, and a manifest
+tuned on evidence the culler never read.
+
+The number they share is **session fitness per branch** (karamazov-ts3o.2):
+`samizdat.session` keeps the same counters cut per branch, and
+`branch-fitness` scores them with the same `fitness-of` and weights the
+supervisor's experiments are judged by. The cull carries it onto the
+retention frontier as a measured objective beside the critic's judged ones —
+a triggered branch is dominated only by a sibling at least as good on every
+critic objective *and* at least as fit, and with no critic at all the fittest
+line is not culled while nobody is measurably doing better — and every cull
+reason cites it. The supervisor's digest lists it per branch, so a tuning
+decision and a cull decision read the same scale.
 
 **F4 — Two supervisors have collided.** `:oversight/reason`'s docstring
 records it: the stream opens `SUP` and `:feature/supervise` opens
@@ -203,8 +214,10 @@ The pattern every supervisory mechanism must follow:
 - No turn-event stream exists, which blocks the protocol's first rule —
   though F6 shows the seam is already there (`:on-trace`) and unused, so this
   is smaller than it looks (karamazov-ts3o.1).
-- The GA's selection metric and the supervisor's evaluation metric are not the
-  same number, and this RFC does not yet say what that number should be.
+- The GA's selection metric and the supervisor's evaluation metric are the
+  same number now, session fitness per branch (F3), but the weights behind
+  it are one policy table tuned for the supervisor's experiments; whether
+  the cull wants the same weights is unmeasured.
 - A parked supervisor stream is a deadlock: if the failing cell is one
   `oversight.edn` traverses, the supervisor parks too and nobody can fix
   anything (karamazov-6y7.7).

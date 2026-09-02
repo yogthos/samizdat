@@ -386,11 +386,14 @@
 ;; --- gate firings -----------------------------------------------------------
 
 (defn- observe-session!
-  "Feed the live session tally. Wrapped because a counter must never be able to
-  cost a turn: the journal's own contract is that it cannot destroy the work it
-  records, and a tally is strictly less important than the journal."
-  [path]
-  (try (session/observe! path) (catch Throwable _ nil)))
+  "Feed the live session tally — and the branch's own, when the caller can
+  name it. Wrapped because a counter must never be able to cost a turn: the
+  journal's own contract is that it cannot destroy the work it records, and a
+  tally is strictly less important than the journal."
+  ([path] (observe-session! path nil nil))
+  ([path run-id branch-id]
+   (try (session/observe! path (when (and run-id branch-id) [run-id branch-id]))
+        (catch Throwable _ nil))))
 
 (defn record-gate!
   "A gate fired, with what it expects to happen next.
@@ -413,13 +416,14 @@
              (db/last-insert-id conn))]
     (emit! conn run-id :gate {:branch-id branch-id :turn turn
                               :data {:gate gate :prediction prediction}})
-    (observe-session! [:gates (keyword (name gate)) :fired])
+    (observe-session! [:gates (keyword (name gate)) :fired] run-id branch-id)
     id))
 
 (defn settle-gate!
   "Record whether a firing's prediction came true."
   [conn firing-id outcome settled-turn]
-  (let [row (db/fetch-one conn ["SELECT gate FROM gate_firings WHERE id = ?" firing-id])]
+  (let [row (db/fetch-one conn ["SELECT gate, run_id, branch_id FROM gate_firings WHERE id = ?"
+                                firing-id])]
     (db/with-writer
       (db/execute! conn
                    ["UPDATE gate_firings SET outcome = ?, settled_at_turn = ? WHERE id = ?"
@@ -428,7 +432,8 @@
     ;; obeyed is the pattern worth surfacing, and it is invisible from firings
     ;; alone.
     (when-let [g (:gate row)]
-      (observe-session! [:gates (keyword g) (keyword (name outcome))]))))
+      (observe-session! [:gates (keyword g) (keyword (name outcome))]
+                        (:run_id row) (:branch_id row)))))
 
 (defn unsettled-gates [conn run-id branch-id]
   (db/fetch conn ["SELECT * FROM gate_firings

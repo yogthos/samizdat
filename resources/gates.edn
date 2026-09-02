@@ -816,6 +816,14 @@
 
         Per TURN, not per run, so runs of different lengths compare.
 
+        PER BRANCH AS WELL AS PER SESSION (RFC-012 F3). The same counters
+        are kept cut per branch, and session/branch-fitness scores them with
+        these weights. That per-branch number is what the beam's cull reads
+        as a measured objective beside the critic's judged ones, and what
+        the supervisor's digest shows for each branch — one scale for the
+        selection step and the evaluation step, so retuning a weight here
+        moves both.
+
         :max-open-experiments — how many measured-but-unsettled changes may be
         in flight. One, because two changes measured over the same interval
         tell you nothing about either, and this is ENFORCED rather than asked:

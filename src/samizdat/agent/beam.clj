@@ -875,6 +875,7 @@
         ;; neither would otherwise be reclaimed for the life of the process.
         (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
         (oversight/forget-run! run-id)
+        (session/forget-run! run-id)
         ;; SHORT-TERM BECOMES LONG-TERM. The session tally dies with the
         ;; process; a pattern that held across the run is a candidate for
         ;; something the next run should start out knowing, and this is the

@@ -163,6 +163,8 @@
     :summary "The concrete failures behind the rates over any set of turn rows — parse errors, provider failures, tool failures, each with the turn and branch to fetch."}
    {:name samizdat.session/render
     :summary "The live session tally since a named mark — what changed while your last adjustment was in force."}
+   {:name samizdat.session/branch-fitness
+    :summary "One branch's fitness per turn, by the same weights the session and every experiment are scored with — the number the cull reads and the digest shows (RFC-012 F3)."}
    {:name samizdat.events/subscribe
     :summary "A channel of every event published from now on, for watching a run without polling."}]}
 

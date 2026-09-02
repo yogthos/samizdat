@@ -105,8 +105,27 @@
   arm was culled at turn 9 of 12 and the run ended there. The last branch
   standing is never culled; the stuck and emergency-review gates keep
   talking to it instead."
-  [{:keys [conn run-id turn]} branch survivors sibling-scores]
+  ([ctx branch survivors sibling-scores]
+   (cull-or-keep ctx branch survivors sibling-scores nil))
+  ([{:keys [conn run-id turn]} branch survivors sibling-scores fitness]
   (let [threshold (gates/threshold :cull-threshold)
+        ;; THE MEASURED OBJECTIVE (RFC-012 F3). `fitness` is {:own f
+        ;; :siblings {id f}}: the branch's session fitness and its living
+        ;; siblings', by the same function the supervisor judges its own
+        ;; changes with. It joins the critic's vector as one more objective,
+        ;; so the frontier is judged AND measured; unknown on either side, it
+        ;; simply does not take part (critic/dominated?).
+        own-fit (:own fitness)
+        with-fit (fn [m f] (cond-> m (some? f) (assoc critic/fitness-objective f)))
+        fittest-sibling (when (seq (:siblings fitness))
+                          (apply max (vals (:siblings fitness))))
+        fit-text (fn []
+                    (when (some? own-fit)
+                      (str " (fitness " (format "%.2f" (double own-fit)) "/turn"
+                           (when fittest-sibling
+                             (str " against a sibling's "
+                                  (format "%.2f" (double fittest-sibling))))
+                           ")")))
         fails (or (:consecutive-failures branch) 0)
         mech (or (:consecutive-mechanics-failures branch) 0)
         pol (or (:consecutive-policy-refusals branch) 0)
@@ -213,24 +232,40 @@
              ;; Tier 2d: the spare's prose is prompts/juvenile-grace.md.
              (prompt/render "juvenile-grace" {:failures fails})))
 
-      (nil? scores)
+      ;; No critic and no measurement: the scalar rule stands, as it always
+      ;; did. No critic but a measurement: the fittest line in the beam is
+      ;; not culled for failing while nobody is doing better — culling exists
+      ;; to reallocate budget to a branch doing better, and the tally says
+      ;; whether one exists.
+      (and (nil? scores) (nil? own-fit))
       (cull-fail (str "culled after " fails
                       " consecutive failures with no recent confirmed work"))
 
-      (critic/dominated? scores sibling-scores)
+      (and (nil? scores) fittest-sibling (> fittest-sibling own-fit))
+      (cull-fail (str "culled after " fails
+                      " consecutive failures; a sibling is measurably fitter"
+                      (fit-text)))
+
+      (and scores
+           (critic/dominated? (with-fit scores own-fit)
+                              (map (fn [s] (with-fit s (get (:siblings fitness) (:id s))))
+                                   sibling-scores)))
       (cull-fail (str "culled after " fails
                       " consecutive failures; dominated by a sibling on every"
-                      " critic objective"))
+                      " critic objective"
+                      (when (some? own-fit) " and on measured fitness")
+                      (fit-text)))
 
       :else
       (do (when (and conn run-id)
             (journal/note! conn run-id :cull-spared
                            {:branch-id (:id branch)
-                            :data {:scores scores :failures fails}}))
+                            :data {:scores scores :failures fails
+                                   :fitness own-fit}}))
             (state/add-message
              branch "user"
              ;; Tier 2d: the reprieve's prose is prompts/cull-reprieve.md.
-             (prompt/render "cull-reprieve" {:failures fails :hard-floor hard-floor}))))))
+             (prompt/render "cull-reprieve" {:failures fails :hard-floor hard-floor})))))))
 
 ;; --- the repopulation policy -------------------------------------------------
 
@@ -462,10 +497,10 @@
         branch standing is never culled, so whether THIS branch survives
         depends on what happened to the ones before it."
    :effects [:db]
-   :requires []
+   :requires [:run-id]
    :input  [:map [:advanced :any] [:turn :int]]
    :output [:map [:culled :any]]}
-  (fn [ctx {:keys [advanced turn] :as data}]
+  (fn [{:keys [run-id] :as ctx} {:keys [advanced turn] :as data}]
     ;; Only ACTIVE branches face the rule, and only they count as survivors.
     ;; `advanced` also holds branches that went done/abandoned during this
     ;; round's advance: counting them seeded `alive` high, so the LAST active
@@ -479,12 +514,22 @@
                   (reduce (fn [[acc alive] b]
                             (if-not (state/active? b)
                               [(conj acc b) alive]
-                              (let [sibs (keep #(when (and (state/active? %)
-                                                           (not= (:id %) (:id b)))
-                                                  (get-in % [:critic :scores]))
-                                               advanced)
+                              (let [living (filter #(and (state/active? %)
+                                                         (not= (:id %) (:id b)))
+                                                   advanced)
+                                    ;; Each sibling's scores carry its id, so
+                                    ;; the cull can pair them with its fitness.
+                                    sibs (keep #(some-> (get-in % [:critic :scores])
+                                                        (assoc :id (:id %)))
+                                               living)
+                                    fitness {:own (session/branch-fitness run-id (:id b))
+                                             :siblings (into {}
+                                                             (keep (fn [s]
+                                                                     (when-let [f (session/branch-fitness run-id (:id s))]
+                                                                       [(:id s) f])))
+                                                             living)}
                                     b' (cull-or-keep (assoc ctx :turn turn)
-                                                     b (dec alive) sibs)]
+                                                     b (dec alive) sibs fitness)]
                                 [(conj acc b') (if (state/active? b') alive (dec alive))])))
                           [[] (count (filter state/active? advanced))]
                           advanced))]

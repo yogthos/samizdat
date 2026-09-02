@@ -1178,6 +1178,26 @@
     (is (not (critic/dominated? c [a b])) "a unique strength survives")
     (is (not (critic/dominated? a [a])) "an equal vector does not dominate")))
 
+(deftest measured-fitness-joins-the-frontier-when-both-sides-carry-it
+  ;; RFC-012 F3. The critic JUDGES a line; the session tally MEASURES it.
+  ;; Both sit on the frontier, and an objective only counts when both
+  ;; vectors carry it: an unknown fitness neither protects nor condemns.
+  (let [a {:momentum 4 :distinctness 3 :viability 4}
+        b {:momentum 3 :distinctness 3 :viability 4}]
+    (is (critic/dominated? b [a]) "on the critic alone, as before")
+    (is (not (critic/dominated? (assoc b :fitness 2.0) [(assoc a :fitness 1.0)]))
+        "the fitter line is not dominated by a critic preference")
+    (is (critic/dominated? (assoc b :fitness 1.0) [(assoc a :fitness 2.0)])
+        "worse on the critic and less fit: dominated")
+    (is (critic/dominated? (assoc b :fitness 2.0) [a])
+        "a sibling with no measurement is compared on the critic alone")
+    (is (critic/dominated? b [(assoc a :fitness 9.0)])
+        "and so is a branch with none")
+    (is (not (critic/dominated? (assoc a :fitness 1.0) [(assoc a :fitness 1.0)]))
+        "equal on everything does not dominate")
+    (is (critic/dominated? (assoc a :fitness 1.0) [(assoc a :fitness 2.0)])
+        "equal on the critic, a fitter sibling: dominated")))
+
 (deftest critic-scoring-is-fail-closed
   (let [b (branch-with :thesis {:goal "g" :technique "t" :subClaims []})]
     (with-redefs [llm/chat (fn [& _]
@@ -1243,6 +1263,46 @@
       (testing "grace does not save a branch the critic calls a dead end"
         (let [doomed (assoc-in (newborn 3) [:critic :scores :viability] 1)]
           (is (= :culled (:status (cull-or-keep ctx doomed 2 [])))))))))
+
+(deftest fitness-is-a-measured-objective-on-the-retention-frontier
+  ;; RFC-012 F3 (karamazov-ts3o.2). The cull reads the branch's session
+  ;; fitness — the number the supervisor judges its own changes by — as one
+  ;; more objective beside the critic's. A branch the critic rates below its
+  ;; sibling survives while it is measurably the fitter line; a branch the
+  ;; critic likes is still culled when a sibling is at least as good on
+  ;; every objective and fitter too; and with no critic at all the fittest
+  ;; line is not culled for failing while nobody is doing better.
+  (let [mature (fn [& {:as extra}]
+                 (-> (apply branch-with :consecutive-failures 3
+                            (mapcat identity extra))
+                     (assoc :turns (vec (repeat (inc (gates/threshold :juvenile-grace)) {})))))
+        judged (mature :critic {:scores {:progress 2 :momentum 2 :distinctness 2 :viability 3}})
+        sib {:id "B2" :progress 4 :momentum 4 :distinctness 4 :viability 4}]
+    (testing "dominated on every critic objective and less fit: culled, citing both"
+      (let [r (cull-or-keep {:turn 20} judged 2 [sib] {:own -1.0 :siblings {"B2" 1.5}})]
+        (is (= :culled (:status r)))
+        (is (str/includes? (:inactive-reason r) "on measured fitness"))
+        (is (str/includes? (:inactive-reason r) "-1.00"))
+        (is (str/includes? (:inactive-reason r) "1.50"))))
+    (testing "dominated on every critic objective but the fitter line: spared"
+      (is (= :active (:status (cull-or-keep {:turn 20} judged 2 [sib]
+                                            {:own 1.5 :siblings {"B2" -1.0}})))))
+    (testing "fitness unknown on either side: the critic's verdict stands as before"
+      (is (= :culled (:status (cull-or-keep {:turn 20} judged 2 [sib] {:own nil :siblings {}}))))
+      (is (= :culled (:status (cull-or-keep {:turn 20} judged 2 [sib] {:own 1.5 :siblings {}}))))
+      (is (= :culled (:status (cull-or-keep {:turn 20} judged 2 [sib])))))
+    (testing "no critic: the fittest line survives, a measurably weaker one does not"
+      (let [unscored (mature)]
+        (is (= :active (:status (cull-or-keep {:turn 20} unscored 2 []
+                                              {:own 0.5 :siblings {"B2" -0.5}}))))
+        (let [r (cull-or-keep {:turn 20} unscored 2 [] {:own -0.5 :siblings {"B2" 0.5}})]
+          (is (= :culled (:status r)))
+          (is (str/includes? (:inactive-reason r) "measurably fitter")))
+        (is (= :culled (:status (cull-or-keep {:turn 20} unscored 2 []
+                                              {:own nil :siblings {"B2" 0.5}})))
+            "unmeasured, the scalar rule stands")
+        (is (= :culled (:status (cull-or-keep {:turn 20} unscored 2 [])))
+            "and so it does with no fitness at all")))))
 
 (deftest pareto-retention-spares-non-dominated-branches
   ;; The scalar rule is the TRIGGER; domination is the verdict. Three runs in

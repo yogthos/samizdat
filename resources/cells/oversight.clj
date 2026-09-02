@@ -161,7 +161,11 @@
     (safely :reason
      (fn []
        (let [dig (telemetry/digest {:idle-turns (:oversight/idle data)
-                                    :unmet-gates (:oversight/unmet data)}
+                                    :unmet-gates (:oversight/unmet data)
+                                    ;; Each branch's session fitness: the
+                                    ;; number the cull reads, shown to the
+                                    ;; role that tunes (RFC-012 F3).
+                                    :fitness (session/branch-fitnesses run-id)}
                                    (:oversight/turns data)
                                    (:oversight/firings data))
              prob (prompt/render "oversight-pass"

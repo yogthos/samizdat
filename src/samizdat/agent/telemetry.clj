@@ -238,7 +238,7 @@
   "The run-health block the supervisor reads. `facts` = {:results :review
   :critic :revision}; `rows` = the run's journal turns."
   ([facts rows] (digest facts rows nil))
-  ([{:keys [results review critic revision errors] :as facts} rows firings]
+  ([{:keys [results review critic revision errors fitness] :as facts} rows firings]
   (let [health (branch-health rows)
         total (count results)
         shipped (count (filter #(= :done (:status %)) results))
@@ -251,10 +251,15 @@
       :outcomes (pr-str (frequencies (map :status results)))
       :reviewer (or (s review) "n/a")
       :critic (or (s critic) "n/a")
+      ;; With each branch's FITNESS — the number the cull read when it
+      ;; decided (RFC-012 F3), so the supervisor judges the run, and its own
+      ;; change to the run, on the scale selection used.
       :per-branch (str/join "\n"
                             (for [[b h] health]
                               (str "- " b ": " (:turns h) " turns, "
-                                   (:mechanics h) " thrash, shipped=" (:shipped? h))))
+                                   (:mechanics h) " thrash, shipped=" (:shipped? h)
+                                   (when-let [f (get fitness b)]
+                                     (str ", fitness " (format "%.2f" (double f)) "/turn")))))
       :failures (failure-exemplars rows (gates/threshold :supervisor-digest))
       ;; WHETHER THE STEERING IS WORKING, which the digest never carried.
       ;; The supervisor's job is to notice a loop going wrong and change it;
