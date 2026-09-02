@@ -503,3 +503,56 @@
                      (some? (sym/match (sym/rule {:when q}) t)))]
     (is (sym/overlap? p q)
         (str (pr-str t) " matches both " (pr-str p) " and " (pr-str q)))))
+
+;;; ------------------------------------------------------------------- facts
+
+(deftest a-query-joins-facts-on-shared-vars
+  ;; Facts are [rel & args]; a clause is the same shape with ?vars; a var
+  ;; shared between clauses is a join. This is what a guard rule is: the
+  ;; symbols a form executes, joined against the symbols that end a process.
+  (let [db (sym/facts '[[:executed-symbol System/exit]
+                        [:executed-symbol println]
+                        [:terminator System/exit]
+                        [:terminator .halt]])]
+    (is (= '[{?s System/exit}]
+           (sym/query db '[[:executed-symbol ?s] [:terminator ?s]])))
+    (is (= [] (sym/query db '[[:executed-symbol ?s] [:terminator ?s] [:terminator .exit]]))
+        "one clause nothing satisfies empties the whole conjunction")))
+
+(deftest a-clause-may-carry-a-literal-and-a-hole
+  (let [db (sym/facts '[[:call 1 spit "src/x.clj"]
+                        [:call 2 slurp "src/y.clj"]
+                        [:call 3 spit "resources/z.md"]])]
+    (is (= '#{{?f 1 ?p "src/x.clj"} {?f 3 ?p "resources/z.md"}}
+           (set (sym/query db '[[:call ?f spit ?p]]))))
+    (is (= '#{{?p "src/x.clj"} {?p "src/y.clj"} {?p "resources/z.md"}}
+           (set (sym/query db '[[:call _ _ ?p]]))))))
+
+(deftest a-query-with-no-vars-answers-whether-the-facts-hold
+  (let [db (sym/facts '[[:terminator System/exit]])]
+    (is (= [{}] (sym/query db '[[:terminator System/exit]])))
+    (is (= [] (sym/query db '[[:terminator println]])))))
+
+(deftest a-fact-rule-fires-once-per-binding-and-a-guard-filters-it
+  (let [db (sym/facts '[[:call 1 require] [:keyword-arg 1 :reload]
+                        [:call 2 require] [:keyword-arg 2 :verbose]])
+        rules (sym/fact-rules '[{:name :reload
+                                 :where [[:call ?f require] [:keyword-arg ?f ?k]]
+                                 :if [:in ?k #{:reload :reload-all}]}])]
+    (is (= '[{:rule :reload :bindings {?f 1 ?k :reload}}] (sym/fire db rules)))
+    (is (= [] (sym/fire (sym/facts '[[:call 1 require]]) rules)))))
+
+(deftest a-fact-that-carries-a-set-comes-back-whole
+  ;; LOGIC-173 once more, now through pldb: a set as a fact VALUE is walked
+  ;; on the way back out, so the IWalkTerm extension is what makes this
+  ;; return at all. A form's arguments are arbitrary read data.
+  (let [db (sym/facts [[:arg 1 #{:reload}]])]
+    (is (= [{'?v #{:reload}}] (sym/query db '[[:arg 1 ?v]])))))
+
+(deftest a-malformed-fact-or-rule-is-refused-at-compile
+  (is (thrown? Exception (sym/facts [["not-a-keyword" 1]])))
+  (is (thrown? Exception (sym/facts [[:too-wide 1 2 3 4 5]])))
+  (is (thrown? Exception (sym/facts [[:too-narrow]])))
+  (is (thrown? Exception (sym/fact-rules '[{:name :r :where [[:x ?a]] :if [:> ?b 1]}]))
+      "a guard over a var no clause binds")
+  (is (thrown? Exception (sym/fact-rules '[{:name :r}])) "a rule with no :where"))

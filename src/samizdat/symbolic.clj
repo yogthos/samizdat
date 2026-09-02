@@ -64,6 +64,14 @@
   required; the rest are optional, and a rule with no :then is a predicate
   whose firing is itself the finding — which is what verification rules want.
 
+  FACTS are the other half. A fact is [rel & args], {[:call 1 spit] ...}, and
+  a fact rule is {:name n :where [[:call ?f ?head] [:kernel-writer ?head]]
+  :if guard}: clauses shaped like facts, a ?var shared between clauses being
+  a join. Patterns describe ONE term; facts describe a whole thing taken
+  apart — the symbols a form executes, the edges of a graph — and a rule over
+  them can say which one fired and on what. pldb holds the facts and
+  core.logic runs the join; nothing here is a query engine of our own.
+
   GUARDS ARE A CLOSED REGISTRY. A guard is data, [:> ?turn 10], resolved
   against a whitelist. It must NOT reach a resolve or an eval: rebuilding
   arbitrary host evaluation inside the engine would give back exactly what
@@ -99,6 +107,7 @@
   followed: guards do not macro-expand host code, and there is no pattern
   protocol of our own, because core.logic's IUnifyTerms already is one."
   (:require [clojure.core.logic :as l]
+            [clojure.core.logic.pldb :as pldb]
             [clojure.core.logic.protocols :as lp]
             [clojure.string :as str]))
 
@@ -588,3 +597,98 @@
   variables, not one shared one."
   [p q]
   (some? (unify {} p (rename-vars q #(symbol "q" (name %))))))
+
+;;; ------------------------------------------------------------------- facts
+
+;; pldb wants one var per relation, defined by a macro at compile time. The
+;; relation name is carried instead as the FIRST, indexed argument of one
+;; generic relation per arity, so a caller declares nothing and pldb's
+;; internals are not touched: [:call 1 spit] is (fact2 :call 1 spit).
+(pldb/db-rel fact1 ^:index r a)
+(pldb/db-rel fact2 ^:index r a b)
+(pldb/db-rel fact3 ^:index r a b c)
+(pldb/db-rel fact4 ^:index r a b c d)
+
+(def ^:private fact-rels [nil fact1 fact2 fact3 fact4])
+
+(defn- fact-rel
+  "The generic relation for a fact or clause of this shape, or a refusal."
+  [tuple]
+  (let [[rel & args] (when (sequential? tuple) tuple)
+        f (get fact-rels (count args))]
+    (when-not (and (keyword? rel) f)
+      (throw (ex-info (str "fact is not [keyword & 1..4 args]: " (pr-str tuple))
+                      {:error :malformed-fact :fact tuple})))
+    f))
+
+(defn facts
+  "A fact database from `tuples`, each [rel & args]."
+  [tuples]
+  (reduce (fn [db [rel & args :as t]]
+            (apply pldb/db-fact db (fact-rel t) rel args))
+          pldb/empty-db
+          tuples))
+
+(defn- clause-goal
+  "Compile one clause to (fn [env] goal); env maps ?vars to lvars, and each
+  _ is a fresh lvar of its own."
+  [clause]
+  (let [f (fact-rel clause)
+        [rel & args] clause]
+    (fn [env]
+      (apply f rel (map (fn [a] (cond (pvar? a) (get env a)
+                                      (wildcard? a) (l/lvar)
+                                      :else a))
+                        args)))))
+
+(defn- compile-where
+  "{:vars [...] :run (fn [db] bindings)} for a vector of clauses."
+  [where]
+  (when-not (and (vector? where) (seq where))
+    (throw (ex-info (str ":where is not a vector of clauses: " (pr-str where))
+                    {:error :malformed-where :where where})))
+  (let [vars (vec (sort (distinct (filter pvar? (mapcat rest where)))))
+        goals (mapv clause-goal where)]
+    {:vars vars
+     :run (fn [db]
+            (let [env (zipmap vars (map (fn [_] (l/lvar)) vars))]
+              (pldb/with-db db
+                (->> (l/run* [q]
+                       (l/and* (conj (mapv #(% env) goals)
+                                     (l/== q (mapv env vars)))))
+                     (map #(zipmap vars %))
+                     distinct
+                     vec))))}))
+
+(defn query
+  "Every binding of the ?vars in `where` that the facts in `db` satisfy: a
+  vector of maps — [{}] when a var-free where holds, [] when nothing does."
+  [db where]
+  ((:run (compile-where where)) db))
+
+(defn fact-rules
+  "Compile rules {:name n :where [clauses] :if guard} over facts, in order.
+  Everything is checked here, as `rule` does for patterns: a guard over a
+  var no clause binds is a compile error, not a rule that never fires."
+  [rs]
+  (mapv (fn [r]
+          (when-not (and (map? r) (contains? r :where))
+            (throw (ex-info (str "fact rule has no :where: " (pr-str r))
+                            {:error :missing-where :rule r})))
+          (let [{:keys [vars run]} (compile-where (:where r))]
+            {:name (:name r)
+             :vars vars
+             :run run
+             :guard (when (contains? r :if) (guard-fn (:if r) (set vars)))
+             :source r}))
+        rs))
+
+(defn fire
+  "Every rule that fires against `db`, once per binding, in rule order:
+  [{:rule name :bindings {?x v}} ...]."
+  [db rules]
+  (into []
+        (for [r rules
+              b ((:run r) db)
+              :when (or (nil? (:guard r)) ((:guard r) b))]
+          {:rule (:name r) :bindings b})))

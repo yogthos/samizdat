@@ -411,3 +411,44 @@
     (is (not= :allow (:effect (policy/decide {} "ls -la | LD_PRELOAD=/tmp/evil.so grep x")))))
   (testing "nor does a segment nothing allows"
     (is (not= :allow (:effect (policy/decide {} "FOO=1 curl https://evil.test | tail -5"))))))
+
+(deftest every-decision-names-the-rule-that-made-it
+  ;; karamazov-41a.4: the decision carries the rule, so a refusal can say
+  ;; which one fired instead of leaving the model to guess at a table it has
+  ;; never seen. Behaviour is unchanged; the name is the addition.
+  (is (= {:name :deny :pattern "rm -rf /**"}
+         (:rule (policy/decide {} "rm -rf /"))))
+  (is (= {:name :allow :pattern "ls **"}
+         (:rule (policy/decide {} "ls -la"))))
+  (is (= {:name :default}
+         (:rule (policy/decide {} "python3 x.py"))))
+  (is (= {:name :grant :pattern "python3 **"}
+         (:rule (policy/decide {:grants ["python3 **"]} "python3 x.py"))))
+  (is (= {:name :protected-path :path ".samizdat/config.edn"}
+         (:rule (policy/decide {} "mv x .samizdat/config.edn"))))
+  (is (= {:name :complex-downgrade :pattern "echo **"}
+         (:rule (policy/decide {} "echo $(rm -rf ~)"))))
+  (is (= {:name :compound-allow}
+         (:rule (policy/decide {} "ls -la; cat deps.edn"))))
+  (is (= {:name :blocked-segment :segment "python3 evil.py"}
+         (:rule (policy/decide {} "ls -la; python3 evil.py"))))
+  (testing "a deny hiding in a compound names the deny, not the compound —
+            and the LAST matching deny, since last match wins"
+    (is (= {:name :deny :pattern "sudo rm -rf /**"}
+           (:rule (policy/decide {} "ls; sudo rm -rf /"))))))
+
+(deftest the-refusal-text-names-the-rule
+  (is (str/includes? (:result (policy/run-shell {:args {:command "rm -rf /"}}))
+                     "Rule: `deny rm -rf /**`"))
+  (is (str/includes? (:result (policy/run-shell {:args {:command "python3 x.py"}}))
+                     "Rule: `default`"))
+  (is (str/includes? (:result (policy/run-shell {:args {:command "mv x .samizdat/config.edn"}}))
+                     "Rule: `protected-path .samizdat/config.edn`")))
+
+(deftest the-rules-are-enumerable
+  (let [{:keys [structural table]} (policy/rules)]
+    (is (= #{:deny :protected-path :grant :allow :compound-allow
+             :complex-downgrade :blocked-segment :default}
+           (set (map :name structural))))
+    (is (every? (comp string? :doc) structural) "each says what it decides")
+    (is (= policy/base-rules table) "and the table is the table")))

@@ -1,5 +1,5 @@
 That eval calls {{calls}}, which ends the harness process rather than the
-evaluation — so it was not run.
+evaluation — so it was not run (rule `{{rule}}`).
 
 Eval executes in the LIVE harness image: your code and the harness share one
 process. `(System/exit 0)` there is not an error you would get back, it is the

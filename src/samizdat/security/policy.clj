@@ -410,18 +410,45 @@
         candidates))
 
 (defn- last-match
-  "The effect of the last rule whose pattern matches any of `candidates`, or
-  nil when none match."
+  "The last rule — [pattern effect] — whose pattern matches any of
+  `candidates`, or nil when none match. The rule and not just its effect, so
+  a decision can say which one made it."
   [rules candidates]
-  (reduce (fn [acc [pattern effect]]
+  (reduce (fn [acc [pattern _ :as rule]]
             (if (some #(matches? pattern %) candidates)
-              effect
+              rule
               acc))
           nil
           rules))
 
+(def ^:private structural-rules
+  "The rules that are not table rows: how the table, the grants and the
+  protected paths combine into one decision. Enumerable beside the table,
+  and every decision names the one that made it."
+  [{:name :deny :doc "hard deny; always wins"}
+   {:name :protected-path :doc "writes the run config"}
+   {:name :grant :doc "a human's allow"}
+   {:name :allow :doc "an allow-table match"}
+   {:name :compound-allow :doc "every statement allowed"}
+   {:name :complex-downgrade :doc "allow demoted; command opaque"}
+   {:name :blocked-segment :doc "one statement not allowed"}
+   {:name :default :doc "nothing matched; ask"}])
+
+(defn rules
+  "The whole policy as data: {:structural [...] :table base-rules}.
+
+  :structural is the decision's own logic, most authoritative first — a deny
+  from the table or a protected path beats a grant beats the table beats the
+  default — with the two compound outcomes (every statement allowed, or the
+  first statement that is not) and the downgrade an opaque command gets. A
+  decision's :rule is one of these by name, with the pattern, path or
+  statement that made it."
+  []
+  {:structural structural-rules :table base-rules})
+
 (defn decide
-  "The decision for a shell command: {:effect :allow|:ask|:deny :head :raw}.
+  "The decision for a shell command: {:effect :allow|:ask|:deny :head :raw
+  :rule}, where :rule names which rule made it — see `rules`.
 
   Order, most-authoritative last: a hard deny in the base rules always wins;
   otherwise a session grant (human-only) allows; otherwise the base rules
@@ -448,14 +475,16 @@
                              (mapcat (fn [s] [s (exec-prefix-stripped s)]))
                              distinct
                              vec)
-        deny-hit (last-match (filter #(= :deny (second %)) base-rules) deny-candidates)
+        deny-rule (last-match (filter #(= :deny (second %)) base-rules) deny-candidates)
         ;; A statement that can write a protected path is a hard deny like the
         ;; base deny rules — it wins over grants, and compound decomposition
         ;; cannot resurrect it.
         protected-hit (protected-path-hit deny-candidates)
-        deny-hit (or deny-hit (when protected-hit :deny))
-        grant-hit (when (some #(matches? % raw) (:grants session)) :allow)
-        base-hit (last-match base-rules allow-candidates)
+        deny-hit (or (second deny-rule) (when protected-hit :deny))
+        grant-pattern (some #(when (matches? % raw) %) (:grants session))
+        grant-hit (when grant-pattern :allow)
+        base-rule (last-match base-rules allow-candidates)
+        base-hit (second base-rule)
         effect (cond
                  deny-hit :deny
                  grant-hit :allow
@@ -489,7 +518,7 @@
                                  (let [cands (distinct [seg (assignments-stripped seg)])]
                                    (if (granted? cands)
                                      :allow
-                                     (last-match base-rules cands))))
+                                     (second (last-match base-rules cands)))))
                                segments))
         compound-allow? (and decomposable?
                              (not deny-hit)
@@ -506,16 +535,31 @@
         promoted? (and complex? (not compound-allow?)
                        (= :allow (or base-hit default-effect))
                        (not deny-hit) (not grant-hit))
+        downgraded? (and complex? (not compound-allow?) (= :allow effect))
         effect (cond
                  (and compound-allow? (not= :deny effect)) :allow
-                 (and complex? (= :allow effect)) :ask
-                 :else effect)]
+                 downgraded? :ask
+                 :else effect)
+        ;; WHICH RULE MADE IT, most authoritative first, mirroring the
+        ;; cascade above — so the refusal names the rule instead of leaving
+        ;; the model to guess at a table it has never seen.
+        rule (cond
+               deny-rule {:name :deny :pattern (first deny-rule)}
+               protected-hit {:name :protected-path :path protected-hit}
+               compound-allow? {:name :compound-allow}
+               blocked-segment {:name :blocked-segment :segment blocked-segment}
+               downgraded? {:name :complex-downgrade
+                            :pattern (or grant-pattern (first base-rule))}
+               grant-pattern {:name :grant :pattern grant-pattern}
+               base-rule {:name :allow :pattern (first base-rule)}
+               :else {:name :default})]
     ;; `:promoted?` — this command WOULD have been allowed on its head and was
     ;; downgraded for being compound. Returned because the refusal has to be
     ;; able to say so: without it the message reads "`ls` is not on the allow
     ;; list", which is false and sent a live run round the same wall twice.
     {:effect effect :head head :raw raw :complex? complex? :promoted? promoted?
      :blocked-segment blocked-segment
+     :rule rule
      ;; Which protected path forced the deny, so the refusal can name it.
      :protected-path protected-hit}))
 
@@ -564,8 +608,10 @@
   (let [command (str (:command args))
         env (or (:env ctx) (into {} (System/getenv)))
         session (if (and conn run-id) (grants/for-run conn run-id) {:grants []})
-        {:keys [effect head complex? promoted? blocked-segment protected-path]}
+        {:keys [effect head complex? promoted? blocked-segment protected-path rule]}
         (decide session command)
+        rule-text (str/join " " (remove nil? [(name (:name rule)) (:pattern rule)
+                                              (:path rule) (:segment rule)]))
         known (secrets/known-values env command)]
     (case effect
       :deny
@@ -575,11 +621,10 @@
       ;; stamps :policy-refusal? on top, which is what routes it to the
       ;; refusal counter.
       {:category :mechanics :progress? false
-       :result (if protected-path
-                 (prompt/render "shell-refused"
-                                {:protected true :path protected-path})
-                 (str "Command denied by policy: `" head "` is on the deny list."
-                      " This cannot be overridden."))
+       :result (prompt/render "shell-refused"
+                              (if protected-path
+                                {:protected true :path protected-path :rule rule-text}
+                                {:denied true :head head :rule rule-text}))
        :policy {:effect :deny}}
 
       :ask
@@ -592,7 +637,7 @@
       {:category :neutral :progress? false :needs-approval true
        :result (prompt/render "shell-refused"
                               {:command command :head head :complex? complex?
-                               :promoted promoted?
+                               :promoted promoted? :rule rule-text
                                ;; Named when the command DID decompose and one
                                ;; statement is the whole reason: pointing at
                                ;; that part beats telling a model to re-split a

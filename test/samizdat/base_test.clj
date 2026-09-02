@@ -710,10 +710,6 @@
     "(no docstring — jolt strips core-var metadata)"
     "ms — the code ran too long "
     }
-   "src/samizdat/security/policy.clj"
-   #{
-    "` is on the deny list."
-    }
    "src/samizdat/smoke.clj"
    #{
     "Count from 1 to 300, one number per line, nothing else."

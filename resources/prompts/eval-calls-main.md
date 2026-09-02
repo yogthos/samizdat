@@ -1,4 +1,5 @@
-That eval calls `{{call}}`, a process entry point, so it was not run.
+That eval calls `{{call}}`, a process entry point, so it was not run (rule
+`{{rule}}`).
 
 Eval shares the harness process. A `-main` conventionally ends with
 `System/exit` — correct for a subprocess, fatal here: it would take down the
