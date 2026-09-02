@@ -95,7 +95,9 @@
    {:name samizdat.repl.guard/rules
     :summary "The eval guard's rules — what an eval may not do in the live image — with the clauses that decide each. Enumerable, not editable: a guard the guarded thing can edit is not a guard."}
    {:name samizdat.security.policy/rules
-    :summary "The shell policy as data: the structural rules, most authoritative first, and the allow/deny table. Every refusal names the one that made it."}]}
+    :summary "The shell policy as data: the structural rules, most authoritative first, and the allow/deny table. Every refusal names the one that made it."}
+   {:name samizdat.security.policy/shell-split
+    :summary "How the policy reads a command's shell structure — statements, separators, redirection — through a POSIX-subset grammar; a string the shell would refuse comes back with the position it stopped at."}]}
 
  {:group "Policy as data"
   :entries

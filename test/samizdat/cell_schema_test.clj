@@ -390,3 +390,56 @@
         (is (contains? (set (map first (rest (:success (second out))))) :verdict)
             "and the derived output missed what the child guarantees"))
       (finally (cell/remove-cell! :test/mapref)))))
+
+;; --- Tier 1 satisfiability: one precondition pass (karamazov-41a.6) ---------
+
+(defn- shipped-definition [n]
+  (edn/read-string (slurp (io/resource (manifests/manifest-resource n)))))
+
+(deftest preconditions-are-one-report-over-ctx-and-data
+  ;; check-requires! answers for ctx keys and the schema chain for data keys,
+  ;; each by throwing. This is the same two facts as ONE report, per node:
+  ;; what it requires from the driver and from upstream, and what holds on
+  ;; every path that reaches it — so an author can ask before an edit rather
+  ;; than learn from the refusal after.
+  (cells/load-cells!)
+  (let [r (manifests/preconditions (loop-def))]
+    (is (= [] (:unsatisfied r)))
+    (is (contains? (get-in r [:nodes :arbiter :established]) :before)
+        "the arbiter can rely on assemble's :before on every path in")
+    (is (= #{:max-turns} (get-in r [:nodes :route :ctx-requires])))
+    (is (every? (fn [[_ n]] (set? (:established n))) (:nodes r))))
+  (doseq [n manifests/shipped-manifests
+          :when (io/resource (manifests/manifest-resource n))]
+    (testing n
+      (is (= [] (:unsatisfied (manifests/preconditions (shipped-definition n))))))))
+
+(deftest an-unsatisfied-precondition-names-the-node-the-key-and-the-path
+  (cells/load-cells!)
+  (let [broken '{:cells {:start :llm/infer :arbiter :gate/arbiter}
+                 :edges {:start :arbiter :arbiter :end}}
+        r (manifests/preconditions broken)
+        u (first (:unsatisfied r))]
+    (is (= :data (:kind u)))
+    (is (= :arbiter (:node u)))
+    (is (contains? (:missing u) :before))
+    (is (= [:start :arbiter] (:path u)))
+    (testing "and the compile refusal quotes the same path"
+      (let [e (try (manifests/compile-definition broken) nil
+                   (catch Throwable t t))]
+        (is (re-find #"\[:start :arbiter\]" (str (ex-message e))))))))
+
+(deftest a-ctx-key-no-driver-provides-is-an-unsatisfied-precondition-too
+  (cell/register-spec! :test/wants-ctx
+                       {:id :test/wants-ctx :doc "x" :pure true
+                        :requires [:no-such-ctx-key]
+                        :handler (fn [_ d] d)
+                        :schema {:input [:map] :output [:map]}})
+  (try
+    (let [r (manifests/preconditions '{:cells {:start :test/wants-ctx}
+                                       :edges {:start :end}})
+          u (first (:unsatisfied r))]
+      (is (= :ctx (:kind u)))
+      (is (= :start (:node u)))
+      (is (= #{:no-such-ctx-key} (:missing u))))
+    (finally (cell/remove-cell! :test/wants-ctx))))

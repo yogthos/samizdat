@@ -35,6 +35,8 @@
   (docs/RFCS/RFC-003-security-model.md), and `run-shell` is where it, the env scrub, and the
   redaction boundary meet on the shell tool path."
   (:require [clojure.string :as str]
+            [instaparse.combinators :as c]
+            [instaparse.core :as insta]
             [samizdat.engine.proc :as proc]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
@@ -78,96 +80,106 @@
   regex cannot tell a quoted `;` from an operator.)"
   [#"\$\(" #"`" #"<\(" #">\(" #"\$\[" #"\(\("])
 
-(def ^:private benign-redirect-re
-  "Redirections that neither create a file nor run anything: stderr folded into
-  another stream (`2>&1`, `>&2`) and either stream discarded to /dev/null.
-  Anchored at the `>` itself, so the stream digit in front of it is already
-  consumed."
-  #"(?s)^(>&\d+|>>?[ \t]*/dev/null)")
+(def ^:private shell-grammar
+  "The shell STRUCTURE a decision needs, as a grammar rather than as state
+  flags in a scanner: statements, the separators between them, quoting, and
+  redirection. A POSIX subset — exactly the subset the old char-by-char pass
+  tracked — so a rule reads structure the shell would agree with, and a
+  string the shell would refuse (an unclosed quote, a dangling escape) is a
+  parse FAILURE with a position instead of a silently wrong split.
 
-(defn- benign-redirect-len
-  "The length of the benign redirection starting at index `i` of `raw`, or nil
-  when the redirection there is anything else — a write, an append, an input
-  read — which stays opaque.
+  Built with the combinator API so the regexes are regex literals; the same
+  grammar in EBNF would carry three levels of string escaping.
 
-  A length rather than a flag because the scanner has to CONSUME the whole
-  token: the `&` in `2>&1` is a redirection operator, and letting the
-  statement splitter see it cut `ls -la 2>&1; cat x` into an `ls -la 2>`, a
-  bare `1`, and a `cat x`, so the command no longer decomposed into statements
-  any rule could match."
-  [raw i]
-  (let [m (re-find benign-redirect-re (subs raw i))
-        tok (if (vector? m) (first m) m)
-        end (when tok (+ i (count tok)))]
-    (when (and tok
-               ;; `> /dev/nullx` is an ordinary file write wearing a familiar
-               ;; prefix; the token must end at the end of a word.
-               (or (>= end (count raw))
-                   (not (re-matches #"[A-Za-z0-9_./-]" (str (nth raw end))))))
-      (count tok))))
+    command  = seg (sep seg)*            ; && is two seps and an empty seg
+    seg      = item*
+    item     = squote / dquote / escape / benign / redirect / plain
+    squote   = '...'                     ; literal, nothing inside is an operator
+    dquote   = \"...\"                   ; backslash escapes honoured
+    escape   = \\ + any char, or a trailing backslash
+    benign   = >&N, >/dev/null, >>/dev/null — a redirection that writes
+               nothing and runs nothing; must end at a word boundary, so
+               `> /dev/nullx` is an ordinary write
+    redirect = < or >                    ; anything else, and it is opaque
+    sep      = ; | & or a newline
+    plain    = a run of anything else
 
-(defn- shell-split
-  "One quote-aware pass over a command string, yielding its shell STRUCTURE:
-  the statement segments (split at unquoted `;`, `|`, `&`, and newline), WHICH
-  of those separators it actually saw, and whether an unquoted redirection
-  (`<` or `>`) appears anywhere.
+  Ordered choice (/), so benign is tried before redirect. Tags are hidden on
+  everything but seg, sep and redirect: a segment's children come back as
+  the strings that spell it, quotes and all, and the two tagged items are
+  the two facts the decision reads."
+  {:command  (c/cat (c/nt :seg) (c/star (c/cat (c/nt :sep) (c/nt :seg))))
+   :seg      (c/star (c/nt :item))
+   :item     (c/hide-tag (c/ord (c/nt :squote) (c/nt :dquote) (c/nt :escape)
+                                (c/nt :benign) (c/nt :redirect) (c/nt :plain)))
+   :squote   (c/hide-tag (c/regexp #"'[^']*'"))
+   :dquote   (c/hide-tag (c/regexp #"(?s)\"(?:[^\"\\]|\\.)*\""))
+   :escape   (c/hide-tag (c/regexp #"(?s)\\.|\\$"))
+   :benign   (c/hide-tag (c/regexp #"(?:>&[0-9]+|>>?[ \t]*/dev/null)(?![A-Za-z0-9_./-])"))
+   :redirect (c/regexp #"[<>]")
+   :sep      (c/regexp #"[;|&\n]")
+   :plain    (c/hide-tag (c/regexp #"[^;|&\n<>'\"\\]+"))})
 
-  The separator set is reported because they are not equally dangerous. A `|`
-  feeds one allowed command into the next and runs nothing an allow rule
+(def ^:private shell-parser
+  (insta/parser shell-grammar :start :command))
+
+(defn- segment-text
+  "The text of one :seg node — its children, spelled back out."
+  [[_ & items]]
+  (apply str (map (fn [x] (if (vector? x) (second x) x)) items)))
+
+(defn shell-split
+  "A command string's shell STRUCTURE: the statement segments (split at an
+  unquoted `;`, `|`, `&` or newline), WHICH of those separators it actually
+  saw, and whether an unquoted redirection (`<` or `>`) appears anywhere.
+
+  The separator set is reported because they are not equally dangerous. A
+  `|` feeds one allowed command into the next and runs nothing an allow rule
   cannot see; a `;` or `&` starts a statement that has nothing to do with the
-  first. `decide` uses the distinction to stop refusing `grep x | head`.
+  first.
 
   A redirection that only discards or folds stderr does not count as one: it
   writes nothing and runs nothing, and treating `find … 2>/dev/null` as
   opaque cost a live run a turn every time it looked around (karamazov-7es).
 
   Quote semantics follow bash: single quotes are literal (nothing inside is
-  an operator, not even backslash), double quotes honor backslash escapes, and
-  an unquoted backslash escapes the next character. Operators inside quotes
-  are string literals — `git commit -m \"a; b\"` is one statement.
+  an operator, not even backslash), double quotes honour backslash escapes,
+  and an unquoted backslash escapes the next character. Operators inside
+  quotes are string literals — `git commit -m \"a; b\"` is one statement.
 
-  Redirection does not split: it does not start a new command, and a deny glob
-  (`.*` spans the rest of the string) already covers the tail of its segment.
-  This is the lexer provenance A-1 asked for — the old regex-only
+  Redirection does not split: it does not start a new command, and a deny
+  glob (`.*` spans the rest of the string) already covers the tail of its
+  segment. This is the lexer provenance A-1 asked for — the old regex-only
   classification let `echo pwned; rm -rf ~` ride `echo **` because `.*`
-  matches `;` too."
+  matches `;` too.
+
+  A string the grammar refuses — an unclosed quote — comes back as its one
+  raw segment plus `:malformed {:index i}`, the character the parse stopped
+  at. The scanner used to swallow an unclosed quote to the end of the string
+  and let the command through on its head, for bash to fail with `unexpected
+  EOF`; `classify` now marks it opaque and the refusal names the position."
   [raw]
-  (let [n (count raw)
-        sep? #{\; \| \& \newline}]
-    (loop [i 0, state :code, cur [], segs [], redirect? false, seps #{}]
-      (if (>= i n)
-        {:segments (->> (conj segs (apply str cur))
+  (let [tree (shell-parser raw)]
+    (if (insta/failure? tree)
+      (let [{:keys [index]} (insta/get-failure tree)]
+        {:segments [raw] :separators #{} :redirection? false
+         :malformed {:index index}})
+      (let [nodes (rest tree)]
+        {:segments (->> nodes
+                        (filter #(= :seg (first %)))
+                        (map segment-text)
                         (map str/trim)
                         (remove str/blank?)
                         vec)
-         :separators seps
-         :redirection? redirect?}
-        (let [c (nth raw i)]
-          (case state
-            :code (cond
-                    (= c \\) (if (< (inc i) n)
-                                (recur (+ i 2) :code (into cur [c (nth raw (inc i))]) segs redirect? seps)
-                                (recur (inc i) :code (conj cur c) segs redirect? seps))
-                    (= c \') (recur (inc i) :single (conj cur c) segs redirect? seps)
-                    (= c \") (recur (inc i) :double (conj cur c) segs redirect? seps)
-                    (sep? c) (recur (inc i) :code [] (conj segs (apply str cur)) redirect? (conj seps c))
-                    (or (= c \<) (= c \>))
-                    (if-let [len (and (= c \>) (benign-redirect-len raw i))]
-                      ;; consumed whole, so its own `&` never reaches the
-                      ;; statement splitter
-                      (recur (+ i len) :code (into cur (subs raw i (+ i len)))
-                             segs redirect? seps)
-                      (recur (inc i) :code (conj cur c) segs true seps))
-                    :else (recur (inc i) :code (conj cur c) segs redirect? seps))
-            :single (if (= c \')
-                      (recur (inc i) :code (conj cur c) segs redirect? seps)
-                      (recur (inc i) :single (conj cur c) segs redirect? seps))
-            :double (cond
-                      (and (= c \\) (< (inc i) n))
-                      (recur (+ i 2) :double (into cur [c (nth raw (inc i))]) segs redirect? seps)
-
-                      (= c \") (recur (inc i) :code (conj cur c) segs redirect? seps)
-                      :else (recur (inc i) :double (conj cur c) segs redirect? seps))))))))
+         :separators (into #{} (comp (filter #(= :sep (first %)))
+                                     (map #(first (second %))))
+                           nodes)
+         :redirection? (boolean
+                        (some (fn [[tag & items]]
+                                (and (= :seg tag)
+                                     (some #(and (vector? %) (= :redirect (first %)))
+                                           items)))
+                              nodes))}))))
 
 (defn- exec-prefix-stripped
   "The command with leading `VAR=val` assignments and exec wrappers
@@ -261,10 +273,13 @@
   rest of what would run."
   [command]
   (let [raw (str/trim (str command))
-        {:keys [segments separators redirection?]} (shell-split raw)]
+        {:keys [segments redirection? malformed]} (shell-split raw)]
     {:raw raw
      :head (command-head raw)
      :segments segments
+     ;; The shell would refuse this string (an unclosed quote); nothing a
+     ;; rule reads off it is trustworthy, so it is opaque like a substitution.
+     :malformed malformed
      ;; DECOMPOSABLE: the command is exactly a list of statements, with
      ;; nothing the shell would expand into a command a rule cannot see — no
      ;; substitution, no subshell, no redirection that writes. Every segment
@@ -275,7 +290,8 @@
      :decomposable? (boolean (and (> (count segments) 1)
                                   (not redirection?)
                                   (not (some #(re-find % raw) complex-markers))))
-     :complex? (boolean (or (some #(re-find % raw) complex-markers)
+     :complex? (boolean (or malformed
+                            (some #(re-find % raw) complex-markers)
                             redirection?
                             (> (count segments) 1)))}))
 
@@ -432,6 +448,7 @@
    {:name :compound-allow :doc "every statement allowed"}
    {:name :complex-downgrade :doc "allow demoted; command opaque"}
    {:name :blocked-segment :doc "one statement not allowed"}
+   {:name :malformed :doc "unparseable by the shell"}
    {:name :default :doc "nothing matched; ask"}])
 
 (defn rules
@@ -457,7 +474,7 @@
 
   `session` is {:grants [pattern ...]} from the grants table (empty is fine)."
   [session command]
-  (let [{:keys [raw head complex? decomposable? segments]} (classify command)
+  (let [{:keys [raw head complex? decomposable? segments malformed]} (classify command)
         ;; Allow matching sees the command RAW — a wrapper prefix changes what
         ;; runs and must not ride an allow. Deny matching sees EVERY statement
         ;; segment (each is a command the shell would run on its own) plus its
@@ -547,6 +564,7 @@
                deny-rule {:name :deny :pattern (first deny-rule)}
                protected-hit {:name :protected-path :path protected-hit}
                compound-allow? {:name :compound-allow}
+               malformed {:name :malformed :index (:index malformed)}
                blocked-segment {:name :blocked-segment :segment blocked-segment}
                downgraded? {:name :complex-downgrade
                             :pattern (or grant-pattern (first base-rule))}
@@ -558,7 +576,7 @@
     ;; able to say so: without it the message reads "`ls` is not on the allow
     ;; list", which is false and sent a live run round the same wall twice.
     {:effect effect :head head :raw raw :complex? complex? :promoted? promoted?
-     :blocked-segment blocked-segment
+     :blocked-segment blocked-segment :malformed malformed
      :rule rule
      ;; Which protected path forced the deny, so the refusal can name it.
      :protected-path protected-hit}))
@@ -608,10 +626,12 @@
   (let [command (str (:command args))
         env (or (:env ctx) (into {} (System/getenv)))
         session (if (and conn run-id) (grants/for-run conn run-id) {:grants []})
-        {:keys [effect head complex? promoted? blocked-segment protected-path rule]}
+        {:keys [effect head complex? promoted? blocked-segment protected-path
+                malformed rule]}
         (decide session command)
         rule-text (str/join " " (remove nil? [(name (:name rule)) (:pattern rule)
-                                              (:path rule) (:segment rule)]))
+                                              (:path rule) (:segment rule)
+                                              (:index rule)]))
         known (secrets/known-values env command)]
     (case effect
       :deny
@@ -638,6 +658,7 @@
        :result (prompt/render "shell-refused"
                               {:command command :head head :complex? complex?
                                :promoted promoted? :rule rule-text
+                               :malformed (:index malformed)
                                ;; Named when the command DID decompose and one
                                ;; statement is the whole reason: pointing at
                                ;; that part beats telling a model to re-split a

@@ -448,7 +448,64 @@
 (deftest the-rules-are-enumerable
   (let [{:keys [structural table]} (policy/rules)]
     (is (= #{:deny :protected-path :grant :allow :compound-allow
-             :complex-downgrade :blocked-segment :default}
+             :complex-downgrade :blocked-segment :malformed :default}
            (set (map :name structural))))
     (is (every? (comp string? :doc) structural) "each says what it decides")
     (is (= policy/base-rules table) "and the table is the table")))
+
+;; --- the lexer is a grammar (karamazov-41a.5) --------------------------------
+
+(deftest shell-split-is-a-grammar-over-quoting-operators-and-redirection
+  ;; The two documented escapes, as explicit regression cases. The first is
+  ;; why the lexer exists at all: `.*` in a deny glob spans `;`, so a
+  ;; regex-only classification let `echo pwned; rm -rf ~` ride `echo **`.
+  (is (= ["echo pwned" "rm -rf ~"]
+         (:segments (policy/shell-split "echo pwned; rm -rf ~"))))
+  ;; The second is the `&` inside `2>&1`, which once cut `ls -la 2>&1; cat x`
+  ;; into `ls -la 2>`, a bare `1`, and `cat x` (karamazov-7es).
+  (let [r (policy/shell-split "ls -la 2>&1; cat x")]
+    (is (= ["ls -la 2>&1" "cat x"] (:segments r)))
+    (is (not (:redirection? r)) "folding stderr writes nothing"))
+  (testing "operators inside quotes are text, and quotes survive in the segment"
+    (is (= ["git commit -m \"a; b | c\""]
+           (:segments (policy/shell-split "git commit -m \"a; b | c\""))))
+    (is (= ["echo 'a|b'"] (:segments (policy/shell-split "echo 'a|b'"))))
+    (is (= ["echo \"a > b\""] (:segments (policy/shell-split "echo \"a > b\""))))
+    (is (not (:redirection? (policy/shell-split "grep \">\" README.md")))))
+  (testing "an unquoted backslash escapes the next character, operators included"
+    (is (= ["echo a\\;b"] (:segments (policy/shell-split "echo a\\;b"))))
+    (is (= ["echo a\\"] (:segments (policy/shell-split "echo a\\")))
+        "a trailing backslash is kept, not a parse failure"))
+  (testing "which separators were seen, and && is two of them"
+    (let [r (policy/shell-split "ls -la && rm -rf ~")]
+      (is (= ["ls -la" "rm -rf ~"] (:segments r)))
+      (is (= #{\&} (:separators r))))
+    (is (= #{\; \newline} (:separators (policy/shell-split "ls; cat x\nwc y")))))
+  (testing "redirection that writes is flagged; discarding is not"
+    (is (:redirection? (policy/shell-split "grep foo bar > out.txt")))
+    (is (:redirection? (policy/shell-split "sort < in.txt")))
+    (is (:redirection? (policy/shell-split "ls -la > /dev/nullx")))
+    (is (not (:redirection? (policy/shell-split "find src -type f 2>/dev/null"))))
+    (is (not (:redirection? (policy/shell-split "jolt -M:test 2>&1"))))
+    (is (not (:redirection? (policy/shell-split "cmd >> /dev/null"))))))
+
+(deftest a-command-the-shell-would-not-parse-is-a-structured-failure
+  ;; The grammar's gift over the scanner: an unclosed quote used to be
+  ;; silently swallowed to the end of the string and the command allowed on
+  ;; its head — and bash then fails it with `unexpected EOF`. Now it is a
+  ;; failure with a position, refused as opaque, and the refusal says where.
+  (let [r (policy/shell-split "echo 'abc")]
+    (is (= ["echo 'abc"] (:segments r)) "the raw command stays the one segment")
+    (is (= 5 (get-in r [:malformed :index])) "the character the parse stopped at"))
+  (is (some? (:malformed (policy/shell-split "echo \"abc"))))
+  (is (nil? (:malformed (policy/shell-split "echo 'abc'"))))
+  (is (:complex? (policy/classify "echo 'abc")) "opaque, like a substitution")
+  (let [d (policy/decide {} "echo 'abc")]
+    (is (= :ask (:effect d)) "echo is allowed, but not this")
+    (is (= {:name :malformed :index 5} (:rule d))))
+  (let [r (policy/run-shell {:args {:command "echo 'abc"}})]
+    (is (:needs-approval r))
+    (is (str/includes? (:result r) "character 5"))
+    (is (str/includes? (:result r) "Rule: `malformed 5`")))
+  (testing "a deny still wins over a parse failure — the raw text is judged too"
+    (is (= :deny (:effect (policy/decide {} "rm -rf / 'oops"))))))

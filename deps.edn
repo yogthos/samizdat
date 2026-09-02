@@ -39,6 +39,15 @@
          {:git/url "https://github.com/clojure/data.json"
           :git/sha "94463ffb54482427fd9b31f264b06bff6dcfd557"}
 
+         ;; instaparse (EPL), for the shell policy's lexer: a POSIX-subset
+         ;; grammar in place of a hand-rolled quote-aware scanner
+         ;; (karamazov-41a.5). The jolt port — .cljc sources, no deps of its
+         ;; own; needs jolt past 0.6.8 (jolt-lang/jolt#567), which the
+         ;; :jolt/min-version above already requires.
+         jolt-lang/instaparse
+         {:git/url "https://github.com/jolt-lang/instaparse"
+          :git/sha "111fae05f30ea0c4f6b13945d9505901649abc6d"}
+
          ;; Selmer renders every prompt template ({{...}} placeholders). Its
          ;; java.time FormatStyle use needs jolt-lang/time (below); prompts
          ;; carry code, so escaping is off (samizdat.prompt).

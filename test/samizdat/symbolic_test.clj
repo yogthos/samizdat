@@ -556,3 +556,38 @@
   (is (thrown? Exception (sym/fact-rules '[{:name :r :where [[:x ?a]] :if [:> ?b 1]}]))
       "a guard over a var no clause binds")
   (is (thrown? Exception (sym/fact-rules '[{:name :r}])) "a rule with no :where"))
+
+;;; -------------------------------------------------------------- contention
+
+(deftest the-widest-beam-a-serializing-provider-can-serve-under-the-deadline
+  ;; Tier 2 (karamazov-41a.8): the one numeric question that bites in
+  ;; practice. A local provider serves `concurrency` calls at a time, so a
+  ;; round of `width` turns takes ceil(width / concurrency) turn-times of
+  ;; wall clock, and the turn deadline abandons whatever is still waiting.
+  ;; fd finds the widest width whose round fits.
+  (is (= {:width 4 :rounds 4}
+         (sym/widest-beam {:requested 5 :concurrency 1
+                           :turn-ms 200000 :deadline-ms 900000})))
+  (is (= {:width 5 :rounds 3}
+         (sym/widest-beam {:requested 5 :concurrency 2
+                           :turn-ms 200000 :deadline-ms 900000})))
+  (is (= {:width 3 :rounds 3}
+         (sym/widest-beam {:requested 5 :concurrency 1
+                           :turn-ms 300000 :deadline-ms 900000})))
+  (is (= {:width 1 :rounds 1}
+         (sym/widest-beam {:requested 1 :concurrency 1
+                           :turn-ms 200000 :deadline-ms 900000}))))
+
+(deftest a-turn-longer-than-the-deadline-fits-no-width-at-all
+  ;; Not zero — a beam of nothing is not a beam — but one, flagged, so the
+  ;; caller can say the run will spend its turns being abandoned.
+  (is (= {:width 1 :infeasible? true}
+         (sym/widest-beam {:requested 5 :concurrency 1
+                           :turn-ms 1000000 :deadline-ms 900000}))))
+
+(deftest an-unknown-provider-leaves-the-width-alone
+  ;; No concurrency or no turn estimate is not a constraint; it is the
+  ;; absence of one, and the width asked for stands.
+  (is (= {:width 5} (sym/widest-beam {:requested 5 :deadline-ms 900000})))
+  (is (= {:width 5} (sym/widest-beam {:requested 5 :concurrency 1 :deadline-ms 900000})))
+  (is (= {:width 5} (sym/widest-beam {:requested 5 :turn-ms 100 :deadline-ms 900000}))))
