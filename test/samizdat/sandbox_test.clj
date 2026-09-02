@@ -197,16 +197,17 @@
 
 ;; --- the Linux backend (karamazov-zrq.8) ------------------------------------
 
-(deftest the-linux-backend-is-explicit-until-it-is-verified
-  ;; Never a stub: :auto on Linux is an honest :none, under which the image
-  ;; is still a separate process, until dev/linux-sandbox/verify.sh has run
-  ;; green on a real kernel. :bwrap asks for it by name and fails closed at
-  ;; spawn when bubblewrap is missing.
-  (is (= :bwrap (sandbox/backend-for :bwrap "Linux")))
+(deftest auto-picks-bwrap-on-linux-only-where-it-is-installed
+  ;; Never a stub: without bubblewrap :auto is an honest :none, under which
+  ;; the image is still a separate process and logged as unsandboxed. :bwrap
+  ;; asks for it by name and fails closed at spawn when it is missing.
+  (is (= :bwrap (sandbox/backend-for :auto "Linux" true)))
+  (is (= :none (sandbox/backend-for :auto "Linux" false)))
   (is (= :none (sandbox/backend-for :auto "Linux")))
-  (is (= :seatbelt (sandbox/backend-for :auto "Mac OS X")))
-  (is (= :none (sandbox/backend-for :none "Linux")))
-  (is (= :none (sandbox/backend-for :auto "Windows 11"))))
+  (is (= :bwrap (sandbox/backend-for :bwrap "Linux" false)))
+  (is (= :seatbelt (sandbox/backend-for :auto "Mac OS X" true)))
+  (is (= :none (sandbox/backend-for :none "Linux" true)))
+  (is (= :none (sandbox/backend-for :auto "Windows 11" true))))
 
 (defn- run-of
   "Does `argv` contain `run` as consecutive elements?"

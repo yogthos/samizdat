@@ -72,11 +72,10 @@
         home (System/getenv "HOME")
         escape (str home "/SAMIZDAT-IMAGE-TEST-ESCAPE.txt")
         im (image/start! {:root root
-                          ;; The strongest backend this host has: bwrap by
-                          ;; name where it is installed (dev/linux-sandbox),
-                          ;; else whatever :auto resolves to.
-                          :backend (sandbox/backend-for (if (fs/which "bwrap") :bwrap :auto)
-                                                        (System/getProperty "os.name"))
+                          ;; Whatever :auto resolves to on this host, which is
+                          ;; what a run would get.
+                          :backend (sandbox/backend-for :auto (System/getProperty "os.name")
+                                                        (some? (fs/which "bwrap")))
                           :sandbox-spec {:deny-read [(str home "/.ssh") "/etc"
                                                     (str (fs/cwd))]
                                          ;; The runtime's own directory. /usr/bin
@@ -130,11 +129,10 @@
 (deftest stopping-an-image-kills-it-and-is-idempotent
   (let [root (project!)
         im (image/start! {:root root
-                          ;; The strongest backend this host has: bwrap by
-                          ;; name where it is installed (dev/linux-sandbox),
-                          ;; else whatever :auto resolves to.
-                          :backend (sandbox/backend-for (if (fs/which "bwrap") :bwrap :auto)
-                                                        (System/getProperty "os.name"))
+                          ;; Whatever :auto resolves to on this host, which is
+                          ;; what a run would get.
+                          :backend (sandbox/backend-for :auto (System/getProperty "os.name")
+                                                        (some? (fs/which "bwrap")))
                           :sandbox-spec {:deny-read []
                                          :exec-roots (route/runtime-exec-roots)}})]
     (is (some? im))
@@ -163,11 +161,10 @@
   ;; isolation exists to prevent.
   (let [root (project!)
         im (image/start! {:root root
-                          ;; The strongest backend this host has: bwrap by
-                          ;; name where it is installed (dev/linux-sandbox),
-                          ;; else whatever :auto resolves to.
-                          :backend (sandbox/backend-for (if (fs/which "bwrap") :bwrap :auto)
-                                                        (System/getProperty "os.name"))
+                          ;; Whatever :auto resolves to on this host, which is
+                          ;; what a run would get.
+                          :backend (sandbox/backend-for :auto (System/getProperty "os.name")
+                                                        (some? (fs/which "bwrap")))
                           :sandbox-spec {:deny-read []
                                          :exec-roots (route/runtime-exec-roots)}})]
     (try

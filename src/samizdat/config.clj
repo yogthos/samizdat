@@ -68,9 +68,9 @@
   closed by making the fix opt-in. So the DANGEROUS mode is the one an operator
   opts into, not the safe one.
 
-  `:sandbox :auto` resolves to the platform's backend, `:none` skips it, and
-  `:bwrap` asks for bubblewrap on Linux explicitly — the backend `:auto` does
-  not pick until it has been verified on a real kernel (karamazov-zrq.8).
+  `:sandbox :auto` resolves to the platform's backend — seatbelt on macOS,
+  bubblewrap on Linux where it is installed — `:none` skips it, and `:bwrap`
+  asks for bubblewrap by name and fails closed without it (karamazov-zrq.8).
   `:none` is legitimate rather than a footgun: inside a container, or on a host
   without a backend, the subprocess split alone still ends in-process access to
   the harness and still fixes the classpath and cwd bugs. The OS layer hardens

@@ -277,25 +277,29 @@
         (into ["--chdir" (resolved project-root) "--"]))))
 
 (defn backend-for
-  "The sandbox backend for `setting` on `os-name` (java.lang.System's os.name).
+  "The sandbox backend for `setting` on `os-name` (java.lang.System's os.name),
+  given whether `bwrap` is installed.
 
-  `:auto` resolves to seatbelt on macOS and to NOTHING anywhere else — `:none`,
-  under which the project image is still a separate sandboxless process that
-  already ends in-process access to the harness and fixes the classpath and
-  cwd bugs. Not a stub for the platforms it does not cover: a backend that has
-  not been shown to confine anything would read as protection without being
-  one. `:bwrap` asks for the Linux backend EXPLICITLY; it fails closed when
-  bubblewrap is not installed (the image does not start, the eval refuses),
-  and `:auto` will select it once dev/linux-sandbox/verify.sh has run green
-  on a real kernel (karamazov-zrq.8). Ubuntu 24.04 and later restrict
-  unprivileged user namespaces by default
+  `:auto` resolves to seatbelt on macOS, to bwrap on Linux when bubblewrap is
+  installed, and to NOTHING otherwise — `:none`, under which the project image
+  is still a separate sandboxless process that already ends in-process access
+  to the harness and fixes the classpath and cwd bugs; image/start! logs it as
+  unsandboxed so nobody mistakes it for confinement. `:bwrap` asks for the
+  Linux backend by name and fails closed without bubblewrap: the image does
+  not start and the eval refuses. Verified on a real x86_64 kernel before
+  `:auto` picked it (karamazov-zrq.8, .github/workflows/linux-sandbox.yml;
+  dev/linux-sandbox/verify.sh measures what an emulating host can). Ubuntu
+  24.04 and later restrict unprivileged user namespaces by default
   (kernel.apparmor_restrict_unprivileged_userns); there bwrap fails to start
   and the image fails closed the same way."
-  [setting os-name]
-  (cond
-    (= :bwrap setting) :bwrap
-    (and (= :auto setting) (str/starts-with? (str os-name) "Mac OS X")) :seatbelt
-    :else :none))
+  ([setting os-name] (backend-for setting os-name false))
+  ([setting os-name bwrap?]
+   (cond
+     (= :bwrap setting) :bwrap
+     (not= :auto setting) :none
+     (str/starts-with? (str os-name) "Mac OS X") :seatbelt
+     (and (str/starts-with? (str os-name) "Linux") bwrap?) :bwrap
+     :else :none)))
 
 (defn write-profile!
   "Write what `backend` reads at spawn to `path`: the SBPL profile for
