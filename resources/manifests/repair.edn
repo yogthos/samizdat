@@ -14,6 +14,10 @@
 ;; its position is right — the next editor gets the reasoning, not just the
 ;; wiring.
 {:description "The tool-call repair ladder: escape control characters inside strings, drop trailing commas, fill a dangling key with null, append missing closers. Edited like any manifest; the next malformed call takes the new ladder. Repairs must only make a parse possible - a rung that could fabricate content does not belong on it."
+ :input-schema
+ ;; One key in and one key out, which is the whole ladder's contract.
+ [:map [:body :string]]
+
  :cells {:start    :repair/control-chars
          :commas   :repair/trailing-commas
          :dangling :repair/dangling-key

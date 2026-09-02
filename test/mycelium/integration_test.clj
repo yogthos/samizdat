@@ -542,3 +542,29 @@
                   {})]
       (is (true? (:done result)))
       (is (not (contains? result :mycelium/params))))))
+
+;; ===== Pattern dispatch =====
+
+(deftest pattern-dispatch-routes-a-run-test
+  (testing "A pattern table routes the data map exactly as a predicate table would"
+    (defmethod cell/cell-spec :int/flag [_]
+      {:id      :int/flag
+       :handler (fn [_ data] (assoc data :ok (pos? (:x data))))
+       :schema  {:input  [:map [:x :int]]
+                 :output [:map [:ok :boolean]]}})
+    (defmethod cell/cell-spec :int/took-yes [_]
+      {:id      :int/took-yes
+       :handler (fn [_ data] (assoc data :route :yes))
+       :schema  {:input  [:map [:ok :boolean]]
+                 :output [:map [:route :keyword]]}})
+    (defmethod cell/cell-spec :int/took-no [_]
+      {:id      :int/took-no
+       :handler (fn [_ data] (assoc data :route :no))
+       :schema  {:input  [:map [:ok :boolean]]
+                 :output [:map [:route :keyword]]}})
+    (let [workflow {:cells      {:start :int/flag :yes :int/took-yes :no :int/took-no}
+                    :edges      {:start {:yes :yes :no :no} :yes :end :no :end}
+                    :dispatches '{:start [[:yes {:ok true}]
+                                          [:no _]]}}]
+      (is (= :yes (:route (myc/run-workflow workflow {} {:x 1}))))
+      (is (= :no (:route (myc/run-workflow workflow {} {:x -1})))))))

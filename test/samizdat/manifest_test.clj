@@ -32,6 +32,7 @@
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.manifest]
             [samizdat.store.db :as db]
+            [samizdat.agent.state :as state]
             [samizdat.store.userspace :as us]
             [samizdat.userspace :as userspace]
             [samizdat.workflow :as wf]))
@@ -174,7 +175,10 @@
                                   :args {:action "save" :name "bad"
                                          :edn "{:cells {:x :no-such-cell}}"
                                          :rationale "a bad save on purpose"}})]
-            (is (= :failure (:category r)))
+            ;; :mechanics since karamazov-gn64 — a refused edit is correctable,
+            ;; not evidence about the branch's line of inquiry. What this test
+            ;; is actually about is the second assertion.
+            (is (= :mechanics (:category r)))
             (is (nil? (us/load-latest conn :manifest "bad")) "nothing broken was stored")))))))
 
 (deftest a-composed-manifest-registers-and-compiles-its-sub-loops
@@ -259,7 +263,8 @@
               r (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
                                 :args {:action "save" :name "badreq" :edn bad
                                        :rationale "a bad require on purpose"}})]
-          (is (= :failure (:category r)))
+          ;; :mechanics since karamazov-gn64, like every other refused edit.
+          (is (= :mechanics (:category r)))
           (is (str/includes? (str (:result r)) "ctx key")
               "the refusal names the loader check that would have thrown")
           (is (nil? (us/load-latest conn :manifest "badreq")) "nothing was stored"))
@@ -350,3 +355,94 @@
           (str "a beam-driven feature run reached a real ending, not a crash: "
                (pr-str (:status r))))
       (is (some? (:run-id r))))))
+
+(deftest a-refused-edit-is-not-charged-to-the-branch
+  ;; karamazov-gn64. A manifest that does not compile is a CORRECTABLE edit:
+  ;; the branch produced no claim and tested nothing about its line of
+  ;; inquiry, it wrote something that did not hold together and was told
+  ;; exactly why, before anything was stored. Charging that to
+  ;; :consecutive-failures is the vf-jki mistake — base/refusal's docstring
+  ;; counts five earlier places, and this is the seventh.
+  ;;
+  ;; What made it sting here: the edit-fix cycle is the one the whole mutation
+  ;; protocol exists to invite. A supervisor that writes a manifest, is told
+  ;; it does not compile, fixes it and saves again had done the right thing
+  ;; twice and been billed two failures for it — enough to trip the stuck gate
+  ;; on its third round of honest work.
+  (with-db
+    (fn [conn]
+      (let [refused (base/run-tool {:branch {:id "B1"} :conn conn
+                                    :tool-name "manifest"
+                                    :args {:action "save" :name "bad"
+                                           :edn "{:cells {:x :no-such-cell}}"
+                                           :rationale "a bad save on purpose"}})]
+        (is (= :mechanics (:category refused))
+            "a manifest that does not compile is mechanics, not failure")
+        (is (str/includes? (str (:result refused)) "no-such-cell")
+            "and it names the actual fault, so the next attempt can fix it
+             rather than guess — a refusal the model cannot act on is a
+             failure whatever it is scored as")
+        (is (nil? (us/load-latest conn :manifest "bad"))))
+
+      (testing "the counters agree: mechanics is bounded, failures untouched"
+        ;; The count is still KEPT — a branch looping on edits that never
+        ;; compile is still spending turns, and :consecutive-mechanics-failures
+        ;; bounds exactly that. What changed is which counter, and therefore
+        ;; whether the stuck gate reads it as evidence about the branch's work.
+        (let [b (state/new-branch {:id "B1" :problem "p"})
+              after (state/record-outcome b {:category :mechanics :tool "manifest"})]
+          (is (= 1 (:consecutive-mechanics-failures after)))
+          (is (zero? (or (:consecutive-failures after) 0))
+              "a refused edit did not move the counter that decides whether the
+               branch lives")))
+
+      (testing "a manifest that DOES compile is still progress"
+        (let [ok (base/run-tool {:branch {:id "B1"} :conn conn
+                                 :tool-name "manifest"
+                                 :args {:action "save" :name "fine"
+                                        :edn (slurp (io/resource "manifests/loop.edn"))
+                                        :rationale "a good save"}})]
+          (is (= :neutral (:category ok)))
+          (is (:progress? ok)))))))
+
+(deftest a-shadowed-dispatch-branch-is-refused-with-the-pattern-rules
+  ;; Dispatch entries are patterns now (karamazov-41a.3), and a pattern table
+  ;; can be analysed where a table of closures could not: a branch an earlier
+  ;; pattern makes unreachable is refused at save. The refusal names both
+  ;; branches and is rendered from a template that carries the pattern rules,
+  ;; because the author here is the model, and a refusal that only states the
+  ;; error sends it guessing at a language it has never been shown.
+  (with-db
+    (fn [conn]
+      (let [def (manifests/read-definition (slurp (io/resource "manifests/loop.edn")))
+            bad (pr-str (assoc-in def [:dispatches :parse]
+                                  '[[:tool _]
+                                    [:provider-error {:call {:ok false}}]
+                                    [:no-call {:parsed nil}]]))
+            r (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                              :args {:action "save" :name "shadow" :edn bad
+                                     :rationale "a shadowed branch on purpose"}})
+            out (str (:result r))]
+        (is (= :mechanics (:category r)))
+        (is (str/includes? out "can never fire"))
+        (is (str/includes? out ":tool") "names the branch in front")
+        (is (str/includes? out "first match wins") "and the pattern rules, from the template")
+        (is (nil? (us/load-latest conn :manifest "shadow")) "nothing was stored")))))
+
+(deftest saving-and-showing-report-where-branch-order-decides
+  ;; Two branches that overlap with neither more specific are legal — the
+  ;; loop's own :parse table has them — but the order is then the only thing
+  ;; deciding, and the moment to say so is when the author is looking at the
+  ;; table: on save, and on show.
+  (with-db
+    (fn [conn]
+      (let [good (slurp (io/resource "manifests/loop.edn"))
+            saved (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                  :args {:action "save" :name "loop4" :edn good
+                                         :rationale "the factory loop under another name"}})
+            shown (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                  :args {:action "show" :name "loop4"}})]
+        (is (= :neutral (:category saved)))
+        (is (str/includes? (str (:result saved)) "Order-dependent"))
+        (is (str/includes? (str (:result saved)) ":provider-error"))
+        (is (str/includes? (str (:result shown)) "Order-dependent"))))))

@@ -21,6 +21,12 @@
 {:description "A hierarchical loop: a worker sub-loop composed with a finalization critic, authored as nested workflows. Same behavior as the flat critic loop, built from composable sub-loops — the pattern the feature loop generalizes."
  :subworkflows {:loop/worker "worker"}
 
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start  :loop/worker
          :retry  :loop/worker
          :critic :gate/critic

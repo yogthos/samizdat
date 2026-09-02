@@ -105,3 +105,25 @@
             function away from its logging is prose the ratchet cannot tell
             from a sentence aimed at the model"
     (is (not (string? (guard/exit-note ["run-abc"]))))))
+
+(deftest every-refusal-is-a-named-rule
+  ;; The guard is rules over facts read off the form (karamazov-41a.4), so a
+  ;; refusal can say WHICH rule fired and on what — the thing a model needs
+  ;; in order to comply rather than guess — and the reach is enumerable.
+  (is (= [:process-exit] (map :rule (guard/findings (forms "(System/exit 0)")))))
+  (is (= [:entry-point-call]
+         (map :rule (guard/findings (forms "(flight.runner/-main)")))))
+  (is (= [] (guard/findings (forms "(+ 1 2)"))))
+  (testing "one form, two rules, both named"
+    (is (= #{:process-exit :entry-point-call}
+           (set (map :rule (guard/findings (forms "(do (System/exit 0) (-main))"))))))))
+
+(deftest the-rules-are-enumerable-with-what-each-catches
+  (let [rules (guard/rules)]
+    (is (= #{:process-exit :kernel-source-write :harness-reload :entry-point-call}
+           (set (map :name rules))))
+    (is (every? (comp string? :doc) rules) "each says what it catches")))
+
+(deftest the-exit-refusal-names-its-rule
+  (let [r (repl/eval-code "(System/exit 0)")]
+    (is (re-find #"process-exit" (str (:error r))))))

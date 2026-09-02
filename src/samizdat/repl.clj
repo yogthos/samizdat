@@ -244,7 +244,8 @@
                                    (throw (ex-info (prompt/render
                                                     "eval-terminates-process"
                                                     {:calls (str/join " and "
-                                                                      (guard/offending forms))})
+                                                                      (guard/offending forms))
+                                                     :rule (name :process-exit)})
                                                    {:samizdat/refused :process-exit})))
                                  ;; And the route the symbol check cannot see:
                                  ;; the exit is inside the callee, one file
@@ -253,7 +254,8 @@
                                    (throw (ex-info (prompt/render
                                                     "eval-calls-main"
                                                     {:call (str/join " and "
-                                                                     (guard/main-calls forms))})
+                                                                     (guard/main-calls forms))
+                                                     :rule (name :entry-point-call)})
                                                    {:samizdat/refused :entry-point})))
                                  (reduce (fn [_ form] (eval form)) nil forms)))]
                    {:ok true :value (pr-str value) :out (str out)})

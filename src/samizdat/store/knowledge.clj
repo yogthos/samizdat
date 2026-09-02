@@ -77,7 +77,7 @@
   ordering worth having is recency."
   [conn query limit]
   (db/fetch conn
-            ["SELECT * FROM knowledge WHERE content LIKE ?
+            ["SELECT * FROM knowledge WHERE content LIKE ? AND current = 1
               ORDER BY created_at DESC, id DESC LIMIT ?"
              (str "%" query "%") (long limit)]))
 
@@ -96,7 +96,8 @@
 (defn remember!
   "Insert a fact and return its id. Kind defaults to 'note' — the column
   exists so later kinds (decisions, gotchas, references) need no migration."
-  [conn {:keys [content kind salience confidence run-id pinned pattern-key]}]
+  [conn {:keys [content kind salience confidence run-id pinned pattern-key
+                cause supersedes lineage-id]}]
   (when (str/blank? (str content))
     (throw (ex-info "a memory needs content" {})))
   (let [kind (or kind "note")
@@ -118,13 +119,21 @@
                    ;; first corroborate! inside that same run look like a
                    ;; second distinct sighting and count it, which is exactly
                    ;; the double-count the distinct-run rule exists to prevent.
+                   ;; `lineage_id` defaults to the row's own id: a new memory
+                   ;; is its own lineage, which is what every pre-migration row
+                   ;; was backfilled to. `cause` is why it was written — see
+                   ;; the v20 note; the model can only act on what it knows
+                   ;; about, and a belief with no recorded origin cannot be
+                   ;; reconsidered later, only deleted.
                    ["INSERT INTO knowledge (id, content, kind, created_at,
                                              salience, confidence, run_id, pinned,
-                                             last_run_id, pattern_key)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                             last_run_id, pattern_key,
+                                             lineage_id, current, cause, supersedes)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
                                 id (str content) kind now
                                 salience confidence run-id (if pinned 1 0)
-                                run-id pattern-key]))
+                                run-id pattern-key
+                                (or lineage-id id) cause supersedes]))
                 1
                 (catch Exception e
                   ;; Only a UNIQUE collision is an id problem; anything else
@@ -210,7 +219,7 @@
                  (seq (db/fetch conn
                                 ["SELECT k.* FROM knowledge_fts fts
                                   JOIN knowledge k ON k.rowid = fts.rowid
-                                  WHERE knowledge_fts MATCH ?
+                                  WHERE knowledge_fts MATCH ? AND k.current = 1
                                   ORDER BY bm25(knowledge_fts) LIMIT ?"
                                  q n]))
                  (catch Throwable e
@@ -249,34 +258,134 @@
           (inc (or (:corroborations row) 1)))
       (or (:corroborations row) 1))))
 
+(defn- unindex!
+  "Drop a row from the FTS mirror so it stops being recallable, leaving the row
+  itself alone. Best effort, like `index!`."
+  [conn id]
+  (try
+    (db/with-writer
+      (db/execute! conn ["DELETE FROM knowledge_fts
+                           WHERE rowid IN (SELECT rowid FROM knowledge WHERE id = ?)" id]))
+    (catch Throwable e
+      (log/warn "knowledge: unindexing" id "failed:" (ex-message e)))))
+
+(defn retire!
+  "Mark a memory no longer true, with the reason. Returns the id, or nil when
+  there was nothing current to retire.
+
+  THE CASE `restate!` CANNOT COVER, and the one a disproven premise actually
+  produces: this was wrong and NOTHING replaces it. `the defect is in src/`
+  had to become false with nothing taking its place — the 238-turn run did not
+  need that belief edited into a different one, it needed it withdrawn.
+
+  The row stays. A retired memory is evidence: what we thought, what made us
+  think it (`cause`), and why it stopped being true. Deleting it would leave
+  the next run to rediscover the same wrong idea with nothing to warn it, which
+  is what `forget!` is for when a memory is merely noise rather than refuted."
+  [conn id {:keys [reason]}]
+  (let [row (get-by-id conn id)]
+    (when (and row (= 1 (:current row)))
+      (db/with-writer
+        (db/execute! conn
+                     ["UPDATE knowledge SET current = 0, retired_at = ?, retired_reason = ?
+                        WHERE id = ? AND current = 1"
+                      (db/now) reason id]))
+      ;; Out of the search index, so recall stops handing it back as something
+      ;; to act on. Still fetchable by id and through `history`.
+      (unindex! conn id)
+      id)))
+
 (defn restate!
-  "Replace a memory's CONTENT in place, keeping its id, salience, use record
-  and corroboration count. Returns true when the text actually changed.
+  "Record a NEW version of a memory and retire the old one. Returns the new
+  row's id, or nil when the text did not change.
 
   For a memory that describes a moving target rather than a standing fact.
   The project overview is the one: it says what the codebase IS, and a run
   that adds a namespace makes the previous wording wrong without making the
-  memory wrong to hold. Corroborating it — which is what happened — counts
-  agreement about a description that no longer matches, and the store had no
-  way to say a project had moved on.
+  memory wrong to hold.
 
-  Not a new row: the id is what a reader cites when it flags the memory as
-  stale, and the history of how often this project has been described is
-  worth more than a pile of past descriptions of it."
-  [conn id content]
-  (let [row (get-by-id conn id)]
-    (when (and row (not= (str content) (str (:content row))))
-      (db/with-writer
-        (db/execute! conn ["UPDATE knowledge SET content = ? WHERE id = ?"
-                           (str content) id])
-        ;; The FTS mirror is rowid-keyed and insert-only, so the stale row has
-        ;; to go before the new one lands — otherwise the old wording stays
-        ;; searchable and the memory can be recalled by text it no longer says.
-        (try (db/execute! conn ["DELETE FROM knowledge_fts
-                                  WHERE rowid IN (SELECT rowid FROM knowledge WHERE id = ?)" id])
-             (catch Throwable _ nil)))
-      (index! conn id (str content))
-      true)))
+  THIS USED TO REWRITE THE ROW IN PLACE, which karamazov-1sy's own design
+  forbids and karamazov-oov is about: you cannot retract what you overwrote.
+  Once the previous wording was gone there was no way to ask what we believed
+  or what made us believe it, so a premise that turned out false left no trace
+  and everything downstream of it kept standing.
+
+  The lineage is what the old id bought: `lineage_id` carries across every
+  version, so `history` still answers how often this project has been
+  described, and a reader citing an old id still finds the row it cited."
+  ([conn id content] (restate! conn id content {}))
+  ([conn id content {:keys [reason cause]}]
+   (let [row (get-by-id conn id)]
+     (when (and row (not= (str content) (str (:content row))))
+       (let [lineage (or (:lineage_id row) id)
+             new-id (remember! conn {:content content
+                                     :kind (:kind row)
+                                     :salience (:salience row)
+                                     :confidence (:confidence row)
+                                     :run-id (:run_id row)
+                                     :pinned (= 1 (:pinned row))
+                                     :pattern-key (:pattern_key row)
+                                     :lineage-id lineage
+                                     :supersedes id
+                                     :cause cause})]
+         (db/with-writer
+           ;; THE RECORD MOVES WITH THE LINEAGE. Rewriting in place kept the
+           ;; use count and corroborations for free; a new row starts at zero,
+           ;; and letting it would mean a project that gets re-described every
+           ;; run looks freshly observed every run — the exact double-count the
+           ;; distinct-run rule exists to prevent, inverted. The subject is the
+           ;; same subject; only its wording moved.
+           (db/execute! conn
+                        ["UPDATE knowledge
+                            SET corroborations = ?, use_count = ?, last_used_at = ?,
+                                success_count = ?, failure_count = ?, last_run_id = ?
+                          WHERE id = ?"
+                         (or (:corroborations row) 1) (or (:use_count row) 0)
+                         (:last_used_at row)
+                         (or (:success_count row) 0) (or (:failure_count row) 0)
+                         (:last_run_id row) new-id])
+           (db/execute! conn
+                        ["UPDATE knowledge SET current = 0, retired_at = ?, retired_reason = ?
+                           WHERE id = ?"
+                         (db/now) (or reason "superseded") id]))
+         (unindex! conn id)
+         new-id)))))
+
+(defn history
+  "Every version in this memory's lineage, newest first — including retired
+  ones, which is the point. Answers what we used to believe and why it changed."
+  [conn id]
+  (let [row (get-by-id conn id)
+        lineage (or (:lineage_id row) id)]
+    (vec (db/fetch conn
+                   ["SELECT * FROM knowledge WHERE lineage_id = ?
+                      ORDER BY created_at DESC, id DESC"
+                    lineage]))))
+
+(defn live-count
+  "How many memories are current — the number that makes a miss actionable.
+  \"No match, and 40 things are recorded\" says try other words; \"no match\"
+  alone says nothing."
+  [conn]
+  (or (:n (first (db/fetch conn ["SELECT COUNT(*) AS n FROM knowledge WHERE current = 1"])))
+      0))
+
+(defn recall-status
+  "Which KIND of nothing a recall found: `:hits`, `:no-match`, or `:empty`.
+
+  Lemmalog's measured failure mode is that extraction gaps produce SILENCE,
+  and silence is indistinguishable from absence — the agent cannot tell `this
+  was never written down` from `your query missed`. The two call for opposite
+  actions (write it down; search again), so they must not read the same. Same
+  argument as the standing discoverability rule, applied to recall.
+
+  A store holding only RETIRED memories is `:empty`, not `:no-match`: there is
+  nothing live to have matched, and telling the model to refine its query
+  would be a lie."
+  [conn query]
+  (if (seq (recall conn query))
+    :hits
+    (if (pos? (live-count conn)) :no-match :empty)))
 
 (defn corroborated?
   "Whether a memory has been seen in enough distinct runs to act on.
@@ -294,9 +403,17 @@
 
   One indexed lookup. This replaced a scan of every row of a kind followed by
   a string-prefix match on the content — text identity, which is what you do
-  when your memory is a file and a claim has no id. A row has a key."
+  when your memory is a file and a claim has no id. A row has a key.
+
+  THE CURRENT ONE. A key names a subject, and since karamazov-oov a subject
+  can have several versions of itself: `LIMIT 1` with no filter was fine while
+  a restate rewrote the row, and became a coin flip the moment restating
+  started retiring the old one. Picking the retired row would send every later
+  corroboration to a memory nobody can recall and freeze the live one — the
+  project overview would stop being updated and nothing would say why."
   [conn pattern-key]
-  (db/fetch-one conn ["SELECT * FROM knowledge WHERE pattern_key = ? LIMIT 1"
+  (db/fetch-one conn ["SELECT * FROM knowledge WHERE pattern_key = ? AND current = 1
+                        ORDER BY created_at DESC, id DESC LIMIT 1"
                       pattern-key]))
 
 (defn- lever-key
@@ -356,12 +473,19 @@
        ;; The content refresh goes through restate! so the FTS mirror follows
        ;; the wording — the raw UPDATE left the memory recallable only by its
        ;; FIRST phrasing (same bead).
-       (do (restate! conn (:id existing) content)
-           (db/with-writer
-             (db/execute! conn ["UPDATE knowledge SET run_id = ? WHERE id = ?"
-                                run-id (:id existing)]))
-           {:id (:id existing) :kind kind :repeat? true
-            :corroborations (corroborate! conn (:id existing) run-id)})
+       ;;
+       ;; CORROBORATE FIRST, THEN RESTATE, and the order is load-bearing since
+       ;; karamazov-oov: restating retires the old row and opens a new one, so
+       ;; a corroboration recorded afterwards lands on the retired version and
+       ;; the live memory stays at one sighting forever. `restate!` carries the
+       ;; record onto the new row, so counting first is what makes it survive.
+       (let [corroborations (corroborate! conn (:id existing) run-id)
+             new-id (or (restate! conn (:id existing) content) (:id existing))]
+         (db/with-writer
+           (db/execute! conn ["UPDATE knowledge SET run_id = ? WHERE id = ?"
+                              run-id new-id]))
+         {:id new-id :kind kind :repeat? true
+          :corroborations corroborations})
        {:id (remember! conn {:content content :kind "episodic" :run-id run-id
                              :pattern-key pattern
                              ;; A measured pattern is better evidenced than a
@@ -443,7 +567,8 @@
                                    (* 86400 (long (:recent-use-window-days p)))))
         stale (db/fetch conn
                         ["SELECT id, salience FROM knowledge
-                           WHERE pinned = 0
+                           WHERE current = 1
+                             AND pinned = 0
                              AND (last_used_at IS NULL OR last_used_at < ?)
                              AND salience > ?"
                          cutoff (:decay-floor p)])]
@@ -555,7 +680,7 @@
   the evidence rather than only the problem text."
   [conn]
   (->> (db/fetch conn ["SELECT pattern_key, success_count, failure_count, corroborations
-                          FROM knowledge WHERE pattern_key LIKE 'workflow:%'"])
+                          FROM knowledge WHERE pattern_key LIKE 'workflow:%' AND current = 1"])
        (keep (fn [r]
                (when-let [nm (second (str/split (str (:pattern_key r)) #":" 2))]
                  {:workflow nm
@@ -612,7 +737,7 @@
   that are already at the top."
   ([conn] (standing conn (:recall-limit (memory/policy))))
   ([conn limit]
-   (let [rows (db/fetch conn ["SELECT * FROM knowledge ORDER BY salience DESC LIMIT ?"
+   (let [rows (db/fetch conn ["SELECT * FROM knowledge WHERE current = 1 ORDER BY salience DESC LIMIT ?"
                               (long (* 3 limit))])
          {overviews true others false} (group-by #(= "overview" (:kind %)) rows)]
      (vec (take limit (concat (memory/rank overviews) (memory/rank others)))))))
@@ -622,7 +747,8 @@
   keeping lately, for orienting without a search term."
   [conn n]
   (db/fetch conn
-            ["SELECT * FROM knowledge ORDER BY created_at DESC, id DESC LIMIT ?"
+            ["SELECT * FROM knowledge WHERE current = 1
+              ORDER BY created_at DESC, id DESC LIMIT ?"
              (long n)]))
 
 (defn forget!

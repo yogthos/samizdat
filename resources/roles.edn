@@ -58,7 +58,7 @@
            "read_file" "grep" "lsp" "write_file" "edit_file" "patch"
            "shell" "websearch" "skill"
            "task"
-           "remember" "recall" "outcome" "forget" "message"
+           "remember" "recall" "outcome" "forget" "retire" "message"
            "fetch_artifact" "fetch_turn"}
   :prompt "roles/implementor"
   :sees #{:task :problem :shared-tree :skills}}
@@ -78,7 +78,7 @@
   ;; library's behaviour has the same need an implementor does.
   :tools #{"intervene" "read_file" "grep" "lsp" "skill" "doc" "complete" "manual"
            "introspect" "cells" "cell" "manifest" "prompt" "policy"
-           "fetch_turn" "fetch_artifact" "recall" "remember" "forget" "outcome"
+           "fetch_turn" "fetch_artifact" "recall" "remember" "forget" "retire" "outcome"
            "experiment" "message" "eval" "shell" "websearch" "done" "give_up"}
   :prompt "roles/supervisor"
   :sees #{:run-health :gate-health :failures}}

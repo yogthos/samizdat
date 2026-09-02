@@ -193,12 +193,15 @@
       :off {:ok false :error (prompt/render "image-off" {}) :error-type "eval-off"}
       ;; THE SUPERVISOR'S IMAGE IS STILL THE LIVE ONE, so the last door to the
       ;; S2 escape is here. Static, and honest about being static — see
-      ;; guard/kernel-write?.
-      :harness (if (guard/kernel-write? (try (read-string (str "(do " code "\n)"))
-                                             (catch Exception _ nil)))
+      ;; guard/kernel-write?. The refusal names the rule and what it fired on.
+      :harness (if-let [hit (first (guard/kernel-writes
+                                    (try (read-string (str "(do " code "\n)"))
+                                         (catch Exception _ nil))))]
                  {:ok false :error-type "kernel-write"
                   :policy-refusal? true
-                  :error (prompt/render "kernel-write-refused" {})}
+                  :error (prompt/render "kernel-write-refused"
+                                        {:rule (name (:rule hit))
+                                         :on (str (:on hit))})}
                  (repl/eval-code code session timeout))
       ;; NO ROOT, NO IMAGE. Confinement is defined relative to the project, so
       ;; a ctx that never said which project cannot be confined to it: the

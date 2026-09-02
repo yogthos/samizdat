@@ -52,14 +52,24 @@ glob-scoped interceptors match on.
  :cells        {node-kw cell-id}
  :edges        {node-kw next-node          ; unconditional
                 node-kw {branch-kw node}}  ; dispatched
- :dispatches   {node-kw [[branch-kw (fn [data] pred)] …]}   ; ordered, first wins
+ :dispatches   {node-kw [[branch-kw pattern] …]}         ; ordered, first wins
+                                           ; [branch-kw pattern guard], or a (fn [data] pred) form
  :constraints  [{:type :must-follow :if node :then node}]
  :subworkflows {cell-id manifest-name}     ; optional: a nested manifest as one node
  :prompt       "name"}                     ; optional: prompt appended to the base
 ```
 
-`:start` is the entry node and `:end` terminates. Dispatch predicates are EDN
-forms evaluated at **compile** time; their bodies run per pass.
+`:start` is the entry node and `:end` terminates. A dispatch entry is a
+**pattern** over the data map (`samizdat.symbolic`): a map is an open-world
+subset — `{:verdict :done}` matches any data map carrying that key with that
+value, and a named key must be present — `_` matches anything, `?x` binds, and
+a third element is a guard from `samizdat.symbolic/guard-catalog`. Entries are
+tried in order and the first match wins. Because the table is data, compile
+checks it: a branch an earlier pattern makes unreachable is refused, and two
+branches that overlap with neither more specific are reported by `manifest
+save` and `manifest show` as order-dependent. A `(fn [data] pred)` form is
+still accepted where a pattern cannot say it; it is evaluated at **compile**
+time and is opaque to the analysis.
 
 ### The two levels
 
@@ -194,12 +204,20 @@ workflow/compile-loop
 
 ## Known gaps
 
-- **Constraint coverage is partial and uneven.** The beam's other two ordering
-  rules (directives before advance, cull before spawn) and the turn's
-  (tool before arbiter, settle before fire) are documented in cell docstrings
-  only, because mycelium's constraint vocabulary does not express them cleanly
-  and a false compile error is worse than a comment. **There is no way to tell
-  from a manifest which of its invariants the compiler will catch** — an editor
-  cannot know what is defended.
-- A cell's `ctx` keys are conventional, not schema'd. A cell reading a key the
-  driver does not set gets `nil` at run time.
+- **Settle before fire is a convention, not a constraint.** Every ordering
+  rule a manifest claims is declared in its `:invariants`, each saying what it
+  `:protects` and whether it is `:enforced`; the enforced ones are DERIVED into
+  the `:constraints` the compiler checks (`must-follow`, `must-precede`), and
+  `beam_test` pins that every enforced invariant reaches the compiler and every
+  unenforced one says why. The beam's four and the turn's five are all
+  enforced except one: settle before fire orders two steps INSIDE
+  `:gate/arbiter`, so a path-based checker has nothing to look at. Enforcing
+  it means splitting the cell into a settle node and a fire node, which
+  `loop.edn` names as the route; until that is worth doing it stays declared
+  `:enforced false` with that reason (karamazov-41a.7).
+- A cell's `ctx` keys are checked at compile against `manifests/ctx-keys`
+  (`check-requires!`), and `manifests/preconditions` reports per node what it
+  requires from the driver and from upstream and what holds on every path in;
+  a schema-chain refusal names the path that reaches the node lacking the key.
+  What is not checked is the driver's side at run time, beyond `beam_test`
+  asserting that the production ctx carries every declared key.

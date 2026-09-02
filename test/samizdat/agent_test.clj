@@ -2185,7 +2185,10 @@
   ;; three places and consulted by no live code — so the critic, team, feature
   ;; and decompose loops could not run outside the suite. These numbers decide
   ;; how much the model sees, which makes a dead one invisible in the same way.
-  (let [src (->> (file-seq (java.io.File. "src"))
+  ;; src/samizdat, not src: the vendored trees under src/ would widen the
+  ;; haystack, and a key that only "appears" in a mycelium docstring is not a
+  ;; key samizdat reads.
+  (let [src (->> (file-seq (java.io.File. "src/samizdat"))
                  (filter #(.isFile %))
                  (filter #(str/ends-with? (.getName %) ".clj"))
                  (map slurp)

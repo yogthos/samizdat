@@ -145,7 +145,13 @@
         tree is how a planner's reasoning preamble became four workers' task
         list (karamazov-6a3)."
    :effects [:db]
-   :requires [:config :conn :run-id]}
+   :requires [:config :conn :run-id]
+   ;; :board/guidance arrives only on a revise round from the outer feature
+   ;; loop, so it is optional; the board's own rounds carry it forward.
+   :input  [:map [:branch :map]
+            [:subtasks {:optional true} :any]
+            [:board/guidance {:optional true} :any]]
+   :output [:map [:board/planned :int]]}
   (fn [{:keys [conn config run-id]} {:keys [branch] :as data}]
     (let [existing (workable conn run-id)
           ;; WHAT DEFINES DELIVERY, on every task the board opens.
@@ -212,7 +218,30 @@
         everything left is a task this run already gave up on, or when the
         runaway guard trips."
    :effects [:db]
-   :requires [:conn :run-id :root]}
+   :requires [:conn :run-id :root]
+   ;; Everything it reads is its own bookkeeping from an earlier lap, so all
+   ;; of it is optional: the first pass through the board has none of it.
+   ;; :branch is REQUIRED and was missed: the handler destructures it and
+   ;; writes (assoc branch :task ...) on the claim path, so without one it
+   ;; would build a fresh {:task ...} map in the branch's place — silently,
+   ;; which is the nil-six-cells-downstream failure this epic exists to refuse.
+   :input  [:map [:branch :map]
+            [:board/left {:optional true} :any]
+            [:board/worked {:optional true} :int]
+            [:board/round {:optional true} :int]]
+   ;; PER-TRANSITION. Claiming a task stamps the whole working set — the id,
+   ;; the branch, the statement, the baseline the review diffs against — and
+   ;; deliberately CLEARS the previous task's outcome. An empty board writes
+   ;; only the verdict, so declaring the working set on both edges would tell
+   ;; :board/finish it may rely on a task that was never claimed.
+   :output [:per-transition
+            {:task  [:map [:board/verdict :keyword] [:board/task :any]
+                     [:board/branch-id :any] [:board/problem :any]
+                     [:board/attempts :int] [:board/findings :any]
+                     [:board/outcome :any] [:board/decision :any]
+                     [:board/answer :any] [:board/baseline :any]
+                     [:branch :map]]
+             :empty [:map [:board/verdict :keyword]]}]}
   (fn [{:keys [conn run-id root]} {:keys [branch] :as data}]
     (release-stale-claims! conn run-id)
     (closable-parents! conn run-id)
@@ -308,7 +337,22 @@
         appended to the task's problem, so the owner works the same task again
         knowing what was wrong with the last try."
    :effects [:net :db]
-   :requires [:config :conn :run-id]}
+   :requires [:config :conn :run-id]
+   ;; The claimed task, and OPTIONAL only because the two board manifests
+   ;; guarantee it by different means. board.edn edges :next -> :work, so the
+   ;; claim structurally precedes the work and its :must-precede invariant
+   ;; says so. board-bt.edn dispatches :sense -> :work directly, and the
+   ;; guarantee there is DYNAMIC: sense answers :work-due only when a claim is
+   ;; already on the blackboard. mycelium walks edges, so it can check the
+   ;; first and not the second — requiring these keys refuses board-bt for a
+   ;; claim its dispatcher will not route without.
+   :input  [:map [:board/task {:optional true} :any]
+            [:board/problem {:optional true} :any]
+            [:board/attempts {:optional true} :int]
+            [:board/findings {:optional true} :any]]
+   :output [:map [:board/branch-id :any] [:board/task :any]
+            [:board/outcome :any] [:board/decision :any]
+            [:board/answer :any]]}
   (fn [{:keys [conn run-id] :as ctx} {:keys [board/task board/branch-id] :as data}]
     (let [attempt (or (:board/attempts data) 0)
           bid (if (pos? attempt) (str branch-id "r" attempt) branch-id)
@@ -390,7 +434,22 @@
         did not finish is never closed — it goes back to the board open, which
         is the honest record of what is left."
    :effects [:net :db]
-   :requires [:conn :root :run-id :llm-adapter :llm-config]}
+   :requires [:conn :root :run-id :llm-adapter :llm-config]
+   ;; :board/outcome and :board/baseline are what make this a review OF a
+   ;; change rather than of a claim — the diff is taken against the baseline
+   ;; :board/next stamped at claim time. Optional for the same reason
+   ;; :board/work's are: board-bt reaches this node from its sense dispatcher,
+   ;; which routes :review-due only when an unjudged outcome exists, and that
+   ;; is a precondition query rather than an edge mycelium can walk.
+   :input  [:map [:board/task {:optional true} :any]
+            [:board/outcome {:optional true} :any]
+            [:board/answer {:optional true} :any]
+            [:board/baseline {:optional true} :any]
+            [:board/branch-id {:optional true} :any]
+            [:board/attempts {:optional true} :int]]
+   :output [:map [:board/decision :keyword] [:board/attempts :int]
+            [:board/findings :any] [:board/worked :int]
+            [:board/landed :any] [:board/left :any]]}
   (fn [{:keys [conn run-id root] :as ctx} {:keys [board/task] :as data}]
     (let [{:keys [llm-adapter llm-config]} (wf/role-ctx ctx :critic)
           attempts (inc (or (:board/attempts data) 0))
@@ -493,7 +552,16 @@
         :board/next and :board/work clearing the previous task's outcome and
         decision — the blackboard hygiene those cells now do for this cell."
    :effects [:db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   ;; Everything OPTIONAL, and that is the behaviour-tree design rather than
+   ;; laxity: this cell re-derives the position from the blackboard on EVERY
+   ;; tick instead of latching it in edges, so it has to cope with any of
+   ;; these being absent — the first tick, where none of them exist yet, most
+   ;; of all.
+   :input  [:map [:board/outcome {:optional true} :any]
+            [:board/decision {:optional true} :any]
+            [:board/verdict {:optional true} :any]]
+   :output [:map [:board/sense :keyword]]}
   (fn [{:keys [conn run-id]} data]
     (let [outcome (:board/outcome data)
           decision (:board/decision data)
@@ -516,7 +584,13 @@
         which still has its review, its tests and its supervisor to run, and a
         stage that closed the run row would end the feature at its own stage."
    :effects [:db]
-   :requires [:conn :run-id]}
+   :requires [:conn :run-id]
+   ;; Both optional: a board that never claimed anything reaches :finish
+   ;; straight from :next's :empty edge, with neither list written.
+   :input  [:map [:branch :map]
+            [:board/landed {:optional true} :any]
+            [:board/left {:optional true} :any]]
+   :output [:map [:status :keyword] [:answer :any]]}
   (fn [{:keys [conn run-id]} {:keys [branch] :as data}]
     (closable-parents! conn run-id)
     (let [landed (or (:board/landed data) [])

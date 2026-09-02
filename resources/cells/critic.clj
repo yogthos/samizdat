@@ -55,7 +55,21 @@
         finding ships; anything else re-activates the branch, injects one
         [critic] note, and re-enters. Bounded and fail-open."
    :effects [:net :db]
-   :requires [:conn :git-baseline :llm-adapter :llm-config :root :run-id]}
+   :requires [:conn :git-baseline :llm-adapter :llm-config :root :run-id]
+   ;; :critic/attempts is read before it is ever written — the first pass
+   ;; defaults it to 0 — so it is optional coming IN and produced going out on
+   ;; the :revise side. That asymmetry is the bound: the count only exists
+   ;; once the gate has sent the branch back at least once.
+   :input  [:map [:branch :map] [:turn :int]
+            [:critic/attempts {:optional true} :int]]
+   ;; Per-transition, because ship and revise are genuinely different writes.
+   ;; ship stamps the decision and nothing else; revise re-activates the
+   ;; branch and does :loop/route's per-turn bookkeeping itself, which route
+   ;; did not do — it routed here on :done rather than on :continue.
+   :output [:per-transition
+            {:ship   [:map [:critic/decision :keyword]]
+             :revise [:map [:critic/decision :keyword] [:critic/attempts :int]
+                      [:branch :map] [:turn :int]]}]}
   (fn [{:keys [conn run-id root git-baseline llm-adapter llm-config]}
        {:keys [branch turn] :as data}]
     (let [attempts (or (:critic/attempts data) 0)

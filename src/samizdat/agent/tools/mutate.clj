@@ -110,9 +110,11 @@
                :progress? true)
       (catch Throwable e
         (cell/registry-restore! snapshot)
-        (base/fail branch
-                   (str (prompt/render "cell-tool" {:reload-failed true})
-                        "\n\n" (ex-message e)))))))
+        ;; The registry is back to what it was and nothing is live, so this is
+        ;; a rejected edit rather than a branch failure — see base/rejected.
+        (base/rejected branch
+                       (str (prompt/render "cell-tool" {:reload-failed true})
+                            "\n\n" (ex-message e)))))))
 
 ;; --- the project's own cells (userspace) -------------------------------------
 
@@ -209,11 +211,14 @@
                          (prompt/render "cell-tool" {:live-unsaved true
                                                      :name name}))
 
-                (base/fail branch
-                           (str "Cell '" name "' was NOT saved; the loop is"
-                                " unchanged and nothing entered this project's"
-                                " history.\n\n" (:reason r)
-                                "\n\nFix it and save again."))))))
+                ;; Rolled back: validate or the soak refused it, the registry
+                ;; is restored, and nothing was stored. A correctable edit,
+                ;; not a branch failure — see base/rejected.
+                (base/rejected branch
+                               (str "Cell '" name "' was NOT saved; the loop is"
+                                    " unchanged and nothing entered this project's"
+                                    " history.\n\n" (:reason r)
+                                    "\n\nFix it and save again."))))))
 
         "revert"
         (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)

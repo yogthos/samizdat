@@ -17,6 +17,12 @@
 ;; cannot open the REPL. :land loops back to itself while files are owed,
 ;; which is the exit condition holding.
 {:description "The REPL session: orient, declare, explore, land. The declaration is made with the `plan` tool - plan({files: [...], tests: [...], goal: \"one line\"}) - and at least one file is required; an empty plan is refused. Entry and exit are enforced as phases.edn refusals, :repl-needs-a-plan (eval is withheld until a file is named) and :plan-not-landed (done is withheld while a declared file is unwritten), so exploration cannot start without a hypothesis or end without a file. Calling plan again REPLACES the declaration, which is how a branch corrects a wrong guess. Reorder or drop a step here and the next session takes the new shape; the two refusals live in phases.edn and are what actually bind."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start    :repl/orient
          :declare  :repl/declare
          :explore  :repl/explore

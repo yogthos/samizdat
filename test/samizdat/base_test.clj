@@ -81,7 +81,12 @@
    form))
 
 (defn- src-files []
-  (sort (map str (fs/glob "src" "**.clj"))))
+  ;; src/samizdat, not src. The vendored trees (mycelium, maestro, ring_chez)
+  ;; moved under src/ and are not ours to hold to this rule — it is about
+  ;; samizdat's own discipline of keeping model-facing prose out of compiled
+  ;; code, and a vendored library's docstrings are neither prose we wrote nor
+  ;; prose the model reads.
+  (sort (map str (fs/glob "src/samizdat" "**.clj"))))
 
 (defn- forms-of [file]
   ;; Read rather than grep. The reader knows which characters are inside a
@@ -200,6 +205,15 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/symbolic.clj"
+   {:threshold {100 "The rewrite step bound: a runaway backstop, not a tunable.
+                     A ruleset that terminates converges in a handful of steps,
+                     so raising this cannot express a different policy — only
+                     postpone the error a cycling ruleset was always going to
+                     raise. A caller that genuinely wants a different bound
+                     passes one to the 3-arity, the same seam api/runs.clj uses
+                     for page sizes."}}
+
    "src/samizdat/agent/tournament.clj"
    {:threshold {1103515245 "The LCG multiplier — a PRNG's algorithm constants,
                             like a hash function's primes. Retuning them at
@@ -272,23 +286,21 @@
    {:threshold {120000 "Shell command timeout. A security bound, and see the
                         note on secrets.clj below: a control the agent could
                         retune is not a control."}
-    :vocabulary {"(?s)^(>&\\d+|>>?[ \\t]*/dev/null)"
+    :vocabulary {"(?:>&[0-9]+|>>?[ \\t]*/dev/null)(?![A-Za-z0-9_./-])"
                  "What a benign redirection IS — `2>&1`, `2>/dev/null` — is
-                  POSIX shell structure the lexer must recognize, like the
+                  POSIX shell structure the grammar must recognize, like the
                   statement separators beside it. Not a vocabulary a project
                   tunes: widening it weakens the redirection downgrade, which
                   is a security control (see the secrets.clj note)."}}
 
    "src/samizdat/repl/guard.clj"
-   {:vocabulary {"(^|/)(src|vendor)/"
-                 "Which trees ARE the kernel, for the guard that refuses a
-                  supervisor's eval from patching them (karamazov-zrq.9). The
-                  same reason this whole namespace is in src/ and not in
-                  gates.edn, stated in its own docstring: a guard the guarded
-                  thing can edit is not a guard. resources/ is deliberately
-                  absent from the pattern, which is what keeps the supervisor's
-                  actual editing surface open."
-                 "samizdat"
+   ;; The kernel-path pattern used to need an allowance: it read
+   ;; `(^|/)(src|vendor)/`, and "vendor" is a run of four letters, so the
+   ;; vocabulary rule counted it as a pattern deciding on words somebody
+   ;; chose. The vendored trees now live under src/, the pattern is `src/`
+   ;; alone, and three letters is not a vocabulary — it is structure, which
+   ;; is what the rule means to let through. No entry, by the rule's own test.
+   {:vocabulary {"samizdat"
                  "How the guard recognises a HARNESS namespace in a
                   `(require … :reload)` — the hot-load half of the same
                   escape. Same reasoning; a run that could edit this could
@@ -697,10 +709,6 @@
     "(an infinite loop or a heavy computation?). If it genuinely "
     "(no docstring — jolt strips core-var metadata)"
     "ms — the code ran too long "
-    }
-   "src/samizdat/security/policy.clj"
-   #{
-    "` is on the deny list."
     }
    "src/samizdat/smoke.clj"
    #{

@@ -1,5 +1,8 @@
-{% if protected %}Command denied: it could modify `{{path}}` — the operator's run config, which defines the verify gate this run ships against. The run a gate judges cannot rewrite the gate, and no grant unlocks this. Reading it is fine (`cat`, `grep`). If the gate itself is wrong, say so in your answer and let the operator change it.{% else %}Command needs approval: `{{command}}`.
-{% if blocked %}
+{% if denied %}Command denied by policy: `{{head}}` is on the deny list. This cannot be overridden.{% else %}{% if protected %}Command denied: it could modify `{{path}}` — the operator's run config, which defines the verify gate this run ships against. The run a gate judges cannot rewrite the gate, and no grant unlocks this. Reading it is fine (`cat`, `grep`). If the gate itself is wrong, say so in your answer and let the operator change it.{% else %}Command needs approval: `{{command}}`.
+{% if malformed %}
+The shell would not parse it: an unclosed quote or a dangling escape, at
+character {{malformed}}. Fix the quoting and send it again.
+{% else %}{% if blocked %}
 The parts of a compound command are judged one at a time, and every part but
 this one is fine:
 
@@ -27,4 +30,6 @@ this run has no human watching, it will not be granted. Prefer a tool that does
 the same job without the shell: `read_file` and `grep` to look around, `eval`
 to run Clojure, including this project's own tests once you have required the
 namespace.
-{% endif %}{% endif %}{% endif %}{% endif %}
+{% endif %}{% endif %}{% endif %}{% endif %}{% endif %}{% endif %}
+
+Rule: `{{rule}}`

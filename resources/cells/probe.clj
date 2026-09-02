@@ -105,7 +105,14 @@
         needs no help and probing it is pure spend. Adds :probe to the data
         map; a manifest routes on it or ignores it."
    :effects [:net :db]
-   :requires []}
+   :requires []
+   :input  [:map [:branch :map] [:turn :int]]
+   ;; OPTIONAL because the early-out is the common case: a branch that is not
+   ;; stuck returns `data` untouched, and a probe that found no winner adds
+   ;; :probe without touching :branch. Declaring either as guaranteed would
+   ;; make every skipped probe a schema warning.
+   :output [:map [:probe {:optional true} :any]
+            [:branch {:optional true} :map]]}
   (fn [ctx {:keys [branch turn] :as data}]
     (let [{:keys [width on-mechanics-failures]} (gates/threshold :probe)]
       (if (or (not (pos? (or width 0)))
@@ -147,7 +154,11 @@
         deliberate: the comparison is worth recording before it is worth
         acting on."
    :effects [:net :db]
-   :requires []}
+   :requires []
+   :input  [:map [:branch :map]]
+   ;; Optional for the same reason next-move's is: no configured variants
+   ;; means the cell returns `data` and adds nothing.
+   :output [:map [:ab {:optional true} :any]]}
   (fn [ctx {:keys [branch] :as data}]
     (let [{:keys [variants]} (gates/threshold :probe)]
       (if-not (seq variants)

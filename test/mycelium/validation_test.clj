@@ -119,3 +119,25 @@
     (is (nil? (v/validate-dispatch-coverage!
                {:start :end}
                {})))))
+
+(deftest validate-dispatch-coverage-accepts-pattern-entries-test
+  (testing "A pattern table with distinct branches passes coverage"
+    (is (nil? (v/validate-dispatch-coverage!
+               {:start {:success :step-b, :failure :error}}
+               '{:start [[:success {:ok true}]
+                         [:failure _]]})))))
+
+(deftest validate-dispatch-coverage-refuses-a-shadowed-pattern-branch-test
+  (testing "A branch an earlier pattern makes unreachable is refused"
+    (is (thrown-with-msg? Exception #"can never fire"
+          (v/validate-dispatch-coverage!
+           {:start {:success :step-b, :failure :error}}
+           '{:start [[:failure _]
+                     [:success {:ok true}]]})))))
+
+(deftest validate-dispatch-coverage-refuses-a-scalar-pattern-test
+  (testing "A keyword where a pattern belongs is refused, not compiled as an accessor"
+    (is (thrown-with-msg? Exception #"map"
+          (v/validate-dispatch-coverage!
+           {:start {:success :end}}
+           {:start [[:success :_]]})))))

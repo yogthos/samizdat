@@ -179,6 +179,11 @@
    "message"     {:reach :harness-only}
    "remember"    {:reach :harness-only}
    "forget"      {:reach :harness-only}
+   ;; Withdrawing a belief rather than deleting a note. Same reach as forget —
+   ;; it moves rows in the harness's own db and touches nothing on the host —
+   ;; but it KEEPS the row, which is the point: what was believed and why it
+   ;; fell stay readable (karamazov-oov).
+   "retire"      {:reach :harness-only}
    "recall"      {:reach :harness-only}
    "outcome"     {:reach :harness-only}
    ;; Writes a row to the run's own interventions table. It reaches no host

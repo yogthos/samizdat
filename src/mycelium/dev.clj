@@ -8,7 +8,8 @@
             [mycelium.cell :as cell]
             [mycelium.schema :as schema]
             [mycelium.workflow :as wf]
-            [maestro.core :as fsm]))
+            [maestro.core :as fsm]
+            [samizdat.symbolic.dispatch :as dispatch]))
 
 (defn test-cell
   "Runs a single cell in isolation with full schema validation.
@@ -37,8 +38,9 @@
               duration-ms (/ (- (System/nanoTime) start-time) 1e6)
               ;; Determine matched dispatch label first
               matched     (when dispatches
-                            (some (fn [[label pred]]
-                                    (when (pred output) label))
+                            (some (fn [entry]
+                                    (let [[label pred] (dispatch/compile-entry entry)]
+                                      (when (pred output) label)))
                                   dispatches))
               output-err  (schema/validate-output cell output matched)
               dispatch-err (when (and expected-dispatch

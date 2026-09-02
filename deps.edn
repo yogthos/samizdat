@@ -3,7 +3,7 @@
  ;; place rather than failing. Declare the floor so it refuses instead.
  :jolt/min-version "0.8.0"
 
- :paths ["src" "vendor" "resources"]
+ :paths ["src" "resources"]
 
  ;; Git deps are fetched into ~/.jolt/gitlibs by jolt. Full SHAs only —
  ;; `git fetch` can't resolve short ones.
@@ -39,16 +39,33 @@
          {:git/url "https://github.com/clojure/data.json"
           :git/sha "94463ffb54482427fd9b31f264b06bff6dcfd557"}
 
+         ;; instaparse (EPL), for the shell policy's lexer: a POSIX-subset
+         ;; grammar in place of a hand-rolled quote-aware scanner
+         ;; (karamazov-41a.5). The jolt port — .cljc sources, no deps of its
+         ;; own; needs jolt past 0.6.8 (jolt-lang/jolt#567), which the
+         ;; :jolt/min-version above already requires.
+         jolt-lang/instaparse
+         {:git/url "https://github.com/jolt-lang/instaparse"
+          :git/sha "111fae05f30ea0c4f6b13945d9505901649abc6d"}
+
          ;; Selmer renders every prompt template ({{...}} placeholders). Its
          ;; java.time FormatStyle use needs jolt-lang/time (below); prompts
          ;; carry code, so escaping is off (samizdat.prompt).
          selmer/selmer {:mvn/version "1.13.5"}
 
-        ;; vendor/mycelium — schema contracts and validation. malli.generator
+        ;; src/mycelium — schema contracts and validation. malli.generator
         ;; hard-requires test.check at namespace load, and mycelium.dev loads
         ;; malli.generator, so test.check rides along in the main deps.
         metosin/malli {:mvn/version "0.17.0"}
         org.clojure/test.check {:mvn/version "1.1.1"}
+
+        ;; src/samizdat/symbolic — the rule layer's substrate (RFC/karamazov-41a).
+        ;; Runs unmodified: 423 tests, 658 assertions, 0 failures under jolt.
+        ;; No fork and no jolt port — the Maven artifact ships the .clj sources
+        ;; jolt compiles, and the pom's only non-provided dep is clojure itself
+        ;; (clojurescript is <scope>provided</scope>, so it does not ride along).
+        ;; Requiring core.logic + fd + pldb + unifier costs ~40ms of boot.
+        org.clojure/core.logic {:mvn/version "1.1.1"}
 
         ;; clojure.tools.logging ported to jolt (stderr backend, :info+ default)
         org.clojure/tools.logging
@@ -64,7 +81,7 @@
         {:git/url "https://github.com/jolt-lang/time"
          :git/sha "bc85090dae95d103ba04f4ea9687945cf46fb19e"}}
 
- ;; The vendored HTTP server (vendor/ring_chez/adapter.clj) binds BSD sockets
+ ;; The vendored HTTP server (src/ring_chez/adapter.clj) binds BSD sockets
  ;; through the running process's own libc symbols, so they must be loaded
  ;; before that namespace is required.
  :jolt/native [{:name "libc (POSIX sockets)" :process true}]

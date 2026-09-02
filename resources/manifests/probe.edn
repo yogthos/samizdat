@@ -14,6 +14,12 @@
 ;; trivial readers of explicit keys: the cell computes the decision INTO the
 ;; data map, the predicate only reads it.
 {:description "The factory loop plus a non-committing probe: before spending a turn on a branch that has been emitting unusable calls, try several framings of the next step against its own context and steer toward the one that produced a real tool call. Costs inference, never a turn."
+ :input-schema
+ ;; What a driver hands this manifest to start a run. mycelium checks it in
+ ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
+ ;; is told which key, instead of a nil surfacing several cells later.
+ [:map [:branch :map] [:turn :int]]
+
  :cells {:start          :loop/assemble
          ;; The context-budget ladder, as in every other turn manifest — a
          ;; probe turn is a turn and pays the same context costs.

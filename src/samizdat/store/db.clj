@@ -151,13 +151,66 @@
   [e]
   (str/includes? (str e) "UNIQUE"))
 
+(def required-columns
+  "Columns the code writes that a database from before an in-place schema edit
+  will not have. Table -> the columns whose absence means the FILE is stale.
+
+  NOT the whole schema. This is a tripwire for one specific failure, and a
+  full mirror of every column would be a second schema to keep in step with
+  the first — which is how a check starts lying. Add a column here only when
+  its absence would otherwise surface as an unrelated-looking error.
+
+  IN src/ AND NOT IN resources, like the other guards: a check the agent can
+  edit is not a check."
+  {"knowledge" #{"lineage_id" "current" "cause"}})
+
+(defn- columns-of
+  "Column names of `table`, or nil when the table does not exist."
+  [conn table]
+  (some->> (seq (jdbc/fetch conn (str "PRAGMA table_info(" table ")")))
+           (map :name)
+           set))
+
+(defn schema-drift
+  "Which required columns the file lacks, as `{table #{col …}}`, or nil when it
+  matches the code.
+
+  DATA, NOT A SENTENCE. The wording belongs at the throw site — an exception
+  message is what a developer reads off a stack trace, and it cannot come from
+  `resources/prompts` here for a reason worth stating: prompt bodies resolve
+  through the userspace TABLE, so rendering one to report a broken database
+  would query the database being reported on.
+
+  WHILE THE SCHEMA IS EDITED IN PLACE rather than migrated (karamazov-gku
+  carries the decision about when that stops), a file from before an edit is
+  missing columns while `user_version` still counts the migration as applied —
+  so `migrate!` skips it and the absence turns up as `no such column:
+  lineage_id` at whatever writes first. A stale schema presenting as a broken
+  feature costs a debugging session in the wrong namespace.
+
+  A table that does not exist is not drift: that is a NEW database and
+  `migrate!` is about to create it."
+  [conn]
+  (not-empty
+   (into {}
+         (for [[table cols] required-columns
+               :let [present (columns-of conn table)]
+               :when present
+               :let [gone (set (remove present cols))]
+               :when (seq gone)]
+           [table gone]))))
+
 (defn migrate!
   "Apply every migration past the current user_version. Idempotent: running it
   twice is a no-op. Each migration is all-or-nothing with its version bump
   INSIDE the transaction (provenance R2-3): v2/v4/v5 are non-idempotent ALTERs, and
   running them as autocommitted statements with the bump after the last one
   meant a crash in between left user_version stale — every later boot died on
-  `duplicate column name` forever. Returns the version now in effect."
+  `duplicate column name` forever. Returns the version now in effect.
+
+  Throws on schema DRIFT afterwards — a file whose tables exist but lack
+  columns the code writes. Loud here beats a `no such column` from whichever
+  namespace happens to write first."
   [conn]
   (let [applied (schema-version conn)
         total (count migrations/migrations)]
@@ -181,6 +234,18 @@
           (catch Throwable e
             (try (jdbc/execute! conn "ROLLBACK") (catch Throwable _ nil))
             (throw e)))))
+    ;; AFTER migrating, because the question is whether the file matches the
+    ;; code once everything that was going to run has run.
+    (when-let [drift (schema-drift conn)]
+      (throw (ex-info (str "this database predates the current schema — "
+                           (str/join "; "
+                                     (for [[table cols] drift]
+                                       (str table " is missing "
+                                            (str/join ", " (sort cols)))))
+                           ". The schema is edited in place until the first"
+                           " release is tagged (karamazov-gku), so delete the"
+                           " database file and let it rebuild.")
+                      {:drift drift})))
     (schema-version conn)))
 
 (defn open!

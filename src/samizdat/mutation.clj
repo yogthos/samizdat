@@ -40,6 +40,7 @@
             [mycelium.core :as myc]
             [samizdat.agent.gates :as gates]
             [samizdat.cells :as cells]
+            [samizdat.manifests :as manifests]
             [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
             [samizdat.store.userspace :as store]
@@ -104,7 +105,7 @@
   is bounded by a timeout so a cell that loops cannot hang the protocol. The
   registry is restored to its pre-soak state afterward, so the stubs never
   leak. Returns nil on success or a reason string on failure."
-  [loop-def soak-input]
+  [compile-fn loop-def soak-input]
   (let [snap (cell/registry-snapshot)]
     (try
       ;; Stub every effectful cell the loop references.
@@ -113,7 +114,16 @@
                     spec (cell/get-cell cell-id)]
               :when (and spec (not (cell/pure? spec)))]
         (cell/register-spec! cell-id (assoc spec :handler (fn [_ d] d))))
-      (let [compiled (myc/pre-compile loop-def)
+      ;; THE CALLER'S compile-fn, which is the loader's own pipeline
+      ;; (manifests/compile-definition) — not a bare pre-compile. The dry-run
+      ;; has to stand in for the real run, and a bare compile drops three
+      ;; things validate and production both have: the ctx-key requires, the
+      ;; constraints derived from the enforced invariants, and the :on-error
+      ;; that returns a schema violation as data. Without the last one a
+      ;; strict violation here throws out of maestro carrying the whole FSM
+      ;; map, and the soak reports it as "soak run threw: <dump>" instead of
+      ;; the message naming the cell and the missing keys.
+      (let [compiled (compile-fn loop-def)
             fut (future
                   (try {:result (myc/run-compiled compiled {:max-turns 1}
                                                   (or soak-input {}))}
@@ -220,7 +230,7 @@
       (if-let [reason (validate compile-fn loop-def)]
         (rollback! opts checkpoint reason)
         ;; SOAK — does the edited cell actually run without throwing?
-        (if-let [reason (soak loop-def soak-input)]
+        (if-let [reason (soak compile-fn loop-def soak-input)]
           (rollback! opts checkpoint reason)
           ;; COMMIT — the edit stands; it is already live in the registry.
           (do (when (and conn run-id)
@@ -335,7 +345,7 @@
                                     (str "manifest '" nm "': " r)))
                                 extra-defs))]
         (fail reason)
-        (if-let [reason (soak loop-def soak-input)]
+        (if-let [reason (soak compile-fn loop-def soak-input)]
           (fail reason)
           ;; COMMIT. The candidate is already live; this is what makes it
           ;; survive a restart and what another run will load.

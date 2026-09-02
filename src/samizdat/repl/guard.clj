@@ -36,7 +36,8 @@
     provides, registered before `system/stop!` so the store is still open
     enough to answer what was running."
   (:require [clojure.string :as str]
-            [clojure.tools.logging :as log]))
+            [clojure.tools.logging :as log]
+            [samizdat.symbolic :as sym]))
 
 (def terminators
   "Calls that end the process rather than the evaluation.
@@ -70,6 +71,116 @@
             seq
             form))
 
+(def kernel-writers
+  "Calls that put bytes on disk. Paired with a `src/` path below, this is a
+  kernel-source write."
+  '#{spit clojure.java.io/copy io/copy write-lines fs/write-lines
+     jolt.fs/spit fs/spit})
+
+(def ^:private kernel-path-re
+  "A string argument naming harness SOURCE rather than userspace.
+
+  `src/` only — the vendored trees (mycelium, maestro, ring_chez) live under
+  it now, so one arm covers the whole kernel. resources/ is deliberately
+  absent: cells, manifests and prompts ARE the supervisor's editing surface,
+  and refusing those would refuse the whole point of the role."
+  #"(^|/)src/")
+
+(defn- call?
+  [x]
+  (and (seq? x) (symbol? (first x))))
+
+(defn facts
+  "What the rules can see of `form`, as facts.
+
+  Two walks. The EXECUTED subforms — definition bodies excluded, because
+  defining a thing that exits is not exiting — give :executed-symbol for
+  every symbol, and for every call an id with its :call head, :keyword-arg,
+  :src-path-arg (a string argument naming harness source under src/) and
+  :harness-ref (an argument that mentions samizdat). Every subform, bodies
+  included, gives :any-call with the head's bare name, because calling a
+  -main is refused wherever it sits. The terminator and kernel-writer sets
+  ride along as facts, so a rule joins against them like anything else."
+  [form]
+  (let [executed (executed-subforms form)]
+    (concat
+     (map (fn [s] [:terminator s]) terminators)
+     (map (fn [s] [:kernel-writer s]) kernel-writers)
+     (for [x executed :when (symbol? x)] [:executed-symbol x])
+     (apply concat
+            (map-indexed
+             (fn [i x]
+               (when (call? x)
+                 (concat [[:call i (first x)]]
+                         (for [a (rest x) :when (keyword? a)]
+                           [:keyword-arg i a])
+                         (for [a (rest x)
+                               :when (and (string? a) (re-find kernel-path-re a))]
+                           [:src-path-arg i a])
+                         (for [a (rest x) :when (re-find #"samizdat" (str a))]
+                           [:harness-ref i a]))))
+             executed))
+     (keep-indexed (fn [i x]
+                     (when (call? x) [:any-call i (first x) (name (first x))]))
+                   (tree-seq coll? seq form)))))
+
+(def ^:private rule-table
+  "The guard as rules over those facts. :on names the var whose binding is
+  what the rule fired on, for a refusal to quote."
+  '[{:name :process-exit
+     :doc "ends the process"
+     :where [[:executed-symbol ?s] [:terminator ?s]]
+     :on ?s}
+    {:name :kernel-source-write
+     :doc "writes harness source"
+     :where [[:call ?f ?head] [:kernel-writer ?head] [:src-path-arg ?f ?path]]
+     :on ?path}
+    {:name :harness-reload
+     :doc "reloads a harness namespace"
+     :where [[:call ?f require] [:keyword-arg ?f ?flag] [:harness-ref ?f ?ns]]
+     :if [:in ?flag #{:reload :reload-all}]
+     :on ?ns}
+    {:name :entry-point-call
+     :doc "calls an entry point"
+     :where [[:any-call ?f ?head "-main"]]
+     :on ?head}])
+
+(def ^:private compiled-rules (sym/fact-rules rule-table))
+
+(defn rules
+  "The guard's rules, enumerable: for each, its name, a label for what it
+  catches, the clauses that decide it and the guard if any.
+
+  IN src/ AND NOT IN resources/, on purpose, like everything else in this
+  namespace: a guard the guarded thing can edit is not a guard. Being data
+  makes the reach reviewable, not editable — which is the distinction this
+  round exists to keep.
+
+  What each catches, densely: :process-exit is a terminator symbol among
+  the executed subforms — System/exit, .halt, and the Runtime interop routes
+  that only the receiver gives away. :kernel-source-write is a kernel-writer
+  call (spit and friends) with a string argument under src/; resources/ is
+  deliberately not src/, being the supervisor's editing surface.
+  :harness-reload is a require carrying :reload or :reload-all and naming a
+  samizdat namespace — the second half of the observed escape, since a
+  patched file is only dangerous once it is in the running image.
+  :entry-point-call is a -main in head position anywhere, bodies included,
+  because the exit is inside the callee where no symbol check can see it."
+  []
+  (mapv #(select-keys % [:name :doc :where :if]) rule-table))
+
+(defn findings
+  "Every rule that fires on `form`: [{:rule name :on subject :bindings b}]."
+  [form]
+  (let [subject (into {} (map (juxt :name :on)) rule-table)]
+    (mapv (fn [f] (assoc f :on (get-in f [:bindings (subject (:rule f))])))
+          (sym/fire (sym/facts (facts form)) compiled-rules))))
+
+(defn- fired
+  "The findings of the rules named in `names`, on `form`."
+  [form names]
+  (filter #(contains? names (:rule %)) (findings form)))
+
 (defn terminating-form?
   "Whether evaluating `form` would end the process.
 
@@ -81,22 +192,13 @@
   one refused eval and a message telling it exactly what to do, and a false
   negative costs the run."
   [form]
-  (boolean (some #(and (symbol? %) (contains? terminators %))
-                 (executed-subforms form))))
+  (boolean (seq (fired form #{:process-exit}))))
 
-(def kernel-writers
-  "Calls that put bytes on disk. Paired with a `src/` path below, this is a
-  kernel-source write."
-  '#{spit clojure.java.io/copy io/copy write-lines fs/write-lines
-     jolt.fs/spit fs/spit})
-
-(def ^:private kernel-path-re
-  "A string argument naming harness SOURCE rather than userspace.
-
-  `src/` and `vendor/` only. resources/ is deliberately absent: cells,
-  manifests and prompts ARE the supervisor's editing surface, and refusing
-  those would refuse the whole point of the role."
-  #"(^|/)(src|vendor)/")
+(defn kernel-writes
+  "The kernel-write findings on `form` — a write to harness source, or a
+  hot-load of a harness namespace — for the refusal to name."
+  [form]
+  (fired form #{:kernel-source-write :harness-reload}))
 
 (defn kernel-write?
   "Whether `form` writes to harness source, or hot-loads a harness namespace
@@ -114,21 +216,7 @@
   actually observed — stops being available by accident, and the supported
   route is named instead."
   [form]
-  (let [executed (executed-subforms form)
-        calls (filter list? executed)
-        writes-src? (some (fn [x]
-                            (and (seq x)
-                                 (symbol? (first x))
-                                 (contains? kernel-writers (first x))
-                                 (some #(and (string? %) (re-find kernel-path-re %)) x)))
-                          calls)
-        reloads-harness? (some (fn [x]
-                                 (and (seq x)
-                                      (= 'require (first x))
-                                      (some #{:reload :reload-all} x)
-                                      (some #(re-find #"samizdat" (str %)) x)))
-                               calls)]
-    (boolean (or writes-src? reloads-harness?))))
+  (boolean (seq (kernel-writes form))))
 
 (defn entry-point-call?
   "Whether `form` calls a `-main`.
@@ -152,28 +240,18 @@
   the recommended workflow — a guard that fires on the work it is meant to
   protect gets worked around, and then protects nothing."
   [form]
-  (boolean (some #(and (seq? %) (symbol? (first %)) (= "-main" (name (first %))))
-                 (tree-seq coll? seq form))))
+  (boolean (seq (fired form #{:entry-point-call}))))
 
 (defn offending
   "The terminator symbols in `form`, sorted, for the refusal to name them."
   [form]
-  (->> (executed-subforms form)
-       (filter symbol?)
-       (filter terminators)
-       distinct
-       sort
-       (map str)))
+  (->> (fired form #{:process-exit}) (map (comp str :on)) distinct sort))
 
 (defn main-calls
   "The `-main` symbols CALLED in `form`, qualified as written, for the refusal
   to name the one the agent actually reached for."
   [form]
-  (->> (tree-seq coll? seq form)
-       (filter #(and (seq? %) (symbol? (first %)) (= "-main" (name (first %)))))
-       (map (comp str first))
-       distinct
-       sort))
+  (->> (fired form #{:entry-point-call}) (map (comp str :on)) distinct sort))
 
 (defn exit-note
   "What to record when the process ends, as DATA rather than a sentence.

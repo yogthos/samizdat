@@ -302,12 +302,40 @@
   ;; did), a knowledge row is a claim extracted as worth keeping — content is
   ;; the searchable text, kind separates notes from other kinds later. Recall
   ;; is a LIKE scan, so content is the index and needs no extra one.
+  ;;
+  ;; A ROW IS A VERSION OF A BELIEF, NOT THE BELIEF. `restate!` used to
+  ;; UPDATE content in place, and you cannot retract what you overwrote: once
+  ;; the previous wording was gone nothing could ask what we believed or what
+  ;; made us believe it, so a premise that turned out false left no trace and
+  ;; everything downstream of it kept standing (karamazov-oov). That is the
+  ;; 238-turn run — every re-read CONFIRMED the code was fine, which is
+  ;; exactly why it read again.
+  ;;
+  ;; `lineage_id` is the subject; `current` says which version speaks for it
+  ;; now. A FLAG rather than MAX(version), because max-version cannot express
+  ;; "retracted with no replacement" and that is the shape a disproven belief
+  ;; has — the run needed its premise withdrawn, not edited into another one.
+  ;; A lineage with no current row is a retraction.
+  ;;
+  ;; `cause` is why the row was written. The model can only act on what it
+  ;; knows about, so "this is false" is a dead end where "this is false, and
+  ;; here is what made us believe it" is a lead. Nullable like
+  ;; userspace.rationale: most writes have nothing to say about their origin,
+  ;; and inventing text would make the history lie.
   ["CREATE TABLE IF NOT EXISTS knowledge (
-      id         TEXT PRIMARY KEY,
-      content    TEXT NOT NULL,
-      kind       TEXT NOT NULL DEFAULT 'note',
-      created_at TEXT NOT NULL
-    )"])
+      id             TEXT PRIMARY KEY,
+      content        TEXT NOT NULL,
+      kind           TEXT NOT NULL DEFAULT 'note',
+      created_at     TEXT NOT NULL,
+      lineage_id     TEXT,
+      current        INTEGER NOT NULL DEFAULT 1,
+      cause          TEXT,
+      supersedes     TEXT,
+      retired_at     TEXT,
+      retired_reason TEXT
+    )"
+   "CREATE INDEX IF NOT EXISTS idx_knowledge_lineage ON knowledge(lineage_id)"
+   "CREATE INDEX IF NOT EXISTS idx_knowledge_current ON knowledge(current)"])
 
 (def ^:private v10
   ;; Agent mailbox: durable messages between branches working one feature.
