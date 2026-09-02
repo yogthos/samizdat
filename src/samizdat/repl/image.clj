@@ -75,9 +75,9 @@
 
 (defn spawn-argv
   "The argv that starts the image: `jolt nrepl-server <port>`, wrapped for the
-  backend. Pure."
-  [backend profile-path port]
-  (sandbox/wrap backend profile-path ["jolt" "nrepl-server" (str port)]))
+  backend given `{:profile path :spec spec}`. Pure."
+  [backend confinement port]
+  (sandbox/wrap backend confinement ["jolt" "nrepl-server" (str port)]))
 
 (defn- await-port!
   "Block until `port` accepts a connection, or `deadline-ms` passes. True when
@@ -104,13 +104,16 @@
         ;; A SEPARATE directory from the scratch, and not under any writable
         ;; path: this is the file that says what the image may do.
         profile-dir (str (fs/create-temp-dir))
-        profile (str (io/file profile-dir "image.sb"))
-        port (free-port)]
-    (spit profile (sandbox/seatbelt-profile
-                   (assoc sandbox-spec
-                          :project-root root
-                          :scratch-paths [scratch])))
-    (let [argv (spawn-argv backend profile port)
+        profile (str (io/file profile-dir "image.profile"))
+        port (free-port)
+        ;; The deny list classified for bwrap, which hides a directory and a
+        ;; file differently and cannot mount over a path that is not there;
+        ;; seatbelt reads the plain list and ignores the classification.
+        spec (merge sandbox-spec
+                    {:project-root root :scratch-paths [scratch]}
+                    (sandbox/deny-read-kinds (:deny-read sandbox-spec)))]
+    (sandbox/write-profile! backend profile spec)
+    (let [argv (spawn-argv backend {:profile profile :spec spec} port)
           ;; THE CHILD SEES ONLY A SCRUBBED ENVIRONMENT, the same one the shell
           ;; tool's subprocess gets. boundary-test's security map records the
           ;; rule this is obeying: a tool whose reach is :spawns-process "must

@@ -41,6 +41,7 @@
   loopback so the harness can reach it."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
+            [jolt.fs :as fs]
             [samizdat.security.sandbox :as sandbox]))
 
 (def ^:private spec
@@ -186,10 +187,98 @@
 (deftest wrapping-a-command-is-a-no-op-without-a-backend
   ;; :sandbox :none still gets the subprocess split, which is most of the fix.
   (is (= ["jolt" "nrepl-server"]
-         (sandbox/wrap :none "/x/p.sb" ["jolt" "nrepl-server"]))))
+         (sandbox/wrap :none {:profile "/x/p.sb"} ["jolt" "nrepl-server"]))))
 
 (deftest wrapping-under-seatbelt-puts-the-profile-on-the-command
   ;; Pure: the caller writes the profile and hands over the path. Round 3 owns
   ;; the file, this owns the argv.
   (is (= ["sandbox-exec" "-f" "/x/p.sb" "jolt" "nrepl-server"]
-         (sandbox/wrap :seatbelt "/x/p.sb" ["jolt" "nrepl-server"]))))
+         (sandbox/wrap :seatbelt {:profile "/x/p.sb"} ["jolt" "nrepl-server"]))))
+
+;; --- the Linux backend (karamazov-zrq.8) ------------------------------------
+
+(deftest the-linux-backend-is-explicit-until-it-is-verified
+  ;; Never a stub: :auto on Linux is an honest :none, under which the image
+  ;; is still a separate process, until dev/linux-sandbox/verify.sh has run
+  ;; green on a real kernel. :bwrap asks for it by name and fails closed at
+  ;; spawn when bubblewrap is missing.
+  (is (= :bwrap (sandbox/backend-for :bwrap "Linux")))
+  (is (= :none (sandbox/backend-for :auto "Linux")))
+  (is (= :seatbelt (sandbox/backend-for :auto "Mac OS X")))
+  (is (= :none (sandbox/backend-for :none "Linux")))
+  (is (= :none (sandbox/backend-for :auto "Windows 11"))))
+
+(defn- run-of
+  "Does `argv` contain `run` as consecutive elements?"
+  [argv run]
+  (boolean (some #(= run (vec %)) (partition (count run) 1 argv))))
+
+(deftest bwrap-mounts-the-shape-the-seatbelt-profile-rules
+  (let [argv (sandbox/bwrap-argv {:project-root "/work/proj"
+                                  :scratch-paths ["/tmp/scratch-1"]
+                                  :deny-dirs ["/home/dev/.ssh"]
+                                  :deny-files ["/home/dev/.netrc"]
+                                  :seccomp-fd 3})]
+    (testing "everything read-only FIRST, then the writable trees over it"
+      (is (= ["bwrap" "--ro-bind" "/" "/"] (subvec argv 0 4)))
+      (is (run-of argv ["--bind" "/work/proj" "/work/proj"]))
+      (is (run-of argv ["--bind" "/tmp/scratch-1" "/tmp/scratch-1"])))
+    (testing "a secret directory is hidden under a tmpfs, a secret file under /dev/null"
+      (is (run-of argv ["--tmpfs" "/home/dev/.ssh"]))
+      (is (run-of argv ["--ro-bind" "/dev/null" "/home/dev/.netrc"])))
+    (testing "its own pid namespace, dies with the harness, no terminal to push keys at"
+      (is (every? (set argv) ["--unshare-pid" "--die-with-parent" "--new-session"])))
+    (testing "the filter arrives on the fd the spawner opened"
+      (is (run-of argv ["--seccomp" "3"])))
+    (testing "and it starts in the project, with the image's argv after --"
+      (is (= ["--chdir" "/work/proj" "--"] (subvec argv (- (count argv) 3)))))))
+
+(deftest a-deny-that-would-hide-the-project-is-not-mounted
+  ;; The self-hosting case: the harness root is denied and IS the project.
+  ;; seatbelt re-allows the project after its denies; bwrap has to leave
+  ;; the mount out, or the run could not read its own tree.
+  (let [argv (sandbox/bwrap-argv {:project-root "/work/samizdat"
+                                  :deny-dirs ["/work/samizdat" "/work" "/home/dev/.ssh"]
+                                  :deny-files ["/work/samizdat/secret" "/home/dev/.netrc"]})]
+    (is (not (run-of argv ["--tmpfs" "/work/samizdat"])))
+    (is (not (run-of argv ["--tmpfs" "/work"])))
+    (is (run-of argv ["--tmpfs" "/home/dev/.ssh"]))
+    (testing "a deny INSIDE the project still holds"
+      (is (run-of argv ["--ro-bind" "/dev/null" "/work/samizdat/secret"])))
+    (testing "no filter fd, no --seccomp"
+      (is (not (some #{"--seccomp"} argv))))))
+
+(deftest the-seccomp-filter-refuses-child-processes-and-nothing-else
+  ;; Read back as instructions rather than trusted as bytes: the filter is
+  ;; the only thing standing between the image and a shell, and a wrong
+  ;; jump offset is a filter that allows everything while looking strict.
+  (let [rows (partition 8 (map #(bit-and 0xff %) (sandbox/seccomp-no-subprocess)))
+        code (fn [[a b]] (+ a (* 256 b)))
+        k (fn [[_ _ _ _ a b c d]] (+ a (* 256 b) (* 65536 c) (* 16777216 d)))]
+    (is (= 18 (count rows)) "eighteen instructions of eight bytes")
+    (testing "it loads the arch the KERNEL reports before it looks at a number"
+      (is (= [0x20 4] [(code (first rows)) (k (first rows))])))
+    (testing "both arches are named, because an x86_64 image under Rosetta makes aarch64 syscalls"
+      (is (= #{0xC000003E 0xC00000B7}
+             (set (map k (filter #(and (= 0x15 (code %)) (> (k %) 0xC0000000)) rows))))))
+    (testing "the syscalls it names are clone, fork, vfork and clone3 on x86_64, clone and clone3 on aarch64"
+      (is (= #{56 57 58 435 220}
+             (set (map k (filter #(and (= 0x15 (code %)) (< (k %) 1000)) rows))))))
+    (testing "CLONE_THREAD is the one flag that lets a clone through"
+      (is (some #(and (= 0x54 (code %)) (= 0x10000 (k %))) rows)))
+    (testing "every verdict is allow, EPERM, ENOSYS or kill — never a silent fallthrough"
+      (is (= #{0x7fff0000 0x00050001 0x00050026 0x80000000}
+             (set (map k (filter #(= 6 (code %)) rows)))))
+      (is (= 6 (code (last rows))) "the program ends in a return"))
+    (testing "every jump lands inside the program"
+      (doseq [[i [_ _ jt jf :as row]] (map-indexed vector rows)
+              :when (= 0x15 (code row))]
+        (is (< (+ i 1 jt) 18) (str "instruction " i " jumps past the end"))
+        (is (< (+ i 1 jf) 18) (str "instruction " i " jumps past the end"))))))
+
+(deftest deny-read-kinds-splits-what-exists-and-drops-what-does-not
+  (let [dir (str (fs/create-temp-dir))
+        file (str dir "/secret")]
+    (spit file "s")
+    (is (= {:deny-dirs [dir] :deny-files [file]}
+           (sandbox/deny-read-kinds [dir file (str dir "/absent") nil ""])))))

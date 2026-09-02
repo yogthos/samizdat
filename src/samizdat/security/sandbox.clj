@@ -163,30 +163,166 @@
    (remove nil?)
    (str/join "\n")))
 
+;; --- Linux: bubblewrap + seccomp ----------------------------------------------
+;;
+;; The same shape as the seatbelt profile, from the same spec, with the three
+;; things Linux has no direct rule for handled honestly (karamazov-zrq.8):
+;;
+;; - "deny read" is a MOUNT, not a rule. bwrap cannot refuse a read; a secret
+;;   directory is hidden under an empty tmpfs and a secret file under
+;;   /dev/null. Both read as empty rather than failing, which is what the deny
+;;   is for. A path that does not exist cannot be mounted over, and a mount
+;;   that fails stops the image rather than confining it, so the spawner
+;;   classifies the list first (`deny-read-kinds`).
+;; - "deny exec" cannot be a seccomp rule on execve: bwrap installs the filter
+;;   before exec'ing the image itself, so that rule would refuse the image.
+;;   What the macOS rule is FOR is that the image cannot spawn a shell, and
+;;   that is a rule on making CHILD PROCESSES: fork, vfork and clone3 are
+;;   refused and clone is allowed only with CLONE_THREAD, so threads work and
+;;   subprocesses do not.
+;; - the network is NOT confined. Loopback is how the harness reaches the
+;;   image, a network namespace of its own would put the image's loopback out
+;;   of reach, and seccomp cannot tell a loopback connect from any other. A
+;;   Linux image may reach the network where the macOS one may not; the
+;;   docstrings say so rather than pretending otherwise.
+;;
+;; Verified on a real kernel — Ubuntu 24.04 under Docker, privileged — by
+;; dev/linux-sandbox/verify.sh, which runs sandbox-test and image-test there.
+
+(def ^:private clone-thread 0x10000)
+
+(defn- bpf
+  "One sock_filter instruction as its eight little-endian bytes."
+  [code jt jf k]
+  (map unchecked-byte
+       [(bit-and code 0xff) (bit-and (bit-shift-right code 8) 0xff)
+        (bit-and jt 0xff) (bit-and jf 0xff)
+        (bit-and k 0xff) (bit-and (bit-shift-right k 8) 0xff)
+        (bit-and (bit-shift-right k 16) 0xff) (bit-and (bit-shift-right k 24) 0xff)]))
+
+(def ^:private seccomp-program
+  "The filter as [code jt jf k] rows. Jumps are forward offsets in
+  instructions; the index comments say where each lands."
+  (let [LD 0x20 JEQ 0x15 AND 0x54 RET 0x06
+        allow 0x7fff0000 kill 0x80000000
+        errno (fn [n] (bit-or 0x00050000 n))
+        eperm (errno 1) enosys (errno 38)
+        x86-64 0xC000003E aarch64 0xC00000B7]
+    [[LD 0 0 4]                  ; 0  arch
+     [JEQ 0 5 x86-64]            ; 1  x86_64 -> 2, else -> 7
+     [LD 0 0 0]                  ; 2  nr
+     [JEQ 7 0 56]                ; 3  clone   -> 11
+     [JEQ 9 0 57]                ; 4  fork    -> 14 EPERM
+     [JEQ 8 0 58]                ; 5  vfork   -> 14 EPERM
+     [JEQ 8 9 435]               ; 6  clone3  -> 15 ENOSYS, else -> 16 allow
+     [JEQ 0 9 aarch64]           ; 7  aarch64 -> 8, else -> 17 kill
+     [LD 0 0 0]                  ; 8  nr
+     [JEQ 1 0 220]               ; 9  clone   -> 11
+     [JEQ 4 5 435]               ; 10 clone3  -> 15 ENOSYS, else -> 16 allow
+     [LD 0 0 16]                 ; 11 args[0], low word: the clone flags
+     [AND 0 0 clone-thread]      ; 12
+     [JEQ 2 0 clone-thread]      ; 13 a thread -> 16 allow, else -> 14
+     [RET 0 0 eperm]             ; 14
+     [RET 0 0 enosys]            ; 15
+     [RET 0 0 allow]             ; 16
+     [RET 0 0 kill]]))           ; 17
+
+(defn seccomp-no-subprocess
+  "A seccomp-bpf filter — the bytes bwrap's --seccomp reads — refusing the
+  image any CHILD PROCESS while leaving threads alone: fork, vfork and clone3
+  fail, clone succeeds only with CLONE_THREAD. Both x86_64 and aarch64 in one
+  program, keyed on the arch the KERNEL reports: an x86_64 image under Rosetta
+  or qemu makes aarch64 syscalls, so a filter built for the binary's arch
+  would let everything through. Any other arch is killed."
+  []
+  (byte-array (mapcat #(apply bpf %) seccomp-program)))
+
+(defn- under?
+  "Is `path` equal to or inside `root`?"
+  [root path]
+  (let [r (str (resolved root) "/") p (str (resolved path) "/")]
+    (str/starts-with? p r)))
+
+(defn deny-read-kinds
+  "`paths` split into the directories and the files that exist, which bwrap
+  hides differently, dropping what does not exist. The one impure step; the
+  argv builder takes its answer."
+  [paths]
+  (let [fs (map io/file (clean paths))]
+    {:deny-dirs (mapv str (filter #(.isDirectory %) fs))
+     :deny-files (mapv str (filter #(.isFile %) fs))}))
+
+(defn bwrap-argv
+  "The bwrap argv confining the project image, ending in `--` so the image's
+  own argv follows: the whole filesystem read-only, the project and scratch
+  trees writable, secret directories hidden under an empty tmpfs and secret
+  files under /dev/null, a private pid namespace, the image dying with the
+  harness, a fresh session so it cannot push keystrokes at a terminal, and the
+  seccomp filter on `seccomp-fd` (opened by the spawner — see `wrap`).
+
+  A deny that CONTAINS a writable tree is not mounted: it would hide the
+  project. The seatbelt profile re-allows the project after its denies for
+  the same reason, and it is what lets a self-hosting run read itself. Pure."
+  [{:keys [project-root scratch-paths deny-dirs deny-files seccomp-fd]}]
+  (let [writable (clean (cons project-root scratch-paths))
+        hides-writable? (fn [d] (some #(under? d %) writable))]
+    (-> ["bwrap" "--ro-bind" "/" "/" "--dev" "/dev" "--proc" "/proc"
+         "--unshare-pid" "--die-with-parent" "--new-session"]
+        (into (mapcat (fn [p] ["--bind" p p]) writable))
+        (into (mapcat (fn [p] ["--tmpfs" p])
+                      (remove hides-writable? (clean deny-dirs))))
+        (into (mapcat (fn [p] ["--ro-bind" "/dev/null" p])
+                      (remove hides-writable? (clean deny-files))))
+        (into (when seccomp-fd ["--seccomp" (str seccomp-fd)]))
+        (into ["--chdir" (resolved project-root) "--"]))))
+
 (defn backend-for
   "The sandbox backend for `setting` on `os-name` (java.lang.System's os.name).
 
-  `:auto` resolves to seatbelt on macOS and to NOTHING anywhere else. That is
-  deliberate and not a stub: shipping an unverified bubblewrap invocation
-  would be a sandbox that reads as protection without having been shown to be
-  one, which is worse than an honest `:none` — under `:none` the project image
-  is still a separate sandboxless process, which already ends in-process
-  access to the harness and fixes the classpath and cwd bugs. The Linux
-  backend is karamazov-zrq.8, to be verified on a real host before `:auto`
-  picks it."
+  `:auto` resolves to seatbelt on macOS and to NOTHING anywhere else — `:none`,
+  under which the project image is still a separate sandboxless process that
+  already ends in-process access to the harness and fixes the classpath and
+  cwd bugs. Not a stub for the platforms it does not cover: a backend that has
+  not been shown to confine anything would read as protection without being
+  one. `:bwrap` asks for the Linux backend EXPLICITLY; it fails closed when
+  bubblewrap is not installed (the image does not start, the eval refuses),
+  and `:auto` will select it once dev/linux-sandbox/verify.sh has run green
+  on a real kernel (karamazov-zrq.8). Ubuntu 24.04 and later restrict
+  unprivileged user namespaces by default
+  (kernel.apparmor_restrict_unprivileged_userns); there bwrap fails to start
+  and the image fails closed the same way."
   [setting os-name]
-  (if (and (= :auto setting) (str/starts-with? (str os-name) "Mac OS X"))
-    :seatbelt
-    :none))
+  (cond
+    (= :bwrap setting) :bwrap
+    (and (= :auto setting) (str/starts-with? (str os-name) "Mac OS X")) :seatbelt
+    :else :none))
+
+(defn write-profile!
+  "Write what `backend` reads at spawn to `path`: the SBPL profile for
+  seatbelt, the seccomp filter for bwrap, nothing for none. Returns `path`."
+  [backend path spec]
+  (case backend
+    :seatbelt (spit path (seatbelt-profile spec))
+    :bwrap (with-open [o (io/output-stream path)]
+             (.write o (seccomp-no-subprocess)))
+    nil)
+  path)
 
 (defn wrap
-  "`cmd` (an argv vector) wrapped so it runs under `backend`, given a profile
-  already written to `profile-path`. Pure: the caller owns the file.
+  "`cmd` (an argv vector) wrapped so it runs under `backend`, given
+  `{:profile path :spec spec}` — the file `write-profile!` wrote and the paths
+  it confines to. Pure: the caller owns the file.
 
   Child processes INHERIT a seatbelt sandbox, so wrapping the nREPL server
   covers anything it manages to spawn — which, with `process-exec*` denied, is
-  nothing."
-  [backend profile-path cmd]
+  nothing. Under bwrap the filter reaches it as a file descriptor: the `sh`
+  here is the HARNESS's own shell, exec'ing bwrap with fd 3 opened on the
+  filter — $0 is the filter path, \"$@\" everything after it — and nothing
+  of it survives into the image."
+  [backend {:keys [profile spec]} cmd]
   (case backend
-    :seatbelt (into ["sandbox-exec" "-f" (str profile-path)] cmd)
+    :seatbelt (into ["sandbox-exec" "-f" (str profile)] cmd)
+    :bwrap (-> ["sh" "-c" "exec bwrap \"$@\" 3<\"$0\"" (str profile)]
+               (into (rest (bwrap-argv (assoc spec :seccomp-fd 3))))
+               (into cmd))
     (vec cmd)))

@@ -68,7 +68,9 @@
   closed by making the fix opt-in. So the DANGEROUS mode is the one an operator
   opts into, not the safe one.
 
-  `:sandbox :auto` resolves to the platform's backend and `:none` skips it.
+  `:sandbox :auto` resolves to the platform's backend, `:none` skips it, and
+  `:bwrap` asks for bubblewrap on Linux explicitly — the backend `:auto` does
+  not pick until it has been verified on a real kernel (karamazov-zrq.8).
   `:none` is legitimate rather than a footgun: inside a container, or on a host
   without a backend, the subprocess split alone still ends in-process access to
   the harness and still fixes the classpath and cwd bugs. The OS layer hardens
@@ -76,7 +78,7 @@
   {:mode :project :sandbox :auto})
 
 (def ^:private eval-modes #{:off :project :harness})
-(def ^:private eval-sandboxes #{:auto :none})
+(def ^:private eval-sandboxes #{:auto :none :bwrap})
 
 (defn eval-settings
   "The `:eval` block of a project config, normalised to
@@ -101,7 +103,8 @@
   (:mode (eval-settings (when root (project-config root)))))
 
 (defn eval-sandbox
-  "The sandbox backend setting for the project at `root` (`:auto` or `:none`)."
+  "The sandbox backend setting for the project at `root` (`:auto`, `:none` or
+  `:bwrap`)."
   [root]
   (:sandbox (eval-settings (when root (project-config root)))))
 

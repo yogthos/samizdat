@@ -177,4 +177,6 @@
    {:name samizdat.repl.route/release!
     :summary "Stop the project image for a root. The next eval starts a fresh one, losing everything defined at the REPL."}
    {:name samizdat.security.sandbox/seatbelt-profile
-    :summary "The macOS profile the project image runs under, as text — read it when a refusal is surprising."}]}]
+    :summary "The macOS profile the project image runs under, as text — read it when a refusal is surprising."}
+   {:name samizdat.security.sandbox/bwrap-argv
+    :summary "The Linux confinement, as the bubblewrap argv the image runs under: filesystem read-only but the project, secrets hidden by mounts, no child processes (seccomp), network open."}]}]

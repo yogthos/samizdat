@@ -282,6 +282,13 @@
                      namespace takes no configuration by design (RFC-004: the
                      tape decides nothing)."}}
 
+   "src/samizdat/security/sandbox.clj"
+   {:threshold {65536 "CLONE_THREAD, the kernel's flag bit for a clone that
+                       makes a thread rather than a process. A Linux ABI
+                       constant, and the seccomp filter that reads it is a
+                       security control: a value the agent could retune is
+                       not a control (see policy.clj below)."}}
+
    "src/samizdat/security/policy.clj"
    {:threshold {120000 "Shell command timeout. A security bound, and see the
                         note on secrets.clj below: a control the agent could

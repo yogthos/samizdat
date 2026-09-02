@@ -35,9 +35,18 @@
 
 (deftest spawn-argv-wraps-for-the-backend
   (is (= ["jolt" "nrepl-server" "7888"]
-         (image/spawn-argv :none "/p.sb" 7888)))
+         (image/spawn-argv :none {:profile "/p.sb"} 7888)))
   (is (= ["sandbox-exec" "-f" "/p.sb" "jolt" "nrepl-server" "7888"]
-         (image/spawn-argv :seatbelt "/p.sb" 7888))))
+         (image/spawn-argv :seatbelt {:profile "/p.sb"} 7888)))
+  (testing "bwrap: the harness's own sh hands the filter to bwrap as fd 3,
+            and the image's argv follows the --"
+    (let [argv (image/spawn-argv :bwrap {:profile "/p.bpf"
+                                         :spec {:project-root "/work/p"}} 7888)]
+      (is (= ["sh" "-c" "exec bwrap \"$@\" 3<\"$0\"" "/p.bpf" "--ro-bind" "/" "/"]
+             (subvec argv 0 7)))
+      (is (= ["--seccomp" "3"] (subvec argv (.indexOf argv "--seccomp")
+                                       (+ 2 (.indexOf argv "--seccomp")))))
+      (is (= ["--" "jolt" "nrepl-server" "7888"] (subvec argv (- (count argv) 4)))))))
 
 (deftest free-port-is-actually-free
   (let [p (image/free-port)]
@@ -63,7 +72,11 @@
         home (System/getenv "HOME")
         escape (str home "/SAMIZDAT-IMAGE-TEST-ESCAPE.txt")
         im (image/start! {:root root
-                          :backend (sandbox/backend-for :auto (System/getProperty "os.name"))
+                          ;; The strongest backend this host has: bwrap by
+                          ;; name where it is installed (dev/linux-sandbox),
+                          ;; else whatever :auto resolves to.
+                          :backend (sandbox/backend-for (if (fs/which "bwrap") :bwrap :auto)
+                                                        (System/getProperty "os.name"))
                           :sandbox-spec {:deny-read [(str home "/.ssh") "/etc"
                                                     (str (fs/cwd))]
                                          ;; The runtime's own directory. /usr/bin
@@ -88,7 +101,11 @@
           (is (= "\"asset-ok\""
                  (:value (image/eval-in im "(clojure.string/trim (slurp \"resources/asset.txt\"))")))))
 
-        (when (= :seatbelt (:backend im))
+        ;; The escape battery, under whichever backend the host has. On a
+        ;; host with none the image is a plain subprocess and these would
+        ;; fail honestly; skipping them there is what lets the test run
+        ;; everywhere the split itself is worth testing.
+        (when (not= :none (:backend im))
           (testing "but it cannot write outside the project"
             (image/eval-in im (str "(try (spit \"" escape "\" \"x\") (catch Throwable _ nil))"))
             (is (not (.exists (java.io.File. escape)))
@@ -113,7 +130,11 @@
 (deftest stopping-an-image-kills-it-and-is-idempotent
   (let [root (project!)
         im (image/start! {:root root
-                          :backend (sandbox/backend-for :auto (System/getProperty "os.name"))
+                          ;; The strongest backend this host has: bwrap by
+                          ;; name where it is installed (dev/linux-sandbox),
+                          ;; else whatever :auto resolves to.
+                          :backend (sandbox/backend-for (if (fs/which "bwrap") :bwrap :auto)
+                                                        (System/getProperty "os.name"))
                           :sandbox-spec {:deny-read []
                                          :exec-roots (route/runtime-exec-roots)}})]
     (is (some? im))
@@ -142,7 +163,11 @@
   ;; isolation exists to prevent.
   (let [root (project!)
         im (image/start! {:root root
-                          :backend (sandbox/backend-for :auto (System/getProperty "os.name"))
+                          ;; The strongest backend this host has: bwrap by
+                          ;; name where it is installed (dev/linux-sandbox),
+                          ;; else whatever :auto resolves to.
+                          :backend (sandbox/backend-for (if (fs/which "bwrap") :bwrap :auto)
+                                                        (System/getProperty "os.name"))
                           :sandbox-spec {:deny-read []
                                          :exec-roots (route/runtime-exec-roots)}})]
     (try
