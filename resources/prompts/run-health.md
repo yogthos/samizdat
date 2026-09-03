@@ -30,7 +30,9 @@ these before concluding the loop is broken, and before writing a rule that
 would have stopped them:
 {{failures.wins.lines}}
 {% endif %}{% endif %}
-{% if prescription %}This project has already tuned itself: {{prescription}}.
+{% if prescription %}This project has already tuned itself: {{prescription.names}}
+piece(s) of userspace overridden ({{prescription.kinds}}){% if prescription.pct %},
+now {{prescription.pct}}% the size of the templates they replaced{% endif %}.
 Every rule you add is context every later run reads. Metan measured richer
 context making a pre-optimized loop WORSE, so before writing another one, check
 whether an existing rule is the thing that is wrong.

@@ -130,18 +130,21 @@
                    {:kind k
                     :sig (failure-signature
                           (or (not-empty (str (:parse_error r))) (:result r)))})]
-    (when (>= (count failures) (or floor 6))
-      (->> failures
-           (group-by (juxt :kind :sig))
-           (map (fn [[[k sig] xs]]
-                  {:kind k :count (count xs)
-                   :pattern (if (> (count sig) (or chars 160))
-                              (str (subs sig 0 (or chars 160)) "…")
-                              sig)}))
-           (sort-by (juxt (comp - :count) (comp name :kind)))
-           (take (or patterns 6))
-           vec
-           not-empty))))
+    ;; Every bound is the CALLER'S. A nil floor means no distribution and a
+    ;; nil cap means no truncation, so there is no policy number defaulted
+    ;; here — the numbers are gates.edn :supervisor-digest's.
+    (when (and floor (>= (count failures) floor))
+      (cond->> (->> failures
+                    (group-by (juxt :kind :sig))
+                    (map (fn [[[k sig] xs]]
+                           {:kind k :count (count xs)
+                            :pattern (if (and chars (> (count sig) chars))
+                                       (str (subs sig 0 chars) "…")
+                                       sig)}))
+                    (sort-by (juxt (comp - :count) (comp name :kind))))
+        patterns (take patterns)
+        true (into [])
+        true not-empty))))
 
 (defn pattern-lines
   "`failure-patterns` as the lines the digest renders, or nil."
@@ -151,27 +154,29 @@
               (for [{:keys [kind count pattern]} ps]
                 (str "- " count "x " (name kind) ": " pattern)))))
 
-(defn prescription-line
-  "This project's accumulated prescription as one line, or nil below `floor`
+(defn prescription-report
+  "This project's accumulated prescription as DATA, or nil below `floor`
   overridden names.
 
   Metan's M9 is that nothing measures this, so \"the loop is now
   over-specified\" is undetectable — and its AlgoTune result is that richer
   context made a pre-optimized kernel WORSE, 9.72x down to 1.69x. A supervisor
   about to write its tenth rule should be able to see that it already wrote
-  nine, and how much bigger they made things."
+  nine, and how much bigger they made things.
+
+  Returns {:names :kinds :pct} and NO sentence: the words the supervisor reads
+  live in prompts/run-health.md like every other word it reads, and the floor
+  is the caller's rather than a default hidden here."
   [mass floor]
   (let [names (reduce + 0 (map :names (vals mass)))
         chars (reduce + 0 (map :chars (vals mass)))
         base  (reduce + 0 (map :factory-chars (vals mass)))]
-    (when (and (pos? names) (>= names (or floor 3)))
-      (str names " piece(s) of userspace overridden ("
-           (str/join ", " (for [[k v] (sort-by key mass)]
-                            (str (:names v) " " (name k))))
-           ")"
-           (when (pos? base)
-             (str ", now " (Math/round (* 100.0 (/ (double chars) base)))
-                  "% the size of the templates they replaced"))))))
+    (when (and floor (pos? names) (>= names floor))
+      {:names names
+       :kinds (str/join ", " (for [[k v] (sort-by key mass)]
+                               (str (:names v) " " (name k))))
+       :pct (when (pos? base)
+              (Math/round (* 100.0 (/ (double chars) base))))})))
 
 (defn gate-health
   "Per (branch, gate): how often it fired and how its predictions settled.
@@ -360,7 +365,7 @@
       :patterns (pattern-lines
                  (failure-patterns rows (gates/threshold :supervisor-digest)))
       ;; What this project has already prescribed for itself (M9).
-      :prescription (prescription-line
+      :prescription (prescription-report
                      prescription
                      (:prescription-floor (gates/threshold :supervisor-digest)))
       ;; WHETHER THE STEERING IS WORKING, which the digest never carried.

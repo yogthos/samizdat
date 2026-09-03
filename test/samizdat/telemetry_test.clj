@@ -235,19 +235,23 @@
 ;; --- accumulated prescription in the brief (karamazov-7mo M9) --------------
 
 (deftest a-project-that-has-tuned-little-is-not-lectured-about-it
-  (is (nil? (telemetry/prescription-line {} 3)))
-  (is (nil? (telemetry/prescription-line {:prompt {:names 2 :versions 2 :chars 100 :factory-chars 100}} 3))
-      "below the floor it says nothing"))
+  (is (nil? (telemetry/prescription-report {} 3)))
+  (is (nil? (telemetry/prescription-report {:prompt {:names 2 :versions 2 :chars 100 :factory-chars 100}} 3))
+      "below the floor it says nothing")
+  (is (nil? (telemetry/prescription-report {:prompt {:names 9 :chars 1 :factory-chars 1}} nil))
+      "and with no floor given it decides nothing on its own"))
 
-(deftest prescription-shows-what-the-project-made-its-own-and-how-much-bigger
-  (let [line (telemetry/prescription-line
-              {:prompt {:names 3 :versions 5 :chars 1500 :factory-chars 1000}
-               :policy {:names 1 :versions 1 :chars 500 :factory-chars 500}}
-              3)]
-    (is (str/includes? line "4 piece(s) of userspace overridden"))
-    (is (str/includes? line "1 policy"))
-    (is (str/includes? line "3 prompt"))
-    (is (str/includes? line "133% the size") "growth against the templates is the point")))
+(deftest prescription-reports-what-the-project-made-its-own-and-how-much-bigger
+  (let [r (telemetry/prescription-report
+           {:prompt {:names 3 :versions 5 :chars 1500 :factory-chars 1000}
+            :policy {:names 1 :versions 1 :chars 500 :factory-chars 500}}
+           3)]
+    (is (= 4 (:names r)))
+    (is (str/includes? (:kinds r) "1 policy"))
+    (is (str/includes? (:kinds r) "3 prompt"))
+    (is (= 133 (:pct r)) "growth against the templates is the point")
+    (testing "it returns data, never a sentence"
+      (is (map? r)))))
 
 (deftest the-digest-warns-before-the-tenth-rule
   (let [out (telemetry/digest
