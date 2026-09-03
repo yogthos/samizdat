@@ -176,7 +176,13 @@
                                                               (read-under root (:file p)) %)
                                                              pr-str)
                                                     (:stubs p)))
-                          :tests (or (read-under root (:tests p)) "")}))
+                          ;; The PATH, not a copy of the tests. They live in
+                          ;; the tree — that is the whole design — so a copy
+                          ;; pinned here would drift the moment the parent
+                          ;; adjusts them at assembly, and it is the path that
+                          ;; lets the harness run exactly this piece's tests
+                          ;; against a tree that is red by design.
+                          :tests (:tests p)}))
                       parts)]
         (base/ok branch (msg {:created (mapv (fn [p id] {:id id :name (:name p)
                                                          :stubs (str/join ", " (:stubs p))})

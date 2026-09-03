@@ -93,6 +93,34 @@
     (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
                                     :changed ["src/x.clj"] :require-test? false})))))
 
+(deftest a-delegated-piece-is-pinned-by-the-tests-its-contract-names
+  ;; karamazov-ioo.15. A child gets its tests from the parent that split the
+  ;; work — they are already in the tree, and the child implements against
+  ;; them. So the TDD rung, which asks whether the branch CHANGED a test file,
+  ;; would refuse every delegated piece for not writing a test that was
+  ;; written for it. The contract's tests are the pinning test.
+  (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                  :changed ["src/example/core.clj"]
+                                  :require-test? true
+                                  :contracted-tests "test/example/core_test.clj"}))
+      "green against the contract's tests, having changed only source: ships")
+  (testing "and it does not excuse changing nothing at all"
+    (is (some? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                     :changed []
+                                     :require-test? true
+                                     :contracted-tests "test/example/core_test.clj"}))))
+  (testing "nor does it excuse a red run"
+    (is (some? (verify/verify-block {:verify-on? true
+                                     :result {:green? false :output "FAIL"}
+                                     :changed ["src/example/core.clj"]
+                                     :require-test? true
+                                     :contracted-tests "test/example/core_test.clj"}))))
+  (testing "an undelegated branch is unaffected"
+    (is (some? (verify/verify-block {:verify-on? true :result nil
+                                     :changed ["src/example/core.clj"]
+                                     :require-test? true
+                                     :contracted-tests nil})))))
+
 (deftest verify-block-passes-a-green-tdd-change
   (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
                                   :changed ["src/samizdat/agent/tools/knowledge.clj"

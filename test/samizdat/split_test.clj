@@ -85,9 +85,10 @@
           (is (apply = (map :parent_id rows))
               "both hang off the same parent task, so the tree is walkable")
           (testing "the contract is the stub SOURCE, not a restatement of the ask"
-            (is (some #(str/includes? (:contract %) "Parse one line into") rows))
-            (is (every? #(seq (:tests %)) rows)
-                "and the sketched tests ride with it")))))))
+            (is (some #(str/includes? (:contract %) "Parse one line into") rows)))
+          (testing "and tests is the PATH, so the harness can run exactly this
+                    piece against a tree that is red by design"
+            (is (every? #(= "test/example/core_test.clj" (:tests %)) rows))))))))
 
 (deftest a-split-naming-a-stub-that-is-not-there-is-declined
   (with-project

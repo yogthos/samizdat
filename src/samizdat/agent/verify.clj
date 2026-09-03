@@ -98,8 +98,15 @@
                   tests were not run (e.g. git could not tell what changed).
     :changed      changed-files since the attempt baseline: a vector, [] for
                   'genuinely nothing', or nil for 'git cannot tell'.
-    :require-test? enforce TDD — a change that includes no test file is refused."
-  [{:keys [verify-on? result changed require-test?]}]
+    :require-test? enforce TDD — a change that includes no test file is refused.
+    :contracted-tests the test file a DELEGATED piece was given, from its task's
+                  `tests` column, or nil. It satisfies the TDD rung: a child
+                  implements against tests its parent already wrote and put in
+                  the tree, so asking it to change a test file would refuse
+                  every delegated piece for not writing what was written for
+                  it. It satisfies nothing else — a piece that changed nothing,
+                  or whose run came back red, is refused exactly as before."
+  [{:keys [verify-on? result changed require-test? contracted-tests]}]
   (cond
     (not verify-on?) nil
 
@@ -112,7 +119,8 @@
 
     ;; TDD: files changed but none is a test — the behaviour was never pinned.
     (and require-test? (some? changed) (seq changed)
-         (not (some test-file? changed)))
+         (not (some test-file? changed))
+         (str/blank? (str contracted-tests)))
     (str "You added no test, so the new behaviour is not pinned. Write a focused "
          "test that FAILS without your change and passes with it, get it green, "
          "then call done.")

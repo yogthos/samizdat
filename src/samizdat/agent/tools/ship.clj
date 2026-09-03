@@ -13,6 +13,7 @@
             [samizdat.agent.verify :as verify]
             [samizdat.lexicon :as lexicon]
             [samizdat.store.journal :as journal]
+            [samizdat.store.tasks :as tasks]
             [samizdat.util :as util]
             [samizdat.session :as session]))
 
@@ -338,23 +339,48 @@
         verify-cmd (get-in ctx [:config :run :verify-cmd])
         verify-focused? (get-in ctx [:config :run :verify-focused?] false)
         require-test? (get-in ctx [:config :run :require-test?] true)
+        ;; THE TEST FILE THIS PIECE WAS DELEGATED, from the task it holds.
+        ;; A split leaves the tree RED on purpose — the stubs are the failing
+        ;; tests — so a child that ran the whole suite would drown in its
+        ;; siblings' unimplemented work and conclude it had broken something.
+        ;; Its contract names the tests that define ITS delivery, and those are
+        ;; the ones it is judged on (karamazov-ioo.15).
+        contracted-tests (when-let [t (and (:conn ctx) (:run-id ctx) (:id branch)
+                                           (tasks/held-by (:conn ctx) (:run-id ctx)
+                                                          (:id branch)))]
+                           (let [p (str (:tests t))]
+                             (when (verify/test-file? p) p)))
+        ;; A contract that names tests turns the rung ON by itself. The whole
+        ;; point of the delegation is that those tests define delivery, so a
+        ;; piece must not ship without them having been run — whether or not
+        ;; the run happened to configure verification.
         verify-on? (and (not advisory?)
                         (nil? block)
-                        (or verify-focused? (not (str/blank? (str verify-cmd)))))
+                        (or verify-focused? contracted-tests
+                            (not (str/blank? (str verify-cmd)))))
         changed (when verify-on? (gitdiff/changed-files (:root ctx) (:git-baseline ctx)))
         ;; Prefer the focused command; fall back to the configured one. Run only
         ;; when the cheap pre-checks (nothing changed / no test yet) haven't
         ;; already doomed the ship — a wasted suite run is a wasted minute.
-        cmd (when verify-on? (or (and verify-focused? (verify/focused-cmd changed)) verify-cmd))
+        ;;
+        ;; The contracted tests are focused on ALONGSIDE whatever the branch
+        ;; touched, not instead of it: a child that wrote extra tests of its own
+        ;; should have them run too, and a child that edited a sibling's test
+        ;; file should have to face it.
+        focus (distinct (concat (when contracted-tests [contracted-tests])
+                                (when (or verify-focused? contracted-tests) changed)))
+        cmd (when verify-on? (or (verify/focused-cmd focus) verify-cmd))
         pre-doomed? (or (and (some? changed) (empty? changed))
                         (and require-test? (some? changed) (seq changed)
-                             (not (some verify/test-file? changed))))
+                             (not (some verify/test-file? changed))
+                             (nil? contracted-tests)))
         vresult (when (and verify-on? cmd (not pre-doomed?))
                   (verify/run-verify (:root ctx) cmd
                                      (get-in ctx [:config :run :verify-timeout-ms])))
         verify-block (verify/verify-block
                       {:verify-on? verify-on? :result vresult
-                       :changed changed :require-test? require-test?})
+                       :changed changed :require-test? require-test?
+                       :contracted-tests contracted-tests})
         block (or block verify-block)]
     ;; Journalled whether the tests RAN or not. A rung that was configured on
     ;; and then did nothing used to leave no trace at all — the note fired only
