@@ -30,7 +30,12 @@ these before concluding the loop is broken, and before writing a rule that
 would have stopped them:
 {{failures.wins.lines}}
 {% endif %}{% endif %}
-{% if gates %}Steering that is NOT working — a gate this branch has been told
+{% if prescription %}This project has already tuned itself: {{prescription}}.
+Every rule you add is context every later run reads. Metan measured richer
+context making a pre-optimized loop WORSE, so before writing another one, check
+whether an existing rule is the thing that is wrong.
+
+{% endif %}{% if gates %}Steering that is NOT working — a gate this branch has been told
 by repeatedly and has not once done what it asked. Either the advice is wrong,
 it is aimed at the wrong branch, or this model does not respond to advice at
 all; all three are yours to fix, and more nagging is not the fix:

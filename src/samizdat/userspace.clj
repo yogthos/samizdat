@@ -310,6 +310,13 @@
   [kind]
   (if-let [c (conn)] (store/names c kind) []))
 
+(defn prescription-mass
+  "This project's accumulated prescription: which kinds it has overridden and
+  by how much. `{}` when unbound or when nothing has been overridden, which is
+  the honest answer for a project still running the shipped template."
+  []
+  (if-let [c (conn)] (store/prescription c) {}))
+
 (defn seed-all!
   "Seed every named template of `kind` into the project, and return the
   project's bodies for that kind as {name body}.

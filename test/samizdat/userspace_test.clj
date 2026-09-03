@@ -624,3 +624,37 @@
     (save-gates *conn* rid (pr-str (assoc-in original [:run-health :value :thrash-min-turns] 7)))
     (is (empty? (journal/notes *conn* rid :self-graded))
         "changing a behaviour gate says nothing; only the scoring gates do")))
+
+;; --- accumulated prescription (karamazov-7mo M9) ----------------------------
+
+(deftest a-project-on-the-shipped-template-has-prescribed-nothing
+  (us/bind! *conn*)
+  (us/body :prompt "system")
+  (us/body :policy "gates")
+  (is (empty? (us/prescription-mass))
+      "seeding the factory template is not the project prescribing anything"))
+
+(deftest prescription-mass-counts-what-the-project-made-its-own
+  (us/bind! *conn*)
+  (let [factory (us/body :prompt "no-edits")]
+    (us/save! :prompt "no-edits" (str factory "\nAnd another rule.") "tightening")
+    (us/save! :prompt "no-edits" (str factory "\nAnd two more rules here.") "tightening again")
+    (us/body :prompt "stuck")
+    (let [m (us/prescription-mass)]
+      (is (= 1 (get-in m [:prompt :names])) "one prompt overridden, not both")
+      (is (= 2 (get-in m [:prompt :versions])) "both edits counted")
+      (testing "and the growth against the factory body is visible"
+        (is (> (get-in m [:prompt :chars]) (get-in m [:prompt :factory-chars]))))
+      (testing "kinds the project never touched do not appear"
+        (is (nil? (:policy m)))
+        (is (nil? (:cell m)))))))
+
+(deftest prescription-mass-separates-the-kinds
+  (us/bind! *conn*)
+  (us/body :prompt "stuck")
+  (us/body :policy "gates")
+  (us/save! :prompt "stuck" "a rewritten stuck prompt" "why")
+  (us/save! :policy "gates" (pr-str (us/edn-body :policy "gates")) "why")
+  (let [m (us/prescription-mass)]
+    (is (= 1 (get-in m [:prompt :names])))
+    (is (= 1 (get-in m [:policy :names])))))

@@ -1311,7 +1311,8 @@
         in trouble is the last one that should be shown less of it."}
 
  :supervisor-digest
- {:value {:per-kind 4 :chars 220 :wins 2 :floor 6 :patterns 6}
+ {:value {:per-kind 4 :chars 220 :wins 2 :floor 6 :patterns 6
+          :prescription-floor 3}
   :kind :threshold :capability-tunable? true
   :doc "How many failure exemplars of each kind the run-health digest shows
         the supervisor, and how much of each failure's text. The digest used

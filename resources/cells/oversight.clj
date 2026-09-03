@@ -16,6 +16,7 @@
             [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.store.runs :as runs]
+            [samizdat.userspace :as userspace]
             [samizdat.workflow :as wf]
             [mycelium.core :as myc]))
 
@@ -262,6 +263,9 @@
                                     ;; the brief's `N/M shipped` line reports.
                                     :results (:oversight/results data)
                                     :self-graded (:oversight/self-graded data)
+                                    ;; What this project has already
+                                    ;; prescribed for itself (M9).
+                                    :prescription (userspace/prescription-mass)
                                     ;; Each branch's session fitness: the
                                     ;; number the cull reads, shown to the
                                     ;; role that tunes (RFC-012 F3).

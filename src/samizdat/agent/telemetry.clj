@@ -151,6 +151,28 @@
               (for [{:keys [kind count pattern]} ps]
                 (str "- " count "x " (name kind) ": " pattern)))))
 
+(defn prescription-line
+  "This project's accumulated prescription as one line, or nil below `floor`
+  overridden names.
+
+  Metan's M9 is that nothing measures this, so \"the loop is now
+  over-specified\" is undetectable — and its AlgoTune result is that richer
+  context made a pre-optimized kernel WORSE, 9.72x down to 1.69x. A supervisor
+  about to write its tenth rule should be able to see that it already wrote
+  nine, and how much bigger they made things."
+  [mass floor]
+  (let [names (reduce + 0 (map :names (vals mass)))
+        chars (reduce + 0 (map :chars (vals mass)))
+        base  (reduce + 0 (map :factory-chars (vals mass)))]
+    (when (and (pos? names) (>= names (or floor 3)))
+      (str names " piece(s) of userspace overridden ("
+           (str/join ", " (for [[k v] (sort-by key mass)]
+                            (str (:names v) " " (name k))))
+           ")"
+           (when (pos? base)
+             (str ", now " (Math/round (* 100.0 (/ (double chars) base)))
+                  "% the size of the templates they replaced"))))))
+
 (defn gate-health
   "Per (branch, gate): how often it fired and how its predictions settled.
 
@@ -307,7 +329,8 @@
   "The run-health block the supervisor reads. `facts` = {:results :review
   :critic :revision}; `rows` = the run's journal turns."
   ([facts rows] (digest facts rows nil))
-  ([{:keys [results review critic revision errors fitness] :as facts} rows firings]
+  ([{:keys [results review critic revision errors fitness prescription] :as facts}
+    rows firings]
   (let [health (branch-health rows)
         total (count results)
         shipped (count (filter #(= :done (:status %)) results))
@@ -336,6 +359,10 @@
       ;; loop actually has.
       :patterns (pattern-lines
                  (failure-patterns rows (gates/threshold :supervisor-digest)))
+      ;; What this project has already prescribed for itself (M9).
+      :prescription (prescription-line
+                     prescription
+                     (:prescription-floor (gates/threshold :supervisor-digest)))
       ;; WHETHER THE STEERING IS WORKING, which the digest never carried.
       ;; The supervisor's job is to notice a loop going wrong and change it;
       ;; a gate one branch has ignored three times is exactly that, and it

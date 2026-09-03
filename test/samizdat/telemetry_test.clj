@@ -231,3 +231,28 @@
         out (telemetry/digest {:results [{:status :done}]} rows)]
     (is (str/includes? (str out) "8x tool"))
     (is (str/includes? (str out) "one fix, not many"))))
+
+;; --- accumulated prescription in the brief (karamazov-7mo M9) --------------
+
+(deftest a-project-that-has-tuned-little-is-not-lectured-about-it
+  (is (nil? (telemetry/prescription-line {} 3)))
+  (is (nil? (telemetry/prescription-line {:prompt {:names 2 :versions 2 :chars 100 :factory-chars 100}} 3))
+      "below the floor it says nothing"))
+
+(deftest prescription-shows-what-the-project-made-its-own-and-how-much-bigger
+  (let [line (telemetry/prescription-line
+              {:prompt {:names 3 :versions 5 :chars 1500 :factory-chars 1000}
+               :policy {:names 1 :versions 1 :chars 500 :factory-chars 500}}
+              3)]
+    (is (str/includes? line "4 piece(s) of userspace overridden"))
+    (is (str/includes? line "1 policy"))
+    (is (str/includes? line "3 prompt"))
+    (is (str/includes? line "133% the size") "growth against the templates is the point")))
+
+(deftest the-digest-warns-before-the-tenth-rule
+  (let [out (telemetry/digest
+             {:results [{:status :done}]
+              :prescription {:prompt {:names 4 :versions 9 :chars 4000 :factory-chars 2000}}}
+             [])]
+    (is (str/includes? (str out) "already tuned itself"))
+    (is (str/includes? (str out) "200% the size"))))
