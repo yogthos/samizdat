@@ -121,6 +121,18 @@
   (let [d (definition source name)]
     (boolean (and d (not (stub? d))))))
 
+(defn unfilled
+  "Which of `names` `source` does not have a real implementation for — absent
+  and still-hollow together, in the order given.
+
+  One answer rather than two because the caller asks one question: what does
+  this piece still owe. A stub never written and a stub deleted instead of
+  filled are the same fact from the parent's side — its composition calls that
+  name and the name has no body."
+  [source names]
+  (vec (remove #(filled? source %)
+               (remove str/blank? (map str names)))))
+
 (defn missing
   "Which of `names` `source` does not define, in the order given.
 

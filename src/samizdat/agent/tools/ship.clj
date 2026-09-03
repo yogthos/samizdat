@@ -6,10 +6,12 @@
   claim-evidence gates those methods share (answer-tokens,
   uncovered-tokens, engages-problem? and friends)."
   (:require [clojure.string :as str]
+            [samizdat.agent.files :as files]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.state :as state]
+            [samizdat.agent.stubs :as stubs]
             [samizdat.agent.verify :as verify]
             [samizdat.lexicon :as lexicon]
             [samizdat.store.journal :as journal]
@@ -345,11 +347,27 @@
         ;; siblings' unimplemented work and conclude it had broken something.
         ;; Its contract names the tests that define ITS delivery, and those are
         ;; the ones it is judged on (karamazov-ioo.15).
-        contracted-tests (when-let [t (and (:conn ctx) (:run-id ctx) (:id branch)
-                                           (tasks/held-by (:conn ctx) (:run-id ctx)
-                                                          (:id branch)))]
-                           (let [p (str (:tests t))]
+        held (when (and (:conn ctx) (:run-id ctx) (:id branch))
+               (tasks/held-by (:conn ctx) (:run-id ctx) (:id branch)))
+        contracted-tests (when held
+                           (let [p (str (:tests held))]
                              (when (verify/test-file? p) p)))
+        ;; THE OTHER HALF OF A DELEGATED PIECE'S CONTRACT, and the half green
+        ;; tests cannot see: are the functions it was handed implemented. The
+        ;; parent's composition calls them by name, so a test passing around a
+        ;; hollow stub, or a stub deleted rather than filled, leaves that
+        ;; caller broken. Read off the tree at ship time rather than trusted.
+        stub-file (not-empty (str (:stub_file held)))
+        owed (when (and stub-file (not-empty (str (:stubs held))))
+               (str/split (str (:stubs held)) #","))
+        unfilled (when (seq owed)
+                   (if-let [abs (files/resolve-under-root (:root ctx) stub-file)]
+                     (let [f (java.io.File. ^String abs)]
+                       (stubs/unfilled (when (.isFile f) (slurp f)) owed))
+                     ;; The file is gone or escapes the root: everything it was
+                     ;; supposed to define is unfilled, which is the honest
+                     ;; answer and the safe direction.
+                     (vec owed)))
         ;; A contract that names tests turns the rung ON by itself. The whole
         ;; point of the delegation is that those tests define delivery, so a
         ;; piece must not ship without them having been run — whether or not
@@ -380,7 +398,8 @@
         verify-block (verify/verify-block
                       {:verify-on? verify-on? :result vresult
                        :changed changed :require-test? require-test?
-                       :contracted-tests contracted-tests})
+                       :contracted-tests contracted-tests
+                       :unfilled unfilled :stub-file stub-file})
         block (or block verify-block)]
     ;; Journalled whether the tests RAN or not. A rung that was configured on
     ;; and then did nothing used to leave no trace at all — the note fired only

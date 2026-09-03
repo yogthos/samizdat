@@ -182,7 +182,13 @@
                           ;; adjusts them at assembly, and it is the path that
                           ;; lets the harness run exactly this piece's tests
                           ;; against a tree that is red by design.
-                          :tests (:tests p)}))
+                          :tests (:tests p)
+                          ;; The same delegation, addressably: which names in
+                          ;; which file, so the child's ship gate can ask
+                          ;; whether they are implemented rather than trusting
+                          ;; that green tests imply it (v21).
+                          :stub-file (:file p)
+                          :stubs (:stubs p)}))
                       parts)]
         (base/ok branch (msg {:created (mapv (fn [p id] {:id id :name (:name p)
                                                          :stubs (str/join ", " (:stubs p))})

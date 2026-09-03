@@ -88,7 +88,11 @@
             (is (some #(str/includes? (:contract %) "Parse one line into") rows)))
           (testing "and tests is the PATH, so the harness can run exactly this
                     piece against a tree that is red by design"
-            (is (every? #(= "test/example/core_test.clj" (:tests %)) rows))))))))
+            (is (every? #(= "test/example/core_test.clj" (:tests %)) rows)))
+          (testing "the delegation is also recorded addressably, so the ship
+                    gate can ask whether the piece was actually built"
+            (is (every? #(= "src/example/core.clj" (:stub_file %)) rows))
+            (is (= #{"parse-line" "render-report"} (set (map :stubs rows))))))))))
 
 (deftest a-split-naming-a-stub-that-is-not-there-is-declined
   (with-project

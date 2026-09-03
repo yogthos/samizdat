@@ -67,3 +67,14 @@
     (is (stubs/filled? after "unimplemented-throw") "after: implemented"))
   (is (not (stubs/filled? "(ns example.core)" "unimplemented-throw"))
       "a stub the child DELETED is not filled in — it is gone"))
+
+(deftest unfilled-is-what-a-piece-still-owes
+  ;; One answer, not two: a stub never written and a stub deleted rather than
+  ;; filled are the same fact from the parent's side — its composition calls
+  ;; that name and the name has no body.
+  (is (= ["unimplemented-throw" "unimplemented-nil" "never-written"]
+         (stubs/unfilled src ["ready" "unimplemented-throw" "unimplemented-nil"
+                              "never-written"]))
+      "hollow and absent alike, in the order asked, implemented ones dropped")
+  (is (empty? (stubs/unfilled src ["ready"])))
+  (is (empty? (stubs/unfilled src []))))

@@ -591,6 +591,30 @@
   ;; (karamazov-aqsr.3).
   ["ALTER TABLE runs ADD COLUMN token_budget INTEGER"])
 
+(def ^:private v21
+  ;; WHAT A DELEGATED PIECE OWES, addressably (karamazov-ioo.15).
+  ;;
+  ;; `contract` already held the delegation spec as text, which is right for
+  ;; the model — it is pinned into the child's tape and says what to build.
+  ;; It is useless to the harness, which has to answer a different question:
+  ;; did this piece deliver. That question is `stubs/filled?` over specific
+  ;; names in a specific file, and neither was addressable.
+  ;;
+  ;; `stub_file` and `stubs` (a comma-separated name list) make the contract
+  ;; CHECKABLE rather than merely readable. They are how a child's ship gate
+  ;; asks whether the functions its parent delegated are implemented, instead
+  ;; of trusting that green tests imply it — a test can pass around a hollow
+  ;; stub, and a child that DELETED its stub can be greener still.
+  ;;
+  ;; `attempts` is the count that has to outlive the process. The recursion
+  ;; counted attempts in memory, so a resumed run re-litigated every unit from
+  ;; zero and "is this making progress" could only be asked of a live branch,
+  ;; never of the task. Escalating a piece that keeps failing into a split is
+  ;; the design's own fallback, and it needs a number that survives a crash.
+  ["ALTER TABLE tasks ADD COLUMN stub_file TEXT NOT NULL DEFAULT ''"
+   "ALTER TABLE tasks ADD COLUMN stubs TEXT NOT NULL DEFAULT ''"
+   "ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20])
+  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21])

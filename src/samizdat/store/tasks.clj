@@ -72,7 +72,8 @@
 (defn create!
   "Insert a task and return its id. Unset fields take the dirge defaults:
   type task, status open, priority normal, no parent, backlog (no run)."
-  [conn {:keys [title body type status priority parent-id run-id contract tests]}]
+  [conn {:keys [title body type status priority parent-id run-id contract tests
+                stub-file stubs]}]
   (when (str/blank? (str title))
     (throw (ex-info "a task needs a title" {})))
   (when (and parent-id (nil? (get-task conn parent-id)))
@@ -88,11 +89,19 @@
                   (db/execute! conn
                                ["INSERT INTO tasks (id, title, body, type, status, priority,
                                                     parent_id, run_id, contract, tests,
+                                                    stub_file, stubs,
                                                     created_at, updated_at, closed_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                                 id (str title) (or body "") (or type "task")
                                 status priority parent-id run-id
                                 (or contract "") (or tests "")
+                                ;; The checkable half of the delegation spec:
+                                ;; which names, in which file. `contract` says
+                                ;; what to build and is for the model; these
+                                ;; two are how the ship gate asks whether it
+                                ;; was built (v21).
+                                (or stub-file "")
+                                (str/join "," (remove str/blank? (map str (or stubs []))))
                                 now now (when (terminal? status) now)]))
                 id
                 (catch Throwable e

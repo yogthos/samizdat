@@ -147,7 +147,7 @@
    "team-worker"
    "turn-deadline"
    "uncertain-effect"
-   "verify-red"
+   "verify-red" "verify-hollow"
    "workflow-select"
    "workflow-select-system"
    "verify-timeout"

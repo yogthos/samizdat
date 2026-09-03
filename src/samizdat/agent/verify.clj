@@ -105,8 +105,16 @@
                   the tree, so asking it to change a test file would refuse
                   every delegated piece for not writing what was written for
                   it. It satisfies nothing else — a piece that changed nothing,
-                  or whose run came back red, is refused exactly as before."
-  [{:keys [verify-on? result changed require-test? contracted-tests]}]
+                  or whose run came back red, is refused exactly as before.
+    :unfilled     the stubs a DELEGATED piece was given and has not implemented
+                  (samizdat.agent.stubs/filled? over its task's stub_file and
+                  stubs). Checked AFTER the run is green, because it is the
+                  half green cannot see: the parent's composition calls these
+                  names, and a test that passes around a hollow stub — or a
+                  stub deleted rather than filled — leaves that caller broken.
+    :stub-file    where they live, for the message. Cosmetic."
+  [{:keys [verify-on? result changed require-test? contracted-tests
+           unfilled stub-file]}]
   (cond
     (not verify-on?) nil
 
@@ -132,6 +140,12 @@
     (prompt/render "verify-red"
       {:output (tail (:output result)
                      (:test-output-lines (gates/threshold :context-budget)))})
+
+    ;; Ran and green — but green is only half of a DELEGATED piece's contract.
+    ;; The other half is that the stubs it was handed are no longer stubs, and
+    ;; no test run can tell you that.
+    (and result (:green? result) (seq unfilled))
+    (prompt/render "verify-hollow" {:unfilled (vec unfilled) :file stub-file})
 
     ;; Ran and green.
     (and result (:green? result)) nil

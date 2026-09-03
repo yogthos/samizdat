@@ -121,6 +121,25 @@
                                      :require-test? true
                                      :contracted-tests nil})))))
 
+(deftest a-piece-that-left-its-stubs-hollow-has-not-delivered
+  ;; Green tests are not enough on their own. The parent's composition CALLS
+  ;; these names, so a child whose tests happen to pass around an unimplemented
+  ;; stub — or that deleted the stub instead of filling it — has not delivered
+  ;; the piece it was given. karamazov-ioo.15.
+  (let [b (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                :changed ["src/example/core.clj"]
+                                :require-test? true
+                                :contracted-tests "test/example/core_test.clj"
+                                :unfilled ["parse-line"]})]
+    (is (some? b) "a green run does not ship a hollow stub")
+    (is (str/includes? b "parse-line") "and it names the one still owed"))
+  (testing "with every stub filled, the same green run ships"
+    (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                    :changed ["src/example/core.clj"]
+                                    :require-test? true
+                                    :contracted-tests "test/example/core_test.clj"
+                                    :unfilled []})))))
+
 (deftest verify-block-passes-a-green-tdd-change
   (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
                                   :changed ["src/samizdat/agent/tools/knowledge.clj"
