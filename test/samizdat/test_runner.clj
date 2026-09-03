@@ -144,6 +144,7 @@
             [samizdat.mechanics-test]
             [samizdat.repair-test]
             [samizdat.storm-test]
+            [samizdat.stubs-test]
             [samizdat.tournament-test]
             [samizdat.trajectory-test]
             [samizdat.store-test]
@@ -205,6 +206,7 @@
     samizdat.mechanics-test
     samizdat.repair-test
     samizdat.storm-test
+    samizdat.stubs-test
     samizdat.tournament-test
     samizdat.trajectory-test
     samizdat.store-test
