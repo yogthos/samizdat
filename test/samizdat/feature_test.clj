@@ -211,9 +211,20 @@
                              (let [c (str/join " " (map :content messages))]
                                (cond
                                  (str/includes? c "Your role: implementor")
-                                 ;; never calls a tool -> runs to ITS turn cap,
-                                 ;; which is what the test measures
-                                 {:content "thinking, no call" :finish-reason "stop"}
+                                 ;; Calls a real but non-terminal tool every
+                                 ;; turn, so the owner runs to ITS turn cap,
+                                 ;; which is what the test measures. It used
+                                 ;; to emit no call at all, which was a
+                                 ;; convenient way to reach the cap until the
+                                 ;; no-call ladder started ending a branch
+                                 ;; that cannot act (karamazov-068) — and
+                                 ;; ending it is right, so the stub is what
+                                 ;; changes. A read is exempt and neutral, so
+                                 ;; it resets no streak and trips no gate.
+                                 {:content (str "```tool-call\n"
+                                                "{\"name\":\"read_file\","
+                                                "\"args\":{\"path\":\"deps.edn\"}}\n```")
+                                  :finish-reason "stop"}
 
                                  :else {:content "COMPLETE" :finish-reason "stop"})))]
       (let [conn (db/open! ":memory:")]

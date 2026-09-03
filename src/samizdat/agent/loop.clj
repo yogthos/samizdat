@@ -490,6 +490,12 @@
         ;; harness has watched this happen without being able to stop it
         ;; (:provider-empty-replies). Both signals required — cut off at the
         ;; limit AND a trace past its own derived budget.
+        ;; This turn included: record-outcome has not run yet, so the
+        ;; counter on the branch is the streak BEFORE this one.
+        streak (inc (or (:consecutive-mechanics-failures branch) 0))
+        ladder (gates/threshold :no-call-ladder)
+        ending? (>= streak (:end-at ladder))
+        withhold? (and (not ending?) (>= streak (:withhold-at ladder)))
         tb (gates/threshold :thinking-budget)
         runaway? (thinking/runaway?
                   {:truncated? (:truncated signals)
@@ -503,6 +509,16 @@
               (:truncated signals)
               (str "[harness] Your response hit the token limit before you"
                    " emitted a tool call. Think less and call a tool.")
+              ;; THE LADDER (karamazov-068 item c). The complaint alone went
+              ;; 0-for-42 on run 89f6487a, which is the project's own rule
+              ;; about suggestion-only gates arriving again. No gate can
+              ;; answer a no-call — the route reaches neither :dispatch nor
+              ;; :arbiter, deliberately — so the escalation lives here, where
+              ;; the streak is already known.
+              ending?
+              (prompt/render "no-call-exhausted" {:streak streak})
+              withhold?
+              (prompt/render "no-call-withheld" {:streak streak})
               imitation?
               (prompt/prompt "no-call-imitation")
               (nil? parsed)
@@ -533,6 +549,20 @@
     (-> branch
         (state/record-outcome {:category :mechanics :progress? false})
         (cond-> runaway? thinking/recovery)
+        ;; WITHHOLD: take away what is being copied. The complaint has already
+        ;; been made and ignored; leaving the digests in front of the model is
+        ;; leaving it the exemplar (karamazov-068).
+        (cond-> withhold? state/drop-unloaded)
+        ;; END: a branch that cannot emit a call cannot make progress, and the
+        ;; rest of its budget spent emitting nothing helps nobody. The same
+        ;; outcome :mechanics-streak predicts, on the path that gate cannot
+        ;; reach.
+        ;; The reason is rendered, not built here: it reaches the model
+        ;; through state/summary, so it is prose and belongs in resources.
+        (cond-> ending? (assoc :status :abandoned
+                               :inactive-reason
+                               (str/trim (prompt/render "no-call-reason"
+                                                        {:streak streak}))))
         (state/add-message "user" msg {:turn turn})
         ;; And make the next request end mid-fence, so prose is not an
         ;; available reply. Telling the model to emit a fence is the

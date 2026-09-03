@@ -69,10 +69,18 @@
 
 (defn- no-call
   "Drive no-call-step over a stubbed journal, returning the branch."
-  [said]
-  (with-redefs [journal/record-turn! (fn [& _] nil)]
-    (aloop/no-call-step {} (state/new-branch {:id "S0" :problem "p"}) 5
-                        {:parsed nil :signals {} :said said :response {}})))
+  ([said] (no-call said 0))
+  ([said streak-before]
+   (with-redefs [journal/record-turn! (fn [& _] nil)]
+     (aloop/no-call-step {} (assoc (state/new-branch {:id "S0" :problem "p"})
+                                   :consecutive-mechanics-failures streak-before
+                                   :messages
+                                   [{:role "system" :content "the frame"}
+                                    {:role "assistant" :content "[unloaded] t3 eval → neutral"}
+                                    {:role "user" :content "[unloaded] t4 shell → failure"}
+                                    {:role "assistant" :content "a real reply"}])
+                         5
+                         {:parsed nil :signals {} :said said :response {}}))))
 
 (deftest an-imitated-digest-gets-a-specific-complaint
   (let [b (no-call "```tool-call\n<tool_call> [unloaded]")
@@ -766,3 +774,84 @@
                          base (-> base
                                   (assoc-in [:fitness :value] {})
                                   (assoc-in [:verify-unknown :value] :trust2))))))))))
+
+;; --- the no-call ladder (karamazov-068 item c) ------------------------------
+
+(deftest dropping-the-unloaded-messages-removes-what-is-being-imitated
+  ;; The withholding move. A branch copying [unloaded] digests is copying what
+  ;; is in front of it, so the escalation takes the exemplar away rather than
+  ;; asking again. Nothing is lost that fetch_turn cannot reopen.
+  (let [b {:messages [{:role "system" :content "the frame"}
+                      {:role "assistant" :content "[unloaded] t3 eval → neutral"}
+                      {:role "user" :content "[unloaded] t4 shell → failure"}
+                      {:role "assistant" :content "a real reply"}]}
+        out (state/drop-unloaded b)]
+    (is (= 2 (count (:messages out))))
+    (is (= ["the frame" "a real reply"] (mapv :content (:messages out))))
+    (testing "the system frame is never dropped even if it somehow matched"
+      (is (= "system" (:role (first (:messages out))))))))
+
+(deftest dropping-unloaded-is-a-no-op-when-there-is-nothing-to-drop
+  (let [b {:messages [{:role "system" :content "f"} {:role "user" :content "p"}]}]
+    (is (= (:messages b) (:messages (state/drop-unloaded b))))))
+
+(deftest the-no-call-ladder-escalates-from-complaint-to-action
+  ;; The complaint alone went 0-for-42 on a live run. The ladder is the
+  ;; project's own rule applied here: withhold rather than nag.
+  (let [{:keys [withhold-at end-at]} (gates/threshold :no-call-ladder)]
+    (is (and (pos? withhold-at) (< withhold-at end-at))
+        "withholding comes before ending, and both are policy")
+    (testing "an isolated no-call is answered with words only"
+      (is (< 1 withhold-at)))))
+
+(deftest an-isolated-no-call-costs-nothing
+  ;; record-outcome zeroes the streak the moment any real call lands, so a
+  ;; branch that stumbles once and recovers never reaches the ladder.
+  (let [b (-> {:consecutive-mechanics-failures 5}
+              (state/record-outcome {:category :success :progress? true}))]
+    (is (zero? (:consecutive-mechanics-failures b)))))
+
+;; --- the ladder, end to end (karamazov-068 item c) --------------------------
+
+(deftest the-no-call-ladder-runs-its-three-rungs
+  (let [{:keys [withhold-at end-at]} (gates/threshold :no-call-ladder)
+        digest "[unloaded] t70 cell → neutral"
+        msg-of (fn [b] (str (:content (last (:messages b)))))
+        ;; DIGESTS, counted the way the compactor builds them. The harness's
+        ;; own complaints quote the marker in order to explain it, so an
+        ;; includes? count would count those too.
+        unloaded-left (fn [b] (count (filter #(str/starts-with?
+                                               (str (:content %)) "[unloaded]")
+                                             (:messages b))))]
+
+    (testing "RUNG 1, below the withhold point: words only, context untouched"
+      (let [b (no-call digest (- withhold-at 2))]
+        (is (str/includes? (msg-of b) "bookkeeping"))
+        (is (= 2 (unloaded-left b)) "the digests are still there")
+        (is (not= :abandoned (:status b)))))
+
+    (testing "RUNG 2, at the withhold point: the exemplar is taken away"
+      (let [b (no-call digest (dec withhold-at))]
+        (is (zero? (unloaded-left b))
+            "a model copying the digests has nothing left to copy")
+        (is (str/includes? (msg-of b) "removed from your context"))
+        (is (str/includes? (msg-of b) "fetch_turn")
+            "and is told how to get any of it back")
+        (is (not= :abandoned (:status b)) "withholding is not ending")))
+
+    (testing "RUNG 3, at the end point: the branch stops honestly"
+      (let [b (no-call digest (dec end-at))]
+        (is (= :abandoned (:status b)))
+        (is (str/includes? (str (:inactive-reason b)) "no usable tool call"))
+        (is (str/includes? (msg-of b) "ended here"))))
+
+    (testing "ending outranks withholding, so the last rung is not skipped"
+      (let [b (no-call digest (+ end-at 5))]
+        (is (= :abandoned (:status b)))))))
+
+(deftest the-ladder-answers-an-ordinary-no-call-too
+  ;; Not only imitation. A branch emitting prose for eight turns is just as
+  ;; stuck, and the streak is the thing being answered.
+  (let [{:keys [end-at]} (gates/threshold :no-call-ladder)
+        b (no-call "I think I should probably consider..." (dec end-at))]
+    (is (= :abandoned (:status b)))))
