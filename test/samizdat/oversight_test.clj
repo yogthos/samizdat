@@ -9,7 +9,9 @@
   hurt the run it watches. What that pass DOES is a cell, because the harness's
   own policy about when to think and what to think about has to be something
   the agent can rewrite at runtime."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.gates :as gates]
@@ -431,3 +433,56 @@
       "ninety-nine free looks do not exhaust a budget of three")
   (is (not (ov/due? {:last-at 0 :passes 3 :looks 3} {:now 999 :every-ms 1 :budget 3 :boundary? true}))
       "three spent passes do"))
+
+;; --- the implement round's outcomes reach the one supervisor (karamazov-u5uy)
+
+(deftest the-brief-counts-what-the-implement-round-shipped
+  ;; Every implement strategy journals its per-owner outcomes and gather reads
+  ;; the last one. Before this the facts map the stream builds carried no
+  ;; :results at all, so `Implementors: 0/0 shipped` was in EVERY brief and
+  ;; :nobody-shipped could not fire on any strategy — not just decompose,
+  ;; which is what karamazov-u5uy was filed as.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :implement-round
+                   {:data {:strategy "board" :revision 0
+                           :results [{:status :abandoned :subtask "alpha" :answer nil}
+                                     {:status :abandoned :subtask "beta" :answer nil}]}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (= 2 (count (:oversight/results gather))))
+      (testing "the status survives the journal's JSON round trip as a keyword,
+                which is what the digest counts on"
+        (is (= [:abandoned :abandoned] (mapv :status (:oversight/results gather)))))
+      (is (str/includes? (str prob) "0/2 shipped"))
+      (is (str/includes? (str prob) "NO IMPLEMENTOR SHIPPED")))))
+
+(deftest a-round-that-shipped-something-does-not-read-as-nobody-shipped
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :implement-round
+                   {:data {:strategy "team" :revision 1
+                           :results [{:status :done :subtask "alpha" :answer "built alpha"}
+                                     {:status :error :subtask "beta" :answer "worker failed"}]}})
+    (let [{:keys [prob]} (reasoning-over conn rid)]
+      (is (str/includes? (str prob) "1/2 shipped"))
+      (is (not (str/includes? (str prob) "NO IMPLEMENTOR SHIPPED"))))))
+
+(deftest a-round-where-nobody-shipped-is-worth-a-look
+  ;; The fifth arming condition, and the most direct instance of the second
+  ;; one the docstring already lists: the run is producing nothing. Measured
+  ;; from the round's own outcomes rather than from turns since a write.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :implement-round
+                   {:data {:strategy "decompose" :revision 0
+                           :results [{:status :abandoned :subtask "T" :answer nil}]}})
+    (let [{:keys [gather]} (reasoning-over conn rid)]
+      (is (true? (:oversight/worth-a-look? gather)))))
+  (testing "a round that shipped everything still buys nothing"
+    (let [conn (db/open! ":memory:")
+          rid (runs/start-run! conn {:problem "p"})]
+      (journal/note! conn rid :implement-round
+                     {:data {:strategy "board" :revision 0
+                             :results [{:status :done :subtask "T" :answer "ok"}]}})
+      (let [{:keys [gather]} (reasoning-over conn rid)]
+        (is (false? (:oversight/worth-a-look? gather)))))))

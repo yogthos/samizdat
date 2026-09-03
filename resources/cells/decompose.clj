@@ -107,6 +107,23 @@
                  (apply str (for [c (:children r)] (str "\n" (line c (inc ind)))))))]
     (str "Decompose-on-stuck result:\n" (line result 0))))
 
+(defn- unit-results
+  "The decompose tree flattened into the FAN-OUT's per-owner vocabulary, one
+  entry per unit, so a decompose round describes itself the way a board or
+  team round does (karamazov-u5uy).
+
+  EVERY unit, not just the root. The root is one attempt among several — it
+  is `:landed` only once its children landed and the assembly passed — so
+  counting it alone would report a round that landed three of four pieces as
+  having shipped nothing. The tree is the same one `summarize` walks."
+  [result]
+  (letfn [(walk [r]
+            (cons {:status (if (= :landed (:status r)) :done :abandoned)
+                   :subtask (get-in r [:node :id])
+                   :answer (:answer r)}
+                  (mapcat walk (:children r))))]
+    (vec (walk result))))
+
 (cell/defcell :decompose/run
   {:doc "Solve the branch's problem by decompose-on-stuck: attempt it directly;
         when a unit is stuck, split it (architect) and solve the sub-units first,
@@ -130,6 +147,10 @@
       (journal/note! conn run-id :decompose
                      {:data {:status (:status result)
                              :children (count (:children result))}})
+      (journal/note! conn run-id :implement-round
+                     {:data {:strategy "decompose"
+                             :revision (:feature/revisions data 0)
+                             :results (unit-results result)}})
       (assoc data
              :verdict (if landed? :done :abandoned)
              :branch (assoc branch

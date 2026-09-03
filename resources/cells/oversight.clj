@@ -49,7 +49,7 @@
 (defn worth-a-look?
   "Whether this moment deserves a model call.
 
-  PURE, and the whole cost control of the stream. Four things make a pass
+  PURE, and the whole cost control of the stream. Five things make a pass
   worth its price, and none of them is 'time has passed':
 
   - the run is being STEERED AND IGNORING IT. A gate firing unmet is the
@@ -63,14 +63,21 @@
     it on its own ladder, and the cap is its notice that whether to switch,
     re-budget or stop is now a decision — the supervisor's, and there is one
     supervisor to hand it to (RFC-012 F1).
+  - NOBODY SHIPPED. The sharpest form of the second one: a round where every
+    owner abandoned, gave up or crashed is producing nothing, and says so in
+    its own outcomes rather than by the proxy of turns since a write
+    (karamazov-u5uy). No floor, because zero out of a positive total is not
+    a matter of degree.
 
   A healthy run that is shipping gets no supervision, which is correct: there
   is nothing to tune and saying so costs a turn of somebody's budget."
-  [{:keys [unmet-gates idle-turns errors at-cap?]} {:keys [unmet-floor idle-floor]}]
+  [{:keys [unmet-gates idle-turns errors at-cap? nothing-shipped?]}
+   {:keys [unmet-floor idle-floor]}]
   (boolean (or (>= (or unmet-gates 0) unmet-floor)
                (>= (or idle-turns 0) idle-floor)
                (seq errors)
-               at-cap?)))
+               at-cap?
+               nothing-shipped?)))
 
 (defn at-cap?
   "Whether the outer loop's last round was at or past its soft cap, read from
@@ -78,6 +85,28 @@
   [round]
   (boolean (and round (:soft-cap round)
                 (>= (or (:revision round) 0) (:soft-cap round)))))
+
+(defn round-results
+  "The implement round's per-owner outcomes, read off the journal.
+
+  Every implement strategy — board, team and decompose — writes the round it
+  finished as an :implement-round note in the FAN-OUT's vocabulary, and this
+  is the one place that vocabulary is read back. The status makes the trip as
+  a string, because a journal note is JSON and JSON has no keywords, so it is
+  put back as a keyword here: the digest counts `(= :done (:status %))` and a
+  silent string would count as zero shipped forever, which is the shape of
+  the bug this fixes (karamazov-u5uy)."
+  [note]
+  (mapv (fn [r] (update r :status #(some-> % name keyword)))
+        (:results note)))
+
+(defn nothing-shipped?
+  "Whether an implement round produced nothing at all. Guarded on a non-empty
+  round: no round is not the same fact as a failed round, and only the second
+  is worth a model call."
+  [results]
+  (boolean (and (seq results)
+                (not-any? #(= :done (:status %)) results))))
 
 (defn- crash-line
   "A :stage-error note as the one-line form the digest's layer classifier
@@ -105,7 +134,7 @@
             {:reason [:map [:oversight/turns :any] [:oversight/firings :any]
                       [:oversight/findings :any] [:oversight/unmet :any]
                       [:oversight/idle :any] [:oversight/round :any]
-                      [:oversight/crashes :any]
+                      [:oversight/crashes :any] [:oversight/results :any]
                       [:oversight/worth-a-look? :boolean]]
              :quiet  [:map [:oversight/worth-a-look? :boolean]]}]}
   (fn [{:keys [conn run-id]} data]
@@ -128,6 +157,13 @@
              ;; its cap, and every :stage-error note is a crash the loop
              ;; survived and nobody else will look at.
              round (journal/last-note conn run-id :route)
+             ;; THE ROUND'S OUTCOMES, per owner. The strategies used to hand
+             ;; these to a supervisor stage of their own in a data map; that
+             ;; stage is gone, so they are journalled and read here like
+             ;; everything else the stream needs (karamazov-u5uy). Without
+             ;; this the digest counted an empty vector on EVERY strategy and
+             ;; every brief read `Implementors: 0/0 shipped`.
+             results (round-results (journal/last-note conn run-id :implement-round))
              crashes (journal/notes conn run-id :stage-error)]
          (assoc data
                 :oversight/turns turns
@@ -136,11 +172,13 @@
                 :oversight/unmet unmet
                 :oversight/idle since
                 :oversight/round round
+                :oversight/results results
                 :oversight/crashes crashes
                 :oversight/worth-a-look?
                 (worth-a-look? {:unmet-gates unmet :idle-turns since
                                 :errors (seq (concat (filter :error findings) crashes))
-                                :at-cap? (at-cap? round)}
+                                :at-cap? (at-cap? round)
+                                :nothing-shipped? (nothing-shipped? results)}
                                {:unmet-floor (gates/threshold :oversight-unmet-floor)
                                 :idle-floor (gates/threshold :oversight-idle-floor)}))))
      (assoc data :oversight/worth-a-look? false))))
@@ -184,6 +222,12 @@
    ;; halves of the same claim.
    :input  [:map [:oversight/turns :any] [:oversight/firings :any]
             [:oversight/unmet :any] [:oversight/idle :any]
+            ;; Required, like the other four gather always writes on this
+            ;; edge: the round's per-owner outcomes are what the digest counts
+            ;; for `N/M shipped` and :nobody-shipped, and a supervisor brief
+            ;; that silently reports 0/0 because nobody declared the key is
+            ;; the bug this closes (karamazov-u5uy).
+            [:oversight/results :any]
             [:oversight/round {:optional true} :any]
             [:oversight/crashes {:optional true} :any]
             [:oversight/carry {:optional true} :any]]
@@ -205,6 +249,10 @@
              _ (session/mark! mark)
              dig (telemetry/digest {:idle-turns (:oversight/idle data)
                                     :unmet-gates (:oversight/unmet data)
+                                    ;; The round's per-owner outcomes, which
+                                    ;; is what :nobody-shipped counts and what
+                                    ;; the brief's `N/M shipped` line reports.
+                                    :results (:oversight/results data)
                                     ;; Each branch's session fitness: the
                                     ;; number the cull reads, shown to the
                                     ;; role that tunes (RFC-012 F3).

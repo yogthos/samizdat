@@ -204,22 +204,29 @@
                                      ;; findings become tasks when the last
                                      ;; round closed everything it opened
                                      :board/round (revision data)
-                                     :board/guidance (:revise/guidance data)})]
+                                     :board/guidance (:revise/guidance data)})
+              ;; The round's outcome in the FAN-OUT's result vocabulary, so
+              ;; that one vocabulary describes a round whichever strategy
+              ;; implemented it.
+              results (vec (concat
+                            (map (fn [{:keys [task answer]}]
+                                   {:status :done :subtask task :answer answer})
+                                 (:board/landed out))
+                            (map (fn [{:keys [task answer]}]
+                                   {:status :abandoned :subtask task :answer answer})
+                                 (:board/left out))))]
+          ;; JOURNALLED, not just handed on. The supervisor is the stream
+          ;; beside the run and it reads the journal — the data map reaches
+          ;; no supervisor at all, and :feature/route dissocs :results one
+          ;; stage later. Writing it only into the map is how the digest came
+          ;; to count an empty vector on every strategy (karamazov-u5uy).
+          (journal/note! conn run-id :implement-round
+                         {:data {:strategy "board" :revision (revision data)
+                                 :results results}})
           (assoc data
                  :board/landed (:board/landed out)
                  :board/left (:board/left out)
-                 ;; The shape the supervisor's telemetry digest reads
-                 ;; (`:nobody-shipped` counts :done statuses in :results) —
-                 ;; the board's outcome in the fan-out's result vocabulary, so
-                 ;; every downstream stage works unchanged whichever strategy
-                 ;; implemented the round.
-                 :results (vec (concat
-                                (map (fn [{:keys [task answer]}]
-                                       {:status :done :subtask task :answer answer})
-                                     (:board/landed out))
-                                (map (fn [{:keys [task answer]}]
-                                       {:status :abandoned :subtask task :answer answer})
-                                     (:board/left out))))
+                 :results results
                  :branch (assoc branch :final-answer (:answer out)))))
       (fn [d] (assoc d :branch (assoc (:branch d) :final-answer nil))))))
 

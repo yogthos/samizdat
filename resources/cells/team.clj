@@ -255,6 +255,11 @@
                              :epic parent
                              :tasks (vec (remove nil? task-ids))
                              :done (count (filter ok? results))}})
+      ;; The per-owner outcomes, where the one supervisor reads them. The
+      ;; :team note above is counts; the stream's digest needs the entries
+      ;; themselves to say which owner shipped (karamazov-u5uy).
+      (journal/note! conn run-id :implement-round
+                     {:data {:strategy "team" :revision rev :results (vec results)}})
       ;; The JOIN lands on the branch — the feature loop's review/critique/
       ;; verify gates read it — but no verdict and no :done here: marking the
       ;; run done unconditionally at this point meant a team where every
@@ -309,6 +314,10 @@
                                (map vector results retried)))]
       (journal/note! conn run-id :supervise
                      {:data {:retried (count (remove ok? results)) :fixed fixed}})
+      ;; Re-journalled AFTER the retries, so the round the supervisor reads is
+      ;; the round as it finally stands rather than the fan-out's first pass.
+      (journal/note! conn run-id :implement-round
+                     {:data {:strategy "team" :results retried}})
       ;; The verdict, decided AFTER the retries, from what actually landed. A
       ;; team where nothing landed — retries included — ends :abandoned with
       ;; no answer, so :loop/finish records an abandoned run rather than a

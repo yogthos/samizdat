@@ -124,9 +124,20 @@ round boundary (`switch`, `budget`, `stop`, from `interventions/workflow-kinds`)
 and applies them to the round's data map, resolving each applied or rejected
 with a reason. What the stage used to be handed — the round's outcome, the
 soft cap, the stage crashes — the stream now reads off the journal
-(`:route`, `:review`, `:critique` and `:stage-error` notes) in
-`:oversight/gather`, and the cap and a crash are each reason enough to spend
-a model call. The stream's brief carries the three levers.
+(`:route`, `:review`, `:critique`, `:stage-error` and `:implement-round`
+notes) in `:oversight/gather`, and the cap, a crash, and a round nobody
+shipped are each reason enough to spend a model call. The stream's brief
+carries the three levers.
+
+`:implement-round` is the round's per-owner outcomes, and every implement
+strategy writes one: `:feature/board`, `:team/fan-out` (again from
+`:team/supervise` after its retries) and `:decompose/run`, all in the
+fan-out's `{:status :subtask :answer}` vocabulary. It exists because moving
+the round's facts out of the data map and onto the journal left the outcomes
+behind: the strategies still computed `:results` and `:feature/route` still
+dissoc'd it, but nothing read it, so the digest counted an empty vector and
+every brief said `Implementors: 0/0 shipped` on every strategy. A supervisory
+signal is only as real as the channel it arrives on (karamazov-u5uy).
 
 **F2 — Phase 2 is not triggered by the turn.** *(Fixed.)* The model says
 evaluation happens at the turn boundary. Mechanism 3 fired on a 120-second

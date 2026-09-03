@@ -514,3 +514,27 @@
     (is (= "revise" (:directive (journal/last-note conn rid :supervise))))
     (is (= ["first" "second"] (mapv :notes (journal/notes conn rid :oversight)))
         "and every note of a kind, oldest first")))
+
+(deftest the-board-round-reports-its-outcome-where-the-supervisor-reads-it
+  ;; karamazov-u5uy. :results in the data map is not a channel to the
+  ;; supervisor — the one supervisor is the stream beside the run, and it
+  ;; reads the journal. The board writes the round's per-owner outcomes as an
+  ;; :implement-round note so the stream's digest can count them.
+  (with-redefs [judge/deterministic-block (constantly nil)
+                judge/parse-verdict (constantly :complete)
+                judge/blocking-findings (constantly nil)
+                llm/chat (roles {:review :pass})]
+    (let [conn (db/open! ":memory:")
+          r (run-feature conn {:config {:run {:loop "feature" :subtasks ["alpha" "beta"]}}})
+          note (journal/last-note conn (:run-id r) :implement-round)
+          results (:results note)]
+      (is (= "board" (:strategy note)))
+      (is (= 2 (count results)))
+      (testing "one entry per owner, identified — the board names its owners by
+                TASK ID, which is what its finish node carries, where the
+                fan-out names them by subtask text. The digest counts statuses
+                and renders neither, so the two coexist; the status vocabulary
+                is the part that must agree."
+        (is (every? #(seq (str (:subtask %))) results)))
+      (is (every? #(= "done" (:status %)) results)
+          "both parts landed, so the round did not read as nobody-shipped"))))
