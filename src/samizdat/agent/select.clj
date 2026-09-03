@@ -46,7 +46,12 @@
   menu that offers them invites a run to be driven by half a workflow."
   [conn]
   (let [allowed (set (:candidates (policy)))]
-    (filterv #(contains? allowed (:name %)) (workflow/catalog conn))))
+    ;; :turn-sliceable? as well as the whitelist. The whitelist is a claim
+    ;; about which workflow suits which task; this is a claim about which
+    ;; ones can drive a run at all, and it must not depend on a policy value
+    ;; the agent may widen (karamazov-4sx).
+    (filterv #(and (contains? allowed (:name %)) (:turn-sliceable? %))
+             (workflow/catalog conn))))
 
 (defn history-lines
   "How each workflow has gone on this project, as lines for the prompt.

@@ -17,6 +17,8 @@
             [samizdat.cells :as cells]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
+            [clojure.string :as str]
+            [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
             [samizdat.agent.resume :as resume]
             [samizdat.store.runs :as runs]
@@ -418,4 +420,54 @@
           (is (= "turn cap of 3 reached"
                  (do (drive c rid2 (fn [bs _turn] bs) :token-budget nil)
                      (:inactive_reason (first (runs/branches c rid2))))))))
+      (finally (db/close c)))))
+
+;; --- nothing is left pending on a run nobody will drain again (karamazov-agbw)
+
+(deftest a-directive-no-boundary-reached-is-expired-when-the-run-cannot-resume
+  ;; Both drains deliberately leave switch/budget/stop for the workflow's OWN
+  ;; directives stage, and only feature.edn has one. On a plain loop.edn beam
+  ;; run such a directive was never applied and never rejected: it sat pending
+  ;; after the run ended, the never-resolves shape of blt.38, and the control
+  ;; API's refusal of directives against ended runs cannot help — the row was
+  ;; queued while the run was live.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})]
+    (try
+      (interventions/submit! c rid {:kind "switch" :payload {:strategy "team"}
+                                    :issued-by "supervisor"})
+      (drive c rid (fn [bs _turn]
+                     (mapv #(if (= "B1" (:id %))
+                              (assoc % :status :done :final-answer "shipped it")
+                              %)
+                           bs)))
+      (is (= "completed" (:status (runs/get-run c rid))))
+      (is (empty? (interventions/pending c rid))
+          "nothing is left pending on a completed run")
+      (let [row (first (interventions/history c rid))]
+        (is (= "rejected" (:status row)))
+        (is (str/includes? (str (:disposition row)) "completed")
+            "and the disposition says which ending overtook it"))
+      (finally (db/close c)))))
+
+(deftest an-exhausted-runs-directives-survive-for-the-resume
+  ;; The other half, and the reason this is not simply "clear the queue when
+  ;; the run stops": an exhausted run is over AND resumable, so a directive no
+  ;; boundary reached is not stale, it is early. Expiring it would throw away
+  ;; an instruction the resume is about to be able to apply.
+  ;;
+  ;; A workflow kind, because those are the ones the drains leave alone. The
+  ;; scheduler kinds are not a test of this at all: the beam drain applies
+  ;; `extend` during the round it arrives in, so it is resolved before the run
+  ;; ever ends.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})]
+    (try
+      (interventions/submit! c rid {:kind "budget" :payload {:turns 20}
+                                    :issued-by "supervisor"})
+      (drive c rid (fn [bs _turn] bs))
+      (is (= "exhausted" (:status (runs/get-run c rid))))
+      (is (resume/resumable? c rid))
+      (is (= 1 (count (interventions/pending c rid)))
+          "still pending, for the boundary a resume will reach")
       (finally (db/close c)))))

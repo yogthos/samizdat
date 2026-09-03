@@ -56,8 +56,23 @@ glob-scoped interceptors match on.
                                            ; [branch-kw pattern guard], or a (fn [data] pred) form
  :constraints  [{:type :must-follow :if node :then node}]
  :subworkflows {cell-id manifest-name}     ; optional: a nested manifest as one node
- :prompt       "name"}                     ; optional: prompt appended to the base
+ :prompt       "name"                      ; optional: prompt appended to the base
+ :turn-sliceable? false}                   ; optional, default true — see below
 ```
+
+`:turn-sliceable?` declares that a manifest may **not** be a run's loop. The
+slice cuts every edge returning to `:start` into `:end`, which is the
+definition of a turn for an iterating loop and silent data loss for anything
+else; two shipped manifests have that back edge *structurally*, and both say
+so here. `beam.edn` is the scheduler — it advances the branches that make
+model calls rather than making one — and `repl.edn` is a shape whose four
+pure cells classify a branch, with the binding enforcement in `phases.edn`.
+Such a manifest stays in `catalog` (the inventory) but is off `render-catalog`
+(the supervisor's switch menu) and off selection's candidates, and both
+drivers refuse it. Beam's exemption used to be an artifact of the fact that
+nothing called `turn-manifest` on it, which is an invariant held by absence —
+`repl` had the same shape, no such luck, and shipped catalogued and unrunnable
+(karamazov-4sx).
 
 `:start` is the entry node and `:end` terminates. A dispatch entry is a
 **pattern** over the data map (`samizdat.symbolic`): a map is an open-world
@@ -123,8 +138,9 @@ role plumbing. Two functions worth knowing apart:
 | `(compiled-manifest name)` | A factory manifest compiled fresh — the seam a role's sub-loop uses. |
 | `(run-turn ctx branch turn [manifest-name])` | **The one composition of a turn.** Compiles the slice and runs one branch through it, so it cannot drift from production. |
 | `(run! {:keys [conn config llm-adapter llm-config problem max-turns]})` | One branch to completion under the stored loop. |
-| `(catalog conn)` / `(render-catalog conn)` | Every selectable workflow with its `:description` — the menu the supervisor chooses from. |
-| `(iterating? definition)`, `(finish-nodes …)`, `(start-node)` | Classification. |
+| `(catalog conn)` | Every workflow with its `:description` and `:turn-sliceable?` — the full inventory. |
+| `(render-catalog conn)` | The switch menu the supervisor chooses from: the catalogue minus what cannot be a run's loop. |
+| `(iterating? definition)`, `(turn-sliceable? …)`, `(finish-nodes …)`, `(start-node)` | Classification. |
 | `(role-ctx ctx role)` | ctx with the adapter and model swapped to `config :run :role-models`. |
 | `(workflow-prompt definition)` / `(prompt-text name)` | A manifest's prompt suffix. |
 

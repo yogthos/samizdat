@@ -17,6 +17,17 @@
 ;; cannot open the REPL. :land loops back to itself while files are owed,
 ;; which is the exit condition holding.
 {:description "The REPL session: orient, declare, explore, land. The declaration is made with the `plan` tool - plan({files: [...], tests: [...], goal: \"one line\"}) - and at least one file is required; an empty plan is refused. Entry and exit are enforced as phases.edn refusals, :repl-needs-a-plan (eval is withheld until a file is named) and :plan-not-landed (done is withheld while a declared file is unwritten), so exploration cannot start without a hypothesis or end without a file. Calling plan again REPLACES the declaration, which is how a branch corrects a wrong guess. Reorder or drop a step here and the next session takes the new shape; the two refusals live in phases.edn and are what actually bind."
+ ;; NOT TURN-SLICEABLE, and this is the file that has to say so. :declare
+ ;; routes its :empty edge back to :start and the manifest does not iterate,
+ ;; which is the shape turn-manifest refuses — so a run pointed at "repl"
+ ;; threw at run start under the beam and, worse, HUNG under the single-branch
+ ;; driver: all four cells are pure functions of an unchanging branch, so the
+ ;; cycle has no model call to break it. That is not a graph to repair, it is
+ ;; a category error. This manifest is a SHAPE, written down so an agent can
+ ;; rewrite the shape; what binds is the two phases.edn refusals, and nothing
+ ;; drives it as a run's loop (karamazov-4sx).
+ :turn-sliceable? false
+
  :input-schema
  ;; What a driver hands this manifest to start a run. mycelium checks it in
  ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly

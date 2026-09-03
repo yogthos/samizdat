@@ -15,6 +15,17 @@
 ;; data map, the predicate only reads it.
 {:description "The beam scheduler: one round advances every active branch once, then scores, culls, settles, repopulates and spawns against the settled set. A barrier rather than a pipeline, because a branch deciding whether to fork needs the whole beam's last round rather than whenever its sibling happened to finish."
 
+ ;; NOT TURN-SLICEABLE. This manifest routes :tick back to :start and is
+ ;; non-iterating by the same test that refuses that shape elsewhere — it
+ ;; SCHEDULES the branches that make model calls rather than making one — so
+ ;; slicing it would cut the round's own back edge and produce a scheduler
+ ;; that runs one round. It was never in danger, because nothing calls
+ ;; turn-manifest on the scheduler; that is an invariant held by absence, and
+ ;; repl.edn is what it cost when a second manifest had the same shape and no
+ ;; such luck. Declared here so it is a property of the file rather than of
+ ;; which call site loads it (karamazov-4sx).
+ :turn-sliceable? false
+
  :input-schema
  ;; The SCHEDULER's entry, which is a different shape from every other
  ;; manifest here: the round works over the whole beam, not one branch.

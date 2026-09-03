@@ -22,7 +22,9 @@
   it into the branch's next turn at priority zero, above every machine gate.
   The specification test drives a real run and asserts a REPL steer lands in
   the model's context."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.beam :as beam]
@@ -175,8 +177,15 @@
   ;; `exhausted` is new here: the beam's exhaust path used to record :failed,
   ;; which is also what a THROWN error records, so "the harness broke" and
   ;; "the work honestly ran out of budget" were the same row (karamazov-emw).
+  ;;
+  ;; `abandoned` was the one still missing, found the same way the last one
+  ;; was: :loop/finish and :board/finish write it for a run that gave up
+  ;; rather than shipped, and the set that decides "has ended" did not list
+  ;; it — so this endpoint accepted a directive against an abandoned run and
+  ;; the row sat pending with nothing left to drain it (karamazov-agbw).
   (with-db [c]
-    (doseq [st ["completed" "aborted" "failed" "interrupted" "exhausted"]]
+    (doseq [st ["completed" "aborted" "failed" "interrupted" "exhausted"
+                "abandoned"]]
       (let [rid (runs/start-run! c {:problem "p"})]
         (runs/finish-run! c rid (keyword st) nil)
         (let [r (api-control/intervene! c rid {:kind "message"
@@ -721,3 +730,4 @@
   ;; it is the one role whose context is ABOUT the run rather than in it.
   (is (not (roles/may-use? :implementor "intervene")))
   (is (roles/may-use? :supervisor "intervene")))
+

@@ -95,17 +95,42 @@
       (is (= (:dispatches def') (:dispatches turn)))
       (is (= (:constraints def') (:constraints turn))))))
 
-(deftest every-shipped-manifest-has-a-compilable-turn-slice
+(defn- shipped-definition [nm]
+  (wf/read-definition (slurp (io/resource (wf/manifest-resource nm)))))
+
+(deftest every-shipped-manifest-slices-or-says-it-cannot
   ;; The rewrite must leave a graph mycelium still accepts — reachable nodes,
   ;; covered dispatches, satisfied constraints — for every manifest, not just
   ;; the factory loop. A slice that fails to compile is a run that cannot
   ;; start, and the beam compiles this before POST /v1/runs answers.
-  (doseq [nm ["loop" "critic" "review" "worker" "reviewer" "supervisor"
-              "orchestrator" "team" "feature" "decompose"]]
+  ;;
+  ;; OVER THE DIRECTORY, not a hand-written list. The list this replaces named
+  ;; ten of seventeen and its docstring said "every manifest", which is how
+  ;; `repl` shipped catalogued and unsliceable: it routes :declare's :empty
+  ;; edge back to :start and does not iterate, so turn-manifest refused it,
+  ;; so `:run :loop "repl"` threw at run start under the beam. Being off
+  ;; gates.edn's selection whitelist was the only thing keeping it unreachable
+  ;; — the supervisor's SWITCH menu is the whole catalogue (karamazov-4sx).
+  (doseq [nm manifests/shipped-manifests]
     (testing nm
-      (let [d (wf/read-definition (slurp (io/resource (wf/manifest-resource nm))))]
-        (is (some? (wf/compile-loop (wf/turn-manifest d)))
-            (str nm "'s turn slice does not compile"))))))
+      (let [d (shipped-definition nm)]
+        (if (manifests/turn-sliceable? d)
+          (is (some? (wf/compile-loop (wf/turn-manifest d)))
+              (str nm "'s turn slice does not compile"))
+          (is (thrown? Exception (wf/turn-manifest d))
+              (str nm " declares itself unsliceable, so slicing it must be
+                       refused rather than quietly producing a turn")))))))
+
+(deftest exactly-two-shipped-manifests-declare-themselves-unsliceable
+  ;; Declaring it is a real decision and not a way out of fixing a graph, so
+  ;; the set is pinned: `beam` is the scheduler, which drives branches rather
+  ;; than being driven, and `repl` is a SHAPE — four pure cells classifying a
+  ;; branch, with the enforcement in phases.edn — that no driver should ever
+  ;; be pointed at. A third name here is a decision somebody has to make on
+  ;; purpose.
+  (is (= #{"beam" "repl"}
+         (set (remove #(manifests/turn-sliceable? (shipped-definition %))
+                      manifests/shipped-manifests)))))
 
 (deftest a-whole-run-manifest-never-routes-back-to-its-entry
   ;; Run 3b8d2af5: the feature loop's revise edge went to :start, and under the
@@ -118,13 +143,51 @@
   ;; is silent data loss. A whole-run manifest that wants to re-enter its
   ;; dispatch adds a node of its own (feature's :redispatch, orchestrator's
   ;; :retry).
-  (doseq [nm ["team" "feature" "decompose" "orchestrator" "board"]]
+  ;;
+  ;; Over the directory as well, for the same reason as the slice test above:
+  ;; the hand-written list of five is what let `repl` route :empty back to
+  ;; :start unnoticed. An unsliceable manifest is exempt because nothing ever
+  ;; cuts its edges.
+  (doseq [nm manifests/shipped-manifests]
     (testing nm
-      (let [d (wf/read-definition (slurp (io/resource (wf/manifest-resource nm))))
+      (let [d (shipped-definition nm)
             targets (mapcat (fn [[_ e]] (if (map? e) (vals e) [e])) (:edges d))]
-        (is (not-any? #{:start} targets)
-            (str nm " routes an edge back to :start — under the beam driver "
-                 "that runs each cycle on a fresh data map"))))))
+        (when (and (manifests/turn-sliceable? d) (not (wf/iterating? d)))
+          (is (not-any? #{:start} targets)
+              (str nm " routes an edge back to :start — under the beam driver "
+                   "that runs each cycle on a fresh data map")))))))
+
+(deftest an-unsliceable-manifest-is-not-on-the-supervisors-switch-menu
+  ;; The catalogue is what render-catalog feeds the supervisor as the set of
+  ;; workflows it may switch a run to, and a run's loop is turn-sliced. Left
+  ;; on the menu, `repl` was an offer that fails at run start — the trap
+  ;; beam-test's selectability test names and does not catch, because it
+  ;; compiles the whole-run form.
+  (let [menu (wf/render-catalog nil)]
+    (is (str/includes? menu "loop"))
+    (doseq [nm ["beam" "repl"]]
+      (is (not (str/includes? menu (str "- " nm " ")))
+          (str nm " is offered as a workflow to switch to, and cannot run as one")))))
+
+(deftest a-driver-refuses-an-unsliceable-manifest-as-a-runs-loop
+  ;; Both drivers, and the single-branch one is the reason this is not just
+  ;; turn-manifest's throw: `repl`'s four cells are pure functions of an
+  ;; unchanging branch, so :declare's :empty edge back to :start is an
+  ;; infinite pure cycle with no model call to break it and no step cap
+  ;; anywhere. Under workflow/run! `:run :loop "repl"` did not fail, it HUNG,
+  ;; which is worse than the beam's throw.
+  (let [conn (db/open! ":memory:")]
+    (doseq [nm ["repl" "beam"]]
+      (testing nm
+        (let [e (try (wf/compile-turn-loop conn nm) nil (catch Throwable t t))]
+          (is (some? e) (str nm " sliced"))
+          (is (str/includes? (str (ex-message e)) "cannot be turn-sliced")))
+        (let [e (try (wf/run! {:conn conn :config {:run {:loop nm}}
+                               :problem "p" :max-turns 1})
+                     nil
+                     (catch Throwable t t))]
+          (is (some? e) (str nm " was accepted as a run's loop"))
+          (is (str/includes? (str (ex-message e)) "cannot be turn-sliced")))))))
 
 (deftest iterating-classification-decides-width-and-deadline
   ;; A pass through the slice is one model call only when the slice contains

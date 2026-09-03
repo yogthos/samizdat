@@ -24,7 +24,9 @@
   compatibility while `POST /v1/runs` starts one and returns. A branch is an
   entity with a durable id rather than a value threaded through the loop,
   because an intervention has to be able to name one."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             ;; log is called from start-run!'s retention sweep. jolt resolves
             ;; ns aliases lazily, so leaving this out loads fine and throws on
             ;; the first run start that actually prunes — which made enabling
@@ -90,10 +92,28 @@
   such a run was accepted and sat `pending` forever — the intervention that
   never resolves, which is the exact defect blt.38 was filed for.
 
-  NOT the same question as `resumable?` in agent.resume, which excludes only
+  NOT the same question as `unresumable-statuses` below, which is only
   completed and aborted. A run that ran out of budget is over AND resumable;
-  those are different facts and deliberately keep different lists."
-  #{"completed" "aborted" "failed" "interrupted" "exhausted"})
+  those are different facts and deliberately keep different lists.
+
+  `abandoned` is on the list and was missing, which is the same defect one
+  layer along: :loop/finish and :board/finish both write it (a branch that
+  gave up rather than shipped), so `terminal?` said an abandoned run was
+  still going and api.control accepted a directive against it — pending
+  forever, with nothing left to drain it (karamazov-agbw)."
+  #{"completed" "aborted" "failed" "interrupted" "exhausted" "abandoned"})
+
+(def unresumable-statuses
+  "The endings a resume will not pick up, so the only ones after which a
+  directive that never reached a boundary is certainly undeliverable.
+
+  Named here beside `terminal-statuses` because the two are read together and
+  were previously one enumerated and one inline: agent.resume's `resumable?`
+  is defined against this set, and the drivers' teardown expires pending
+  directives against it. An aborted run stays aborted and a completed one
+  shipped; everything else is over but may yet continue, and a pending
+  directive against it is not stale, it is early (karamazov-agbw)."
+  #{"completed" "aborted"})
 
 (defn terminal?
   "Whether this run row has ended, whatever ended it."

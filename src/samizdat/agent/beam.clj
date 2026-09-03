@@ -872,6 +872,25 @@
         (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
         (oversight/forget-run! run-id)
         (session/forget-run! run-id)
+        ;; NOTHING IS LEFT PENDING ON A RUN NOBODY WILL DRAIN AGAIN. The
+        ;; drains leave workflow kinds (switch/budget/stop) for a workflow's
+        ;; own directives stage and only feature.edn has one, so on any other
+        ;; loop such a directive was neither applied nor rejected and sat
+        ;; pending after the run ended (karamazov-agbw). Guarded on the
+        ;; ending: an exhausted or failed run is over and still resumable, and
+        ;; its pending `extend` is what the resume will apply.
+        ;;
+        ;; Best effort, like everything else in this teardown: a failure to
+        ;; tidy the queue must not turn a finished run into a failed one.
+        (try
+          (let [status (str (:status (runs/get-run conn run-id)))]
+            (when (contains? runs/unresumable-statuses status)
+              (interventions/expire-pending!
+               conn run-id
+               (str "the run ended (" status ") before a boundary applied it"))))
+          (catch Throwable e
+            (log/warn "expiring the run's pending directives failed:" (ex-message e))))
+
         ;; SHORT-TERM BECOMES LONG-TERM. The session tally dies with the
         ;; process; a pattern that held across the run is a candidate for
         ;; something the next run should start out knowing, and this is the

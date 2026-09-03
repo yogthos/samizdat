@@ -101,7 +101,9 @@
     table does hold the result text, but it holds the ESCALATED copy, which
     would not compare equal to the next clean one — replaying it would break
     the detection it was meant to restore."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
@@ -250,7 +252,7 @@
   exhausted process that never got to tear down — is resumable."
   [conn run-id]
   (when-let [r (runs/get-run conn run-id)]
-    (not (contains? #{"completed" "aborted"} (:status r)))))
+    (not (contains? runs/unresumable-statuses (str (:status r))))))
 
 (defn resume!
   "Rebuild a run's branches from the journal and continue the beam's round

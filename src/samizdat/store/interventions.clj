@@ -38,7 +38,9 @@
   Abort is the exception and does not come through here. It goes to the
   supervisor, because a run that is wedged is exactly the run that will never
   reach another boundary to drain a queue at."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
             ;; points connection construction at the native driver; it has to load
@@ -179,6 +181,34 @@
       (journal/note! conn run-id :intervention-resolved
                      {:turn turn :data {:id id :status status :disposition disposition}}))
     n))
+
+(defn expire-pending!
+  "Resolve every directive still pending on a run as rejected, because the run
+  ended before any boundary applied it. Returns how many were expired.
+
+  THE OTHER HALF OF api.control's refusal. That one stops a directive arriving
+  after the run is over; this one stops a directive that arrived in time from
+  outliving the run it was for. Between them, nothing is left `pending` on a
+  run nobody will drain again — the never-resolves shape of blt.38.
+
+  Workflow kinds are how it was reachable. Both drains deliberately leave
+  switch/budget/stop for a workflow's OWN directives stage, and only
+  feature.edn has one, so on a plain loop.edn run those three were never
+  applied and never rejected (karamazov-agbw). The expiry is written for every
+  kind rather than those three, because 'the run ended first' is not a fact
+  about which kind it was.
+
+  THE CALLER DECIDES WHETHER THE RUN IS REALLY OVER, and must not call this
+  for an ending a resume can pick up: an exhausted or failed run is over and
+  still resumable, and a pending `extend` against one is precisely what the
+  resume exists to apply — expiring it would delete the instruction that would
+  have un-exhausted the run. `runs/unresumable-statuses` is that test."
+  [conn run-id disposition]
+  (let [rows (pending conn run-id)]
+    (reduce (fn [n {:keys [id]}]
+              (+ n (resolve! conn run-id id :rejected disposition nil)))
+            0
+            rows)))
 
 (defn history [conn run-id]
   (db/fetch conn ["SELECT * FROM interventions WHERE run_id = ? ORDER BY id" run-id]))
