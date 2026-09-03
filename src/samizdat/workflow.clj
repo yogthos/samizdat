@@ -320,7 +320,8 @@
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width 1
-                                      :prompt-digest (branch-loop/prompt-digest)})
+                                      :prompt-digest (branch-loop/prompt-digest
+                                                      (workflow-prompt definition))})
         branch (state/new-branch {:id "B1" :problem problem
                                   :messages (branch-loop/initial-messages
                                              problem (workflow-prompt definition))})

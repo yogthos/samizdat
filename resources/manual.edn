@@ -79,6 +79,8 @@
     :summary "A whole-run manifest reduced to one turn — the slice the beam schedules. Refuses a manifest that declares :turn-sliceable? false, and one that routes an edge back to :start without iterating (that edge is cut into :end, so each cycle would run as a fresh turn with a fresh data map)."}
    {:name samizdat.workflow/turn-sliceable?
     :summary "Whether a manifest may be a run's LOOP at all. Default true; declare :turn-sliceable? false at the top of a manifest for one whose back edge to :start is structural rather than a turn — beam.edn (the scheduler, which drives branches rather than being driven) and repl.edn (a shape whose four pure cells classify a branch, enforced by phases.edn refusals). Such a manifest stays in the catalogue but is off the supervisor's switch menu and off selection's candidate list, and both drivers refuse to run it."}
+   {:name samizdat.workflow/workflow-prompt
+    :summary "A manifest's own instructions: `:prompt \"name\"` at the top names resources/prompts/<name>.md, appended to the base system prompt for every branch the run opens. This is how a manifest declares what its graph is FOR — review.edn is the same loop framed as a code review — so a new task shape is a manifest plus a prompt rather than a code path. Read from the LOADED definition, so an edit to the manifest reframes the next run."}
    {:name samizdat.userspace/self-hosting?
     :summary "Whether the project under work IS a samizdat checkout. What the system prompt gates its sections about cells, manifests and src-vs-resources on: all of it is load-bearing here and standing instruction about the wrong codebase anywhere else."}
    {:name samizdat.agent.files/reference-roots

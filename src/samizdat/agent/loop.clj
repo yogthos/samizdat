@@ -148,9 +148,18 @@
 
 (defn prompt-digest
   "A cheap fingerprint of the prompt and gate set a run used. AHE component
-  observability: a pass-rate change should be attributable to a file."
-  []
-  (str (hash [(system-prompt) (gates/config) (judge-exemptions)])))
+  observability: a pass-rate change should be attributable to a file.
+
+  `prompt-suffix` is the run manifest's own `:prompt`, which is part of the
+  prompt the run used and so part of what a pass-rate change is attributable
+  to — a review run and a factory run recorded the same digest while reading
+  different instructions. Conjed only when there is one, so every digest
+  already in the run history keeps its value and the comparison this exists
+  for still spans the crossover."
+  ([] (prompt-digest nil))
+  ([prompt-suffix]
+   (str (hash (cond-> [(system-prompt) (gates/config) (judge-exemptions)]
+                (not (str/blank? prompt-suffix)) (conj prompt-suffix))))))
 
 (defn shareable?
   "Whether a just-produced artifact belongs in the run's shared pool.

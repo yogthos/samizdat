@@ -118,8 +118,13 @@
 
   `gates.edn :fork-inherit` owns the decision, so switching a run back to
   fresh-tape forks — or forking from an older turn — is a data edit and not a
-  rebuild. See `state/fork-branch` for what is and is not inherited."
-  [{:keys [problem]} parent id thesis turn]
+  rebuild. See `state/fork-branch` for what is and is not inherited.
+
+  `:prompt-suffix` is the run manifest's own `:prompt`, and it applies to a
+  FRESH tape only: a child that inherits its parent's conversation inherits
+  the system message the suffix is already part of, and appending it again
+  would put the workflow's instructions in the transcript twice."
+  [{:keys [problem prompt-suffix]} parent id thesis turn]
   (let [{:keys [inherit? depth]} (gates/threshold :fork-inherit)]
     (if (and parent inherit?)
       (state/fork-branch parent {:id id :depth depth :turn turn
@@ -127,7 +132,7 @@
       (cond-> (state/new-branch
                {:id id :parent-id (:id parent) :problem problem
                 :created-at-turn turn
-                :messages (branch-loop/initial-messages problem)})
+                :messages (branch-loop/initial-messages problem prompt-suffix)})
         thesis (assoc :thesis thesis)))))
 
 (defn- open-branch!
@@ -973,9 +978,15 @@
         ;; exists — the row records a width this compile decides — and
         ;; :on-trace is only accepted here.
         run-id* (atom nil)
-        {loop-version :version turn-wf :compiled iterating? :iterating?}
+        {loop-version :version turn-wf :compiled iterating? :iterating?
+         loop-def :definition}
         (workflow/compile-turn-loop conn loop-nm
                                     {:on-trace (events/tracer run-id*)})
+        ;; The manifest's OWN instructions, appended to the base system prompt
+        ;; of every branch this run opens. Read from the loaded definition
+        ;; rather than the file, so an agent's edit to the manifest is what
+        ;; frames the run.
+        prompt-suffix (workflow/workflow-prompt loop-def)
         ;; A non-iterating manifest (team, feature, decompose) is a whole-run
         ;; workflow: one "turn" is the branch's entire job, and it fans out
         ;; internally. Running five of those concurrently would multiply the
@@ -1003,7 +1014,8 @@
                                       :max-turns max-turns
                                       :beam-width width
                                       :token-budget token-budget
-                                      :prompt-digest (branch-loop/prompt-digest)})
+                                      :prompt-digest (branch-loop/prompt-digest
+                                                      prompt-suffix)})
         ;; The tracer's steps can now say which run they belong to; the bus is
         ;; process-wide and the watcher filters on it.
         _ (reset! run-id* run-id)
@@ -1033,6 +1045,8 @@
              :max-turns max-turns :beam? (> width 1) :beam-width width
              :token-budget token-budget
              :root root
+             ;; What the manifest says this run is FOR — see seed-branch.
+             :prompt-suffix prompt-suffix
              ;; The compiled per-turn manifest advance-branch drives, and
              ;; whether it is a per-turn loop at all (which decides the turn
              ;; deadline; see advance-all).

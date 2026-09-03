@@ -509,3 +509,65 @@
         (is (str/includes? (str (:result saved)) "Order-dependent"))
         (is (str/includes? (str (:result saved)) ":provider-error"))
         (is (str/includes? (str (:result shown)) "Order-dependent"))))))
+
+(deftest a-manifests-prompt-reaches-the-driver-that-production-uses
+  ;; karamazov-ioo.20's leftover, and the same shape its own commit message
+  ;; describes: the two drivers were unified for what a TURN is and left
+  ;; apart for how a BRANCH OPENS. `workflow-prompt` had exactly one caller,
+  ;; the single-branch workflow/run!, so `:run :loop "review"` through
+  ;; POST /v1/runs — which drives beam/run! — ran the review GRAPH under the
+  ;; build-a-feature system prompt. review.edn's own comment says "the
+  ;; manifest declares the ROLE"; in production it declared the routing and
+  ;; nothing else.
+  (let [seen (atom [])]
+    (with-redefs [llm/chat (fn [_ _ msgs & _]
+                             (swap! seen conj msgs)
+                             {:content "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"no defects found\"}}\n```"
+                              :finish-reason "stop"})
+                  judge/deterministic-block (constantly nil)
+                  judge/parse-verdict (constantly :complete)
+                  judge/blocking-findings (constantly nil)]
+      (let [conn (db/open! ":memory:")]
+        (beam/run! {:conn conn :llm-adapter :a :llm-config {:max-tokens 4096}
+                    :problem "review src/example.clj" :max-turns 2 :beam-width 1
+                    :config {:run {:loop "review"}}})
+        (is (seq @seen) "the run reached the model at least once")
+        (let [system (->> @seen first (filter #(= "system" (:role %))) first :content)]
+          (is (str/includes? system "CODE REVIEW")
+              "the review manifest's :prompt is appended to the system prompt")
+          (is (str/includes? system "read_file")
+              "and it is APPENDED — the base prompt with its tool surface is still there"))))))
+
+(deftest an-edited-manifest-governs-the-next-beam-run
+  ;; karamazov-ioo.20's third acceptance criterion, which nothing held: "a
+  ;; manifest edit changes beam-run behavior in a live run". Every other test
+  ;; here proves an edit VALIDATES and STORES; this one proves it is then what
+  ;; production runs. Across 26 recorded live runs every `manifest` tool call
+  ;; was `show` or `list`, so the one capability this project exists for — the
+  ;; agent rewriting the loop it is running — had never once been exercised
+  ;; end to end, by an agent or by a test.
+  ;;
+  ;; The edit is a :prompt swap because it is the cheapest change with a
+  ;; visible effect on the model's own view: same graph, different framing.
+  (let [seen (atom [])]
+    (with-redefs [llm/chat (fn [_ _ msgs & _]
+                             (swap! seen conj msgs)
+                             {:content "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"done\"}}\n```"
+                              :finish-reason "stop"})
+                  judge/deterministic-block (constantly nil)
+                  judge/parse-verdict (constantly :complete)
+                  judge/blocking-findings (constantly nil)]
+      (let [conn (db/open! ":memory:")
+            edited (-> (slurp (io/resource "manifests/loop.edn"))
+                       (str/replace "{:description" "{:prompt \"review\"\n :description"))
+            saved (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                  :args {:action "save" :name "loop" :edn edited
+                                         :rationale "frame the same graph as a review"}})]
+        (is (not= :mechanics (:category saved))
+            (str "the edited factory loop compiles and stores: " (:result saved)))
+        (beam/run! {:conn conn :llm-adapter :a :llm-config {:max-tokens 4096}
+                    :problem "build the thing" :max-turns 2 :beam-width 1
+                    :config {:run {:loop "loop"}}})
+        (let [system (->> @seen first (filter #(= "system" (:role %))) first :content)]
+          (is (str/includes? system "CODE REVIEW")
+              "the beam ran the EDITED version, not the factory file it seeds from"))))))

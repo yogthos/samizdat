@@ -579,6 +579,28 @@
                     (:messages b))
               "and its opening messages are rebuilt from it"))))))
 
+(deftest a-resumed-run-keeps-the-manifests-framing
+  ;; The other half of the same hole `workflow-prompt` had in the beam: a
+  ;; resume REBUILDS the system message from the problem rather than replaying
+  ;; it, because the journal stores turns and not prompts. Without the
+  ;; manifest's :prompt the run came back as a different kind of run — a
+  ;; review that crashed resumed building features, under a graph still shaped
+  ;; for reviewing.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "review src/example.clj"
+                                  :max-turns 10 :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (with-redefs [beam/run-rounds (fn [_ branches _] {:branches branches})]
+        (let [b (first (:branches (resume/resume! {:conn c
+                                                   :config {:run {:loop "review"}}
+                                                   :llm-adapter :a :llm-config {}
+                                                   :run-id rid})))
+              system (->> (:messages b) (filter #(= "system" (:role %))) first :content)]
+          (is (str/includes? system "CODE REVIEW")
+              "the resumed branch is framed by the manifest it is running")
+          (is (str/includes? system "read_file")
+              "appended to the base prompt, not replacing it"))))))
+
 (deftest replay-applies-the-live-loops-call-discipline
   ;; karamazov-blt.22: replay pushed EVERY journalled row through add-turn +
   ;; record-outcome, but the live loop applies neither to a provider-error row
