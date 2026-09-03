@@ -31,7 +31,8 @@
 
   For a lisp this is the whole story, as dirge's comment puts it: any balanced
   paren arrangement reads, so getting the balance right is getting it right."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [parinferish.core :as parinfer]))
 
 (def ^:private opener->closer {\( \), \[ \], \{ \}})
 (def ^:private closer->opener {\) \(, \] \[, \} \{})
@@ -221,6 +222,46 @@
                                   (when-let [l (first-odd-quote-line s)]
                                     {:line l})))))
 
+(defn indent-repair
+  "Repair from INDENTATION, or nil. The rung below the delimiter stack's own.
+
+  The stack knows how many delimiters are open and nothing about where the
+  missing one belongs, so it can only append at the end — which is exact for a
+  trailing truncation and useless for the commonest shape a model emits, a
+  binding vector never closed with the body indented under it. The stack calls
+  that a mismatch and the whole write is refused. Indentation is the
+  information it does not have: the body is indented less than the bindings,
+  so the vector ended before it, and the `]` goes there.
+
+  THE ACCEPT GATE, which is what makes this a repair rather than a rewrite.
+  Two conditions, both required:
+
+  - EVERY change is an INSERTED DELIMITER. Parinfer in indent mode will also
+    remove a closer that indentation disagrees with, and deleting from text a
+    model wrote is how a repair becomes a corruption. It is also how this
+    would quietly overrule samizdat's standing refusals: a mid-file stray and
+    a mismatched closer are the model's to fix precisely because removing one
+    re-parents the forms around it. Insert-only keeps that rule.
+  - THE RESULT READS. Balanced delimiters do not promise Clojure
+    (karamazov-ozv), and a repair that cannot be read back has not earned its
+    write.
+
+  Fails soft to nil on anything thrown: a repair engine is an optimisation on
+  the write path and must never be able to fail a write by throwing into it."
+  [s]
+  (try
+    (let [parsed (parinfer/parse s {:mode :indent})
+          changes (parinfer/diff parsed)
+          repaired (parinfer/flatten parsed)]
+      (when (and (seq changes)
+                 (every? #(and (= :insert (:action %))
+                               (= :delimiter (:type %)))
+                         changes)
+                 (not= repaired s)
+                 (reads? repaired))
+        {:content repaired :inserts (vec changes)}))
+    (catch Throwable _ nil)))
+
 (defn balance
   "Diagnose, and where it is safe to, repair Clojure source.
 
@@ -235,8 +276,14 @@
 
     {:status :repaired   :content s' :reason :auto-closed|:auto-trimmed
                          :count n :closers \"…\"}
-      a trailing truncation or over-close was mechanically fixed and the
-      result reads.
+      a trailing truncation or over-close was mechanically fixed from the
+      DELIMITER STACK, and the result reads.
+
+    {:status :repaired   :content s' :reason :auto-indented
+                         :count n :inserts [{:line :column :content}…]}
+      the stack could not place them, and INDENTATION could: a form left open
+      with the lines under it indented as though it had closed. Insert-only —
+      see `indent-repair` for why nothing may be removed.
 
     {:status :unbalanced :reason :mismatch|:mid-file-stray
                                 |:unterminated-string|:unclosed-unresolvable
@@ -256,7 +303,17 @@
       `(:)` is exactly what a truncated model write produces."
   [s]
   (let [{:keys [balance stack]} (scan s)
-        refuse (fn [] (assoc (diagnose s) :status :unbalanced))]
+        ;; The indentation rung, tried wherever the stack has to give up —
+        ;; and only there, so a trailing truncation still takes the exact
+        ;; stack repair and still reports :auto-closed. Its accept gate is
+        ;; insert-delimiters-only, which is what keeps the refusals below
+        ;; genuine: a mid-file stray and a mismatched closer stay the model's
+        ;; to fix, because parinfer would resolve both by DELETING (5wb).
+        indented (fn []
+                   (when-let [{:keys [content inserts]} (indent-repair s)]
+                     {:status :repaired :content content :reason :auto-indented
+                      :count (count inserts) :inserts inserts}))
+        refuse (fn [] (or (indented) (assoc (diagnose s) :status :unbalanced)))]
     (case balance
       :balanced
       ;; The delimiters are right. That is a DIFFERENT question from whether
