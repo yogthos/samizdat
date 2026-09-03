@@ -85,6 +85,26 @@ tasks(id, title, body, type, status, priority, parent_id,
 | `branch_id` | **who holds it.** `NULL` means claimable |
 | `contract` / `tests` | the delegation spec: what the work must satisfy, and what defines delivery |
 
+**The delegation spec is CODE, and the harness checks it.** A parent that
+splits a task writes the STUBS each piece must fill — the signature with a
+docstring saying what it owes, and a body that only throws — writes its own
+composition against them, and sketches the tests that pin each piece. The
+`split` tool then reads the tree and declines the delegation unless every named
+stub is there, is still hollow, and is claimed by exactly one piece; on
+acceptance `contract` is the stub source itself rather than a restatement of
+the ask. This is what makes the two layers independent: the parent reasons
+about the API and how the pieces compose, the child reasons about the
+implementation behind one signature, and the only thing they share is the
+boundary. It is also what makes both halves checkable rather than judged —
+`samizdat.agent.stubs/filled?` answers whether a child delivered.
+
+The suite is **red** from the split until the last piece lands. That is
+tests-first at the scale of a delegation, not a broken tree: a child's green is
+its OWN tests, and the parent's assembly is green when its tests and every
+child's tests pass together. The parent may adjust what the pieces delivered at
+assembly — seeing them compose is the first time anyone can tell whether the
+boundary was right (`prompts/assembly.md`).
+
 **The holder is a branch, not a run.** On a team workflow the competing
 implementors are branches of one run, so a per-run claim is exclusive between
 runs and a no-op within one — which is precisely the case the board exists to
@@ -122,7 +142,7 @@ indistinguishable from work that is progressing.
 | files | `read_file` `write_file` `edit_file` `grep` |
 | shell | `shell` |
 | shipping | `done` `give_up` `thesis` `branch_theses` |
-| board | `task` |
+| board | `task` `split` |
 | coordination | `message` |
 | memory | `remember` `recall` `forget` `outcome` |
 | record | `fetch_turn` `fetch_artifact` |

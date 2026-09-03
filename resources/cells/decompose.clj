@@ -41,11 +41,9 @@
                        (str "## A prior attempt got stuck. Try this different approach:\n"
                             (:hint node)))
                      (when (:assembly node)
-                       (str "## This is an ASSEMBLY step\n"
-                            "The sub-units below are already built and tested. Your job is the "
-                            "small piece that composes them to satisfy this unit — do not rebuild "
-                            "them.\n\nSub-units delivered:\n"
-                            (str/join "\n" (map #(str "- " %) (:child-answers node)))))])))
+                       (wf/prompt-text "assembly"))
+                     (when (:assembly node)
+                       (str/join "\n" (map #(str "- " %) (:child-answers node))))])))
 
 (defn- attempt-node
   "Build the unit directly: run an implementor worker on its own branch, then the

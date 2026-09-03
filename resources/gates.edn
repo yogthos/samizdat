@@ -1741,6 +1741,16 @@
  {:value 4 :kind :cost-ceiling :capability-tunable? false
   :doc "Most sub-units the architect may split one unit into."}
 
+ :split-parts
+ {:value {:min-parts 2 :max-parts 4}
+  :kind :cost-ceiling :capability-tunable? false
+  :doc "How many pieces the `split` tool accepts. The floor is the definition
+        of a split rather than a budget: one piece is not a decomposition, it
+        is the same task with a new name, and accepting it would let an agent
+        recurse without ever getting smaller. The ceiling is the cost one, and
+        it matches :decompose-max-parts — each piece is an agent, and a parent
+        that lists eight has not thought about the boundary."}
+
  :judge-rules
  ;; drg-4026 #55: the judge's deterministic finalization rules — what counts
  ;; as a test run, a code edit, an outside claim — as data. A fixed

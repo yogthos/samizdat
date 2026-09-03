@@ -143,6 +143,7 @@
             [samizdat.oversight-test]
             [samizdat.mechanics-test]
             [samizdat.repair-test]
+            [samizdat.split-test]
             [samizdat.storm-test]
             [samizdat.stubs-test]
             [samizdat.tournament-test]
@@ -205,6 +206,7 @@
     samizdat.oversight-test
     samizdat.mechanics-test
     samizdat.repair-test
+    samizdat.split-test
     samizdat.storm-test
     samizdat.stubs-test
     samizdat.tournament-test

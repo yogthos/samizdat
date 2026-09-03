@@ -44,7 +44,7 @@
   goes through the userspace seam, which is what decides whether the project's
   version or the template answers."
   [
-   "architect"
+   "architect" "assembly"
    "branch-cap"
    "branch-out"
    "cell-shadowed"
@@ -126,7 +126,7 @@
    "session-block"
    "shared-artifacts"
    "shared-tree"
-   "shell-refused"
+   "shell-refused" "split-tool"
    "stale-write"
    "storm"
    "storm-force"

@@ -176,6 +176,13 @@
    "complete"    {:reach :in-process     :also "reads the live image, same as eval"}
 
    "task"        {:reach :harness-only}
+   ;; READS the tree, so :host-bytes and not :harness-only like `task` beside
+   ;; it: verifying a split means reading the stubs the parent wrote and the
+   ;; tests it sketched. Every read goes through files/resolve-under-root, the
+   ;; same confinement primitive read_file uses — the lsp tool rolling its own
+   ;; io/file was the escape this project already had (karamazov-blt.28). It
+   ;; writes only task rows, never the tree.
+   "split"       {:reach :host-bytes}
    "message"     {:reach :harness-only}
    "remember"    {:reach :harness-only}
    "forget"      {:reach :harness-only}
