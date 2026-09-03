@@ -190,11 +190,14 @@
   whatever the project builds — while the words that carry them, and the two
   numbers behind the thrash judgement, are `gates.edn :run-health`."
   [{:keys [results review revision errors hollow? tests-passed? verify-note
-           at-cap? soft-cap]} health]
+           at-cap? soft-cap self-graded]} health]
   (let [total (count results)
         shipped (count (filter #(= :done (:status %)) results))
         {:keys [thrash-min-turns thrash-mechanics-rate]} (health-policy)]
     (cond-> []
+      (seq self-graded)
+      (conj (signal :self-graded {:keys (str/join ", " self-graded)}))
+
       (seq errors)
       (into (map (fn [e]
                    ;; Which layer owns it, so the supervisor knows before it

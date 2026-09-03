@@ -135,6 +135,7 @@
                       [:oversight/findings :any] [:oversight/unmet :any]
                       [:oversight/idle :any] [:oversight/round :any]
                       [:oversight/crashes :any] [:oversight/results :any]
+                      [:oversight/self-graded :any]
                       [:oversight/worth-a-look? :boolean]]
              :quiet  [:map [:oversight/worth-a-look? :boolean]]}]}
   (fn [{:keys [conn run-id]} data]
@@ -164,6 +165,11 @@
              ;; this the digest counted an empty vector on EVERY strategy and
              ;; every brief read `Implementors: 0/0 shipped`.
              results (round-results (journal/last-note conn run-id :implement-round))
+             ;; Every evaluator edit this run made, so a run that regraded
+             ;; itself says so in its own brief and its own record
+             ;; (karamazov-7mo M10). Named, never refused.
+             self-graded (into [] (comp (mapcat :keys) (distinct))
+                               (journal/notes conn run-id :self-graded))
              crashes (journal/notes conn run-id :stage-error)]
          (assoc data
                 :oversight/turns turns
@@ -173,6 +179,7 @@
                 :oversight/idle since
                 :oversight/round round
                 :oversight/results results
+                :oversight/self-graded self-graded
                 :oversight/crashes crashes
                 :oversight/worth-a-look?
                 (worth-a-look? {:unmet-gates unmet :idle-turns since
@@ -228,6 +235,7 @@
             ;; that silently reports 0/0 because nobody declared the key is
             ;; the bug this closes (karamazov-u5uy).
             [:oversight/results :any]
+            [:oversight/self-graded {:optional true} :any]
             [:oversight/round {:optional true} :any]
             [:oversight/crashes {:optional true} :any]
             [:oversight/carry {:optional true} :any]]
@@ -253,6 +261,7 @@
                                     ;; is what :nobody-shipped counts and what
                                     ;; the brief's `N/M shipped` line reports.
                                     :results (:oversight/results data)
+                                    :self-graded (:oversight/self-graded data)
                                     ;; Each branch's session fitness: the
                                     ;; number the cull reads, shown to the
                                     ;; role that tunes (RFC-012 F3).

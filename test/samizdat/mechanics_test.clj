@@ -738,3 +738,31 @@
         "a name that is not a typo of anything gets no guess")
     (is (str/includes? (refusal "totally_made_up") "Available:")
         "and still gets the full list to choose from")))
+
+;; --- which gate edits count as regrading the run (karamazov-7mo M10) --------
+
+(deftest self-graded-changes-names-only-the-scoring-gates
+  (let [base {:fitness {:value {:weights {:tool-success 1.0}}}
+              :verify-unknown {:value :trust}
+              :storm {:value {:window 6}}}]
+    (testing "an edit that leaves the scoring alone is not a regrade"
+      (is (empty? (gates/self-graded-changes
+                   base (assoc-in base [:storm :value :window] 3)))))
+    (testing "reweighting fitness is"
+      (let [c (gates/self-graded-changes
+               base (assoc-in base [:fitness :value :weights :tool-success] 9.0))]
+        (is (= [:fitness] (keys c)))
+        (is (= {:tool-success 1.0} (get-in c [:fitness :from :weights])))))
+    (testing "so is loosening the ship gate"
+      (is (= [:verify-unknown]
+             (keys (gates/self-graded-changes
+                    base (assoc-in base [:verify-unknown :value] :refuse))))))
+    (testing "rewording a doc is not"
+      (is (empty? (gates/self-graded-changes
+                   base (assoc-in base [:fitness :doc] "new words")))))
+    (testing "both at once are both named"
+      (is (= #{:fitness :verify-unknown}
+             (set (keys (gates/self-graded-changes
+                         base (-> base
+                                  (assoc-in [:fitness :value] {})
+                                  (assoc-in [:verify-unknown :value] :trust2))))))))))

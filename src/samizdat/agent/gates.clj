@@ -76,6 +76,40 @@
 (defn threshold [k]
   (get-in (config) [k :value]))
 
+(def self-grading-keys
+  "The gate entries that decide how a run is SCORED rather than how it behaves.
+
+  `:fitness` is the weight table session fitness is computed from, which is the
+  number selection and evaluation share. `:verify-unknown` decides whether the
+  ship gate trusts or refuses when it cannot tell, and `:trust` is how a run
+  once shipped with five test errors.
+
+  IN src/ AND NOT IN gates.edn, deliberately. Everything else about a gate is
+  data the agent may rewrite at runtime, and that is the project's whole
+  premise. But a list of 'the keys we watch for self-grading' living inside the
+  file being watched could be edited by the party it watches — the same
+  reasoning that put the run-config protection in src/ (karamazov-kvw). This
+  does not PREVENT the edit; nothing here refuses anything. It only makes the
+  edit nameable so a run that regraded itself says so in its own record
+  (karamazov-7mo M10)."
+  #{:fitness :verify-unknown})
+
+(defn self-graded-changes
+  "The `self-grading-keys` whose values differ between two gate configs, as a
+  map of key -> {:from :to}. Empty when a proposed edit leaves the run's own
+  scoring alone.
+
+  Pure over two parsed configs so it is testable without a save. Compares the
+  `:value` only: a reworded `:doc` is not a regrade."
+  [current proposed]
+  (into {}
+        (keep (fn [k]
+                (let [before (get-in current [k :value])
+                      after (get-in proposed [k :value])]
+                  (when (not= before after)
+                    [k {:from before :to after}]))))
+        self-grading-keys))
+
 (defn tool-vocab
   "The tool vocabulary `k` (:verification, :shipping, :file-write,
   :settle-called) from gates.edn. The vocabularies the gates read are

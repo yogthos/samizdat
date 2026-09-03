@@ -486,3 +486,29 @@
                              :results [{:status :done :subtask "T" :answer "ok"}]}})
       (let [{:keys [gather]} (reasoning-over conn rid)]
         (is (false? (:oversight/worth-a-look? gather)))))))
+
+;; --- a run that regrades itself says so (karamazov-7mo M10) -----------------
+
+(deftest changing-the-runs-own-scoring-lands-in-the-brief
+  ;; The decision here was DETECTION, not prevention: a run may still rewrite
+  ;; the gates it is judged by, because policy being runtime-editable data is
+  ;; the project's premise. What it may not do is change its own score
+  ;; quietly. Metan's M10 wants the evaluator outside the improver's editable
+  ;; surface; this is the half of that we chose to take.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :self-graded
+                   {:data {:keys ["fitness"]
+                           :changes "{:fitness {:from ... :to ...}}"
+                           :rationale "the weights undervalued shipping"}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (= ["fitness"] (:oversight/self-graded gather)))
+      (is (str/includes? (str prob) "YOU CHANGED HOW THIS RUN IS SCORED"))
+      (is (str/includes? (str prob) "fitness")))))
+
+(deftest a-run-that-tuned-nothing-about-its-scoring-says-nothing
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (empty? (:oversight/self-graded gather)))
+      (is (not (str/includes? (str prob) "YOU CHANGED HOW THIS RUN IS SCORED"))))))

@@ -14,6 +14,8 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [jolt.fs :as jfs]
             [samizdat.store.db :as db]
+            [samizdat.store.runs :as runs]
+            [samizdat.store.journal :as journal]
             [samizdat.store.userspace :as store]
             [samizdat.system :as system]
             [samizdat.userspace :as us]
@@ -590,3 +592,35 @@
       (store/seed! conn :prompt "p" "BODY")
       (store/save! conn :prompt "p" "BODY")
       (is (= [1 2] (sort (mapv :version (db/fetch conn ["SELECT version FROM userspace WHERE name = ?" "p"]))))))))
+
+;; --- a run that regrades itself leaves a record (karamazov-7mo M10) ---------
+
+(defn- save-gates [conn run-id body]
+  (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "p"})
+                   :conn conn :run-id run-id
+                   :tool-name "policy"
+                   :args {:action "save" :name "gates" :edn body
+                          :rationale "tuning"}}))
+
+(deftest editing-the-runs-own-scoring-is-journalled
+  ;; Prevention was rejected: a run may still rewrite the gates it is judged
+  ;; by, because policy being runtime-editable data is the whole premise. The
+  ;; edit is NAMED instead, so a reader of the run can tell a real correction
+  ;; from a run grading itself green.
+  (us/bind! *conn*)
+  (let [rid (runs/start-run! *conn* {:problem "p"})
+        original (us/edn-body :policy "gates")]
+    (testing "reweighting fitness is on the record"
+      (save-gates *conn* rid (pr-str (assoc-in original [:fitness :value :weights :tool-success] 99.0)))
+      (let [notes (journal/notes *conn* rid :self-graded)]
+        (is (= 1 (count notes)))
+        (is (= ["fitness"] (:keys (first notes))))
+        (is (str/includes? (str (:rationale (first notes))) "tuning"))))))
+
+(deftest an-ordinary-gate-edit-is-not-a-regrade
+  (us/bind! *conn*)
+  (let [rid (runs/start-run! *conn* {:problem "p"})
+        original (us/edn-body :policy "gates")]
+    (save-gates *conn* rid (pr-str (assoc-in original [:run-health :value :thrash-min-turns] 7)))
+    (is (empty? (journal/notes *conn* rid :self-graded))
+        "changing a behaviour gate says nothing; only the scoring gates do")))

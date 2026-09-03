@@ -1274,6 +1274,7 @@
    :signals
    {:stage-crashed "STAGE CRASHED — {{detail}}{% if layer %} [layer: {{layer}}{% if base? %} — the base is compiled and unreachable from here: name it, record it with `remember` so a later run inherits it, and move on. Do NOT go looking for the source{% endif %}{% if userspace? %} — userspace, so this one IS yours: the cell/manifest/prompt tools can fix it{% endif %}]{% endif %}"
     :hollow "NO FILES CHANGED — done was called but the working tree is unchanged; nothing was actually built"
+    :self-graded "YOU CHANGED HOW THIS RUN IS SCORED — this run edited {{keys}} in its own gates. That is allowed and it is on the record. Say in your answer why the old scoring was wrong, so a reader can tell a real correction from a run grading itself green."
     :nobody-shipped "NO IMPLEMENTOR SHIPPED — the implement round produced nothing verified"
     :tests-failing "TESTS FAILING — {{detail}}"
     :tests-failing-fallback "the tests did not pass"
