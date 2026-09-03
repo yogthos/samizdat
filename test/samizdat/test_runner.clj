@@ -109,6 +109,7 @@
             [samizdat.cells-test]
             [samizdat.park-test]
             [samizdat.events-test]
+            [samizdat.escapes-test]
             [samizdat.cell-schema-test]
             [samizdat.mutation-test]
             [samizdat.ratelimit-test]
@@ -253,6 +254,7 @@
     samizdat.cells-test
     samizdat.park-test
     samizdat.events-test
+    samizdat.escapes-test
     samizdat.cell-schema-test
     samizdat.mutation-test
     samizdat.ratelimit-test

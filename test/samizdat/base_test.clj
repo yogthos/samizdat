@@ -214,6 +214,20 @@
                      passes one to the 3-arity, the same seam api/runs.clj uses
                      for page sizes."}}
 
+   "src/samizdat/escapes.clj"
+   {:threshold {:all "Unicode's own numbers, not this project's. The ASCII hex
+                      digit boundaries (48/57, 65/70, 97/102), U+00A0 as the
+                      floor below which an escape is load-bearing rather than
+                      drift, and the surrogate ranges (0xD800-0xDBFF,
+                      0xDC00-0xDFFF) are facts about the encoding. Retuning any
+                      of them at runtime cannot express a different policy, only
+                      a decoder that is wrong: shifting the ASCII range makes it
+                      read hex it should not, and moving the surrogate bounds
+                      makes it build code points that do not exist. What IS
+                      policy here — which categories may be decoded INTO — is
+                      already named rather than numbered, as
+                      `undecodable-categories`."}}
+
    "src/samizdat/agent/tournament.clj"
    {:threshold {1103515245 "The LCG multiplier — a PRNG's algorithm constants,
                             like a hash function's primes. Retuning them at

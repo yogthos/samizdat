@@ -76,7 +76,9 @@
    {:name samizdat.workflow/compile-loop
     :summary "Compile a workflow definition through mycelium's static checks. Throws on any violation."}
    {:name samizdat.workflow/turn-manifest
-    :summary "A whole-run manifest reduced to one turn — the slice the beam schedules."}
+    :summary "A whole-run manifest reduced to one turn — the slice the beam schedules. Refuses a manifest that declares :turn-sliceable? false, and one that routes an edge back to :start without iterating (that edge is cut into :end, so each cycle would run as a fresh turn with a fresh data map)."}
+   {:name samizdat.workflow/turn-sliceable?
+    :summary "Whether a manifest may be a run's LOOP at all. Default true; declare :turn-sliceable? false at the top of a manifest for one whose back edge to :start is structural rather than a turn — beam.edn (the scheduler, which drives branches rather than being driven) and repl.edn (a shape whose four pure cells classify a branch, enforced by phases.edn refusals). Such a manifest stays in the catalogue but is off the supervisor's switch menu and off selection's candidate list, and both drivers refuse to run it."}
    {:name samizdat.userspace/self-hosting?
     :summary "Whether the project under work IS a samizdat checkout. What the system prompt gates its sections about cells, manifests and src-vs-resources on: all of it is load-bearing here and standing instruction about the wrong codebase anywhere else."}
    {:name samizdat.agent.files/reference-roots
@@ -137,7 +139,11 @@
   [{:name samizdat.lisp/diagnose
     :summary "Why a piece of Clojure would not load AS WRITTEN, or nil — reason plus 1-based line/col, naming both ends of a mismatch. Answers 'is this loadable now', which is a different question from lisp/balance's 'could this be repaired': the delimiters balancing does not promise it READS, and `(defn f [] :)` is perfectly balanced and is not Clojure."}
    {:name samizdat.lisp/balance
-    :summary "The repair half: closes a trailing truncation or trims a trailing over-close when the result reads, and refuses anything mid-file because closing it would re-parent code. Returns data, not sentences — the words live in prompts/file-tool.md."}
+    :summary "The repair half, two rungs deep: closes a trailing truncation or trims a trailing over-close from the delimiter stack, and where the stack has to give up falls to lisp/indent-repair. Refuses anything it cannot repair by ADDING, because removing or moving a mid-file delimiter re-parents code. Returns data, not sentences — the words live in prompts/file-tool.md."}
+   {:name samizdat.lisp/indent-repair
+    :summary "Repair from INDENTATION rather than from the delimiter stack (vendored parinferish, indent mode). The stack knows how many delimiters are open and never where the missing one goes, so it can only append at the end; indentation says an unclosed binding vector ended before the body indented under it, and puts the `]` there. Accepted only when every change is an INSERTED delimiter and the result reads — parinfer would also resolve a mismatch or a stray by deleting, and deleting from a model's text is a corruption, not a repair. Reached by write_file and eval (whole texts), never by edit_file, which refuses instead."}
+   {:name samizdat.escapes/decode-unicode-escapes
+    :summary "Undo the \\uXXXX drift a model writes when it meant the character itself — the six characters \\u2014 become an em dash. Deliberately narrow, and the narrowness is why it is safe: the backslash must be UNESCAPED (text about an escape is left alone) and the escape must name a VISIBLE ASSIGNED character judged on the code point, so an ASCII or control escape, a private-use point, an unassigned point, a bidi override, a zero-width joiner, a line separator and a space that is not a space all survive verbatim. A surrogate pair is judged by the character it builds, so emoji decode and an invisible tag character cannot sneak in as one. Applied to the model's OWN text — write_file's content, edit_file's new_text, patch's replace — never to the assembled file, so an edit cannot rewrite lines it did not touch."}
    {:name samizdat.lisp/first-odd-quote-line
     :summary "The line where the running unescaped-quote count first goes odd — the line that most likely opened a string nobody closed, which is NOT where the reader complains."}
    {:name samizdat.hashline/line-anchor

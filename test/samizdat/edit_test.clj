@@ -109,3 +109,29 @@
                                   (ctx root {:path "nope.clj" :old_text "a" :new_text "b"})))))
     (is (= :mechanics (:category (files/edit-file
                                   (ctx root {:path "../escape.clj" :old_text "a" :new_text "b"})))))))
+
+(deftest a-drifted-unicode-escape-in-the-replacement-is-decoded
+  ;; karamazov-b9v.1. A model that means an em dash sometimes writes the six
+  ;; characters —, and they used to land on disk exactly like that. The
+  ;; decode is on the model's OWN text — the replacement — and never on the
+  ;; assembled file, so an edit cannot rewrite lines it did not touch.
+  (with-root [root]
+    (write root "a.clj" ";; heading — note\n(defn f [] :old)\n")
+    (let [r (files/edit-file (ctx root {:path "a.clj" :old_text ":old"
+                                        :new_text ":new \\u2192 done"}))
+          after (read* root "a.clj")]
+      (is (= :success (:category r)))
+      (is (str/includes? after ":new → done") "the escape became the arrow")
+      (is (not (str/includes? after "\\u2192")))
+      (testing "and the untouched line keeps its own six characters, because
+                only the replacement is decoded"
+        (is (str/includes? after ";; heading — note"))))))
+
+(deftest an-escaped-escape-in-a-replacement-is-left-alone
+  ;; The backslash must itself be unescaped. Text ABOUT an escape is not drift.
+  (with-root [root]
+    (write root "b.clj" "(def s :old)\n")
+    (let [r (files/edit-file (ctx root {:path "b.clj" :old_text ":old"
+                                        :new_text "\"\\\\u2014\""}))]
+      (is (= :success (:category r)))
+      (is (str/includes? (read* root "b.clj") "\\\\u2014")))))
