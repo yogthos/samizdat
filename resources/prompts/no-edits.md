@@ -1,10 +1,19 @@
-You are working, but none of it is being kept. The REPL session dies with this
-run: a function that exists only as an `eval` is not part of the project, no
-test can reach it, and the ship gate cannot see it.
+You are working, but none of it is being kept. This run ends with its turn
+budget, and only what is in a file survives it.
 
-Write what you have to its file NOW, even if it is rough and even if you are
-mid-debug — a version on disk that you refine beats a better one that only
-ever existed in a REPL. Then go back to iterating, against the file.
+Check which of these you are doing:
 
-If you are stuck on one form, that is the strongest reason to write it: a file
-you can re-read is easier to fix than a form you keep retyping.
+- Prototyping in the REPL: a function that exists only as an `eval` is not
+  part of the project, no test can reach it, and the ship gate cannot see it.
+  Write it to its file NOW, rough is fine, and keep iterating against the file.
+- Reading, planning, or re-verifying: if your last several turns were reads,
+  greps, or re-running a suite that was already green, that is not progress —
+  it is postponement. You know enough. Name the next file this task needs and
+  write it NOW.
+- Saving the writing for later: there is no later. A run's final turns are the
+  worst place to land several files at once — that is exactly how a whole
+  run's work is lost to one malformed call. Land each file the moment it
+  exists in your head, then verify it, then move to the next.
+
+If you cannot name the file you should write next, name the decision that
+blocks it, make the smallest choice that unblocks it, and write that file.
