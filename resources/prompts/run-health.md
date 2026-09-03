@@ -11,7 +11,11 @@ then `fetch_turn({turn: N, branch: "B"})` for the full record, then fix the
 cause at the surface that governs it — a parse failure lives in the prompt
 or call format, a provider failure at the endpoint or the context budget, a
 tool failure in the work or the tool.
-{% if failures.parse %}
+{% if patterns %}
+The SHAPE of them, commonest first — a count this high against one signature
+is one fix, not many:
+{{patterns}}
+{% endif %}{% if failures.parse %}
 Calls that did not parse ({{failures.parse.count}} total):
 {{failures.parse.lines}}
 {% endif %}{% if failures.provider %}

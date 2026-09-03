@@ -1311,7 +1311,7 @@
         in trouble is the last one that should be shown less of it."}
 
  :supervisor-digest
- {:value {:per-kind 4 :chars 220 :wins 2}
+ {:value {:per-kind 4 :chars 220 :wins 2 :floor 6 :patterns 6}
   :kind :threshold :capability-tunable? true
   :doc "How many failure exemplars of each kind the run-health digest shows
         the supervisor, and how much of each failure's text. The digest used
@@ -1322,6 +1322,15 @@
         per kind, because the three kinds are fixed in different places (a
         parse failure in the prompt/format, a provider failure at the
         endpoint, a tool failure in the work itself).
+
+        :floor and :patterns are the DISTRIBUTION half (Metan App. E.2, M7).
+        Below :floor failures the exemplars already say everything and a
+        histogram of ones is noise; at or above it the digest also shows the
+        commonest :patterns failure shapes with their counts, so twelve
+        instances of one bug read as one fix rather than as four arbitrary
+        recent lines. Signatures are crude on purpose — numbers, quoted
+        strings and paths are stripped — because over-merging costs one
+        fetch_turn and under-merging costs the pattern.
 
         :wins is how many SUCCESSES ride along with them, and it is not
         decoration. Metan (research/2608.24735v1, App. D) ablated the ratio

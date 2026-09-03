@@ -181,3 +181,53 @@
     (let [d (telemetry/digest {:results [] :fitness {}} [(row "W0" 1 "shell" "success")])]
       (is (str/includes? d "W0: 1 turns, 0 thrash, shipped=false"))
       (is (not (str/includes? d "shipped=false, fitness"))))))
+
+;; --- the shape of the failures, not just the newest few (karamazov-7mo M7) --
+
+(deftest a-signature-collapses-instances-of-one-failure
+  (testing "the parts that differ between instances are stripped"
+    (is (= (telemetry/failure-signature "No such file: /a/b/core.clj at line 12")
+           (telemetry/failure-signature "No such file: /x/y/other.clj at line 907"))))
+  (testing "quoted text is one of those parts"
+    (is (= (telemetry/failure-signature "String to replace not found: \"foo bar\"")
+           (telemetry/failure-signature "String to replace not found: \"baz qux\""))))
+  (testing "different failures stay different"
+    (is (not= (telemetry/failure-signature "connection reset by peer")
+              (telemetry/failure-signature "String to replace not found")))))
+
+(deftest patterns-appear-only-once-there-is-a-stack
+  (let [tool-row (fn [n] {:turn n :branch_id "B1" :id n :tool_name "edit_file"
+                          :category "failure"
+                          :result (str "String to replace not found: \"x" n "\"")})
+        opts {:floor 6 :patterns 6 :chars 160}]
+    (testing "below the floor the exemplars already say everything"
+      (is (nil? (telemetry/failure-patterns (map tool-row (range 1 5)) opts))))
+    (testing "at the floor the distribution appears, collapsed to one line"
+      (let [ps (telemetry/failure-patterns (map tool-row (range 1 9)) opts)]
+        (is (= 1 (count ps)))
+        (is (= 8 (:count (first ps))))
+        (is (= :tool (:kind (first ps))))))))
+
+(deftest patterns-are-ordered-by-how-much-they-matter
+  (let [rows (concat
+              (for [n (range 1 11)]
+                {:turn n :branch_id "B1" :id n :tool_name "__parse_error__"
+                 :parse_error (str "unbalanced delimiter at " n)})
+              (for [n (range 11 14)]
+                {:turn n :branch_id "B1" :id n :tool_name "shell"
+                 :category "failure" :result "command not found"}))
+        ps (telemetry/failure-patterns rows {:floor 6 :patterns 6 :chars 160})]
+    (is (= 10 (:count (first ps))) "the commonest shape leads")
+    (is (= :parse (:kind (first ps))))
+    (is (= 3 (:count (second ps))))
+    (testing "and they render with their counts"
+      (is (str/includes? (telemetry/pattern-lines ps) "10x parse")))))
+
+(deftest the-digest-carries-the-distribution
+  (let [rows (for [n (range 1 9)]
+               {:turn n :branch_id "B1" :id n :tool_name "edit_file"
+                :category "failure"
+                :result (str "String to replace not found: \"x" n "\"")})
+        out (telemetry/digest {:results [{:status :done}]} rows)]
+    (is (str/includes? (str out) "8x tool"))
+    (is (str/includes? (str out) "one fix, not many"))))
