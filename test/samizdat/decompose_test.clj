@@ -113,6 +113,43 @@
     (is (contains? (set @attempts) "root/a") "each sub-unit was attempted")
     (is (contains? (set @attempts) "root/b"))))
 
+(deftest solve-follows-a-split-the-agent-made-itself
+  ;; UNIFORM RECURSION (karamazov-ioo.15). The agent working the task is the
+  ;; agent that decides to break it up: it writes the stubs, calls `split`, and
+  ;; the harness verifies and opens the child tasks. There is no separate
+  ;; architect deciding from outside, and no stuck-detection involved — this
+  ;; unit was never stuck, it was DELEGATED on the first attempt.
+  (let [seen (atom [])
+        r (dec/solve {:id "root" :problem "big task"} 0
+                     {:attempt (fn [node]
+                                 (swap! seen conj (:id node))
+                                 (cond
+                                   (:assembly node) {:passed? true :answer "assembled"}
+                                   (= "root" (:id node))
+                                   {:split [{:id "root/a" :problem "do a" :task-id "T1"}
+                                            {:id "root/b" :problem "do b" :task-id "T2"}]}
+                                   :else {:passed? true :answer (str "built " (:id node))}))
+                      :recover (fn [& _]
+                                 (throw (ex-info "a unit that split was never stuck" {})))
+                      :fan seq-fan})]
+    (is (= :landed (:status r)))
+    (is (= ["root/a" "root/b"] (mapv #(get-in % [:node :id]) (:children r))))
+    (is (= #{"root" "root/a" "root/b"} (set @seen))
+        "the children were attempted, and the root twice — once to split, once to assemble")))
+
+(deftest a-split-that-lost-a-child-fails-rather-than-assembling-over-it
+  (let [r (dec/solve {:id "root" :problem "big"} 0
+                     {:attempt (fn [node]
+                                 (cond
+                                   (:assembly node)
+                                   (throw (ex-info "must not assemble over a failed piece" {}))
+                                   (= "root" (:id node))
+                                   {:split [{:id "root/a" :problem "do a"}]}
+                                   :else {:passed? false :failure "could not build it"}))
+                      :recover (constantly nil)
+                      :fan seq-fan})]
+    (is (= :failed (:status r)))))
+
 (deftest solve-fails-hard-at-the-depth-budget
   (let [r (dec/solve {:id "x" :problem "p"} (dec/max-depth)
                      {:attempt (constantly {:passed? false :failure "nope"})

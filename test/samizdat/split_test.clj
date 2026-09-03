@@ -155,3 +155,18 @@
                        (assoc (second good-parts) "stubs" ["absent-fn"])]})
       (is (empty? (tasks/board conn {:run-id run-id}))
           "no parent row and no child rows"))))
+
+(deftest the-pieces-hang-off-the-task-the-agent-holds
+  ;; An agent splits the task it is working, so that task is the pieces'
+  ;; parent. Without this the split is reported out of band and the tree is
+  ;; not walkable from the work the agent was actually given.
+  (with-project
+    (fn [{:keys [conn run-id root]}]
+      (let [held (tasks/create! conn {:title "build the report" :run-id run-id})]
+        (is (some? (tasks/claim! conn held run-id "B1")))
+        (base/run-tool {:branch {:id "B1"} :conn conn :run-id run-id :root root
+                        :tool-name "split"
+                        :args {:reason "two things" :parts good-parts}})
+        (let [kids (tasks/children-of conn held)]
+          (is (= 2 (count kids)) "the pieces are children of the held task")
+          (is (= #{"parse-line" "render-report"} (set (map :title kids)))))))))

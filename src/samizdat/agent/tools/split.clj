@@ -157,9 +157,18 @@
                                   :min-parts min-parts :max-parts max-parts}))
 
       :else
-      (let [parent (tasks/create! conn {:title (str "Split: " (or reason "this task"))
-                                        :body (str reason)
-                                        :type "epic" :run-id run-id})
+      ;; THE PIECES HANG OFF THE TASK THE AGENT HOLDS. An agent splits the task
+      ;; it is working, so that task is their parent — which is what makes the
+      ;; tree walkable in both directions and what lets the caller find the
+      ;; pieces afterwards without the tool having to report them out of band.
+      ;; Only when the agent holds nothing is a row minted to hang them from,
+      ;; because a set of orphan pieces is a split nobody owns.
+      (let [held (when (and conn run-id (:id branch))
+                   (tasks/held-by conn run-id (:id branch)))
+            parent (or (:id held)
+                       (tasks/create! conn {:title (str "Split: " (or reason "this task"))
+                                            :body (str reason)
+                                            :type "epic" :run-id run-id}))
             ids (mapv (fn [p]
                         (tasks/create!
                          conn

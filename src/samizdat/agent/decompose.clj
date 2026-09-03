@@ -109,19 +109,36 @@
 
 (declare solve)
 
-(defn- decompose-node
-  "Split `node` per `decision`, solve each sub-unit (recursively, so a stuck
-  sub-unit splits again), then — if they all land — re-attempt the parent as the
-  thin assembly that composes them, judged against the parent's OWN tests."
-  [node depth {:keys [attempt fan] :as ops} decision]
-  (let [children (:subtasks decision)
-        results (fan (mapv (fn [c] #(solve (child-node node c) (inc depth) ops)) children))]
+(defn- assemble
+  "Solve `children` (recursively, so a stuck sub-unit splits again), then — if
+  they all land — re-attempt the parent as the assembly that composes them,
+  judged against the parent's OWN tests.
+
+  The parent may ADJUST what the pieces delivered at this step. Seeing them
+  compose is the first time anyone can tell whether the boundary was right, so
+  assembly is where the design gets checked rather than only where the glue
+  goes (prompts/assembly.md). What it must not do is discard a piece that met
+  its contract."
+  [node depth {:keys [attempt fan] :as ops} children]
+  (let [results (fan (mapv (fn [c] #(solve c (inc depth) ops)) children))]
     (if-not (every? #(= :landed (:status %)) results)
       {:status :failed :reason "a sub-unit did not land" :node node :children results}
       (let [asm (attempt (assoc node :assembly true :child-answers (mapv :answer results)))]
         (if (:passed? asm)
           {:status :landed :answer (:answer asm) :node node :children results}
           {:status :failed :reason "assembly did not land" :node node :children results})))))
+
+(defn- decompose-node
+  "Assemble from an ARCHITECT's decision rather than the agent's own split.
+
+  This is the recovery path: a unit that got stuck, could not be talked into a
+  different approach, and is being broken up from outside. Its children are
+  described rather than stubbed — the architect has no tools and cannot write
+  code — so they carry a paragraph where a delegated piece carries a signature.
+  That is a weaker contract, and it is why this is the fallback and the agent's
+  own `split` is the ordinary path."
+  [node depth ops decision]
+  (assemble node depth ops (mapv #(child-node node %) (:subtasks decision))))
 
 (defn solve
   "Recursive decompose-on-stuck for one node. Pure control flow over injected
@@ -148,8 +165,16 @@
   [node depth {:keys [attempt recover fan max-depth] :as ops}]
   (let [max-d (or max-depth (samizdat.agent.decompose/max-depth))
         r (attempt node)]
-    (if (:passed? r)
-      {:status :landed :answer (:answer r) :node node}
+    (cond
+      ;; THE AGENT SPLIT ITS OWN TASK. It wrote the stubs, the harness verified
+      ;; them against the tree, and the child tasks exist — so there is nothing
+      ;; to diagnose and no architect to ask. This is the recursion's ordinary
+      ;; path, not its recovery path: a unit that split was never stuck.
+      (seq (:split r)) (assemble node depth ops (:split r))
+
+      (:passed? r) {:status :landed :answer (:answer r) :node node}
+
+      :else
       (let [ev {:last-answer (:answer r) :last-failure (:failure r) :depth depth}
             decision (recover node ev)]
         (case (:kind decision)
