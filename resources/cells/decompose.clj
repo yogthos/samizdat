@@ -21,13 +21,23 @@
             [samizdat.agent.skills :as skills]
             [samizdat.agent.state :as state]
             [samizdat.llm.client :as llm]
+            [samizdat.agent.tools.tasks :as task-tool]
             [samizdat.store.journal :as journal]
+            [samizdat.store.tasks :as tasks]
             [samizdat.store.runs :as runs]
             [samizdat.workflow :as wf]))
 
 (defn- branch-id [node]
   (str "D" (str/replace (str (:id node)) #"[^A-Za-z0-9]" "_")
        (cond (:assembly node) "-a" (:hint node) "-h" :else "")))
+
+(defn- title-of
+  "A task title from a unit's problem text: one line, bounded. Same shape the
+  board and the team use — a title is an index entry, and the contract is what
+  a worker actually reads."
+  [s]
+  (let [t (str/trim (str/replace (str s) #"\s+" " "))]
+    (if (> (count t) 100) (str (subs t 0 100) "…") t)))
 
 (defn- attempt-suffix
   "The prompt an implementor gets for one unit: its role, the REPL/TDD workflow,
@@ -53,17 +63,35 @@
   [{:keys [conn run-id root] :as ctx} worker node]
   (let [bid (branch-id node)
         base (gitdiff/baseline root)
-        prob (:problem node)]
+        prob (:problem node)
+        ;; EVERY UNIT HOLDS A TASK, and that is what makes the rest work. The
+        ;; `split` tool hangs the pieces off the task the agent holds; the ship
+        ;; gate reads the contract's tests and stubs off it; the attempt count
+        ;; lives on it. A unit that held nothing was also told "No task
+        ;; claimed" on every turn — the instruction that ate the turns in run
+        ;; 938b4eb8, pointing at a board the decompose path never wrote to.
+        ;; A delegated piece arrives with its row; the root mints one.
+        task-id (or (:task-id node)
+                    (tasks/create! conn {:title (title-of prob) :body (str prob)
+                                         :contract (str (:contract node))
+                                         :run-id run-id}))
+        held (tasks/claim! conn task-id run-id bid)
+        attempts (tasks/attempted! conn task-id)]
     (try
       ;; The unit's contract is the branch's OWN problem, durably — what a
       ;; resume rebuilds this branch's opening messages from (blt.23).
       (runs/open-branch! conn run-id {:branch-id bid :problem prob})
-      (let [b (assoc (state/new-branch
-                      {:id bid :problem prob
-                       ;; Scoped and enforced, as the board's owners are.
-                       :messages (turn/initial-messages prob (attempt-suffix node)
-                                                        :implementor)})
-                     :role :implementor)
+      (let [b (cond-> (assoc (state/new-branch
+                              {:id bid :problem prob
+                               ;; Scoped and enforced, as the board's owners are.
+                               :messages (turn/initial-messages prob (attempt-suffix node)
+                                                                :implementor)})
+                             :role :implementor)
+                ;; Opens HOLDING its piece, so the contract and the tests it
+                ;; must satisfy are pinned in its context rather than restated
+                ;; once at turn zero and never again.
+                held (assoc :task {:id (:id held) :title (:title held)})
+                held (task-tool/task-statement held))
             ;; The attempt's own baseline reaches the worker's ship gate, so the
             ;; done tool's test rung diffs against exactly what THIS attempt
             ;; changed (a green suite with no diff of its own is not a ship).
@@ -72,14 +100,32 @@
                                   {:branch b :turn 1})
             done? (= :done (:verdict out))
             changed (gitdiff/changed-files root base)
-            passed? (and done? (or (nil? changed) (seq changed)))]
-        {:passed? passed?
-         :answer (get-in out [:branch :final-answer])
-         :failure (when-not passed?
-                    (if done? "the worker shipped but changed no files"
-                        "the worker did not finish"))})
+            ;; DID IT DELEGATE? The agent splits by writing stubs and calling
+            ;; `split`, which the harness verified and turned into child rows
+            ;; under this unit's task. Walking them is how the recursion finds
+            ;; the pieces — the tool reports nothing out of band, so a split
+            ;; that survived a crash is still found here.
+            kids (tasks/children-of conn task-id)]
+        (if (seq kids)
+          {:split (mapv (fn [k]
+                          {:id (str (:id node) "/" (:title k))
+                           :name (:title k)
+                           :problem (:body k)
+                           :contract (:contract k)
+                           :task-id (:id k)
+                           :parent (:id node)})
+                        kids)
+           :attempts attempts}
+          (let [passed? (and done? (or (nil? changed) (seq changed)))]
+            {:passed? passed?
+             :answer (get-in out [:branch :final-answer])
+             :attempts attempts
+             :failure (when-not passed?
+                        (if done? "the worker shipped but changed no files"
+                            "the worker did not finish"))})))
       (catch Throwable e
-        {:passed? false :failure (str "attempt crashed: " (ex-message e))}))))
+        {:passed? false :attempts attempts
+         :failure (str "attempt crashed: " (ex-message e))}))))
 
 (defn- recover-node
   "The architect call on a stuck unit: decompose vs fresh-approach, from the

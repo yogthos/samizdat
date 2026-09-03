@@ -216,6 +216,20 @@
        (throw (ex-info (str "close! wants a terminal status, got " status) {})))
      (update! conn id {:status status}))))
 
+(defn attempted!
+  "Record one more attempt on `id`, and return the new count.
+
+  The number the recursion escalates on. It was kept in memory, so a resumed
+  run re-litigated every unit from zero and 'is this making progress' could
+  only be asked of a live branch, never of the task (v21). Incremented in the
+  UPDATE rather than read-then-written, for the reason `claim!` guards in the
+  row: two branches attempting one task would both read the same count."
+  [conn id]
+  (db/with-writer
+    (db/execute! conn ["UPDATE tasks SET attempts = attempts + 1, updated_at = ?
+                        WHERE id = ?" (db/now) id]))
+  (:attempts (first (db/fetch conn ["SELECT attempts FROM tasks WHERE id = ?" id]))))
+
 (defn children-of [conn id]
   (db/fetch conn ["SELECT * FROM tasks WHERE parent_id = ? ORDER BY created_at, id" id]))
 

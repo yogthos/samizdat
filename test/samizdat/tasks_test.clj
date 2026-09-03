@@ -352,3 +352,14 @@
         (is (thrown-with-msg? Exception #"disk I/O error"
                               (tasks/create! c {:title "nope"}))))
       (is (= 1 @inserts) "a non-collision failure is not retried"))))
+
+(deftest attempts-survive-the-process
+  ;; v21. The recursion counted attempts in memory, so a resumed run
+  ;; re-litigated every unit from zero and "is this making progress" could only
+  ;; be asked of a live branch, never of the task.
+  (with-db [c]
+    (let [id (tasks/create! c {:title "a piece"})]
+      (is (= 0 (:attempts (tasks/get-task c id))) "a fresh task has been tried nothing")
+      (is (= 1 (tasks/attempted! c id)))
+      (is (= 2 (tasks/attempted! c id)))
+      (is (= 2 (:attempts (tasks/get-task c id))) "and it is on the row, not in a process"))))
