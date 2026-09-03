@@ -389,6 +389,34 @@
  ;; resources/prompts/storm*.md. Everything tunable is HERE, because dirge
  ;; hardcodes its 6/3 window and cannot tune it at runtime — we can.
 
+ :no-call-ladder
+ {:value {:withhold-at 3 :end-at 8}
+  :kind :threshold :capability-tunable? true
+  :doc "WHAT HAPPENS WHEN A BRANCH KEEPS PRODUCING NO USABLE CALL.
+
+        The no-call route reaches neither :dispatch nor :arbiter, and that is
+        deliberate — the arbiter reads what the turn DID and a no-call turn did
+        nothing, which loop.edn's :must-precede invariant says in its own
+        :protects text. So no gate can answer this, and the only response was
+        the complaint appended in no-call-step. On run 89f6487a that complaint
+        went 0-FOR-42: branch T0 spent turns 193-250 emitting nothing, every
+        turn correctly diagnosed as a compaction-digest imitation and told so.
+
+        A ladder inside the step instead, since that is where the streak is
+        already known:
+
+        :withhold-at   drop the [unloaded] digests from the branch's context.
+                       A model copying them is copying what is in front of it,
+                       so this takes the exemplar away rather than asking
+                       again. Bookkeeping only; fetch_turn reopens any of it.
+        :end-at        end the branch honestly. The work goes back with an
+                       account rather than the branch burning to its cap
+                       emitting nothing — the same outcome :mechanics-streak
+                       predicts, on the path that gate cannot reach.
+
+        Counted on :consecutive-mechanics-failures, which record-outcome zeroes
+        the moment any real call lands, so an isolated no-call costs nothing."}
+
  :storm-enabled
  {:value true :kind :threshold :capability-tunable? true
   :doc "Whether the storm guard withholds calls at all. The off switch is
@@ -1096,7 +1124,7 @@
         Not capability-tunable: it describes the provider, not the branch."}
 
  :schema-validation
- {:value {:mode :warn}
+ {:value {:mode :strict}
   :kind :policy :capability-tunable? false
   :doc "WHAT A CELL WHOSE DATA DOES NOT MATCH ITS DECLARED SHAPE COSTS AT RUN
         TIME.
@@ -1119,10 +1147,20 @@
         {:missing :extra} and :failed-keys, which is the part worth reading —
         it names the rename rather than reporting that something did not match.
 
-        Move to :strict once the warnings stop arriving on a real run. That is
-        the point of the staging: :warn measures whether the declarations are
-        right, and :strict is only worth having once they are. Going straight
-        to :strict makes every imprecise declaration an outage.
+        NOW :strict, on the evidence the staging was built to collect. Run
+        89f6487a (2026-09-03, Qwen3.8-27B-Q8_0 via llama-server, the feature
+        loop over mdlite) ran 280 turns across 3 branches under :warn and
+        emitted ZERO schema warnings — real model responses, real tool
+        results, real compaction, and a branch that degenerated into a 57-turn
+        no-call loop, which is the ugliest shape the shapes get. The suite had
+        already shown zero across 1860 mocked tests; this is the half the
+        suite could not give, because a declaration that is right for a
+        stubbed response can still be wrong for a live one.
+
+        Going straight to :strict without that would have made every imprecise
+        declaration an outage. If one turns up now it halts a run, and
+        karamazov-6y7.5 made that land as a clean branch outcome rather than
+        an FSM dump — put the mode back to :warn and file what halted.
 
         Not capability-tunable: a tier under observation should not be able to
         stop its own shapes being checked."}

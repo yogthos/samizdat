@@ -215,15 +215,24 @@
     (finally (cell/remove-cell! :schema-test/boom))))
 
 (deftest the-validate-mode-is-policy-rather-than-a-constant
-  (testing "the shipped default"
-    (is (= :warn (manifests/validate-mode))))
+  (testing "the shipped default, now :strict"
+    ;; Flipped on the evidence the staging was built to collect: run 89f6487a
+    ;; ran 280 turns across 3 branches under :warn against a real endpoint and
+    ;; emitted ZERO schema warnings — real responses, real tool results, real
+    ;; compaction, and a branch that spent 57 turns in a no-call loop, which
+    ;; is the ugliest shape the data takes. The suite's 1860 mocked tests had
+    ;; already shown zero; this is the half they could not give
+    ;; (karamazov-6y7).
+    (is (= :strict (manifests/validate-mode))))
   (testing "an edit to gates.edn moves it"
-    (with-redefs [lexicon/policy (fn [k] (when (= k :schema-validation) {:mode :strict}))]
-      (is (= :strict (manifests/validate-mode)))))
+    (with-redefs [lexicon/policy (fn [k] (when (= k :schema-validation) {:mode :warn}))]
+      (is (= :warn (manifests/validate-mode)))))
   (testing "and a MISSING policy does not silently switch checking off"
-    ;; :off would be the dangerous default — nobody finds out. :strict would
-    ;; be the other kind of wrong, halting runs over declarations the rollout
-    ;; has not finished tightening.
+    ;; :off would be the dangerous default — nobody finds out. The CODE
+    ;; fallback stays :warn even though the shipped file now says :strict, and
+    ;; that asymmetry is deliberate: a project whose gates.edn failed to load
+    ;; should still be checked, but should not have its runs halted by a
+    ;; policy it never got to read.
     (with-redefs [lexicon/policy (constantly nil)]
       (is (= :warn (manifests/validate-mode))))))
 
