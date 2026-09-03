@@ -35,7 +35,9 @@
   and only the capability tier. Per the rule from dirge PR 740, a signal may
   tune a guard that fires on the same thing the signal measures, so these may
   adjust repair budgets and may never relax a verification gate."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [instaparse.combinators :as c]
             [instaparse.core :as insta]

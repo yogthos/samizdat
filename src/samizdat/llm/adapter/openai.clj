@@ -29,7 +29,9 @@
   return `reasoning_content` alongside `content`; others return nothing. The
   field name is configurable and the client folds it into <think> framing so
   the fence parser sees one string either way."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]

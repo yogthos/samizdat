@@ -21,7 +21,9 @@
   Pure here — the architect prompt and the decision parsing; the orchestration
   (attempt, recurse, assemble, depth cap) lives in cells/decompose.clj. Same
   split as planner.clj vs cells/team.clj."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [samizdat.agent.gates :as gates]
             [samizdat.prompt :as prompt]))

@@ -28,7 +28,13 @@
   Every append also emits an event carrying a monotonic cursor, which is what
   `GET /v1/runs/:id/journal?since=N` reads. The loop calls these; nothing calls
   the loop."
-  (:require [clojure.data.json :as json]
+  (:require ;; The java.time.* host shim, before data.json: it builds a
+            ;; DateTimeFormatter at namespace load, and under jolt 0.8.1 that
+            ;; class exists only once jolt.time has installed it — 0.8.0 had it
+            ;; implicitly. Required where the library that needs it enters, the
+            ;; same as selmer in samizdat.prompt and db.jdbc before jdbc.core.
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and

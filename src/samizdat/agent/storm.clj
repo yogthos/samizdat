@@ -36,7 +36,9 @@
   tools never enter, and a withheld call never ran so it is not noted either —
   which is what keeps the originals in the window and the repeat withheld
   until the branch actually changes course."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.set :as set]
             [clojure.string :as str]
             [clojure.walk :as walk]))

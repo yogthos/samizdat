@@ -27,7 +27,9 @@
   The tail endpoint is a cursor over `events` rather than a stream, because a
   cursor works over any HTTP server and a stream does not — see PLAN.md on the
   vendored adapter."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [samizdat.agent.gates :as gates]
             [samizdat.store.db :as db]
             [samizdat.store.interventions :as interventions]

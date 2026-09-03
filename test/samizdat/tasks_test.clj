@@ -20,7 +20,9 @@
   "The task board: dirge's issues schema generalized (epic_id -> parent_id +
   a type column, session scoping -> run scoping) plus the contract fields
   that make a task a delegable unit, and the model-facing `task` tool."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [jolt.fs :as fs]

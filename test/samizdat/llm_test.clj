@@ -22,7 +22,9 @@
   The fence parser gets the most tests here because it is the component whose
   bugs are invisible in a live run. A parser that quietly drops a tool call
   looks exactly like a model that chose not to make one."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [jolt.http-client :as http]

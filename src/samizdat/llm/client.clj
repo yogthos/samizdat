@@ -37,7 +37,9 @@
 
   Prior assistant turns lose their think blocks on the way out. See
   samizdat.llm.message."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [jolt.http-client :as http]

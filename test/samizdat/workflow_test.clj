@@ -21,7 +21,9 @@
   mycelium's checks, and the manifest-driven driver produces the same runs the
   hand-written loop did. Editing the stored definition changes the next run —
   that is the whole point."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.introspect]

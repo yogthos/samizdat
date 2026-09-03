@@ -24,7 +24,9 @@
   form \"this reduces turns\" is unmeasurable at an affordable sample size,
   while \"the mechanism fired when it should and stayed silent otherwise\" is
   checkable deterministically."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [samizdat.agent.arbiter :as arbiter]
