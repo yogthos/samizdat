@@ -234,3 +234,13 @@
                       :max-depth 1})]
     (is (= :failed (:status r)))
     (is (> (count @ids) 1) "it split before giving up")))
+
+(deftest the-architect-is-told-how-many-times-this-was-really-attempted
+  ;; v21: the count comes off the task row, so a resumed run diagnoses a unit
+  ;; on its fourth try as one rather than starting the tally over.
+  (let [seen (atom nil)]
+    (dec/solve {:id "x" :problem "p"} 0
+               {:attempt (constantly {:passed? false :failure "no" :attempts 4})
+                :recover (fn [_ ev] (reset! seen (:attempts ev)) nil)
+                :fan seq-fan})
+    (is (= 4 @seen) "the architect sees the durable count, not a fresh one")))

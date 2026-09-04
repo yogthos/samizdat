@@ -349,25 +349,42 @@
         ;; the ones it is judged on (karamazov-ioo.15).
         held (when (and (:conn ctx) (:run-id ctx) (:id branch))
                (tasks/held-by (:conn ctx) (:run-id ctx) (:id branch)))
-        contracted-tests (when held
-                           (let [p (str (:tests held))]
-                             (when (verify/test-file? p) p)))
-        ;; THE OTHER HALF OF A DELEGATED PIECE'S CONTRACT, and the half green
-        ;; tests cannot see: are the functions it was handed implemented. The
-        ;; parent's composition calls them by name, so a test passing around a
-        ;; hollow stub, or a stub deleted rather than filled, leaves that
-        ;; caller broken. Read off the tree at ship time rather than trusted.
+        ;; THE HELD TASK AND ANY PIECES UNDER IT. A branch assembling a split
+        ;; is judged on its own contract AND on every child's, which is what
+        ;; makes the parent's freedom to adjust the pieces safe: it may reshape
+        ;; a signature that turned out awkward, and it may not quietly break a
+        ;; piece that met its contract. A branch with no children reduces to
+        ;; the plain delegated case, and a branch holding nothing to the old
+        ;; behaviour exactly.
+        specs (when held
+                (into [held] (when (:conn ctx) (tasks/children-of (:conn ctx) (:id held)))))
+        contracted-tests (->> specs
+                              (map #(str (:tests %)))
+                              (filter verify/test-file?)
+                              distinct
+                              vec
+                              not-empty)
+        ;; THE OTHER HALF OF THE CONTRACT, and the half green tests cannot see:
+        ;; are the functions it was handed implemented. The composition calls
+        ;; them by name, so a test passing around a hollow stub, or a stub
+        ;; deleted rather than filled, leaves that caller broken. Read off the
+        ;; tree at ship time rather than trusted.
+        source-of (fn [path]
+                    (when-let [abs (files/resolve-under-root (:root ctx) path)]
+                      (let [f (java.io.File. ^String abs)]
+                        (when (.isFile f) (slurp f)))))
+        unfilled (vec (distinct
+                       (mapcat (fn [t]
+                                 (let [file (not-empty (str (:stub_file t)))
+                                       owed (when (not-empty (str (:stubs t)))
+                                              (str/split (str (:stubs t)) #","))]
+                                   (when (and file (seq owed))
+                                     ;; A file gone or escaping the root leaves
+                                     ;; everything it should define unfilled:
+                                     ;; the honest answer, and the safe one.
+                                     (stubs/unfilled (source-of file) owed))))
+                               specs)))
         stub-file (not-empty (str (:stub_file held)))
-        owed (when (and stub-file (not-empty (str (:stubs held))))
-               (str/split (str (:stubs held)) #","))
-        unfilled (when (seq owed)
-                   (if-let [abs (files/resolve-under-root (:root ctx) stub-file)]
-                     (let [f (java.io.File. ^String abs)]
-                       (stubs/unfilled (when (.isFile f) (slurp f)) owed))
-                     ;; The file is gone or escapes the root: everything it was
-                     ;; supposed to define is unfilled, which is the honest
-                     ;; answer and the safe direction.
-                     (vec owed)))
         ;; A contract that names tests turns the rung ON by itself. The whole
         ;; point of the delegation is that those tests define delivery, so a
         ;; piece must not ship without them having been run — whether or not
@@ -385,7 +402,7 @@
         ;; touched, not instead of it: a child that wrote extra tests of its own
         ;; should have them run too, and a child that edited a sibling's test
         ;; file should have to face it.
-        focus (distinct (concat (when contracted-tests [contracted-tests])
+        focus (distinct (concat contracted-tests
                                 (when (or verify-focused? contracted-tests) changed)))
         cmd (when verify-on? (or (verify/focused-cmd focus) verify-cmd))
         pre-doomed? (or (and (some? changed) (empty? changed))

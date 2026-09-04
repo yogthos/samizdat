@@ -175,7 +175,13 @@
       (:passed? r) {:status :landed :answer (:answer r) :node node}
 
       :else
-      (let [ev {:last-answer (:answer r) :last-failure (:failure r) :depth depth}
+      (let [ev {:last-answer (:answer r) :last-failure (:failure r) :depth depth
+                ;; From the TASK ROW (v21), not a counter in this process. A
+                ;; resumed run picks up the tally its predecessor left, so a
+                ;; unit on its fourth try is diagnosed as one — the architect
+                ;; is told how many times this has been attempted, and that
+                ;; number used to reset to zero on every crash.
+                :attempts (:attempts r)}
             decision (recover node ev)]
         (case (:kind decision)
           ;; The architect wants a split. Honour it if the budget allows; at the

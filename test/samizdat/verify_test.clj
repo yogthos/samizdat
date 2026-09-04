@@ -119,7 +119,14 @@
     (is (some? (verify/verify-block {:verify-on? true :result nil
                                      :changed ["src/example/core.clj"]
                                      :require-test? true
-                                     :contracted-tests nil})))))
+                                     :contracted-tests nil}))))
+  (testing "an ASSEMBLY carries its own tests and every piece's"
+    (is (nil? (verify/verify-block
+               {:verify-on? true :result {:green? true :output ""}
+                :changed ["src/example/core.clj"]
+                :require-test? true
+                :contracted-tests ["test/example/core_test.clj"
+                                   "test/example/parse_test.clj"]})))))
 
 (deftest a-piece-that-left-its-stubs-hollow-has-not-delivered
   ;; Green tests are not enough on their own. The parent's composition CALLS
