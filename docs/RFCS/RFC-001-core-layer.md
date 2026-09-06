@@ -59,9 +59,55 @@ re-appending:
 | `:policy` | EDN | `gates`, `phases`, `wordlists`, `manual`, `prompt-chain` |
 | `:prompt` | markdown | `samizdat.prompt` → selmer |
 
-A project is one database. The db path is cwd-relative (`samizdat.sqlite3`), so
-a project *is* a directory, and two projects on one binary diverge without
-either being able to affect the other.
+A project is one database at `<root>/.samizdat/samizdat.sqlite3` — root-relative,
+so a project *is* a directory, and two projects on one binary diverge without
+either being able to affect the other. `HARNESS_DB` or `:db :path` in a config
+file names another path; a checkout that still has the pre-1g6b `<root>/samizdat.sqlite3`
+and no `.samizdat/` one is opened where it is, and the boot log says so
+(`config/db-location`).
+
+### Configuration is layered from files
+
+```
+built-in defaults (with HARNESS_* env folded in)
+  < ~/.config/samizdat/config.edn        the user's machine-wide defaults
+  < <root>/.samizdat/config.edn           the project
+  < explicit overrides                    a test, a REPL, POST /v1/runs
+```
+
+Both files are the same EDN map shape, so a key means the same thing wherever
+it is set. Maps deep-merge (a project's `:llm :model` does not wipe a global
+`:llm :base-url`); anything else is replaced. `$XDG_CONFIG_HOME` is honoured
+for the global path. Every reader of on-disk config goes through
+`config/file-config`, so no reader sees one layer and not the other; the boot
+log and `/health` (`config_sources`) name each file and whether it was read.
+
+### Prompts may also be files
+
+A project carries prompt overrides under `<root>/.samizdat/prompts/`, for a
+human and the agent to edit in place:
+
+```
+<name>.md                         every provider, every model
+<provider>/<name>.md              every model on that provider
+<provider>/<model-dir>/<name>.md  one model family — a case-insensitive PREFIX
+                                  of the model id (qwen3 covers Qwen3.8-27B-Q8_0),
+                                  longest matching directory first
+```
+
+The rule for the two sources of truth: **a file, when present, is the newest
+version.** It beats a stored row, it is read fresh on every call rather than
+cached, and `userspace/prompt-source` (surfaced by `prompt list`/`show`) says
+which layer answered, so a wording is never a shadow one has to know to look
+for. The model is bound once per process (`userspace/bind-model!`, from the
+run config after the endpoint probe has said what a local server loaded);
+resolution per role — a role on a different model than the run — is a known
+gap, tracked on karamazov-2lbi.
+
+The overridable unit is deliberately smaller than `system.md`: sections a
+model is measured to need worded differently are their own prompts, injected
+(`{{split-decision}}` is the first), so a per-model file says one thing rather
+than forking five hundred lines.
 
 ## API
 
@@ -123,6 +169,10 @@ append-only.
 | `(seed! conn kind name body)` | Install as version 1 iff no version exists. Idempotent; returns the latest row either way. |
 | `(revert! conn kind name version)` | Re-append that version's body as a new version. `nil` when it does not exist. |
 | `(names conn kind)` | `{name, version, versions}` per name. |
+| `(userspace/bind-model! {:provider :model})` | Which model the prompt file layer serves; nil unbinds. |
+| `(userspace/prompt-file name)` | The file overriding a prompt for the bound root and model, `{:path :layer}` or nil. |
+| `(userspace/prompt-source name)` | `{:source :file/:project/:template …}` — which layer `body` would answer from. |
+| `(userspace/prompt-variants)` | Every prompt file the project holds, `{name [variant …]}`, for discovery. |
 | `(latest-bodies conn kind)` | `{name body}` at the newest version of each — one query for a loader that needs a whole kind. |
 
 `kinds` is `#{:cell :manifest :policy :prompt}`; an unrecognised kind throws

@@ -323,9 +323,37 @@
              (Thread/sleep wait)
              (recur (inc attempt) errors))))))))
 
+(defn- file-stem
+  "`/a/b/Qwen3.8-27B-Q8_0.gguf` -> `Qwen3.8-27B-Q8_0`; a bare alias is itself."
+  [s]
+  (let [base (last (str/split (str s) #"/"))]
+    (str/replace base #"\.gguf$" "")))
+
+(defn llama-props->probe
+  "The probe result for a decoded /props body, or nil when the body is not a
+  llama.cpp server's (no `total_slots`).
+
+  `:model-id` is WHICH MODEL the server loaded — model_alias when the operator
+  set one, else the model_path's file stem — and it is absent, not guessed,
+  on a build that serves neither. It exists because :local's configured
+  :model is the placeholder \"local-model\": the provider says nothing about
+  the model, and the prompt file layer (.samizdat/prompts/<provider>/<model>/)
+  keys on the model. Pure, so it is testable without a server."
+  [body]
+  (when-let [slots (:total_slots body)]
+    (let [alias (:model_alias body)
+          path  (:model_path body)
+          id (cond
+               (and (string? alias) (not (str/blank? alias))) (file-stem alias)
+               (and (string? path) (not (str/blank? path)))   (file-stem path))]
+      (cond-> {:llama-cpp? true :total-slots slots}
+        id (assoc :model-id id)))))
+
 (defn probe-llama-cpp
-  "Ask an endpoint whether it is a llama.cpp server, and how many KV slots it
-  was launched with. Returns `{:llama-cpp? true :total-slots n}` or nil.
+  "Ask an endpoint whether it is a llama.cpp server, how many KV slots it was
+  launched with, and which model it loaded. Returns
+  `{:llama-cpp? true :total-slots n :model-id s}` (model-id when the server
+  reports one) or nil.
 
   IDENTIFY, DO NOT GUESS — and do not send hopefully either. RFC-005 recorded
   that `:local` was decided by which config key the endpoint sat under, so a
@@ -355,9 +383,7 @@
                                                           default-conn-timeout-ms)
                           :throw-exceptions false})]
       (when (<= 200 (:status resp) 299)
-        (let [body (decode (:body resp))]
-          (when-let [slots (:total_slots body)]
-            {:llama-cpp? true :total-slots slots}))))
+        (llama-props->probe (decode (:body resp)))))
     (catch Throwable _
       ;; Unreachable, not-llama.cpp and malformed are the same answer here, and
       ;; none of them is a reason not to start: the harness must come up

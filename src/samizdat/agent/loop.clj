@@ -117,14 +117,18 @@
         :self-hosting (userspace/self-hosting?)
         :repl (not= :off image)
         :harness-image (= :harness image)
-        ;; From the project's own config file rather than the merged run
-        ;; config, which prompt assembly is not handed. Same file, same key —
-        ;; `.samizdat/config.edn` is the only place these are ever set, and it
-        ;; is the operator's rather than the agent's.
+        ;; From the config FILES rather than the merged run config, which
+        ;; prompt assembly is not handed. Both layers — a machine-wide
+        ;; reference tree is a real thing to declare once — and they are the
+        ;; operator's rather than the agent's.
         :reference-paths (seq (files/reference-roots
-                               (get-in (config/project-config root)
+                               (get-in (config/file-config root)
                                        [:run :reference-paths])
-                               root))})
+                               root))
+        ;; The split decision is its own prompt so a provider/model file can
+        ;; replace the 8 lines that were measured to matter without forking
+        ;; the other 490 (karamazov-1g6b.3).
+        :split-decision (prompt/prompt "split-decision")})
      role eval-mode)))
 
 (defn system-prompt

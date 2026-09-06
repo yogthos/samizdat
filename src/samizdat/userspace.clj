@@ -51,6 +51,7 @@
   day: nothing has to know whether a project store is present."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.store.userspace :as store]))
 
@@ -143,6 +144,42 @@
   loop manifest is not mistaken for the harness."
   ["src/samizdat/workflow.clj" "resources/manifests/loop.edn"])
 
+;; --- the MODEL ---------------------------------------------------------------
+;;
+;; Which provider and model this run speaks to, for the prompt file layer
+;; below: .samizdat/prompts/<provider>/<model>/ is consulted for the running
+;; model and no other. Bound by system/start! from the run config, after the
+;; endpoint probe has said what a local server actually loaded.
+
+(defonce ^:private model (atom nil))
+
+(defn bind-model!
+  "Point the prompt file layer at this run's `{:provider kw :model string}`.
+  nil unbinds — the provider/model directories are then not consulted at
+  all, and only the plain project files and the store answer. Returns the
+  previous value."
+  [m]
+  (let [prev @model]
+    (reset! model (when (map? m) m))
+    prev))
+
+(defn model-context
+  "The bound `{:provider :model}`, or nil."
+  []
+  @model)
+
+(defn model-dir-matches?
+  "Whether a `.samizdat/prompts/<provider>/<dir>/` directory applies to
+  `model-id`: a case-insensitive PREFIX match, so `qwen3` covers
+  `Qwen3.8-27B-Q8_0` and `glm` covers `glm-5.3`. A prefix rather than an
+  exact id because the trait a per-model prompt accommodates is a family's
+  training, and an exact key would need re-authoring on every point release."
+  [dir model-id]
+  (boolean
+   (and (string? dir) (string? model-id)
+        (not (str/blank? dir))
+        (str/starts-with? (str/lower-case model-id) (str/lower-case dir)))))
+
 (defn self-hosting?
   "Whether the project being worked on IS a samizdat checkout.
 
@@ -191,7 +228,92 @@
   [kind name]
   (some-> (io/resource (template-path kind name)) slurp))
 
+;; --- prompt FILES ------------------------------------------------------------
+;;
+;; A project carries prompt overrides as files a human and the agent can both
+;; read and edit in place, under <root>/.samizdat/prompts/:
+;;
+;;   <name>.md                       every provider, every model
+;;   <provider>/<name>.md            every model on that provider
+;;   <provider>/<model-dir>/<name>.md  one model family (prefix match)
+;;
+;; Most specific first; among model directories the LONGEST match wins, so a
+;; project can special-case a sub-family beneath a general one. A file, when
+;; present, IS the newest version — it beats a stored row, and `prompt-source`
+;; says so, because two sources of truth that silently shadow each other is
+;; the drift this project keeps finding. Read fresh on every call (a few
+;; stats, against a render that costs far more): the point of a file is that
+;; someone edits it in place, and a cache would pin the first content it saw.
+
+(defn- prompts-dir
+  "The project's prompt file directory, or nil when no root is bound."
+  []
+  (when-let [r (project-root)]
+    (io/file r ".samizdat" "prompts")))
+
+(defn- present-file
+  "`f` when it is a readable file, else nil."
+  [^java.io.File f]
+  (when (and f (.isFile f)) f))
+
+(defn- model-dirs
+  "Subdirectories of <prompts>/<provider>/ that apply to `model-id`, most
+  specific (longest name) first."
+  [^java.io.File provider-dir model-id]
+  (when (and provider-dir (.isDirectory provider-dir))
+    (->> (.listFiles provider-dir)
+         (filter #(.isDirectory ^java.io.File %))
+         (filter #(model-dir-matches? (.getName ^java.io.File %) model-id))
+         (sort-by #(- (count (.getName ^java.io.File %)))))))
+
+(defn prompt-file
+  "The file that overrides prompt `name` for the bound root and model, as
+  `{:path :layer}` — :layer being :model, :provider or :project — or nil when
+  no file applies."
+  [name]
+  (when-let [dir (prompts-dir)]
+    (let [{:keys [provider model]} (model-context)
+          pname (str name ".md")
+          provider-dir (when provider (io/file dir (clojure.core/name provider)))]
+      (or (some (fn [^java.io.File md]
+                  (when-let [f (present-file (io/file md pname))]
+                    {:path (.getPath f) :layer :model}))
+                (model-dirs provider-dir model))
+          (when-let [f (present-file (some-> provider-dir (io/file pname)))]
+            {:path (.getPath f) :layer :provider})
+          (when-let [f (present-file (io/file dir pname))]
+            {:path (.getPath f) :layer :project})))))
+
+(defn prompt-variants
+  "Every prompt file the project holds, as {name [variant …]} — each variant
+  `{:layer :path}` plus :provider and :model-dir where they apply. What the
+  `prompt` tool lists, so a per-model wording is a thing the supervisor can
+  see rather than a shadow it has to know to look for. {} with no root."
+  []
+  (if-let [^java.io.File dir (prompts-dir)]
+    (if-not (.isDirectory dir)
+      {}
+      (let [md? (fn [^java.io.File f] (and (.isFile f) (.endsWith (.getName f) ".md")))
+            nm (fn [^java.io.File f] (subs (.getName f) 0 (- (count (.getName f)) 3)))
+            project (for [f (.listFiles dir) :when (md? f)]
+                      [(nm f) {:layer :project :path (.getPath f)}])
+            provider (for [^java.io.File p (.listFiles dir) :when (.isDirectory p)
+                           f (.listFiles p) :when (md? ^java.io.File f)]
+                       [(nm f) {:layer :provider :provider (.getName p) :path (.getPath ^java.io.File f)}])
+            model (for [^java.io.File p (.listFiles dir) :when (.isDirectory p)
+                        ^java.io.File m (.listFiles p) :when (.isDirectory m)
+                        f (.listFiles m) :when (md? ^java.io.File f)]
+                    [(nm f) {:layer :model :provider (.getName p) :model-dir (.getName m)
+                             :path (.getPath ^java.io.File f)}])]
+        (reduce (fn [acc [n v]] (update acc n (fnil conj []) v))
+                {}
+                (sort-by (fn [[n v]] [n (:path v)])
+                         (concat project provider model)))))
+    {}))
+
 ;; --- reads -------------------------------------------------------------------
+
+(declare cached-body)
 
 (defn- read-body
   [kind name]
@@ -218,7 +340,17 @@
   decides whether that is an error, because it is one for a cell the manifest
   references and not one for an optional prompt.
 
+  A :prompt is first looked for as a FILE under the project's
+  .samizdat/prompts/ (see `prompt-file`); the file layer is not cached, the
+  store/template layer below it is.
+
   Cached per (kind, name) and invalidated on every write; see `cache`."
+  [kind name]
+  (or (when (= :prompt kind)
+        (some-> (prompt-file name) :path slurp))
+      (cached-body kind name)))
+
+(defn- cached-body
   [kind name]
   (let [k [kind name]
         hit (get @cache k ::miss)]
@@ -246,6 +378,27 @@
                            (pr-str name) ": the project has no version and"
                            " nothing ships at " (template-path kind name))
                       {:kind kind :name name}))))
+
+(defn prompt-source
+  "Where the text of prompt `name` comes from, for the `prompt` tool:
+  `{:source :file :layer … :path …}` for a project file, `{:source :project
+  :version n}` for a stored row, `{:source :template}` for the shipped file,
+  nil for a name nobody has."
+  [name]
+  (or (when-let [f (prompt-file name)]
+        {:source :file :layer (:layer f) :path (:path f)})
+      ;; A bound project SEEDS a shipped prompt as a factory row on first read,
+      ;; so "there is a row" does not mean the project authored anything. A
+      ;; row whose body is still the template's is reported as the template:
+      ;; that is where the words come from, and it is what a reader deciding
+      ;; whether to edit a file or `save` a version needs to know.
+      (when-let [c (conn)]
+        (when-let [row (store/load-latest c :prompt name)]
+          (if (= (:body row) (template :prompt name))
+            {:source :template}
+            {:source :project :version (:version row)})))
+      (when (template :prompt name)
+        {:source :template})))
 
 (defn edn-body
   "`body` parsed as EDN — a manifest or a policy table. nil stays nil."

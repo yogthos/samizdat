@@ -84,7 +84,19 @@
    {:name samizdat.userspace/self-hosting?
     :summary "Whether the project under work IS a samizdat checkout. What the system prompt gates its sections about cells, manifests and src-vs-resources on: all of it is load-bearing here and standing instruction about the wrong codebase anywhere else."}
    {:name samizdat.agent.files/reference-roots
-    :summary "The READ-ONLY roots a project declared beside its own (.samizdat/config.edn :run :reference-paths). read_file and grep resolve against them; writes stay confined to the root."}]}
+    :summary "The READ-ONLY roots a project declared beside its own (.samizdat/config.edn :run :reference-paths). read_file and grep resolve against them; writes stay confined to the root."}
+   {:name samizdat.config/file-config
+    :summary "Both config files as one map: ~/.config/samizdat/config.edn ($XDG_CONFIG_HOME honoured) with the project's .samizdat/config.edn merged on top, key by key. Every reader of on-disk config comes through here."}
+   {:name samizdat.config/config-sources
+    :summary "Which config files this process reads, lowest precedence first, and whether each exists — what the boot log and /health show so a surprising value can be traced to its file."}
+   {:name samizdat.config/db-location
+    :summary "Where the project db is and why: HARNESS_DB, the existing .samizdat/samizdat.sqlite3, a legacy root samizdat.sqlite3 (opened in place, logged), or the .samizdat/ default for a fresh project."}
+   {:name samizdat.userspace/bind-model!
+    :summary "Which {:provider :model} the prompt FILE layer serves. Bound once at start from the run config, after the endpoint probe has said what a local server actually loaded — :local's configured model is only a placeholder."}
+   {:name samizdat.userspace/prompt-source
+    :summary "Where a prompt's text comes from — a file under .samizdat/prompts/ (and which layer: model, provider, project), a stored row, or the shipped template. A file always wins; this is how you see that it did."}
+   {:name samizdat.userspace/prompt-variants
+    :summary "Every prompt file the project holds, by name, with the provider/model directory each applies to. The `prompt list` view of the file layer, so a per-model wording is visible rather than a shadow."}]}
 
  {:group "Patterns: dispatch tables and rules"
   :entries

@@ -658,3 +658,176 @@
   (let [m (us/prescription-mass)]
     (is (= 1 (get-in m [:prompt :names])))
     (is (= 1 (get-in m [:policy :names])))))
+
+;; --- prompt FILES under .samizdat/prompts (karamazov-1g6b.3) -----------------
+;;
+;; A project carries prompt overrides as files a human and the agent can both
+;; edit in place: .samizdat/prompts/<name>.md for any model, and
+;; .samizdat/prompts/<provider>/<model>/<name>.md for one provider+model
+;; family. Most specific wins; a file beats a stored row; no file means
+;; exactly what the seam did before.
+
+(defn- temp-root-with-prompts
+  "A temp project root with these prompt files written, {relative-path body}."
+  [files]
+  (let [root (str (java.nio.file.Files/createTempDirectory
+                   "samizdat-prompt-files"
+                   (make-array java.nio.file.attribute.FileAttribute 0)))]
+    (doseq [[rel body] files]
+      (let [f (java.io.File. root (str ".samizdat/prompts/" rel))]
+        (.mkdirs (.getParentFile f))
+        (spit f body)))
+    root))
+
+(defn- rm-rf [^java.io.File f]
+  (when (.isDirectory f) (doseq [c (.listFiles f)] (rm-rf c)))
+  (.delete f))
+
+(defmacro with-prompt-root
+  "Bind `root` and `model` for the body, restoring both after."
+  [[root model] & body]
+  `(let [prev-root# (us/project-root)
+         prev-model# (us/model-context)]
+     (try
+       (us/bind-root! ~root)
+       (us/bind-model! ~model)
+       ~@body
+       (finally
+         (us/bind-root! prev-root#)
+         (us/bind-model! prev-model#)))))
+
+(deftest a-prompt-file-resolves-most-specific-first
+  (let [root (temp-root-with-prompts
+              {"local/qwen3/split-decision.md" "MODEL FILE"
+               "local/foo.md"                  "PROVIDER FILE"
+               "bar.md"                        "PROJECT FILE"})]
+    (try
+      (with-prompt-root [root {:provider :local :model "Qwen3.8-27B-Q8_0"}]
+        (is (= "MODEL FILE" (us/body :prompt "split-decision"))
+            "the provider/model directory wins for the running model")
+        (is (= "PROVIDER FILE" (us/body :prompt "foo"))
+            "a provider-wide file serves every model on that provider")
+        (is (= "PROJECT FILE" (us/body :prompt "bar"))
+            "a plain project file serves every provider")
+        (is (re-find #"\{\{problem\}\}" (us/body :prompt "problem"))
+            "a name with no file is the shipped template, as before"))
+      (with-prompt-root [root {:provider :deepseek :model "deepseek-v4-flash"}]
+        (is (= "PROJECT FILE" (us/body :prompt "bar"))
+            "the plain project file still applies on another provider")
+        (is (nil? (us/body :prompt "foo"))
+            "a local/ file is ignored on deepseek — and nothing ships under that name")
+        (is (not= "MODEL FILE" (us/body :prompt "split-decision"))
+            "the qwen3 file is ignored on deepseek"))
+      (with-prompt-root [root nil]
+        (is (= "PROJECT FILE" (us/body :prompt "bar"))
+            "with no model bound the plain project file still resolves")
+        (is (nil? (us/body :prompt "foo"))
+            "and the provider/model directories are not consulted"))
+      (finally (rm-rf (java.io.File. root))))))
+
+(deftest the-model-directory-matches-as-a-family-prefix
+  ;; The trait being accommodated is a family's training, so the directory
+  ;; is a prefix — qwen3 covers Qwen3.8-27B-Q8_0 — and a point release does
+  ;; not need re-authoring. The longest matching directory wins, so a project
+  ;; can special-case one sub-family beneath a general one.
+  (is (true? (us/model-dir-matches? "qwen3" "Qwen3.8-27B-Q8_0")))
+  (is (true? (us/model-dir-matches? "glm" "glm-5.3")))
+  (is (true? (us/model-dir-matches? "GLM-5" "glm-5.3")) "case-insensitive both ways")
+  (is (false? (us/model-dir-matches? "qwen" "deepseek-v4-flash")))
+  (is (false? (us/model-dir-matches? "qwen3" nil)))
+  (let [root (temp-root-with-prompts
+              {"local/qwen3/x.md"   "GENERAL"
+               "local/qwen3.8/x.md" "SPECIFIC"})]
+    (try
+      (with-prompt-root [root {:provider :local :model "Qwen3.8-27B-Q8_0"}]
+        (is (= "SPECIFIC" (us/body :prompt "x"))))
+      (with-prompt-root [root {:provider :local :model "Qwen3.5-9B"}]
+        (is (= "GENERAL" (us/body :prompt "x"))))
+      (finally (rm-rf (java.io.File. root))))))
+
+(deftest a-file-beats-a-stored-row-and-says-so
+  ;; Two sources of truth is the drift this project keeps finding, so the
+  ;; rule is stated and the tool reports it: a file, when present, IS the
+  ;; newest version, and prompt-source names where the text came from.
+  (us/bind! *conn*)
+  (let [root (temp-root-with-prompts {"local/qwen3/bar.md" "FILE"})]
+    (try
+      (with-prompt-root [root {:provider :local :model "qwen3-27b"}]
+        (us/save! :prompt "bar" "ROW" "a stored edit")
+        (is (= "FILE" (us/body :prompt "bar")))
+        (is (= {:source :file :layer :model
+                :path (str root "/.samizdat/prompts/local/qwen3/bar.md")}
+               (us/prompt-source "bar")))
+        (testing "a name with a row and no file reports the row"
+          (us/save! :prompt "baz" "ROW" "another")
+          (is (= {:source :project :version 1} (us/prompt-source "baz"))))
+        (testing "a shipped name with neither reports the template"
+          (is (= {:source :template} (us/prompt-source "problem"))))
+        (testing "an unknown name reports nothing"
+          (is (nil? (us/prompt-source "no-such-prompt-anywhere")))))
+      (finally (rm-rf (java.io.File. root))))))
+
+(deftest editing-a-prompt-file-takes-effect-on-the-next-read
+  ;; The point of files is that a human edits them in place, so the read
+  ;; cache must not pin the first content it saw.
+  (let [root (temp-root-with-prompts {"bar.md" "FIRST"})]
+    (try
+      (with-prompt-root [root nil]
+        (is (= "FIRST" (us/body :prompt "bar")))
+        (spit (java.io.File. root ".samizdat/prompts/bar.md") "SECOND")
+        (is (= "SECOND" (us/body :prompt "bar"))))
+      (finally (rm-rf (java.io.File. root))))))
+
+(deftest prompt-variants-are-discoverable
+  ;; A capability the supervisor cannot enumerate does not exist for it: the
+  ;; prompt tool lists which names carry files, and for which provider/model.
+  (let [root (temp-root-with-prompts
+              {"local/qwen3/split-decision.md" "a"
+               "deepseek/split-decision.md"    "b"
+               "bar.md"                        "c"})]
+    (try
+      (with-prompt-root [root nil]
+        (is (= {"split-decision" [{:layer :provider :provider "deepseek"
+                                   :path (str root "/.samizdat/prompts/deepseek/split-decision.md")}
+                                  {:layer :model :provider "local" :model-dir "qwen3"
+                                   :path (str root "/.samizdat/prompts/local/qwen3/split-decision.md")}]
+                "bar" [{:layer :project
+                        :path (str root "/.samizdat/prompts/bar.md")}]}
+               (us/prompt-variants))))
+      (with-prompt-root [nil nil]
+        (is (= {} (us/prompt-variants)) "no root, no files, no error"))
+      (finally (rm-rf (java.io.File. root))))))
+
+(deftest the-prompt-tool-shows-where-every-wording-comes-from
+  ;; Discoverability is the whole point of files over hidden shadows: `list`
+  ;; names each file and its layer, `show` says which layer answered, so the
+  ;; next edit lands in the right place — a file with the file tools, a row
+  ;; with `save`.
+  (us/bind! *conn*)
+  (let [root (temp-root-with-prompts {"local/qwen3/split-decision.md" "QWEN BLOCK"
+                                      "bar.md" "PROJECT BAR"})
+        run (fn [args] (tools/run-tool {:tool-name "prompt"
+                                        :branch (state/new-branch {:id "B1" :problem "p"})
+                                        :conn *conn* :args args}))]
+    (try
+      (with-prompt-root [root {:provider :local :model "Qwen3.8-27B-Q8_0"}]
+        (us/save! :prompt "bar" "ROW BAR" "a stored edit the file now shadows")
+        (let [listing (:result (run {:action "list"}))]
+          (is (re-find #"(?m)^split-decision  \[template\]  \[file: model wins\]$" listing)
+              (str listing))
+          (is (re-find #"local/qwen3  .*local/qwen3/split-decision\.md" listing))
+          (is (re-find #"(?m)^bar  v1 \(1 version\)  \[file: project wins\]$" listing)
+              "a stored row that a file shadows says so, next to the version it shadows")
+          (is (re-find #"project  .*/\.samizdat/prompts/bar\.md" listing)))
+        (let [shown (:result (run {:action "show" :name "split-decision"}))]
+          (is (re-find #"\[from model file .*local/qwen3/split-decision\.md\]" shown))
+          (is (re-find #"QWEN BLOCK" shown)))
+        (let [shown (:result (run {:action "show" :name "bar"}))]
+          (is (re-find #"\[from project file" shown))
+          (is (re-find #"PROJECT BAR" shown)))
+        (is (re-find #"ROW BAR"
+                     (:result (run {:action "show" :name "bar" :version "1"})))
+            "asking for a version by number still reads the row the file shadows")
+        (is (re-find #"\[from the shipped template\]"
+                     (:result (run {:action "show" :name "problem"})))))
+      (finally (rm-rf (java.io.File. root))))))

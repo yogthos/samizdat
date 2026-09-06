@@ -30,24 +30,102 @@
 (defn deep-merge
   "Merge maps left to right, recursing when BOTH values are maps; any other
   collision is won by the later value. The layering primitive for config:
-  defaults < project .samizdat/config.edn < explicit overrides."
+  defaults < ~/.config/samizdat/config.edn < project .samizdat/config.edn
+  < explicit overrides."
   [& ms]
   (apply merge-with (fn [a b] (if (and (map? a) (map? b))
                                (deep-merge a b)
                                b))
          ms))
 
-(defn project-config
-  "The project-local config layer: <root>/.samizdat/config.edn as an EDN map.
-  {} when absent, unreadable, or not a map — a broken project file must never
-  stop the harness. Precedence sits between the built-in defaults and the
-  caller's overrides, so a checkout pins its port/model/db without env or code
-  and an explicit override still wins. Mirrors the project-local CELLS layer
-  (samizdat.cells/default-dirs)."
-  [root]
-  (try (let [v (edn/read-string (slurp (str root "/.samizdat/config.edn")))]
+(defn- env [k] (let [v (jolt.host/getenv k)] (when-not (str/blank? v) v)))
+
+(defn- env-long [k] (some-> (env k) parse-long))
+
+(defn- read-config-file
+  "`path` as an EDN map, or {} when absent, unreadable, or not a map — a
+  broken config file must never stop the harness. Shared by both file layers
+  so they cannot disagree about what a bad file means."
+  [path]
+  (try (let [v (edn/read-string (slurp (str path)))]
          (if (map? v) v {}))
        (catch Exception _ {})))
+
+(defn project-config
+  "The project-local config layer: <root>/.samizdat/config.edn as an EDN map.
+  {} when absent, unreadable, or not a map. Precedence sits between the global
+  layer and the caller's overrides, so a checkout pins its port/model/db
+  without env or code and an explicit override still wins. Mirrors the
+  project-local CELLS layer (samizdat.cells/default-dirs)."
+  [root]
+  (read-config-file (str root "/.samizdat/config.edn")))
+
+(defn config-home
+  "The user's config directory: $XDG_CONFIG_HOME, else ~/.config, else nil
+  when neither is known. A var rather than inline so a test can point it at a
+  temp dir with-redefs."
+  []
+  (or (env "XDG_CONFIG_HOME")
+      (some-> (env "HOME") (str "/.config"))))
+
+(defn global-config-path
+  "Where the machine-wide layer lives: <config-home>/samizdat/config.edn, or
+  nil when there is no config home to look in."
+  []
+  (some-> (config-home) (str "/samizdat/config.edn")))
+
+(defn global-config
+  "The machine-wide config layer as an EDN map — a user's defaults, so they
+  are not re-declared per checkout. {} when there is no file, same posture as
+  project-config. Same map shape as the project file, so a key means the same
+  thing wherever it is set."
+  []
+  (if-let [p (global-config-path)] (read-config-file p) {}))
+
+(defn file-config
+  "Both file layers as one map: the project's .samizdat/config.edn merged ON
+  TOP of the global file, so a project overrides a machine default key by key
+  and inherits the rest. Everything that reads config from disk comes through
+  here — load-config, the eval settings, the reference paths — so no reader
+  can see one layer and not the other."
+  [root]
+  (deep-merge (global-config) (project-config root)))
+
+(defn config-sources
+  "Which config files this process reads, in precedence order (lowest first),
+  and whether each exists. For the boot log and /health, so a surprising
+  value can be traced to the file that set it rather than guessed at."
+  [root]
+  (let [present? (fn [p] (boolean (and p (.exists (java.io.File. (str p))))))
+        g (global-config-path)
+        p (str root "/.samizdat/config.edn")]
+    [{:layer :global  :path g :present? (present? g)}
+     {:layer :project :path p :present? (present? p)}]))
+
+(defn db-location
+  "Where the project's database is, as {:path :from}. `env-db` is HARNESS_DB
+  or nil.
+
+    :env      the operator named a path; it wins whatever is on disk
+    :project  <root>/.samizdat/samizdat.sqlite3 exists
+    :legacy   only the pre-1g6b <root>/samizdat.sqlite3 exists — opened where
+              it is, and the boot log says so, rather than moved: a file the
+              user did not ask to have moved stays where they left it
+    :default  neither exists; a fresh project gets the .samizdat/ path
+
+  Root-relative, not cwd-relative: the db belongs to the project being
+  worked on, and a served harness with HARNESS_ROOT set elsewhere used to put
+  the project's whole history in whatever directory it happened to be
+  launched from."
+  [root env-db]
+  (let [under (str root "/.samizdat/samizdat.sqlite3")
+        legacy (str root "/samizdat.sqlite3")
+        exists? (fn [p] (.exists (java.io.File. p)))]
+    (cond
+      env-db           {:path env-db :from :env}
+      (exists? under)  {:path under :from :project}
+      (exists? legacy) {:path legacy :from :legacy}
+      :else            {:path under :from :default})))
 
 ;; --- the eval toggle --------------------------------------------------------
 
@@ -100,13 +178,13 @@
   "The eval mode for the project rooted at `root`. nil root — a test, a bare
   REPL — gets the default."
   [root]
-  (:mode (eval-settings (when root (project-config root)))))
+  (:mode (eval-settings (when root (file-config root)))))
 
 (defn eval-sandbox
   "The sandbox backend setting for the project at `root` (`:auto`, `:none` or
   `:bwrap`)."
   [root]
-  (:sandbox (eval-settings (when root (project-config root)))))
+  (:sandbox (eval-settings (when root (file-config root)))))
 
 (def harness-image-roles
   "The roles that keep the LIVE harness image under `:mode :project`.
@@ -207,10 +285,6 @@
   [provider]
   (or (:temperature (providers provider)) 0.7))
 
-(defn- env [k] (let [v (jolt.host/getenv k)] (when-not (str/blank? v) v)))
-
-(defn- env-long [k] (some-> (env k) parse-long))
-
 (defn- detect-provider []
   (or (some-> (env "HARNESS_PROVIDER") str/lower-case keyword)
       (first (for [p [:deepseek :glm :openai]
@@ -238,7 +312,13 @@
          root (or (get-in overrides [:run :root])
                   (env "HARNESS_ROOT")
                   (System/getProperty "user.dir"))
-         project (project-config root)]
+         ;; global < project, as one map (file-config). Env stays INSIDE the
+         ;; defaults layer below both files, which is where it always was:
+         ;; a file has beaten HARNESS_* since the project layer existed, and
+         ;; moving env above the files would silently change every checkout
+         ;; that pins a value in .samizdat/config.edn.
+         files (file-config root)
+         db (db-location root (env "HARNESS_DB"))]
      (deep-merge
       ;; 3985 rather than a common port: 3000 is the busiest address on a
       ;; developer machine, and a harness that silently fails to bind (or
@@ -248,7 +328,9 @@
        :nrepl    {:port (or (env-long "HARNESS_NREPL_PORT")
                             (env-long "JOLT_NREPL_PORT")
                             7888)}
-       :db       {:path (or (env "HARNESS_DB") "samizdat.sqlite3")}
+       ;; :from is carried so start! can say WHERE it opened the db and why
+       ;; — a legacy root file in particular is worth one log line.
+       :db       {:path (:path db) :from (:from db)}
        :llm      {:provider    provider
                   :base-url    (or (env "HARNESS_BASE_URL") (:base-url defaults))
                   :api-key     (some-> (:key-env defaults) env)
@@ -340,7 +422,7 @@
                   ;; keep exploring, and the best is ranked at the end.
                   :stop-on-first-done? (not= "0" (or (env "HARNESS_STOP_ON_FIRST_DONE")
                                                      "1"))}}
-      project
+      files
       overrides))))
 
 (defn provider-llm

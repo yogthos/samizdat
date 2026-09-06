@@ -1409,3 +1409,24 @@
     (let [args (xml-args close)]
       (is (= "a.clj" (:path args)) (str "closing with " close))
       (is (= "(ns a)" (:content args)) (str "content survived " close)))))
+
+;; --- the /props probe carries the model's identity ---------------------------
+
+(deftest the-llama-probe-reports-which-model-is-loaded
+  ;; :local's configured :model is the placeholder "local-model"; what the
+  ;; endpoint SERVES is whatever llama-server loaded. /props says so, and the
+  ;; probe already fetched it and kept only total_slots.
+  (is (= {:llama-cpp? true :total-slots 4 :model-id "Qwen3.8-27B-Q8_0"}
+         (samizdat.llm.client/llama-props->probe
+          {:total_slots 4
+           :model_path "/Users/x/models/Qwen3.8-27B-Q8_0.gguf"
+           :model_alias "/Users/x/models/Qwen3.8-27B-Q8_0.gguf"})))
+  (is (= {:llama-cpp? true :total-slots 1 :model-id "my-alias"}
+         (samizdat.llm.client/llama-props->probe
+          {:total_slots 1 :model_alias "my-alias" :model_path "/m/Other.gguf"}))
+      "an alias the operator set is the name they mean")
+  (is (= {:llama-cpp? true :total-slots 2}
+         (samizdat.llm.client/llama-props->probe {:total_slots 2}))
+      "an older server with no model fields reports none, rather than a guess")
+  (is (nil? (samizdat.llm.client/llama-props->probe {:object "list"}))
+      "not llama.cpp"))

@@ -105,6 +105,8 @@
       ;; had already served 91 shared artifacts. The per-run truth is on the
       ;; run detail endpoint as share_artifacts.
       :config_defaults (config/redacted (select-keys cfg [:llm :run :db]))
+      ;; Which files those defaults were layered from, lowest first.
+      :config_sources (config/config-sources (get-in cfg [:run :root]))
       ;; Kept under the old key as well: this is a published endpoint and the
       ;; GUI reads it. Removing it is a separate change from correcting it.
       :config (config/redacted (select-keys cfg [:llm :run :db]))})))

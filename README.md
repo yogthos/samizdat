@@ -37,6 +37,6 @@ jolt test       # full suite
 jolt smoke      # platform probes (sqlite, https, server)
 ```
 
-State lives in `samizdat.sqlite3` (moving to [dolt](https://github.com/dolthub/dolt)
+State lives in `.samizdat/samizdat.sqlite3` (moving to [dolt](https://github.com/dolthub/dolt)
 via [doltera](https://github.com/jolt-lang/doltera)); a run survives restart
 and resumes from its journal.

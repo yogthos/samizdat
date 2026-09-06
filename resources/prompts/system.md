@@ -374,6 +374,10 @@ split({reason, parts})
     the split if the stubs are not there, are already implemented, or two
     parts claim the same one.
 
+    A part owns FUNCTIONS, not files. Several parts routinely share one
+    file: each is keyed to the stubs it fills, so three parts filling
+    three stubs in one namespace is the ordinary case, not a conflict.
+
     The suite goes red and stays red until the parts land. That is the
     point: the stubs are the failing tests, one delegation wide. Each
     part is done when its stubs are implemented and its own tests pass.
@@ -381,6 +385,8 @@ split({reason, parts})
     adjust what the parts delivered if they do not fit together the way
     you planned.
 ```
+
+{{split-decision}}
 
 **This is how work starts.** Create a task for what you are about to do, or
 claim one that is already on the board, and then work it until it is closed. You

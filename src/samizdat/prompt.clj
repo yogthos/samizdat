@@ -152,6 +152,7 @@
    "workflow-select-system"
    "verify-timeout"
    "verify-unknown"
+   "split-decision"
    "watch-intervention"
    "websearch-tool"
    "wind-down"   ])
@@ -219,7 +220,10 @@
   [{:keys [project file text] :as entry}]
   (cond
     (contains? entry :project)
-    (let [f (io/file project)]
+    ;; Against the bound project root, not the process cwd: a served harness
+    ;; with HARNESS_ROOT elsewhere never saw the project's own file. Unbound
+    ;; (a test, a bare REPL) the cwd is the root, as it always was.
+    (let [f (if-let [r (userspace/project-root)] (io/file r project) (io/file project))]
       (if (.exists f) (slurp f) ::absent))
 
     (contains? entry :file)

@@ -64,21 +64,50 @@
 (defn- shipped? [name]
   (some? (userspace/template :prompt name)))
 
+(defn- variant-line
+  "One prompt FILE, as the list shows it: which layer, and the path a human
+  or the agent edits."
+  [{:keys [layer provider model-dir path]}]
+  (str "    "
+       (case layer
+         :model    (str provider "/" model-dir)
+         :provider provider
+         :project  "project")
+       "  " path))
+
 (defn- render-list []
   (let [stored (into {} (map (juxt :name identity)) (userspace/names :prompt))
+        files (userspace/prompt-variants)
         shipped (sort prompt/shipped-prompts)
-        all (sort (into (set shipped) (keys stored)))]
+        all (sort (into (set shipped) (concat (keys stored) (keys files))))]
     (if (empty? all)
       "No prompts."
       (str/join "\n"
                 (for [n all
-                      :let [{:keys [version versions]} (get stored n)]]
+                      :let [{:keys [version versions]} (get stored n)
+                            src (userspace/prompt-source n)]]
                   (str n
                        (if version
                          (str "  v" version " (" versions
                               (if (= 1 versions) " version)" " versions)"))
                          "  [template]")
-                       (when (and version (shipped? n)) "  [edited]")))))))
+                       (when (and version (shipped? n)) "  [edited]")
+                       ;; A file shadows the row above it, and the reader of
+                       ;; this list is deciding which one to edit.
+                       (when (= :file (:source src))
+                         (str "  [file: " (name (:layer src)) " wins]"))
+                       (when-let [vs (get files n)]
+                         (str "\n" (str/join "\n" (map variant-line vs))))))))))
+
+(defn- source-line
+  "One line naming where `show` got its text, so an edit lands in the right
+  place: a file is edited with the file tools, a row with `save`."
+  [{:keys [source layer path version]}]
+  (case source
+    :file     (str "[from " (name layer) " file " path "]")
+    :project  (str "[from this project's stored v" version "]")
+    :template "[from the shipped template]"
+    nil))
 
 (defn- msg
   "One of this tool's messages, from prompts/prompt-tool.md. The tool that
@@ -106,7 +135,11 @@
                        (some-> (userspace/conn) (us/load-version :prompt name v) :body)
                        (userspace/body :prompt name))]
             (if body
-              (base/ok branch (str name (when v (str " v" v)) ":\n\n" body))
+              (base/ok branch (str name (when v (str " v" v))
+                                   (when-not v
+                                     (some->> (userspace/prompt-source name)
+                                              source-line (str "  ")))
+                                   ":\n\n" body))
               (base/malformed branch (msg {:no-prompt true :name name :version v})))))
 
         "versions"

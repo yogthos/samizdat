@@ -249,7 +249,13 @@
    {:threshold {:all "HTTP status classes (200/299/500) and the retry ladder's
                       wall-clock bounds, which RFC-005 fixes deliberately: the
                       ladder is the one thing a provider adapter may not
-                      diverge from, so it is not per-project tunable."}}
+                      diverge from, so it is not per-project tunable."}
+    :vocabulary {"\\.gguf$" "llama.cpp's model container extension, stripped
+                              from the model_path /props reports so the file
+                              stem can name the model. A fact about the file
+                              format the endpoint serves, not a choice a
+                              project makes; a different container would be a
+                              different server and a different probe."}}
 
    "src/samizdat/api/runs.clj"
    {:threshold {:all "Page sizes for a read API. A client that wants fewer
