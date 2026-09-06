@@ -185,8 +185,11 @@
  ;; :context-squeeze). A regex PATTERN STRING matched against the raw
  ;; response body; it has to track how endpoints actually word it:
  ;; llama.cpp says 'Context size has been exceeded', OpenAI-compatible
- ;; servers say 'maximum context length' / 'context_length_exceeded'.
- "(?i)context (size|length|window)|context_length_exceeded|maximum context"
+ ;; servers say 'maximum context length' / 'context_length_exceeded', and
+ ;; GLM/Zhipu answers a 400 with code 1261 and 'Prompt exceeds max length'
+ ;; (measured live 2026-09-06) — which matches none of the above, so a GLM
+ ;; overflow was retried on backoff instead of squeezing the branch.
+ "(?i)context (size|length|window)|context_length_exceeded|maximum context|prompt exceeds max length|\"?1261\"?"
 
  :failure-layers
  ;; How a failure names the layer it belongs to (karamazov-i1u). The

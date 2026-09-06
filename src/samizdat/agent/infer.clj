@@ -211,7 +211,11 @@
                     :reason (or (:reason (ex-data e)) :call-failed)}))]
          (if (and (:ok r)
                   (< attempt max-call-attempts)
-                  (truncated-without-call? (:response r) prefill))
+                  ;; The prefill the adapter ACTUALLY sent (nil where it was
+                  ;; dropped), so a GLM reply is not parsed as if it began
+                  ;; mid-fence — see absorb (karamazov-0r8s).
+                  (truncated-without-call? (:response r)
+                                           (get (:response r) :prefilled prefill)))
            (do (when (and journal? (:conn ctx) (:run-id ctx))
                  (journal/note! (:conn ctx) (:run-id ctx) :turn-retry
                                 {:branch-id id
@@ -239,9 +243,16 @@
   ([tape response] (absorb tape response nil))
   ([{:keys [messages prefill] :as tape} response turn]
    (let [content (:content response)
-         ;; The prefill the request ended with, if any. Without it the response
-         ;; starts mid-fence and parses as a no-call — the very failure the
-         ;; prefill exists to prevent.
+         ;; The prefill the request ended with, if any. The CLIENT reports
+         ;; which prefill it actually sent as :prefilled — nil where the
+         ;; adapter dropped it (GLM, DeepSeek /v1) — so an unsupported provider
+         ;; is not credited a fence opener it never continued, which otherwise
+         ;; stored a doubled ```tool-call on every steered turn (karamazov-0r8s).
+         ;; A stub response with no :prefilled key falls back to the tape's
+         ;; knob, which is how the pure tests drive it.
+         prefill (if (contains? response :prefilled) (:prefilled response) prefill)
+         ;; Without the opener the response starts mid-fence and parses as a
+         ;; no-call — the very failure the prefill exists to prevent.
          parsed (fence/parse-tool-call content {:prefill prefill})
          signals (fence/signals response parsed)
          said (fence/reattach content prefill)]

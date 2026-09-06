@@ -1573,23 +1573,24 @@
       (#'aloop/call-model {:llm-adapter :a :llm-config {:max-tokens 16384}} {:messages []})
       (is (= 2 @calls)))))
 
-;; --- a turn that emitted no call is prefilled into the fence ----------------
+;; --- a no-call recovers by a graduated steer, not always a prefill ----------
 
-(deftest a-turn-that-emitted-no-tool-call-prefills-the-next-one
+(deftest a-repeated-no-tool-call-prefills-the-next-one-but-the-first-keeps-thinking
   ;; gen-22 B1 spent 24 of its 44 turns on __no_call__ — more than half the
   ;; branch. It was told "[harness] No ```tool-call block in your response"
   ;; twenty-four times, which is the measurement: asking a model that just
   ;; wrote 109,360 characters without a fence to please emit one does not
-  ;; work. Turn 42 is the shape of it — a full page of sound reasoning ending
-  ;; "let me confirm the composition theorem a#712's exact statement", and
-  ;; then nothing.
+  ;; work, so a REPEAT no-call ends the request mid-fence — the withholding
+  ;; form, which the model cannot answer in prose because it is already inside
+  ;; a tool call.
   ;;
-  ;; arbiter/prefill-for already argues the general case: across gen-19 and
-  ;; gen-20 the gates that changed behaviour were the ones that WITHHELD, and
-  ;; ending the request mid-fence is the withholding form of an instruction —
-  ;; the model cannot answer in prose because it is already inside a tool
-  ;; call. That mechanism was reachable only from a gate decision, so it never
-  ;; reached the branch with the most to gain from it.
+  ;; But the FIRST plain no-call gets a message-only steer, not a prefill: on
+  ;; DeepSeek /beta a content prefix skips the reasoning phase entirely
+  ;; (measured 3/3), so clamping the fence takes away the model's thinking on
+  ;; the turn it is struggling — and a no-call is usually a format slip it can
+  ;; fix once told. Every other provider already recovers this way (the adapter
+  ;; drops a prefill it cannot continue); this gives DeepSeek one reasoning-
+  ;; intact chance before the clamp, and keeps the clamp as the second rung.
   (let [c (db/connect ":memory:")
         _ (db/migrate! c)
         rid (runs/start-run! c {:problem "p" :beam-width 1})
@@ -1597,13 +1598,18 @@
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
     (with-redefs [llm/chat (fn [& _] {:content "Let me confirm a#712 first."
                                       :finish-reason "stop"})]
-      (let [after (wf/run-turn {:conn c :run-id rid :max-turns 40
+      (let [after1 (wf/run-turn {:conn c :run-id rid :max-turns 40
+                                 :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                b 1)]
+        (is (nil? (:prefill after1))
+            "the first plain no-call is message-only, so DeepSeek keeps its reasoning")
+        (let [after2 (wf/run-turn {:conn c :run-id rid :max-turns 40
                                    :llm-adapter :a :llm-config {:max-tokens 16384}}
-                                  b 1)]
-        (is (= "```tool-call\n" (:prefill after))
-            "the next request ends mid-fence, so prose is not an available reply")
-        (is (not (str/includes? (:prefill after) "\"name\""))
-            "bare: which tool to call is the branch's decision, not the harness's")))))
+                                  after1 2)]
+          (is (= "```tool-call\n" (:prefill after2))
+              "a second consecutive no-call ends the request mid-fence — the tested clamp")
+          (is (not (str/includes? (:prefill after2) "\"name\""))
+              "bare: which tool to call is the branch's decision, not the harness's"))))))
 
 (deftest a-turn-that-called-a-tool-leaves-no-prefill-behind
   ;; The complement, and the one that would go wrong quietly: a branch that is

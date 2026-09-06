@@ -142,6 +142,36 @@ that option:
 this adapter** rather than a private twin, so the answer a caller can query and
 the answer acted on cannot drift (`provenance R3-14`).
 
+**Prefill is preferred for a reason beyond thinking-mode: it is the only
+cache-safe force.** Measured live 2026-09-06:
+
+- A prefill appends a trailing assistant message, so the whole prior prefix
+  stays cached (hit 10496 of 10514) — the force costs only the new tokens.
+- A native `tool_choice` busts the cache once per forced episode, on **both**
+  providers, and a constant tools block does not prevent it. GLM renders
+  `tool_choice` into the prompt it hashes, so flipping it to a function is a new
+  prefix (hit 0); DeepSeek rejects a forced `tool_choice` unless thinking is
+  off, and toggling thinking off is itself a cache bust (hit 0). Forcing
+  clusters at terminal gates, so the cost is ~one full-prompt miss per branch on
+  GLM — accepted, since GLM cannot prefill and the alternative (a constant tools
+  block) does not help.
+
+deepseek-harness — the official DeepSeek reference — never prefills and never
+forces: it uses native tool calling, whose structured output cannot be prose, so
+it needs neither. samizdat keeps the fenced-prose convention, so it keeps prefill
+(where the provider continues one) as the cache-safe force and the withholding
+recovery, and falls back to native `tool_choice` only where it must.
+
+**A no-call recovery is graduated, not always a prefill** (`agent/loop`
+no-call step). A content prefix skips DeepSeek's reasoning phase entirely, so a
+FIRST plain no-call gets a message-only steer — the model keeps its reasoning on
+the turn it is struggling, which is how every provider but DeepSeek `/beta`
+already recovers (the adapter drops a prefill it cannot continue). A repeat
+no-call, a truncation, or a runaway ends the request mid-fence — the withholding
+form the ladder was built on (message-only recovery went 0-for-42 on a weak local
+model and could not lift a strong one out of a 24-turn no-call loop), kept as the
+second rung.
+
 ### Local prefix cache
 
 `:cache-key` (the branch id) reaches `chat-body`. For `provider-id :local` only,

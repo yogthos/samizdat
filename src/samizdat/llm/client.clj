@@ -53,6 +53,37 @@
 (def default-max-retries 2)
 (def default-timeout-ms 300000)
 
+(def default-max-response-ms
+  "The ceiling on a derived read timeout, matching config's :llm
+  :max-response-ms default (samizdat.config). No read should be allowed to run
+  longer than the process-wide response cap, which is what actually unwinds a
+  trickling body."
+  600000)
+
+(def default-gen-floor-tps
+  "A conservative floor on generation speed, in tokens per second, used to size
+  the read timeout to the budget being asked for.
+
+  Neither provider streams a byte before the completion finishes (measured
+  2026-09-06: an 8s socket timeout is a `Read timed out` on both DeepSeek and
+  GLM), so the read timeout is a bound on TOTAL generation time, not the gap
+  between chunks the way dirge/deepseek-harness/opencode bound it. A fixed
+  300s therefore killed a legitimate long generation — a 32768-token budget at
+  the truncation retry needs ~360s on GLM and ~500s on deepseek-v4-pro — and
+  then billed it again on the retry ladder.
+
+  50 tok/s is below every hosted rate measured (flash 170, GLM 91, pro 65) with
+  margin, so at the default 16384-token budget the derived timeout lands near
+  the old 300s and only GROWS past it as the budget grows. A per-endpoint value
+  belongs in config where :timeout-ms already lives, and overrides this."
+  50)
+
+(def default-read-timeout-overhead-ms
+  "Fixed headroom added to the budget-derived read timeout: connect, prefill of
+  a long prompt, and first-token latency, none of which scale with the output
+  budget."
+  30000)
+
 (def default-conn-timeout-ms
   "A bound on the TCP handshake alone, separate from the per-read timeout.
 
@@ -117,6 +148,23 @@
   [raw-body]
   (boolean (re-find (context-overflow-re) (str raw-body))))
 
+(defn effective-read-timeout-ms
+  "The read timeout for a call asking for `max-tokens` of output.
+
+  `max(floor, ceil(max-tokens / tps) + overhead)`, capped at the response
+  ceiling. The floor is config's :timeout-ms, so a small call (a side query,
+  a probe) is never bounded tighter than it is today; the derivation only
+  RAISES the bound for a large budget, so a genuine long generation is not cut
+  off mid-stream and then re-billed. See `default-gen-floor-tps`."
+  [config max-tokens]
+  (let [floor    (:timeout-ms config default-timeout-ms)
+        ceiling  (:max-response-ms config default-max-response-ms)
+        tps      (max 1 (:gen-floor-tps config default-gen-floor-tps))
+        overhead (:read-timeout-overhead-ms config default-read-timeout-overhead-ms)
+        derived  (+ (long (Math/ceil (* (/ (double (or max-tokens 0)) tps) 1000.0)))
+                    overhead)]
+    (min ceiling (max floor derived))))
+
 (defn classify
   "Decide what to do about a non-2xx response.
 
@@ -173,7 +221,14 @@
       (post-once* adapter config request url))))
 
 (defn- post-once* [adapter config request url]
-  (let [payload (json/write-str (adapter/chat-body adapter config request))
+  (let [;; Whether the prefill in the request was actually sent — the adapter
+        ;; drops it where the endpoint cannot continue a trailing assistant
+        ;; message (GLM, DeepSeek /v1). Reported on the reply so the caller
+        ;; reattaches the opener only when it was really there, rather than
+        ;; storing a doubled fence on every steered GLM turn.
+        use-prefill? (boolean (and (:prefill request)
+                                   (adapter/prefill-support? adapter config)))
+        payload (json/write-str (adapter/chat-body adapter config request))
         started (System/currentTimeMillis)
         resp (http/post url {:headers (merge (adapter/auth-headers adapter config)
                                              {"Content-Type" "application/json"})
@@ -224,6 +279,12 @@
                           :reasoning (:reasoning parsed)
                           :finish-reason (:finish-reason parsed)
                           :usage (:usage parsed)
+                          ;; The prefill this reply CONTINUES, or nil when the
+                          ;; adapter did not send one. absorb reattaches the
+                          ;; opener iff this is non-nil, so a provider that
+                          ;; ignored the prefill (GLM) is not credited a fence
+                          ;; it never emitted (karamazov-0r8s).
+                          :prefilled (when use-prefill? (:prefill request))
                           :elapsed-ms elapsed}}))
           {:outcome :fatal
            :error (str (adapter/display-name adapter)
@@ -233,15 +294,26 @@
       ;; 5xx that is deterministic, and the reason travels from where it is
       ;; detected so the loop can respond by compacting rather than retrying
       ;; (karamazov-d41).
-      (let [overflow? (context-overflow? (:body resp))]
-        (cond-> {:outcome (if overflow? :fatal (classify adapter status decoded))
+      (let [overflow? (context-overflow? (:body resp))
+            ;; A wall, not a window: DeepSeek answers 402 "Insufficient
+            ;; Balance", and any status can carry the usage-cap wording the
+            ;; adapter knows. Retrying spends the run's budget against
+            ;; something that will not move (dirge PR 689), so it is fatal and
+            ;; the reason travels so a supervisor tells a wall from a bug.
+            cap? (and (not overflow?)
+                      (or (= 402 status)
+                          (adapter/usage-cap? adapter status decoded)))]
+        (cond-> {:outcome (if (or overflow? cap?)
+                            :fatal
+                            (classify adapter status decoded))
                  :headers (:headers resp)
                  :error (str (adapter/display-name adapter) " error " status
                              (when-let [m (adapter/error-message adapter decoded)] (str " — " m))
                              (when-not decoded
                                (str " — " (subs (str (:body resp))
                                                 0 (min 300 (count (str (:body resp))))))))}
-          overflow? (assoc :reason :context-overflow))))))
+          overflow? (assoc :reason :context-overflow)
+          cap?      (assoc :reason :usage-cap))))))
 
 ;; --- the public surface -----------------------------------------------------
 
@@ -253,7 +325,7 @@
   stuck provider costs a known amount rather than the run."
   ([adapter config messages] (chat adapter config messages nil))
   ([adapter config messages {:keys [max-tokens temperature max-retries prefill force-tool
-                                    cache-key]}]
+                                    cache-key reasoning-effort]}]
    (let [request {:messages (message/prepare messages)
                   :max-tokens (or max-tokens (:max-tokens config))
                   :temperature (or temperature (:temperature config))
@@ -269,15 +341,38 @@
                   ;; The stable conversation key an endpoint pins its prefix
                   ;; cache to — a branch id. Adapters that have nowhere to put
                   ;; it MUST ignore it; only the local one emits anything.
-                  :cache-key cache-key}
+                  :cache-key cache-key
+                  ;; This call's reasoning effort, overriding the run default
+                  ;; in config. Lets a cheap side call ask for less thinking
+                  ;; than the run is configured for; nil defers to config.
+                  :reasoning-effort reasoning-effort}
+         ;; The read timeout is sized to the budget being asked for: a big
+         ;; max-tokens legitimately takes longer than a small one, and a fixed
+         ;; bound cut off long generations and re-billed them (see
+         ;; effective-read-timeout-ms). A per-endpoint socket read bound, so it
+         ;; overrides config's :timeout-ms for THIS call only.
+         call-config (assoc config
+                            :timeout-ms
+                            (effective-read-timeout-ms config (:max-tokens request)))
          retries (or max-retries (:max-retries config) default-max-retries)]
      (loop [attempt 0, errors []]
        (let [result (try
-                      (post-once adapter config request)
+                      (post-once adapter call-config request)
                       (catch Throwable e
-                        ;; A transport failure — connection reset, TLS error,
-                        ;; socket timeout — is the case retrying exists for.
-                        {:outcome :retry :error (str "transport: " (ex-message e))}))
+                        (let [m (str (ex-message e))]
+                          (if (re-find #"(?i)read timed out" m)
+                            ;; The provider accepted the request and never
+                            ;; finished the body inside the budget-sized
+                            ;; window. Buffered all-or-nothing, so a retry
+                            ;; reproduces it at the same budget — fatal, and
+                            ;; tagged so the loop does not read it as a
+                            ;; transient blip.
+                            {:outcome :fatal :reason :timeout
+                             :error (str "read timeout: " m)}
+                            ;; A real transport failure — connection reset, TLS
+                            ;; error, connect timeout — is what retrying exists
+                            ;; for.
+                            {:outcome :retry :error (str "transport: " m)}))))
              errors (conj errors (:error result))]
          (cond
            (= :ok (:outcome result))

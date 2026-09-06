@@ -241,8 +241,10 @@
               :key-env  "DEEPSEEK_API_KEY"
               ;; deepseek-v4-flash is the development and test model: cheap
               ;; enough to run the beam repeatedly. deepseek-v4-pro is the
-              ;; second arm. Note the TypeScript default, deepseek-reasoner,
-              ;; is no longer served by the API.
+              ;; second arm. Both think by default (high effort); the
+              ;; TypeScript default, deepseek-reasoner, is no longer served by
+              ;; the API. Both serve a 1M context — :context-window below is a
+              ;; compaction-ladder budget, not the model's window (karamazov-fass).
               :model    "deepseek-v4-flash"}
    ;; The coding endpoint, not the general /api/paas/v4: it is the one dirge
    ;; drives GLM through in practice, tuned for agentic coding traffic. Same
@@ -336,10 +338,14 @@
                   :api-key     (some-> (:key-env defaults) env)
                   :model       (or (env "HARNESS_MODEL") (:model defaults))
                   ;; Sent only when set — see llm/adapter/openai. Left unset,
-                  ;; each model does whatever it does by default, which for
-                  ;; deepseek-v4-pro is to think and for deepseek-v4-flash is
-                  ;; not to. A run that cares should say so; POST /v1/runs
-                  ;; takes reasoning_effort per run and overrides this.
+                  ;; each model does whatever it does by default; both v4 models
+                  ;; THINK by default at `high` effort (verified live
+                  ;; 2026-09-06, and DeepSeek's docs), so a run that wants them
+                  ;; quiet must say so. POST /v1/runs takes reasoning_effort per
+                  ;; run and overrides this; the runaway breaker sets it to the
+                  ;; off-value, which the adapter turns into each provider's
+                  ;; documented disable wire (deepseek: thinking off; glm-5.3
+                  ;; cannot disable, so: effort low).
                   :reasoning-effort (env "HARNESS_REASONING_EFFORT")
                   :max-tokens  (or (env-long "HARNESS_MAX_TOKENS") 16384)
                   ;; What the compaction ladder measures pressure against. Its

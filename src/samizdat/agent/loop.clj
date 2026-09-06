@@ -577,21 +577,38 @@
                                (str/trim (prompt/render "no-call-reason"
                                                         {:streak streak}))))
         (state/add-message "user" msg {:turn turn})
-        ;; And make the next request end mid-fence, so prose is not an
-        ;; available reply. Telling the model to emit a fence is the
-        ;; suggesting form; this is the withholding form, which is the one
-        ;; that has ever worked — see arbiter/prefill-for. Bare, with no tool
-        ;; named: nothing is being steered — the branch had a plan and failed
-        ;; to act on it, and picking its next call for it would replace a
-        ;; mechanics failure with the harness doing the reasoning.
+        ;; How the next request recovers depends on WHY this turn made no call,
+        ;; because the fixes differ and a content prefill is not free: on
+        ;; DeepSeek /beta a trailing assistant prefix makes generation SKIP the
+        ;; reasoning phase entirely (measured 3/3, zero reasoning tokens), so
+        ;; clamping the fence also takes away the model's thinking on the very
+        ;; turn it is struggling.
         ;;
-        ;; EXCEPT on an imitation, where the prefill is half the trap: the
-        ;; model opens inside a fence, looks at a context of digest lines,
-        ;; and the likeliest continuation is another digest. Withholding
-        ;; prose is the right instinct against rambling and the wrong one
-        ;; here, so this turn gets a clean slate to reason in
-        ;; (karamazov-068).
-        (as-> b (if imitation? (dissoc b :prefill) (assoc b :prefill "```tool-call\n"))))))
+        ;;   - imitation → a clean slate. The prefill is half the trap here:
+        ;;     the model opens inside a fence, looks at a context of digest
+        ;;     lines, and the likeliest continuation is another digest
+        ;;     (karamazov-068). Withhold the exemplar (above), not the prose.
+        ;;   - a FIRST plain no-fence → a message-only steer, keeping the
+        ;;     model's reasoning. A no-call is usually a format slip it can fix
+        ;;     once told, and every provider EXCEPT DeepSeek /beta already
+        ;;     recovers this way (the adapter drops a prefill it cannot
+        ;;     continue); deepseek-harness never prefills at all. This is the
+        ;;     one turn that changes for DeepSeek.
+        ;;   - a REPEAT no-call, a truncation, or a runaway → end the request
+        ;;     mid-fence so prose is not an available reply. This is the
+        ;;     withholding form the ladder was built on: message-only recovery
+        ;;     went 0-for-42 on a weak local model and could not lift a strong
+        ;;     one out of a 24-turn no-call loop (gen-22). Kept as the second
+        ;;     rung, and the only form that helps a truncation (already
+        ;;     fencing, out of room) or a runaway (thinking without
+        ;;     converging). Bare, no tool named: the branch had a plan and
+        ;;     failed to act on it, and naming its next call would replace a
+        ;;     mechanics failure with the harness doing the reasoning.
+        (as-> b
+              (if (and (not imitation?)
+                       (or (>= streak 2) (:truncated signals) runaway?))
+                (assoc b :prefill "```tool-call\n")
+                (dissoc b :prefill))))))
 
 (defn transition-effects
   "The effect names a turn envelope triggers, per phases.edn `:transitions`.
