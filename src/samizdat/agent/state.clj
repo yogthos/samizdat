@@ -31,6 +31,7 @@
             [clojure.string :as str]
             [samizdat.agent.phases :as phases]
             [samizdat.lexicon :as lexicon]
+            [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
             [samizdat.tape :as tape]
             [samizdat.util :as util]))
@@ -834,6 +835,36 @@
                      (dissoc % :pinned?)
                      %)
                   ms))))
+
+(defn drop-unloaded
+  "Remove the compaction digests from a branch's context.
+
+  THE WITHHOLDING MOVE against digest imitation. On a long branch almost every
+  message is an `[unloaded] tN tool → category` line standing in for a past
+  turn, and a model reading its own history that way starts writing digests
+  instead of tool calls. Telling it not to leaves the exemplar in front of it,
+  which is why the complaint went 0-for-42 on run 89f6487a; this takes the
+  exemplar away instead (karamazov-068).
+
+  Nothing is lost that cannot be recovered: a digest is bookkeeping ABOUT a
+  turn, the turn itself is in the journal, and `fetch_turn` reopens it in
+  full. The frame is untouched because compaction never rewrites it.
+
+  STARTS-WITH, not includes. message/unloaded? answers whether a REPLY
+  imitates the marker, which is an includes? test because a model copies the
+  marker mid-sentence. A DIGEST MESSAGE is one the compactor built, and
+  llm.message/replacement-for always builds it as the marker followed by the
+  line — so identifying one is a prefix test. Using the looser predicate here
+  would strip the harness's own explanations, which quote the marker in order
+  to tell the model what it is.
+
+  Pure over the branch."
+  [branch]
+  (let [digest? (fn [m]
+                  (and (not= "system" (str (:role m)))
+                       (str/starts-with? (str (:content m))
+                                         (str/trim message/unloaded-marker))))]
+    (update branch :messages #(into [] (remove digest?) %))))
 
 (defn repeating-failure?
   "Whether this branch's LAST turn was already this exact (tool, error) failure.

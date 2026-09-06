@@ -4,30 +4,41 @@
 (ns samizdat.agent.oversight
   "A PARALLEL STREAM over a running run: the mechanism a supervisor is.
 
-  This namespace knows nothing about supervision. It runs a pass function on a
-  cadence, against a budget, in a thread whose failures cost the run nothing,
-  and it carries one value from each pass to the next. What a pass looks at and
-  what it decides is a cell — the harness's policy about when to think has to
-  be something the agent can rewrite while it runs, like every other policy
+  This namespace knows nothing about supervision. It runs a pass function when
+  the run it watches reaches a turn boundary — no more often than a spacing,
+  against a budget, in a thread whose failures cost the run nothing — and it
+  carries one value from each pass to the next. What a pass looks at and what
+  it decides is a cell — the harness's policy about when to think has to be
+  something the agent can rewrite while it runs, like every other policy
   here.
 
   WHY A STREAM AND NOT A NODE. A supervisor wired as a node in the workflow it
-  supervises can only run where that workflow puts it. `:feature/supervise` is
-  node five of six, reached after the implement stage RETURNS — so a run whose
-  implementer stalls never reaches its own watchdog. Runs fps5 and fps6 both
-  ended with no supervisor turn at all, having stalled inside implement. A peer
-  process is not an arrangement of the graph; it is a second stream beside it.
+  supervises can only run where that workflow puts it. `:feature/supervise`
+  used to be node five of six, reached after the implement stage RETURNED — so
+  a run whose implementer stalled never reached its own watchdog. Runs fps5
+  and fps6 both ended with no supervisor turn at all, having stalled inside
+  implement. A peer process is not an arrangement of the graph; it is a second
+  stream beside it.
 
-  WHY IT CARRIES CONTEXT. `run-role` opens a fresh branch per call, so the
-  supervisor in feature.edn reads the run cold on every revision and cannot
-  refer to what it concluded before. A stream that cannot remember its own last
-  conclusion cannot distinguish a change it made from one it merely considered,
-  which is most of what supervising is. The carry is that memory.
+  WHY IT CARRIES CONTEXT. `run-role` opens a fresh branch per call, so a
+  supervisor run as a stage reads the run cold on every revision and cannot
+  refer to what it concluded before. A stream that cannot remember its own
+  last conclusion cannot distinguish a change it made from one it merely
+  considered, which is most of what supervising is. The carry is that memory.
 
   It has TWO PHASES, and `reflex!` below is the first. The reflex is cheap:
-  rule-based, cheap, every few seconds, steering only. This is DELIBERATION:
-  a model call, rare, and permitted to tune the harness as well as steer it.
-  Different costs, so different evidence bars and different cadences."
+  rule-based, every poll, steering only. The pass is DELIBERATION: a model
+  call, rare, and permitted to tune the harness as well as steer it.
+  Different costs, so different evidence bars and different triggers.
+
+  WHAT TRIGGERS EACH (RFC-012 F2). Both phases read the same event bus,
+  drained ONCE per poll. The reflex looks whenever anything of this run
+  arrived. The pass is due when a TURN of this run has ended since the last
+  pass — a `:turn` journal event, which is the record of a turn being written
+  — and at least `:every-ms` have elapsed. The clock is a spacing, not a
+  trigger: it used to fire the pass every two minutes whether or not the
+  implementer had done anything, which evaluated no turn in particular and
+  spent looks on a run that was idle."
   (:require [clojure.tools.logging :as log]
             [samizdat.events :as events]
             [samizdat.session :as session]
@@ -39,20 +50,26 @@
 (defn due?
   "Whether a pass should run now.
 
-  The first pass is due immediately: a supervisor that waits out a full cadence
-  before its first look is blind through the opening stretch in which a run
-  picks the approach it will then spend its whole budget on.
+  The first pass is due immediately: a supervisor that waits out a full
+  spacing before its first look is blind through the opening stretch in which
+  a run picks the approach it will then spend its whole budget on.
 
-  The budget is checked FIRST and binds unconditionally — including against a
-  signal. A bound a signal can lift is not a bound.
+  After that a pass is due when a turn has ENDED since the last one
+  (`boundary?`) and the spacing has elapsed. The boundary is what makes there
+  be something to evaluate; the spacing is what keeps a beam of five branches
+  from buying a pass per turn. Neither alone is enough, and that is the
+  difference between evaluating a turn and polling.
+
+  The budget is checked FIRST and binds unconditionally — including on a
+  boundary. A bound a signal can lift is not a bound.
 
   What the budget counts is passes that SPENT something, not passes that
   happened; see `pass!`."
-  [{:keys [last-at passes]} {:keys [now every-ms budget signal?]}]
+  [{:keys [last-at passes]} {:keys [now every-ms budget boundary?]}]
   (and (or (nil? budget) (< (or passes 0) budget))
        (or (nil? last-at)
-           signal?
-           (>= (- now last-at) every-ms))))
+           (and boundary?
+                (>= (- now last-at) (or every-ms 0))))))
 
 (defn pass!
   "Run one pass, and never let it out.
@@ -109,33 +126,6 @@
 
 (defn- watch-policy [] (lexicon/policy :watch))
 
-(defn- steps-since
-  "The implementer's steps that have arrived on `ch` since the last look,
-  narrowed to this run.
-
-  The bus is process-wide and two runs in one process publish onto the same
-  one, so filtering by run is not tidiness. `:kind :step` excludes the journal
-  appends that have always been published there — a watcher wants the graph
-  advancing, not the record of it being written."
-  [ch run-id]
-  (when ch
-    (filterv #(and (= :step (:kind %)) (= run-id (:run-id %)))
-             (events/collect ch))))
-
-(defn- actionable
-  "The findings this pass should react to: severe enough to be worth a turn,
-  and not already raised.
-
-  Severity is the filter rather than novelty alone, because most findings are
-  worth SEEING and only some are worth interrupting for. A supervisor reading
-  a block can weigh a medium finding; a branch mid-task being handed one is
-  just distracted."
-  [findings seen p]
-  (let [wanted (set (map keyword (:severities p)))]
-    (remove #(or (contains? seen (:kind %))
-                 (not (contains? wanted (keyword (name (:severity %))))))
-            findings)))
-
 (defn- actionable
   "The findings this pass should react to: severe enough to be worth a turn,
   and not already raised.
@@ -151,14 +141,14 @@
             findings)))
 
 (defn- react!
-  "Say something about one finding, through the human channel.
+  "Say something about one finding, through the one write path.
 
-  A `message` directive, not a `cull` or a `pause`: the watcher observes and
+  A `message` directive, not a `cull` or a `pause`: the reflex observes and
   advises, and deciding that a run should stop is a judgement with a cost that
-  belongs to a person or to the supervisor role, not to a threshold that fired.
-  The message names the finding and what it rules out — a branch told only
-  that turns are being wasted will reword something, which is the expensive
-  wrong move."
+  belongs to a person or to the supervisor's reasoning pass, not to a
+  threshold that fired. The message names the finding and what it rules out —
+  a branch told only that turns are being wasted will reword something, which
+  is the expensive wrong move."
   [conn run-id {:keys [kind detail evidence]}]
   (interventions/submit!
    conn run-id
@@ -190,6 +180,16 @@
   "PHASE 1 of the supervisor (RFC-012): one cheap, rule-based look at what the
   implementer has just done, and at most a nudge.
 
+  `:arrived`, when the caller supplies it, is this run's share of what the bus
+  delivered since the last look — steps from the traced turn manifest, turn
+  records from every sub-loop, gate firings. Empty means nothing advanced, so
+  there is nothing new to judge: the findings are derived from what turns
+  did, and re-deriving them over an unchanged run is the work the bus exists
+  to stop doing. Any event counts, not only a step — role sub-loops are
+  compiled without the tracer and journal turns instead, and a reflex that
+  waited for steps was blind through every implement stage of a feature run.
+  A caller that hands nothing (a test, a REPL) gets a look regardless.
+
   Returns the findings it reacted to. Exposed separately from the stream so a
   test can drive it a step at a time — a supervisor that can only be tested by
   waiting on a thread is one nobody tests.
@@ -199,40 +199,27 @@
   graph reaches it, which is exactly when a stuck turn does not — but that is
   an argument against being a node, not for being a separate stream. It is the
   supervisor's cheap phase, so it runs on the supervisor's stream."
-  ;; `ch` rather than destructuring into a local named `events` — that would
-  ;; shadow the samizdat.events alias and every events/… call here would
-  ;; resolve against the local instead.
   ([{:keys [run-id] :as ctx}]
    ;; The stream calls this arity every poll and keeps no per-run state of its
    ;; own, so the already-raised set lives here, keyed by run.
    (reflex! ctx (or (get @seen-by-run run-id)
                     (get (swap! seen-by-run update run-id #(or % (atom #{})))
                          run-id))))
-  ([{:keys [conn run-id] ch :event-ch} seen]
-  (let [p (watch-policy)
-        ;; THE IMPLEMENTER'S STEPS, pushed (RFC-012). mycelium hands every
-        ;; completed cell to :on-trace and the tracer publishes it; this reads
-        ;; what has arrived. The supervisor now looks BECAUSE the state graph
-        ;; advanced, rather than re-deriving session/findings on a clock
-        ;; whether or not the implementer had moved.
-        steps (steps-since ch run-id)]
-    (if (and ch (empty? steps))
-      ;; Nothing advanced, so there is nothing new to judge. The findings are
-      ;; derived from what turns did; re-deriving them over an unchanged run
-      ;; is the work this change exists to stop doing.
-      []
-      (let [;; Evaluated over THIS RUN, not the whole session. A watcher is
-            ;; asking `is this going wrong now`, and a rate over every run the
-            ;; process has done answers a different question — one that says
-            ;; no for a long time after the answer became yes.
-            fresh (actionable (session/findings (session/run-window run-id)) @seen p)
-            room (- (:max-interventions p) (count @seen))
-            raising (take (max 0 room) fresh)]
-        (doseq [f raising]
-          (react! conn run-id f)
-          (swap! seen conj (:kind f)))
-        (vec raising))))))
-
+  ([{:keys [conn run-id arrived] :as ctx} seen]
+   (let [p (watch-policy)]
+     (if (and (contains? ctx :arrived) (empty? arrived))
+       []
+       (let [;; Evaluated over THIS RUN, not the whole session. A watcher is
+             ;; asking `is this going wrong now`, and a rate over every run the
+             ;; process has done answers a different question — one that says
+             ;; no for a long time after the answer became yes.
+             fresh (actionable (session/findings (session/run-window run-id)) @seen p)
+             room (- (:max-interventions p) (count @seen))
+             raising (take (max 0 room) fresh)]
+         (doseq [f raising]
+           (react! conn run-id f)
+           (swap! seen conj (:kind f)))
+         (vec raising))))))
 
 (defn start!
   "Begin a stream. Returns an idempotent stop function.
@@ -242,41 +229,58 @@
   policy the agent cannot see or change, which is the one thing `src/` may not
   hold.
 
+  `:event-ch` is the stream's tap on the bus. With one, the pass is due on the
+  run's turn boundaries (see `due?`). Without one there is no way to see a
+  boundary, so the clock stands in and the pass runs on the spacing alone —
+  the shape a driver with no bus gets, and the old behaviour, kept explicit
+  here rather than hidden in `due?`.
+
   Disabled returns a stop function too, so a caller's teardown never has to
   ask whether the stream was ever running."
-  [{:keys [enabled? every-ms budget poll-ms now-fn signal-fn reflex-fn] :as ctx}
+  [{:keys [enabled? every-ms budget poll-ms now-fn reflex-fn run-id] ch :event-ch :as ctx}
    pass-fn]
   (if-not enabled?
     (constantly nil)
     (let [running (atom true)
           now (or now-fn #(System/currentTimeMillis))
-          state (atom {:passes 0 :last-at nil :carry nil})
+          state (atom {:passes 0 :last-at nil :carry nil :turns-ended 0})
           f (future
               (while @running
                 (try
                   (Thread/sleep (long poll-ms))
-                  ;; PHASE 1, every poll and unbudgeted (RFC-012). The reflex
-                  ;; is rule-based and cheap — it reads what the implementer
-                  ;; has done and may nudge — so it is not what :every-ms and
-                  ;; :budget exist to ration. Those bound MODEL CALLS, which
-                  ;; is phase 2 below. This used to be a second thread of its
-                  ;; own (samizdat.watch), which made two supervisors where
-                  ;; the design calls for one with two phases.
-                  (when (and @running reflex-fn)
-                    (try (reflex-fn ctx)
-                         (catch Throwable e
-                           ;; The reflex must never cost the stream its
-                           ;; reasoning pass, nor the run anything at all.
-                           (when @running
-                             (log/warn "oversight reflex:" (ex-message e))))))
-                  ;; PHASE 2, on the pass cadence and against the budget.
-                  (when (and @running
-                             (due? @state {:now (now)
-                                           :every-ms every-ms
-                                           :budget budget
-                                           :signal? (boolean (when signal-fn (signal-fn)))}))
-                    (swap! state assoc :last-at (now))
-                    (pass! ctx state pass-fn))
+                  ;; ONE DRAIN of the bus per poll, shared by both phases. The
+                  ;; bus is process-wide and two runs in one process publish
+                  ;; onto the same one, so narrowing by run is not tidiness.
+                  (let [arrived (when ch
+                                  (filterv #(= run-id (:run-id %)) (events/collect ch)))
+                        ended (count (filter #(= :turn (:kind %)) arrived))]
+                    (when (pos? ended)
+                      (swap! state update :turns-ended (fnil + 0) ended))
+                    ;; PHASE 1, every poll and unbudgeted (RFC-012). The reflex
+                    ;; is rule-based and cheap — it reads what the implementer
+                    ;; has done and may nudge — so it is not what :every-ms
+                    ;; and :budget exist to ration. Those bound MODEL CALLS,
+                    ;; which is phase 2 below. This used to be a second thread
+                    ;; of its own (samizdat.watch), which made two supervisors
+                    ;; where the design calls for one with two phases.
+                    (when (and @running reflex-fn)
+                      (try (reflex-fn (cond-> ctx ch (assoc :arrived arrived)))
+                           (catch Throwable e
+                             ;; The reflex must never cost the stream its
+                             ;; reasoning pass, nor the run anything at all.
+                             (when @running
+                               (log/warn "oversight reflex:" (ex-message e))))))
+                    ;; PHASE 2, on the run's turn boundary, no closer together
+                    ;; than the spacing, and against the budget.
+                    (when (and @running
+                               (due? @state {:now (now)
+                                             :every-ms every-ms
+                                             :budget budget
+                                             :boundary? (if ch
+                                                          (pos? (or (:turns-ended @state) 0))
+                                                          true)}))
+                      (swap! state assoc :last-at (now) :turns-ended 0)
+                      (pass! ctx state pass-fn)))
                   (catch Throwable e
                     ;; Guarded on @running: stop clears the flag and then
                     ;; cancels, so an ordinary stop unwinds through here and

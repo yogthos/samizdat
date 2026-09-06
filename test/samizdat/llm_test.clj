@@ -22,7 +22,9 @@
   The fence parser gets the most tests here because it is the component whose
   bugs are invisible in a live run. A parser that quietly drops a tool call
   looks exactly like a model that chose not to make one."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [jolt.http-client :as http]
@@ -142,6 +144,12 @@
   (is (client/context-overflow?
        "This model's maximum context length is 32768 tokens"))
   (is (client/context-overflow? "code: context_length_exceeded"))
+  ;; GLM/Zhipu: a 400 with code 1261, matching none of the OpenAI wording, so
+  ;; an overflow on the provider we actually run was walked round the backoff
+  ;; ladder instead of squeezing the branch (karamazov-686j).
+  (is (client/context-overflow?
+       "{\"error\":{\"code\":\"1261\",\"message\":\"Prompt exceeds max length\"}}")
+      "GLM's overflow, both by wording and by code")
   (is (not (client/context-overflow? "internal server error")))
   (is (not (client/context-overflow? nil))))
 
@@ -707,6 +715,24 @@
         (is (= "r" (:reasoning (adapter/parse-chat (registry/adapter-for :deepseek) reply))))
         (is (nil? (:reasoning (adapter/parse-chat (registry/adapter-for :openai) reply))))))
 
+    (testing "a local endpoint's reasoning is read, not dropped"
+      ;; :local had no :reasoning-key, so it fell to the sentinel and every
+      ;; reasoning stream a locally-served model produced was discarded. The
+      ;; cost is not cosmetic: turns.reasoning_text stayed empty for every
+      ;; local run, fence.clj's handling of a tool call emitted INSIDE the
+      ;; reasoning stream was unreachable, and a turn that spent its budget
+      ;; thinking became a fatal :empty-reply — client.clj blanks on
+      ;; content+reasoning, and reasoning was always nil here. Measured
+      ;; against llama-server serving Qwen3.8, which returns reasoning_content
+      ;; on the OpenAI-compatible surface exactly as DeepSeek does.
+      (let [reply {:choices [{:message {:content "c" :reasoning_content "r"}
+                              :finish_reason "stop"}]}]
+        (is (= "r" (:reasoning (adapter/parse-chat (registry/adapter-for :local) reply)))))
+      ;; A local model that reasons in no separate field is unaffected: the
+      ;; key is simply absent, which is what it already was.
+      (let [reply {:choices [{:message {:content "c"}} ]}]
+        (is (nil? (:reasoning (adapter/parse-chat (registry/adapter-for :local) reply))))))
+
     (testing "Ollama reads content and usage from its own field names"
       (let [reply {:message {:content "c" :thinking "t"} :done_reason "stop"
                    :prompt_eval_count 3 :eval_count 7}
@@ -897,6 +923,70 @@
       (is (= :fatal (client/classify a 429 {:error {:message "per-day quota reached"}})))
       (is (= :retry (client/classify a 429 {:error {:message "Rate limit reached, slow down"}}))))))
 
+(deftest a-402-is-a-usage-cap-and-is-not-retried
+  ;; DeepSeek answers 402 "Insufficient Balance" when the account is out of
+  ;; credit — a wall, not a window. It must be fatal AND carry :usage-cap so a
+  ;; supervisor tells it from an ordinary bug, rather than the run spending its
+  ;; budget retrying (karamazov-6uyv).
+  (let [a (registry/adapter-for :deepseek)
+        calls (atom 0)]
+    (with-redefs [http/post (fn [& _]
+                              (swap! calls inc)
+                              {:status 402
+                               :body (json/write-str
+                                      {:error {:message "Insufficient Balance"}})})]
+      (let [e (try (client/chat a {:model "m"} [{:role "user" :content "go"}])
+                   (catch Exception ex ex))]
+        (is (= :usage-cap (:reason (ex-data e))))
+        (is (= 1 @calls) "a wall is not retried")))))
+
+(deftest a-read-timeout-is-fatal-and-scales-with-the-budget
+  ;; Neither provider streams; the read timeout bounds total generation, so a
+  ;; fixed 300s killed a long generation and the retry ladder re-billed it
+  ;; (karamazov-0udp). Two properties: the timeout GROWS with the requested
+  ;; budget, and a read that times out is fatal :timeout, not a transient blip
+  ;; retried at the same budget.
+  (testing "the bound is sized to max-tokens, floored and capped"
+    (let [cfg {:timeout-ms 300000 :max-response-ms 600000 :gen-floor-tps 50
+               :read-timeout-overhead-ms 30000}]
+      (is (= 300000 (client/effective-read-timeout-ms cfg 64))
+          "a small side call is never bounded tighter than the floor")
+      (is (= 600000 (client/effective-read-timeout-ms cfg 32768))
+          "a doubled budget is capped at the response ceiling, not killed at 300s")
+      (is (< 300000 (client/effective-read-timeout-ms cfg 16384) 600000)
+          "the default budget lands between the floor and the ceiling")))
+  (testing "a read timeout is fatal and not retried"
+    (let [a (registry/adapter-for :deepseek)
+          calls (atom 0)]
+      (with-redefs [http/post (fn [& _]
+                                (swap! calls inc)
+                                (throw (java.net.SocketTimeoutException. "Read timed out")))]
+        (let [e (try (client/chat a {:model "m"} [{:role "user" :content "go"}])
+                     (catch Exception ex ex))]
+          (is (= :timeout (:reason (ex-data e))))
+          (is (= 1 @calls) "the same budget would just time out again"))))))
+
+(deftest the-prefill-actually-sent-is-reported-on-the-response
+  ;; absorb reattaches the fence opener only when the adapter really continued
+  ;; it. The client is the one place that knows — it asked prefill-support? —
+  ;; so it reports :prefilled, nil where the prefill was dropped, and a GLM
+  ;; reply is not credited a fence it never emitted (karamazov-0r8s).
+  (let [reply (json/write-str {:choices [{:message {:content "tail"}
+                                          :finish_reason "stop"}]})]
+    (testing "a provider that continues the prefill reports it"
+      (with-redefs [adapter/prefill-support? (fn [_ _] true)
+                    http/post (fn [& _] {:status 200 :body reply})]
+        (is (= "```tool-call\n"
+               (:prefilled (client/chat (registry/adapter-for :deepseek) {:model "m"}
+                                        [{:role "user" :content "go"}]
+                                        {:prefill "```tool-call\n"}))))))
+    (testing "a provider that drops it reports nil, even though a prefill was asked for"
+      (with-redefs [adapter/prefill-support? (fn [_ _] false)
+                    http/post (fn [& _] {:status 200 :body reply})]
+        (is (nil? (:prefilled (client/chat (registry/adapter-for :glm) {:model "m"}
+                                           [{:role "user" :content "go"}]
+                                           {:prefill "```tool-call\n"}))))))))
+
 (deftest backoff-carries-jitter
   ;; The exponential base is jittered up to +25% so a beam that all trips the
   ;; same 429 does not retry in lockstep and re-collide.
@@ -963,28 +1053,94 @@
     (is (:auto-repaired? r))))
 
 (deftest reasoning-effort-is-sent-only-when-asked-for
-  ;; deepseek-v4-pro thinks by default and deepseek-v4-flash does not, so
-  ;; "thinking is on" was a property of which model happened to be configured
-  ;; rather than something the run stated. reasoning_effort makes it explicit:
-  ;; the API honours "high" and treats "none" as thinking disabled — a probe
-  ;; with "none" came back with no reasoning_content and one completion token.
+  ;; Both v4 models think by default (verified live 2026-09-06), so "thinking
+  ;; is on" was never a property of which model happened to be configured;
+  ;; reasoning_effort makes what a run wants explicit. An ordinary tier is the
+  ;; top-level string; the OFF value has its own per-provider wire, tested
+  ;; separately.
   ;;
   ;; Omitted from the body entirely when unset, because a provider that has
   ;; never heard of the field rejects the request rather than ignoring it.
   (let [a (registry/adapter-for :deepseek)
         req {:messages [{:role "user" :content "go"}] :max-tokens 10}]
-    (testing "absent from the body when the config says nothing"
-      (is (not (contains? (adapter/chat-body a {:model "m"} req) :reasoning_effort))))
+    (testing "no reasoning fields when the config says nothing"
+      (let [b (adapter/chat-body a {:model "m"} req)]
+        (is (not (contains? b :reasoning_effort)))
+        (is (not (contains? b :thinking)))))
 
     (testing "sent when the config asks for it"
       (is (= "high" (:reasoning_effort
-                     (adapter/chat-body a {:model "m" :reasoning-effort "high"} req)))))
+                     (adapter/chat-body a {:model "m" :reasoning-effort "high"} req)))))))
 
-    (testing "\"none\" is a real setting and not the same as unset"
-      ;; It is how thinking gets turned OFF, so dropping it as falsy-looking
-      ;; would silently leave thinking on for a run that asked for neither.
-      (is (= "none" (:reasoning_effort
-                     (adapter/chat-body a {:model "m" :reasoning-effort "none"} req)))))))
+(deftest the-off-value-uses-each-providers-documented-disable
+  ;; The runaway breaker sets :reasoning-effort to the off-value "none", and
+  ;; the wire for "do not think" is per-provider because the providers differ
+  ;; (measured live 2026-09-06):
+  ;;   - DeepSeek: thinking {type disabled} is reliable (0 reasoning tokens);
+  ;;     sending reasoning_effort alongside would let the two disagree, so it
+  ;;     is dropped.
+  ;;   - GLM-5.3 CANNOT be turned off — thinking disabled had no effect — so
+  ;;     the off value maps to reasoning_effort low, z.ai's own migration.
+  ;;   - anyone else keeps the literal "none" string, unchanged.
+  (let [req {:messages [{:role "user" :content "go"}] :max-tokens 10}
+        body (fn [p] (adapter/chat-body (registry/adapter-for p)
+                                        {:model "m" :reasoning-effort "none"} req))]
+    (testing "DeepSeek turns thinking off and sends no effort"
+      (let [b (body :deepseek)]
+        (is (= {:type "disabled"} (:thinking b)))
+        (is (not (contains? b :reasoning_effort)))))
+    (testing "GLM drops to low, the least it will think"
+      (let [b (body :glm)]
+        (is (= "low" (:reasoning_effort b)))
+        (is (not (contains? b :thinking)))))
+    (testing "a plain OpenAI-compatible endpoint keeps the literal value"
+      (let [b (body :openai)]
+        (is (= "none" (:reasoning_effort b)))
+        (is (not (contains? b :thinking)))))))
+
+(deftest a-per-call-reasoning-effort-overrides-the-config
+  ;; A cheap side call (a critic, a reflector, the workflow chooser) can ask
+  ;; for less thinking than the run is configured for — GLM-5.3 defaults to
+  ;; max and spent 24-31s on sub-1k-token prompts (karamazov-kgj4). The opt
+  ;; reaches chat-body on the request and wins over config.
+  (let [req (fn [e] {:messages [{:role "user" :content "go"}] :max-tokens 10
+                     :reasoning-effort e})]
+    (testing "the request's effort beats the config default"
+      (is (= "low" (:reasoning_effort
+                    (adapter/chat-body (registry/adapter-for :glm)
+                                       {:model "m" :reasoning-effort "max"}
+                                       (req "low"))))))
+    (testing "the request can force the off value even against a config effort"
+      (let [b (adapter/chat-body (registry/adapter-for :deepseek)
+                                 {:model "m" :reasoning-effort "high"}
+                                 (req "none"))]
+        (is (= {:type "disabled"} (:thinking b)))
+        (is (not (contains? b :reasoning_effort)))))
+    (testing "no override falls back to config"
+      (is (= "high" (:reasoning_effort
+                     (adapter/chat-body (registry/adapter-for :glm)
+                                        {:model "m" :reasoning-effort "high"}
+                                        {:messages [] :max-tokens 10})))))))
+
+(deftest a-deepseek-force-tool-without-prefill-turns-thinking-off
+  ;; DeepSeek REJECTS tools+tool_choice while thinking is on ("Thinking mode
+  ;; does not support this tool_choice", a 400 — measured live 2026-09-06). On
+  ;; a /v1 base URL there is no prefill to force the call instead, so the
+  ;; forced request must turn thinking off for that one call (karamazov-sj5i).
+  (let [ds (registry/adapter-for :deepseek)
+        ;; /v1, so prefill-support? is false and the force-tool branch fires.
+        cfg {:base-url "https://api.deepseek.com/v1" :model "deepseek-v4-flash"
+             :api-key "k" :reasoning-effort "high"}
+        done {:name "done" :description "Finish."
+              :parameters {:type "object" :properties {:answer {:type "string"}}
+                           :required ["answer"]}}
+        b (adapter/chat-body ds cfg {:messages [{:role "user" :content "x"}]
+                                     :max-tokens 10 :force-tool done})]
+    (is (= [{:type "function" :function done}] (:tools b)))
+    (is (= {:type "function" :function {:name "done"}} (:tool_choice b)))
+    (is (= {:type "disabled"} (:thinking b)) "thinking off, so the 400 cannot fire")
+    (is (not (contains? b :reasoning_effort))
+        "the config effort is dropped rather than left to disagree with the toggle")))
 
 (deftest an-xml-style-tool-call-is-accepted-rather-than-discarded
   ;; gen-30, the first run on deepseek-v4-pro. The model emits Anthropic's XML
@@ -1306,6 +1462,59 @@
     (is (str/includes? (:parse-error parsed) "brace")
         "the complaint names the missing-closer cause alongside the others")))
 
+(deftest a-json-failure-is-located-in-the-body-the-model-wrote
+  ;; karamazov-aqsr.1. Under jolt, data.json says "JSON error (end-of-file
+  ;; inside string)" and nothing else — no index — so the model was told
+  ;; the category of its mistake and left to find the character in a body
+  ;; that can run to thousands. The grammar runs only on the failure path
+  ;; and only to say WHERE.
+  (testing "valid JSON has no failure to locate"
+    (is (nil? (fence/locate-json-failure "{\"name\": \"x\", \"args\": {}}"))))
+  (testing "an unescaped quote: the failure is at the text after it"
+    (let [loc (fence/locate-json-failure
+               "{\"name\": \"x\", \"args\": {\"a\": \"un\"escaped\"}}")]
+      (is (= {:index 32 :line 1 :column 33}
+             (select-keys loc [:index :line :column])))
+      (is (str/starts-with? (:after loc) "escaped"))
+      (is (str/ends-with? (:before loc) "\"un\""))))
+  (testing "a string that never closes: the failure is at its opening quote, on its line"
+    (let [loc (fence/locate-json-failure
+               "{\"name\": \"x\",\n \"args\": {\"cmd\": \"ls}")]
+      (is (= 2 (:line loc)))
+      (is (str/starts-with? (:after loc) "\"ls}"))))
+  (testing "a missing colon"
+    (is (= 7 (:index (fence/locate-json-failure "{\"name\" \"x\"}")))))
+  (testing "the excerpt is bounded, so a huge body does not come back whole"
+    (let [big (str "{\"name\": \"x\", \"args\": {\"c\": \""
+                   (apply str (repeat 500 "a")) "\""
+                   (apply str (repeat 500 "b")) "\"}}")
+          loc (fence/locate-json-failure big)]
+      (is (some? loc))
+      (is (<= (count (:before loc)) 60))
+      (is (<= (count (:after loc)) 60)))))
+
+(deftest the-parse-error-the-model-reads-names-the-position
+  (testing "an unrepairable body: line, column and the text at the failure"
+    (let [p (fence/parse-tool-call
+             (fenced "{\"name\": \"x\", \"args\": {\"a\": \"un\"escaped\"}}"))]
+      (is (= "__parse_error__" (:name p)))
+      (is (= {:index 32 :line 1 :column 33}
+             (select-keys (:position p) [:index :line :column])))
+      (is (str/includes? (:parse-error p) "line 1"))
+      (is (str/includes? (:parse-error p) "column 33"))
+      (is (str/includes? (:parse-error p) "escaped"))))
+  (testing "a body the repair could not save: the position is in the body the
+            model wrote, not in the repaired one"
+    (let [p (fence/parse-tool-call (fenced "{\"name\": \"x\", \"args\": {\"c\": \"a\nb"))]
+      (is (= "__parse_error__" (:name p)))
+      (is (:auto-repaired? p))
+      (is (= 1 (get-in p [:position :line])))
+      (is (str/starts-with? (get-in p [:position :after]) "\"a\n")
+          "the string that never closes, as the model wrote it")
+      (is (str/includes? (:parse-error p) "line 1"))))
+  (testing "a shape error is not a JSON failure and carries no position"
+    (is (nil? (:position (fence/parse-tool-call (fenced "[1, 2, 3]")))))))
+
 
 ;; --- a drifted closing tag must not swallow the next parameter --------------
 ;; Run c377260b turn 300: the model wrote a complete, correct boundary_test.clj
@@ -1336,3 +1545,24 @@
     (let [args (xml-args close)]
       (is (= "a.clj" (:path args)) (str "closing with " close))
       (is (= "(ns a)" (:content args)) (str "content survived " close)))))
+
+;; --- the /props probe carries the model's identity ---------------------------
+
+(deftest the-llama-probe-reports-which-model-is-loaded
+  ;; :local's configured :model is the placeholder "local-model"; what the
+  ;; endpoint SERVES is whatever llama-server loaded. /props says so, and the
+  ;; probe already fetched it and kept only total_slots.
+  (is (= {:llama-cpp? true :total-slots 4 :model-id "Qwen3.8-27B-Q8_0"}
+         (samizdat.llm.client/llama-props->probe
+          {:total_slots 4
+           :model_path "/Users/x/models/Qwen3.8-27B-Q8_0.gguf"
+           :model_alias "/Users/x/models/Qwen3.8-27B-Q8_0.gguf"})))
+  (is (= {:llama-cpp? true :total-slots 1 :model-id "my-alias"}
+         (samizdat.llm.client/llama-props->probe
+          {:total_slots 1 :model_alias "my-alias" :model_path "/m/Other.gguf"}))
+      "an alias the operator set is the name they mean")
+  (is (= {:llama-cpp? true :total-slots 2}
+         (samizdat.llm.client/llama-props->probe {:total_slots 2}))
+      "an older server with no model fields reports none, rather than a guess")
+  (is (nil? (samizdat.llm.client/llama-props->probe {:object "list"}))
+      "not llama.cpp"))

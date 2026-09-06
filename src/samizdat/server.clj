@@ -26,7 +26,9 @@
 
   This namespace is pure logic: redefining `handler` against a running process
   takes effect on the next request. See samizdat.system."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.gates :as gates]
@@ -103,6 +105,8 @@
       ;; had already served 91 shared artifacts. The per-run truth is on the
       ;; run detail endpoint as share_artifacts.
       :config_defaults (config/redacted (select-keys cfg [:llm :run :db]))
+      ;; Which files those defaults were layered from, lowest first.
+      :config_sources (config/config-sources (get-in cfg [:run :root]))
       ;; Kept under the old key as well: this is a published endpoint and the
       ;; GUI reads it. Removing it is a separate change from correcting it.
       :config (config/redacted (select-keys cfg [:llm :run :db]))})))

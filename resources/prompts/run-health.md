@@ -3,7 +3,7 @@
 Implementors: {{shipped}}/{{total}} shipped. Outcomes: {{outcomes}}
 Reviewer: {{reviewer}}   Critic: {{critic}}
 
-Per branch (turns / mechanics-thrash / shipped?):
+Per branch (turns / mechanics-thrash / shipped? / fitness per turn, the number the cull reads):
 {{per-branch}}
 {% if failures %}
 Failures this run, newest last. Start HERE: read the failure's own words,
@@ -11,7 +11,11 @@ then `fetch_turn({turn: N, branch: "B"})` for the full record, then fix the
 cause at the surface that governs it — a parse failure lives in the prompt
 or call format, a provider failure at the endpoint or the context budget, a
 tool failure in the work or the tool.
-{% if failures.parse %}
+{% if patterns %}
+The SHAPE of them, commonest first — a count this high against one signature
+is one fix, not many:
+{{patterns}}
+{% endif %}{% if failures.parse %}
 Calls that did not parse ({{failures.parse.count}} total):
 {{failures.parse.lines}}
 {% endif %}{% if failures.provider %}
@@ -26,7 +30,14 @@ these before concluding the loop is broken, and before writing a rule that
 would have stopped them:
 {{failures.wins.lines}}
 {% endif %}{% endif %}
-{% if gates %}Steering that is NOT working — a gate this branch has been told
+{% if prescription %}This project has already tuned itself: {{prescription.names}}
+piece(s) of userspace overridden ({{prescription.kinds}}){% if prescription.pct %},
+now {{prescription.pct}}% the size of the templates they replaced{% endif %}.
+Every rule you add is context every later run reads. Metan measured richer
+context making a pre-optimized loop WORSE, so before writing another one, check
+whether an existing rule is the thing that is wrong.
+
+{% endif %}{% if gates %}Steering that is NOT working — a gate this branch has been told
 by repeatedly and has not once done what it asked. Either the advice is wrong,
 it is aimed at the wrong branch, or this model does not respond to advice at
 all; all three are yours to fix, and more nagging is not the fix:

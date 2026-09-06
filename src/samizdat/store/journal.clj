@@ -28,7 +28,13 @@
   Every append also emits an event carrying a monotonic cursor, which is what
   `GET /v1/runs/:id/journal?since=N` reads. The loop calls these; nothing calls
   the loop."
-  (:require [clojure.data.json :as json]
+  (:require ;; The java.time.* host shim, before data.json: it builds a
+            ;; DateTimeFormatter at namespace load, and under jolt 0.8.1 that
+            ;; class exists only once jolt.time has installed it — 0.8.0 had it
+            ;; implicitly. Required where the library that needs it enters, the
+            ;; same as selmer in samizdat.prompt and db.jdbc before jdbc.core.
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
@@ -116,6 +122,22 @@
                     (if policy-refusal? 1 0)]))
   (emit! conn run-id :turn {:branch-id branch-id :turn turn
                             :data {:tool tool-name :category category}}))
+
+(defn run-usage
+  "What a run has spent so far, summed over its turn rows: {:turns
+  :prompt-tokens :completion-tokens :total-tokens}. A row with no usage — a
+  provider error — counts as a turn and costs nothing. This is what the beam
+  holds a run's token budget against (karamazov-aqsr.3)."
+  [conn run-id]
+  (let [r (first (db/fetch conn ["SELECT count(*) AS turns,
+                                         coalesce(sum(prompt_tokens), 0) AS prompt_tokens,
+                                         coalesce(sum(completion_tokens), 0) AS completion_tokens,
+                                         coalesce(sum(total_tokens), 0) AS total_tokens
+                                    FROM turns WHERE run_id = ?" run-id]))]
+    {:turns (:turns r)
+     :prompt-tokens (:prompt_tokens r)
+     :completion-tokens (:completion_tokens r)
+     :total-tokens (:total_tokens r)}))
 
 (defn turns
   "Every turn of a run, whole rows. `assistant_text` comes back with them, so
@@ -370,11 +392,14 @@
 ;; --- gate firings -----------------------------------------------------------
 
 (defn- observe-session!
-  "Feed the live session tally. Wrapped because a counter must never be able to
-  cost a turn: the journal's own contract is that it cannot destroy the work it
-  records, and a tally is strictly less important than the journal."
-  [path]
-  (try (session/observe! path) (catch Throwable _ nil)))
+  "Feed the live session tally — and the branch's own, when the caller can
+  name it. Wrapped because a counter must never be able to cost a turn: the
+  journal's own contract is that it cannot destroy the work it records, and a
+  tally is strictly less important than the journal."
+  ([path] (observe-session! path nil nil))
+  ([path run-id branch-id]
+   (try (session/observe! path (when (and run-id branch-id) [run-id branch-id]))
+        (catch Throwable _ nil))))
 
 (defn record-gate!
   "A gate fired, with what it expects to happen next.
@@ -397,13 +422,14 @@
              (db/last-insert-id conn))]
     (emit! conn run-id :gate {:branch-id branch-id :turn turn
                               :data {:gate gate :prediction prediction}})
-    (observe-session! [:gates (keyword (name gate)) :fired])
+    (observe-session! [:gates (keyword (name gate)) :fired] run-id branch-id)
     id))
 
 (defn settle-gate!
   "Record whether a firing's prediction came true."
   [conn firing-id outcome settled-turn]
-  (let [row (db/fetch-one conn ["SELECT gate FROM gate_firings WHERE id = ?" firing-id])]
+  (let [row (db/fetch-one conn ["SELECT gate, run_id, branch_id FROM gate_firings WHERE id = ?"
+                                firing-id])]
     (db/with-writer
       (db/execute! conn
                    ["UPDATE gate_firings SET outcome = ?, settled_at_turn = ? WHERE id = ?"
@@ -412,7 +438,8 @@
     ;; obeyed is the pattern worth surfacing, and it is invisible from firings
     ;; alone.
     (when-let [g (:gate row)]
-      (observe-session! [:gates (keyword g) (keyword (name outcome))]))))
+      (observe-session! [:gates (keyword g) (keyword (name outcome))]
+                        (:run_id row) (:branch_id row)))))
 
 (defn unsettled-gates [conn run-id branch-id]
   (db/fetch conn ["SELECT * FROM gate_firings
@@ -474,6 +501,24 @@
                                    run-id (name kind)]))]
     (try (json/read-str (str (:data row)) :key-fn keyword)
          (catch Throwable _ nil))))
+
+(defn notes
+  "Every note of `kind` on this run, oldest first, each parsed back from
+  JSON; one that will not parse is skipped rather than failing the read.
+
+  `last-note`'s plural, for the kinds that accumulate — a run's :stage-error
+  notes are the crashes its stages survived, and the supervisor stream wants
+  all of them, not the latest (RFC-012 F1: the crashes used to be shown to a
+  supervisor stage that no longer exists, so the stream reads them here)."
+  [conn run-id kind]
+  (into []
+        (keep (fn [row]
+                (try (json/read-str (str (:data row)) :key-fn keyword)
+                     (catch Throwable _ nil))))
+        (db/fetch conn ["SELECT data FROM events
+                          WHERE run_id = ? AND kind = ?
+                          ORDER BY id"
+                        run-id (name kind)])))
 
 (def ^:private record-tables
   "The tables holding a run's account of itself, and how each one names its

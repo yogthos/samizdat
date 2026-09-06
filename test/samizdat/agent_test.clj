@@ -24,7 +24,9 @@
   form \"this reduces turns\" is unmeasurable at an affordable sample size,
   while \"the mechanism fired when it should and stayed silent otherwise\" is
   checkable deterministically."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [samizdat.agent.arbiter :as arbiter]
@@ -100,6 +102,23 @@
 
   (testing "a fresh branch is not nudged"
     (is (nil? (arbiter/decide {:branch (branch-with) :max-turns 40})))))
+
+(deftest a-directive-says-who-issued-it
+  ;; RFC-012 F5. Three writers share the queue — a person, the supervisor's
+  ;; reasoning pass, the reflex — and every one of their steers reaches the
+  ;; branch through this gate. Its message used to open "A human has
+  ;; intervened" whatever the issuer, so the one ledger of what was said to a
+  ;; branch attributed the harness's own steering to the operator. The record
+  ;; must say who, and so must the branch reading it.
+  (let [msg (fn [d] ((:message (gates/by-name :human-directive)) {:directive d}))]
+    (is (str/includes? (msg {:payload "ship it" :issued_by "human"}) "**A human has intervened"))
+    (is (str/includes? (msg {:payload "ship it"}) "**A human has intervened")
+        "an unattributed directive is the operator's — the REPL path predates issued_by")
+    (is (str/includes? (msg {:payload "ship it" :issued_by "supervisor"})
+                       "**The supervisor has intervened"))
+    (is (str/includes? (msg {:payload "ship it" :issued_by "watch"})
+                       "**The harness's reflex has intervened"))
+    (is (not (str/includes? (msg {:payload "ship it" :issued_by "supervisor"}) "human")))))
 
 (deftest gates-stay-silent-when-they-should
   (testing "the stall gate arms only after the branch has made progress"
@@ -1178,6 +1197,26 @@
     (is (not (critic/dominated? c [a b])) "a unique strength survives")
     (is (not (critic/dominated? a [a])) "an equal vector does not dominate")))
 
+(deftest measured-fitness-joins-the-frontier-when-both-sides-carry-it
+  ;; RFC-012 F3. The critic JUDGES a line; the session tally MEASURES it.
+  ;; Both sit on the frontier, and an objective only counts when both
+  ;; vectors carry it: an unknown fitness neither protects nor condemns.
+  (let [a {:momentum 4 :distinctness 3 :viability 4}
+        b {:momentum 3 :distinctness 3 :viability 4}]
+    (is (critic/dominated? b [a]) "on the critic alone, as before")
+    (is (not (critic/dominated? (assoc b :fitness 2.0) [(assoc a :fitness 1.0)]))
+        "the fitter line is not dominated by a critic preference")
+    (is (critic/dominated? (assoc b :fitness 1.0) [(assoc a :fitness 2.0)])
+        "worse on the critic and less fit: dominated")
+    (is (critic/dominated? (assoc b :fitness 2.0) [a])
+        "a sibling with no measurement is compared on the critic alone")
+    (is (critic/dominated? b [(assoc a :fitness 9.0)])
+        "and so is a branch with none")
+    (is (not (critic/dominated? (assoc a :fitness 1.0) [(assoc a :fitness 1.0)]))
+        "equal on everything does not dominate")
+    (is (critic/dominated? (assoc a :fitness 1.0) [(assoc a :fitness 2.0)])
+        "equal on the critic, a fitter sibling: dominated")))
+
 (deftest critic-scoring-is-fail-closed
   (let [b (branch-with :thesis {:goal "g" :technique "t" :subClaims []})]
     (with-redefs [llm/chat (fn [& _]
@@ -1243,6 +1282,46 @@
       (testing "grace does not save a branch the critic calls a dead end"
         (let [doomed (assoc-in (newborn 3) [:critic :scores :viability] 1)]
           (is (= :culled (:status (cull-or-keep ctx doomed 2 [])))))))))
+
+(deftest fitness-is-a-measured-objective-on-the-retention-frontier
+  ;; RFC-012 F3 (karamazov-ts3o.2). The cull reads the branch's session
+  ;; fitness — the number the supervisor judges its own changes by — as one
+  ;; more objective beside the critic's. A branch the critic rates below its
+  ;; sibling survives while it is measurably the fitter line; a branch the
+  ;; critic likes is still culled when a sibling is at least as good on
+  ;; every objective and fitter too; and with no critic at all the fittest
+  ;; line is not culled for failing while nobody is doing better.
+  (let [mature (fn [& {:as extra}]
+                 (-> (apply branch-with :consecutive-failures 3
+                            (mapcat identity extra))
+                     (assoc :turns (vec (repeat (inc (gates/threshold :juvenile-grace)) {})))))
+        judged (mature :critic {:scores {:progress 2 :momentum 2 :distinctness 2 :viability 3}})
+        sib {:id "B2" :progress 4 :momentum 4 :distinctness 4 :viability 4}]
+    (testing "dominated on every critic objective and less fit: culled, citing both"
+      (let [r (cull-or-keep {:turn 20} judged 2 [sib] {:own -1.0 :siblings {"B2" 1.5}})]
+        (is (= :culled (:status r)))
+        (is (str/includes? (:inactive-reason r) "on measured fitness"))
+        (is (str/includes? (:inactive-reason r) "-1.00"))
+        (is (str/includes? (:inactive-reason r) "1.50"))))
+    (testing "dominated on every critic objective but the fitter line: spared"
+      (is (= :active (:status (cull-or-keep {:turn 20} judged 2 [sib]
+                                            {:own 1.5 :siblings {"B2" -1.0}})))))
+    (testing "fitness unknown on either side: the critic's verdict stands as before"
+      (is (= :culled (:status (cull-or-keep {:turn 20} judged 2 [sib] {:own nil :siblings {}}))))
+      (is (= :culled (:status (cull-or-keep {:turn 20} judged 2 [sib] {:own 1.5 :siblings {}}))))
+      (is (= :culled (:status (cull-or-keep {:turn 20} judged 2 [sib])))))
+    (testing "no critic: the fittest line survives, a measurably weaker one does not"
+      (let [unscored (mature)]
+        (is (= :active (:status (cull-or-keep {:turn 20} unscored 2 []
+                                              {:own 0.5 :siblings {"B2" -0.5}}))))
+        (let [r (cull-or-keep {:turn 20} unscored 2 [] {:own -0.5 :siblings {"B2" 0.5}})]
+          (is (= :culled (:status r)))
+          (is (str/includes? (:inactive-reason r) "measurably fitter")))
+        (is (= :culled (:status (cull-or-keep {:turn 20} unscored 2 []
+                                              {:own nil :siblings {"B2" 0.5}})))
+            "unmeasured, the scalar rule stands")
+        (is (= :culled (:status (cull-or-keep {:turn 20} unscored 2 [])))
+            "and so it does with no fitness at all")))))
 
 (deftest pareto-retention-spares-non-dominated-branches
   ;; The scalar rule is the TRIGGER; domination is the verdict. Three runs in
@@ -1494,23 +1573,24 @@
       (#'aloop/call-model {:llm-adapter :a :llm-config {:max-tokens 16384}} {:messages []})
       (is (= 2 @calls)))))
 
-;; --- a turn that emitted no call is prefilled into the fence ----------------
+;; --- a no-call recovers by a graduated steer, not always a prefill ----------
 
-(deftest a-turn-that-emitted-no-tool-call-prefills-the-next-one
+(deftest a-repeated-no-tool-call-prefills-the-next-one-but-the-first-keeps-thinking
   ;; gen-22 B1 spent 24 of its 44 turns on __no_call__ — more than half the
   ;; branch. It was told "[harness] No ```tool-call block in your response"
   ;; twenty-four times, which is the measurement: asking a model that just
   ;; wrote 109,360 characters without a fence to please emit one does not
-  ;; work. Turn 42 is the shape of it — a full page of sound reasoning ending
-  ;; "let me confirm the composition theorem a#712's exact statement", and
-  ;; then nothing.
+  ;; work, so a REPEAT no-call ends the request mid-fence — the withholding
+  ;; form, which the model cannot answer in prose because it is already inside
+  ;; a tool call.
   ;;
-  ;; arbiter/prefill-for already argues the general case: across gen-19 and
-  ;; gen-20 the gates that changed behaviour were the ones that WITHHELD, and
-  ;; ending the request mid-fence is the withholding form of an instruction —
-  ;; the model cannot answer in prose because it is already inside a tool
-  ;; call. That mechanism was reachable only from a gate decision, so it never
-  ;; reached the branch with the most to gain from it.
+  ;; But the FIRST plain no-call gets a message-only steer, not a prefill: on
+  ;; DeepSeek /beta a content prefix skips the reasoning phase entirely
+  ;; (measured 3/3), so clamping the fence takes away the model's thinking on
+  ;; the turn it is struggling — and a no-call is usually a format slip it can
+  ;; fix once told. Every other provider already recovers this way (the adapter
+  ;; drops a prefill it cannot continue); this gives DeepSeek one reasoning-
+  ;; intact chance before the clamp, and keeps the clamp as the second rung.
   (let [c (db/connect ":memory:")
         _ (db/migrate! c)
         rid (runs/start-run! c {:problem "p" :beam-width 1})
@@ -1518,13 +1598,18 @@
     (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
     (with-redefs [llm/chat (fn [& _] {:content "Let me confirm a#712 first."
                                       :finish-reason "stop"})]
-      (let [after (wf/run-turn {:conn c :run-id rid :max-turns 40
+      (let [after1 (wf/run-turn {:conn c :run-id rid :max-turns 40
+                                 :llm-adapter :a :llm-config {:max-tokens 16384}}
+                                b 1)]
+        (is (nil? (:prefill after1))
+            "the first plain no-call is message-only, so DeepSeek keeps its reasoning")
+        (let [after2 (wf/run-turn {:conn c :run-id rid :max-turns 40
                                    :llm-adapter :a :llm-config {:max-tokens 16384}}
-                                  b 1)]
-        (is (= "```tool-call\n" (:prefill after))
-            "the next request ends mid-fence, so prose is not an available reply")
-        (is (not (str/includes? (:prefill after) "\"name\""))
-            "bare: which tool to call is the branch's decision, not the harness's")))))
+                                  after1 2)]
+          (is (= "```tool-call\n" (:prefill after2))
+              "a second consecutive no-call ends the request mid-fence — the tested clamp")
+          (is (not (str/includes? (:prefill after2) "\"name\""))
+              "bare: which tool to call is the branch's decision, not the harness's"))))))
 
 (deftest a-turn-that-called-a-tool-leaves-no-prefill-behind
   ;; The complement, and the one that would go wrong quietly: a branch that is
@@ -2332,3 +2417,34 @@
           "and IS recent when the run is actually at turn 9")))
   (is (= 7 (:current-turn (aloop/phase-valve (state/new-branch {:id "B" :problem "p"}) 7)))
       "phase-valve is where the stamp lands, at the top of every turn"))
+
+;; --- settle is its own step (karamazov-aqsr.2) -------------------------------
+
+(deftest settle-step-closes-what-the-turn-resolved-and-says-how-many
+  ;; Settling used to be the first thing steer-step did, which made
+  ;; settle-before-fire a convention inside one cell. It is a node now, and
+  ;; its product — the branch with its predictions closed, and the count —
+  ;; is what :gate/arbiter's schema requires, so the order is compiled.
+  (let [c (db/open! ":memory:")]
+    (try
+      (db/migrate! c)
+      (let [rid (runs/start-run! c {:problem "p" :beam-width 1})
+            _ (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+            fid (journal/record-gate! c rid {:branch-id "B1" :turn 1
+                                             :gate :stuck :priority 1
+                                             :message "m" :prediction "p"
+                                             :window 3})
+            before (state/new-branch {:id "B1" :problem "p"})
+            open {:id fid :gate :stuck :prediction "p" :window 3 :turn 1}
+            b (assoc before :open-predictions [open])]
+        (testing "a prediction whose window has passed is closed and counted"
+          (let [{:keys [branch closed]}
+                (aloop/settle-step {:conn c} before b 10 {:parsed {:name "read_file"}})]
+            (is (= 1 closed))
+            (is (empty? (:open-predictions branch)))))
+        (testing "one still inside its window stays open, and the count says so"
+          (let [{:keys [branch closed]}
+                (aloop/settle-step {:conn c} before b 2 {:parsed {:name "read_file"}})]
+            (is (= 0 closed))
+            (is (= [open] (:open-predictions branch))))))
+      (finally (db/close c)))))

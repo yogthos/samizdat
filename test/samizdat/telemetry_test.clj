@@ -165,3 +165,98 @@
                :category "failure" :result "boom"}])]
       (is (str/includes? d "what WORKED"))
       (is (str/includes? d "wrote core.clj")))))
+
+(deftest the-digest-shows-each-branch-the-fitness-the-cull-reads
+  ;; RFC-012 F3: one number for selection and evaluation. The supervisor is
+  ;; shown per branch what the cull reads, on the same scale it judges its
+  ;; own changes by.
+  (let [d (telemetry/digest {:results [{:status :done}] :review :pass
+                             :critic :ship :revision 1
+                             :fitness {"W0" 1.25 "W1" -0.5}}
+                            [(row "W0" 1 "done" "success")
+                             (row "W1" 1 "shell" "failure")])]
+    (is (str/includes? d "W0: 1 turns, 0 thrash, shipped=true, fitness 1.25/turn"))
+    (is (str/includes? d "W1: 1 turns, 0 thrash, shipped=false, fitness -0.50/turn")))
+  (testing "a branch with no measurement shows none rather than a zero"
+    (let [d (telemetry/digest {:results [] :fitness {}} [(row "W0" 1 "shell" "success")])]
+      (is (str/includes? d "W0: 1 turns, 0 thrash, shipped=false"))
+      (is (not (str/includes? d "shipped=false, fitness"))))))
+
+;; --- the shape of the failures, not just the newest few (karamazov-7mo M7) --
+
+(deftest a-signature-collapses-instances-of-one-failure
+  (testing "the parts that differ between instances are stripped"
+    (is (= (telemetry/failure-signature "No such file: /a/b/core.clj at line 12")
+           (telemetry/failure-signature "No such file: /x/y/other.clj at line 907"))))
+  (testing "quoted text is one of those parts"
+    (is (= (telemetry/failure-signature "String to replace not found: \"foo bar\"")
+           (telemetry/failure-signature "String to replace not found: \"baz qux\""))))
+  (testing "different failures stay different"
+    (is (not= (telemetry/failure-signature "connection reset by peer")
+              (telemetry/failure-signature "String to replace not found")))))
+
+(deftest patterns-appear-only-once-there-is-a-stack
+  (let [tool-row (fn [n] {:turn n :branch_id "B1" :id n :tool_name "edit_file"
+                          :category "failure"
+                          :result (str "String to replace not found: \"x" n "\"")})
+        opts {:floor 6 :patterns 6 :chars 160}]
+    (testing "below the floor the exemplars already say everything"
+      (is (nil? (telemetry/failure-patterns (map tool-row (range 1 5)) opts))))
+    (testing "at the floor the distribution appears, collapsed to one line"
+      (let [ps (telemetry/failure-patterns (map tool-row (range 1 9)) opts)]
+        (is (= 1 (count ps)))
+        (is (= 8 (:count (first ps))))
+        (is (= :tool (:kind (first ps))))))))
+
+(deftest patterns-are-ordered-by-how-much-they-matter
+  (let [rows (concat
+              (for [n (range 1 11)]
+                {:turn n :branch_id "B1" :id n :tool_name "__parse_error__"
+                 :parse_error (str "unbalanced delimiter at " n)})
+              (for [n (range 11 14)]
+                {:turn n :branch_id "B1" :id n :tool_name "shell"
+                 :category "failure" :result "command not found"}))
+        ps (telemetry/failure-patterns rows {:floor 6 :patterns 6 :chars 160})]
+    (is (= 10 (:count (first ps))) "the commonest shape leads")
+    (is (= :parse (:kind (first ps))))
+    (is (= 3 (:count (second ps))))
+    (testing "and they render with their counts"
+      (is (str/includes? (telemetry/pattern-lines ps) "10x parse")))))
+
+(deftest the-digest-carries-the-distribution
+  (let [rows (for [n (range 1 9)]
+               {:turn n :branch_id "B1" :id n :tool_name "edit_file"
+                :category "failure"
+                :result (str "String to replace not found: \"x" n "\"")})
+        out (telemetry/digest {:results [{:status :done}]} rows)]
+    (is (str/includes? (str out) "8x tool"))
+    (is (str/includes? (str out) "one fix, not many"))))
+
+;; --- accumulated prescription in the brief (karamazov-7mo M9) --------------
+
+(deftest a-project-that-has-tuned-little-is-not-lectured-about-it
+  (is (nil? (telemetry/prescription-report {} 3)))
+  (is (nil? (telemetry/prescription-report {:prompt {:names 2 :versions 2 :chars 100 :factory-chars 100}} 3))
+      "below the floor it says nothing")
+  (is (nil? (telemetry/prescription-report {:prompt {:names 9 :chars 1 :factory-chars 1}} nil))
+      "and with no floor given it decides nothing on its own"))
+
+(deftest prescription-reports-what-the-project-made-its-own-and-how-much-bigger
+  (let [r (telemetry/prescription-report
+           {:prompt {:names 3 :versions 5 :chars 1500 :factory-chars 1000}
+            :policy {:names 1 :versions 1 :chars 500 :factory-chars 500}}
+           3)]
+    (is (= 4 (:names r)))
+    (is (str/includes? (:kinds r) "1 policy"))
+    (is (str/includes? (:kinds r) "3 prompt"))
+    (is (= 133 (:pct r)) "growth against the templates is the point")
+    (testing "it returns data, never a sentence"
+      (is (map? r)))))
+
+(deftest the-digest-warns-before-the-tenth-rule
+  (let [out (telemetry/digest
+             {:results [{:status :done}]
+              :prescription {:prompt {:names 4 :versions 9 :chars 4000 :factory-chars 2000}}}
+             [])]
+    (is (str/includes? (str out) "already tuned itself"))
+    (is (str/includes? (str out) "200% the size"))))

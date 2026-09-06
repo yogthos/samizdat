@@ -21,13 +21,21 @@
   directives were the machine's and which were a person's is the difference
   between the loop steering itself and someone steering it.
 
-  The wording lives in prompts/intervene-tool.md."
+  The wording lives in prompts/intervene-tool.md, and what each kind does in
+  wordlists.edn :directive-kinds — the store holds the names, the resources
+  hold the words."
   (:require [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
             [samizdat.store.interventions :as interventions]))
 
 (defn- msg [ctx] (prompt/render "intervene-tool" ctx))
+
+(defn- described
+  "Kind -> what it does, for the listings a refusal renders."
+  []
+  (lexicon/wordlist :directive-kinds))
 
 (defn- payload-for
   "The directive's payload. `message` and `fork` carry prose the branch reads,
@@ -41,13 +49,13 @@
         text (some-> (base/arg ctx :text) str not-empty)]
     (cond
       (nil? kind)
-      (base/malformed branch (msg {:needs-kind true :kinds interventions/kinds}))
+      (base/malformed branch (msg {:needs-kind true :kinds (described)}))
 
       ;; An unknown kind is the model guessing at the vocabulary. Name what is
       ;; available rather than only what was wrong, so the retry can be right
       ;; the first time — the eval-syntax lesson (karamazov-7d4).
       (not (contains? interventions/kinds kind))
-      (base/malformed branch (msg {:unknown kind :kinds interventions/kinds}))
+      (base/malformed branch (msg {:unknown kind :kinds (described)}))
 
       :else
       (try

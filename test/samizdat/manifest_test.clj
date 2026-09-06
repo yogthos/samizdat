@@ -95,17 +95,42 @@
       (is (= (:dispatches def') (:dispatches turn)))
       (is (= (:constraints def') (:constraints turn))))))
 
-(deftest every-shipped-manifest-has-a-compilable-turn-slice
+(defn- shipped-definition [nm]
+  (wf/read-definition (slurp (io/resource (wf/manifest-resource nm)))))
+
+(deftest every-shipped-manifest-slices-or-says-it-cannot
   ;; The rewrite must leave a graph mycelium still accepts — reachable nodes,
   ;; covered dispatches, satisfied constraints — for every manifest, not just
   ;; the factory loop. A slice that fails to compile is a run that cannot
   ;; start, and the beam compiles this before POST /v1/runs answers.
-  (doseq [nm ["loop" "critic" "review" "worker" "reviewer" "supervisor"
-              "orchestrator" "team" "feature" "decompose"]]
+  ;;
+  ;; OVER THE DIRECTORY, not a hand-written list. The list this replaces named
+  ;; ten of seventeen and its docstring said "every manifest", which is how
+  ;; `repl` shipped catalogued and unsliceable: it routes :declare's :empty
+  ;; edge back to :start and does not iterate, so turn-manifest refused it,
+  ;; so `:run :loop "repl"` threw at run start under the beam. Being off
+  ;; gates.edn's selection whitelist was the only thing keeping it unreachable
+  ;; — the supervisor's SWITCH menu is the whole catalogue (karamazov-4sx).
+  (doseq [nm manifests/shipped-manifests]
     (testing nm
-      (let [d (wf/read-definition (slurp (io/resource (wf/manifest-resource nm))))]
-        (is (some? (wf/compile-loop (wf/turn-manifest d)))
-            (str nm "'s turn slice does not compile"))))))
+      (let [d (shipped-definition nm)]
+        (if (manifests/turn-sliceable? d)
+          (is (some? (wf/compile-loop (wf/turn-manifest d)))
+              (str nm "'s turn slice does not compile"))
+          (is (thrown? Exception (wf/turn-manifest d))
+              (str nm " declares itself unsliceable, so slicing it must be
+                       refused rather than quietly producing a turn")))))))
+
+(deftest exactly-two-shipped-manifests-declare-themselves-unsliceable
+  ;; Declaring it is a real decision and not a way out of fixing a graph, so
+  ;; the set is pinned: `beam` is the scheduler, which drives branches rather
+  ;; than being driven, and `repl` is a SHAPE — four pure cells classifying a
+  ;; branch, with the enforcement in phases.edn — that no driver should ever
+  ;; be pointed at. A third name here is a decision somebody has to make on
+  ;; purpose.
+  (is (= #{"beam" "repl"}
+         (set (remove #(manifests/turn-sliceable? (shipped-definition %))
+                      manifests/shipped-manifests)))))
 
 (deftest a-whole-run-manifest-never-routes-back-to-its-entry
   ;; Run 3b8d2af5: the feature loop's revise edge went to :start, and under the
@@ -118,13 +143,51 @@
   ;; is silent data loss. A whole-run manifest that wants to re-enter its
   ;; dispatch adds a node of its own (feature's :redispatch, orchestrator's
   ;; :retry).
-  (doseq [nm ["team" "feature" "decompose" "orchestrator" "board"]]
+  ;;
+  ;; Over the directory as well, for the same reason as the slice test above:
+  ;; the hand-written list of five is what let `repl` route :empty back to
+  ;; :start unnoticed. An unsliceable manifest is exempt because nothing ever
+  ;; cuts its edges.
+  (doseq [nm manifests/shipped-manifests]
     (testing nm
-      (let [d (wf/read-definition (slurp (io/resource (wf/manifest-resource nm))))
+      (let [d (shipped-definition nm)
             targets (mapcat (fn [[_ e]] (if (map? e) (vals e) [e])) (:edges d))]
-        (is (not-any? #{:start} targets)
-            (str nm " routes an edge back to :start — under the beam driver "
-                 "that runs each cycle on a fresh data map"))))))
+        (when (and (manifests/turn-sliceable? d) (not (wf/iterating? d)))
+          (is (not-any? #{:start} targets)
+              (str nm " routes an edge back to :start — under the beam driver "
+                   "that runs each cycle on a fresh data map")))))))
+
+(deftest an-unsliceable-manifest-is-not-on-the-supervisors-switch-menu
+  ;; The catalogue is what render-catalog feeds the supervisor as the set of
+  ;; workflows it may switch a run to, and a run's loop is turn-sliced. Left
+  ;; on the menu, `repl` was an offer that fails at run start — the trap
+  ;; beam-test's selectability test names and does not catch, because it
+  ;; compiles the whole-run form.
+  (let [menu (wf/render-catalog nil)]
+    (is (str/includes? menu "loop"))
+    (doseq [nm ["beam" "repl"]]
+      (is (not (str/includes? menu (str "- " nm " ")))
+          (str nm " is offered as a workflow to switch to, and cannot run as one")))))
+
+(deftest a-driver-refuses-an-unsliceable-manifest-as-a-runs-loop
+  ;; Both drivers, and the single-branch one is the reason this is not just
+  ;; turn-manifest's throw: `repl`'s four cells are pure functions of an
+  ;; unchanging branch, so :declare's :empty edge back to :start is an
+  ;; infinite pure cycle with no model call to break it and no step cap
+  ;; anywhere. Under workflow/run! `:run :loop "repl"` did not fail, it HUNG,
+  ;; which is worse than the beam's throw.
+  (let [conn (db/open! ":memory:")]
+    (doseq [nm ["repl" "beam"]]
+      (testing nm
+        (let [e (try (wf/compile-turn-loop conn nm) nil (catch Throwable t t))]
+          (is (some? e) (str nm " sliced"))
+          (is (str/includes? (str (ex-message e)) "cannot be turn-sliced")))
+        (let [e (try (wf/run! {:conn conn :config {:run {:loop nm}}
+                               :problem "p" :max-turns 1})
+                     nil
+                     (catch Throwable t t))]
+          (is (some? e) (str nm " was accepted as a run's loop"))
+          (is (str/includes? (str (ex-message e)) "cannot be turn-sliced")))))))
 
 (deftest iterating-classification-decides-width-and-deadline
   ;; A pass through the slice is one model call only when the slice contains
@@ -446,3 +509,65 @@
         (is (str/includes? (str (:result saved)) "Order-dependent"))
         (is (str/includes? (str (:result saved)) ":provider-error"))
         (is (str/includes? (str (:result shown)) "Order-dependent"))))))
+
+(deftest a-manifests-prompt-reaches-the-driver-that-production-uses
+  ;; karamazov-ioo.20's leftover, and the same shape its own commit message
+  ;; describes: the two drivers were unified for what a TURN is and left
+  ;; apart for how a BRANCH OPENS. `workflow-prompt` had exactly one caller,
+  ;; the single-branch workflow/run!, so `:run :loop "review"` through
+  ;; POST /v1/runs — which drives beam/run! — ran the review GRAPH under the
+  ;; build-a-feature system prompt. review.edn's own comment says "the
+  ;; manifest declares the ROLE"; in production it declared the routing and
+  ;; nothing else.
+  (let [seen (atom [])]
+    (with-redefs [llm/chat (fn [_ _ msgs & _]
+                             (swap! seen conj msgs)
+                             {:content "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"no defects found\"}}\n```"
+                              :finish-reason "stop"})
+                  judge/deterministic-block (constantly nil)
+                  judge/parse-verdict (constantly :complete)
+                  judge/blocking-findings (constantly nil)]
+      (let [conn (db/open! ":memory:")]
+        (beam/run! {:conn conn :llm-adapter :a :llm-config {:max-tokens 4096}
+                    :problem "review src/example.clj" :max-turns 2 :beam-width 1
+                    :config {:run {:loop "review"}}})
+        (is (seq @seen) "the run reached the model at least once")
+        (let [system (->> @seen first (filter #(= "system" (:role %))) first :content)]
+          (is (str/includes? system "CODE REVIEW")
+              "the review manifest's :prompt is appended to the system prompt")
+          (is (str/includes? system "read_file")
+              "and it is APPENDED — the base prompt with its tool surface is still there"))))))
+
+(deftest an-edited-manifest-governs-the-next-beam-run
+  ;; karamazov-ioo.20's third acceptance criterion, which nothing held: "a
+  ;; manifest edit changes beam-run behavior in a live run". Every other test
+  ;; here proves an edit VALIDATES and STORES; this one proves it is then what
+  ;; production runs. Across 26 recorded live runs every `manifest` tool call
+  ;; was `show` or `list`, so the one capability this project exists for — the
+  ;; agent rewriting the loop it is running — had never once been exercised
+  ;; end to end, by an agent or by a test.
+  ;;
+  ;; The edit is a :prompt swap because it is the cheapest change with a
+  ;; visible effect on the model's own view: same graph, different framing.
+  (let [seen (atom [])]
+    (with-redefs [llm/chat (fn [_ _ msgs & _]
+                             (swap! seen conj msgs)
+                             {:content "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"done\"}}\n```"
+                              :finish-reason "stop"})
+                  judge/deterministic-block (constantly nil)
+                  judge/parse-verdict (constantly :complete)
+                  judge/blocking-findings (constantly nil)]
+      (let [conn (db/open! ":memory:")
+            edited (-> (slurp (io/resource "manifests/loop.edn"))
+                       (str/replace "{:description" "{:prompt \"review\"\n :description"))
+            saved (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                  :args {:action "save" :name "loop" :edn edited
+                                         :rationale "frame the same graph as a review"}})]
+        (is (not= :mechanics (:category saved))
+            (str "the edited factory loop compiles and stores: " (:result saved)))
+        (beam/run! {:conn conn :llm-adapter :a :llm-config {:max-tokens 4096}
+                    :problem "build the thing" :max-turns 2 :beam-width 1
+                    :config {:run {:loop "loop"}}})
+        (let [system (->> @seen first (filter #(= "system" (:role %))) first :content)]
+          (is (str/includes? system "CODE REVIEW")
+              "the beam ran the EDITED version, not the factory file it seeds from"))))))

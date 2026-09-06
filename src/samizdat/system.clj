@@ -130,7 +130,21 @@
          cfg (cond-> cfg probed (update :llm merge probed))
          _ (when probed
              (log/info "endpoint identified as llama.cpp:"
-                       (:total-slots probed) "KV slots — prefix caching on"))
+                       (:total-slots probed) "KV slots — prefix caching on"
+                       (when-let [m (:model-id probed)] (str "— serving " m))))
+         ;; Which config files were read, so a surprising value is traceable
+         ;; to its layer rather than to a guess about which file won.
+         _ (doseq [{:keys [layer path present?]} (config/config-sources
+                                                  (get-in cfg [:run :root]))]
+             (log/info "config" (name layer)
+                       (cond (nil? path) "— no config home"
+                             present? (str "read " path)
+                             :else (str "absent " path))))
+         _ (when (= :legacy (get-in cfg [:db :from]))
+             (log/info "db: opening the pre-existing root file"
+                       (get-in cfg [:db :path])
+                       "— new projects get .samizdat/samizdat.sqlite3; move"
+                       "this one there to adopt the new layout"))
          c (db/open! (get-in cfg [:db :path]))
          ;; Point the userspace reads at THIS project's store, and reload the
          ;; policy caches AFTER the bind so they hold the project's own
@@ -148,6 +162,14 @@
          ;; instruction about the wrong codebase on any other project
          ;; (karamazov-8zk). The same value the drivers take :root from.
          _ (userspace/bind-root! (get-in cfg [:run :root]))
+         ;; And which MODEL, for the prompt file layer
+         ;; (.samizdat/prompts/<provider>/<model>/). The configured :model is
+         ;; the identity for a hosted provider; for a local endpoint it is the
+         ;; placeholder "local-model", and what the server actually loaded
+         ;; came back from the /props probe above.
+         _ (userspace/bind-model! {:provider (get-in cfg [:llm :provider])
+                                   :model (or (get-in cfg [:llm :model-id])
+                                              (get-in cfg [:llm :model]))})
          ;; The repair ladder is a COMPOSITION, so the workflow layer owns it:
          ;; the `repair` manifest wires the fence's rung fns as cells, and
          ;; this install is how the fence — which sits below the workflow

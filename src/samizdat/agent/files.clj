@@ -37,6 +37,7 @@
             [jolt.fs :as fs]
             [samizdat.agent.source :as source]
             [samizdat.hashline :as hashline]
+            [samizdat.escapes :as escapes]
             [samizdat.lisp :as lisp]
             [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]))
@@ -304,7 +305,11 @@
                 edits (mapv (fn [e]
                               {:from (str (or (:from e) (get e "from")))
                                :to (some-> (or (:to e) (get e "to")) str)
-                               :replace (str (or (:replace e) (get e "replace") ""))})
+                               ;; Same as edit_file: the model's own text, so
+                               ;; a drifted escape is undone on the
+                               ;; REPLACEMENT and nowhere else.
+                               :replace (escapes/decode-unicode-escapes
+                                         (str (or (:replace e) (get e "replace") "")))})
                             edits)
                 result (hashline/apply-edits content edits)]
             (if-let [err (:error result)]
@@ -480,7 +485,12 @@
   [{:keys [branch root args]}]
   (let [path (str (:path args))
         old-text (str (:old_text args))
-        new-text (str (:new_text args))
+        ;; THE MODEL'S OWN TEXT, so drifted \uXXXX escapes are undone here —
+        ;; on the replacement alone, never on the assembled file. A model that
+        ;; means an em dash sometimes writes the six characters; decoding the
+        ;; whole file after the splice would rewrite lines this edit never
+        ;; touched (karamazov-b9v.1).
+        new-text (escapes/decode-unicode-escapes (str (:new_text args)))
         replace-all? (boolean (:replace_all args))]
     (cond
       (str/blank? path) (miss branch (msg {:needs-path true :tool "edit_file"}))
@@ -613,7 +623,7 @@
         ;; replace a file it has decided is wrong. vis draws the line in the
         ;; same place: its anchored `patch` refuses, its wholesale
         ;; `Path.write_text` does not.
-        (let [content (str content)
+        (let [content (escapes/decode-unicode-escapes (str content))
               ;; whole? TRUE: the text IS the file, every character of it
               ;; authored in this call, so there is nothing pre-existing that
               ;; closing a truncation could re-parent.

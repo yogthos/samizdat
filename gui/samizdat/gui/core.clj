@@ -26,7 +26,9 @@
   GL pane draws, and everything it does (interventions, abort, resume)
   goes back through a POST. The server neither knows nor cares that a GUI
   exists, which is what keeps `jolt serve` headless."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [glimmer.core :as ui]
             ;; Installs the GTK4 backend into glimmer.backend as a side effect

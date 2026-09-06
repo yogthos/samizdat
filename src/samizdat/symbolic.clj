@@ -696,40 +696,74 @@
 
 ;;; -------------------------------------------------------------- contention
 
-(defn widest-beam
-  "The widest beam `requested` or narrower that one turn deadline can carry,
-  given a provider that serves `concurrency` calls at once and a turn that
-  takes `turn-ms`: {:width w :rounds r}, or {:width 1 :infeasible? true}
-  when even one branch's turn outlasts the deadline, or {:width requested}
-  when either number is unknown — an unknown provider is not a constraint.
+(defn- ceil-div [a b] (quot (+ a b -1) b))
 
-  The model, in core.logic.fd (Tier 2, karamazov-41a.8): a round of w turns
-  takes r = ceil(w / concurrency) turn-times of wall clock, and r * turn-ms
-  must be within deadline-ms. ceil is the pair of constraints
-  (r-1)*c < w <= r*c. One integer variable and four products — nothing a
-  solver is needed for, which is the point: fd is in process, and this is
-  the seam the token dimension joins when there is a run-level budget to
-  join it to. Measured ~40ms a solve, once per run start."
-  [{:keys [requested concurrency turn-ms deadline-ms]}]
-  (if-not (and concurrency turn-ms deadline-ms
-               (pos? concurrency) (pos? turn-ms) (pos? requested))
-    {:width requested}
-    (let [fits (l/run* [q]
-                 (l/fresh [w r rp rc rpc rt]
-                   (fd/in w r rp (fd/interval 0 requested))
-                   (fd/>= w 1)
-                   (fd/>= r 1)
-                   (fd/in rc rpc (fd/interval 0 (* requested concurrency)))
-                   (fd/in rt (fd/interval 0 deadline-ms))
-                   (fd/* r concurrency rc)
-                   (fd/<= w rc)
-                   (fd/+ rp 1 r)
-                   (fd/* rp concurrency rpc)
-                   (fd/< rpc w)
-                   (fd/* r turn-ms rt)
-                   (fd/<= rt deadline-ms)
-                   (l/== q [w r])))]
-      (if (seq fits)
-        (let [[w r] (apply max-key first fits)]
-          {:width w :rounds r})
-        {:width 1 :infeasible? true}))))
+(defn widest-beam
+  "The widest beam `requested` or narrower that fits every limit it is given:
+  {:width w :bound #{...}}, plus :rounds when the deadline is known, or
+  {:width 1 :infeasible? true} when even one branch outruns a limit, or
+  {:width requested} when no limit is known — an unknown provider is not a
+  constraint. :bound names the limits that would refuse one branch more,
+  which is what a log line saying WHY the beam narrowed reads.
+
+  Two limits, each applied only when all of its numbers are known
+  (core.logic.fd, Tier 2 of karamazov-41a):
+
+  - the turn deadline: a provider serving `concurrency` calls at once makes
+    a round of w turns take r = ceil(w / concurrency) turn-times, and
+    r * turn-ms must be within deadline-ms. ceil is the pair of constraints
+    (r-1)*c < w <= r*c.
+  - the token budget (karamazov-aqsr.3): w branches each running to `turns`
+    at `turn-tokens` a turn must fit token-budget. A projection at the cap —
+    the run may finish early — and the beam enforces the budget as it is
+    actually spent; this only keeps the beam from opening wider than the
+    budget could ever carry.
+
+  One integer variable and a handful of products — nothing a solver is
+  needed for, which is the point: fd is in process, and a third limit joins
+  the same way. Measured ~40ms a solve, once per run start."
+  [{:keys [requested concurrency turn-ms deadline-ms
+           turns turn-tokens token-budget]}]
+  (let [deadline? (boolean (and concurrency turn-ms deadline-ms
+                                (pos? concurrency) (pos? turn-ms)))
+        budget? (boolean (and turns turn-tokens token-budget
+                              (pos? turns) (pos? turn-tokens)))
+        per-branch (when budget? (* turns turn-tokens))
+        bound (fn [w]
+                (cond-> #{}
+                  (and deadline?
+                       (> (* (ceil-div (inc w) concurrency) turn-ms) deadline-ms))
+                  (conj :deadline)
+                  (and budget? (> (* (inc w) per-branch) token-budget))
+                  (conj :budget)))]
+    (if-not (and requested (pos? requested) (or deadline? budget?))
+      {:width requested}
+      (let [fits (l/run* [q]
+                   (l/fresh [w r rp rc rpc rt wt]
+                     (fd/in w (fd/interval 1 requested))
+                     (if deadline?
+                       (l/all
+                        (fd/in r rp (fd/interval 0 requested))
+                        (fd/>= r 1)
+                        (fd/in rc rpc (fd/interval 0 (* requested concurrency)))
+                        (fd/in rt (fd/interval 0 deadline-ms))
+                        (fd/* r concurrency rc)
+                        (fd/<= w rc)
+                        (fd/+ rp 1 r)
+                        (fd/* rp concurrency rpc)
+                        (fd/< rpc w)
+                        (fd/* r turn-ms rt)
+                        (fd/<= rt deadline-ms))
+                       (l/== r 0))
+                     (if budget?
+                       (l/all
+                        (fd/in wt (fd/interval 0 (* requested per-branch)))
+                        (fd/* w per-branch wt)
+                        (fd/<= wt token-budget))
+                       l/succeed)
+                     (l/== q [w r])))]
+        (if (seq fits)
+          (let [[w r] (apply max-key first fits)]
+            (cond-> {:width w :bound (if (< w requested) (bound w) #{})}
+              deadline? (assoc :rounds r)))
+          {:width 1 :infeasible? true :bound (bound 0)})))))

@@ -35,6 +35,7 @@
          :no-call        :loop/no-call
          :dispatch       :tool/dispatch
          :journal        :journal/record
+         :settle         :gate/settle
          :arbiter        :gate/arbiter
          :route          :loop/route
          :distil         :memory/distil
@@ -58,7 +59,8 @@
          :provider-error :route
          :no-call        :route
          :dispatch       :journal
-         :journal        :arbiter
+         :journal        :settle
+         :settle         :arbiter
          :arbiter        :route
          ;; The back edge: one turn ends where the next begins.
          ;; Every ending goes through :distil first. A run that gave up has
@@ -119,16 +121,8 @@
               graph runs whether or not it feels like it, and putting it before
               :finish is what stops a future edit routing an ending around it."}
 
-  {:enforced false
-   :rule "settle before fire, inside :gate/arbiter"
-   :protects "A gate cannot be credited with an outcome that preceded it.
-              steer-step settles open predictions BEFORE the arbiter chooses,
-              so this turn's resolution closes against the gate that asked
-              for it and not the one about to."
-   :unenforced-because "It orders two steps INSIDE one cell, not two nodes of
-                        the manifest, so there is no path for a constraint to
-                        check. Splitting :gate/arbiter into a settle node and
-                        a fire node would make it expressible and is the way
-                        to enforce it if it ever comes loose; it is documented
-                        in the cell for now, which is a convention and is
-                        named as one."}]}
+  {:type :must-precede :cell :settle :before :arbiter :enforced true
+   :protects "A gate cannot be credited with an outcome that preceded it:
+              :gate/settle closes this turn's open predictions BEFORE the
+              arbiter chooses, so a resolution closes against the gate that
+              asked for it and not the one about to."}]}

@@ -109,6 +109,7 @@
             [samizdat.cells-test]
             [samizdat.park-test]
             [samizdat.events-test]
+            [samizdat.escapes-test]
             [samizdat.cell-schema-test]
             [samizdat.mutation-test]
             [samizdat.ratelimit-test]
@@ -142,7 +143,9 @@
             [samizdat.oversight-test]
             [samizdat.mechanics-test]
             [samizdat.repair-test]
+            [samizdat.split-test]
             [samizdat.storm-test]
+            [samizdat.stubs-test]
             [samizdat.tournament-test]
             [samizdat.trajectory-test]
             [samizdat.store-test]
@@ -203,7 +206,9 @@
     samizdat.oversight-test
     samizdat.mechanics-test
     samizdat.repair-test
+    samizdat.split-test
     samizdat.storm-test
+    samizdat.stubs-test
     samizdat.tournament-test
     samizdat.trajectory-test
     samizdat.store-test
@@ -253,6 +258,7 @@
     samizdat.cells-test
     samizdat.park-test
     samizdat.events-test
+    samizdat.escapes-test
     samizdat.cell-schema-test
     samizdat.mutation-test
     samizdat.ratelimit-test

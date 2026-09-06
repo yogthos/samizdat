@@ -110,6 +110,26 @@
         (is (str/includes? text "not more steering"))
         (is (str/includes? text "budget")))))) 
 
+(deftest the-reflex-looks-when-the-run-moved-and-not-otherwise
+  ;; The driver drains the bus once per poll and hands the reflex this run's
+  ;; share. Nothing arrived means nothing new to judge — the findings derive
+  ;; from what turns did, and re-deriving them over an unchanged run is the
+  ;; work the bus exists to stop. ANY event of the run counts, not only a
+  ;; traced step: role sub-loops are compiled without the tracer and journal
+  ;; turns instead, and a reflex that waited for steps was blind through every
+  ;; implement stage of a feature run.
+  (with-run
+    (fn [c rid]
+      (struggling!)
+      (let [seen (atom #{})]
+        (is (empty? (oversight/reflex! {:conn c :run-id rid :arrived []} seen))
+            "nothing arrived, so nothing is judged — even on a struggling run")
+        (is (empty? (interventions/pending c rid)))
+        (is (seq (oversight/reflex! {:conn c :run-id rid
+                                     :arrived [{:kind :turn :run-id rid :branch-id "B1" :turn 3}]}
+                                    seen))
+            "a turn record is the run moving, as much as a step is")))))
+
 (deftest a-reflex-that-throws-does-not-take-the-run-with-it
   ;; It is an observer; its failure must cost the run nothing — and now that it
   ;; shares the supervisor's stream, it must not cost the stream its reasoning

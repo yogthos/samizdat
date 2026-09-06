@@ -249,8 +249,14 @@
     (schema-version conn)))
 
 (defn open!
-  "Connect, migrate, return the connection."
+  "Connect, migrate, return the connection.
+
+  Creates the parent directory first: sqlite does not, and the default path
+  now sits one level down (<root>/.samizdat/samizdat.sqlite3), which a fresh
+  checkout does not have until something makes it. \":memory:\" has no parent."
   [path]
+  (when-not (= ":memory:" (str path))
+    (some-> (java.io.File. (str path)) .getAbsoluteFile .getParentFile .mkdirs))
   (doto (connect path) (migrate!)))
 
 (defn table-names

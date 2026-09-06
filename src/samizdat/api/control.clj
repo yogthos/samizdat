@@ -25,7 +25,8 @@
   exactly the one that will never reach another boundary — that is the RAX
   manager pattern, and it is why the stop path does not share machinery with
   the steer path."
-  (:require [clojure.string :as str]
+  (:require [samizdat.lexicon :as lexicon]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.resume :as resume]
@@ -82,6 +83,7 @@
   (let [problem (or (:problem body) (get body "problem"))
         max-turns (or (:max_turns body) (:max-turns body))
         beam-width (or (:beam_width body) (:beam-width body))
+        token-budget (or (:token_budget body) (:token-budget body))
         seed-run (or (:seed_run body) (:seed-run body))
         quarantine (or (:quarantine body) (get body "quarantine"))]
   ;; A {} body used to start a REAL run on a nil problem — a selection model
@@ -102,6 +104,7 @@
                                     :problem problem
                                     :max-turns max-turns
                                     :beam-width beam-width
+                                    :token-budget token-budget
                                     :seed-run seed-run
                                     :quarantine quarantine
                                      :abort abort
@@ -134,7 +137,8 @@
       ;; success and the refusal and neither has to be special-cased.
       {:body {:run_id run-id :status "running"
               :beam_width (or beam-width (get-in config [:run :beam-width]))
-              :max_turns (or max-turns (get-in config [:run :max-turns]))}}
+              :max_turns (or max-turns (get-in config [:run :max-turns]))
+              :token_budget (or token-budget (get-in config [:run :token-budget]))}}
       ;; 503, not 200: the request was well formed and the server could not
       ;; service it. Answering 200 with an error body made a caller that checks
       ;; the status code read this as a started run, which is why gui.api's
@@ -259,7 +263,7 @@
       {:status 400
        :body {:error {:message (str "Unknown intervention kind " (pr-str (:kind body))
                                     "; known: "
-                                    (str/join ", " (sort (keys interventions/kinds))))}
+                                    (str/join ", " (sort interventions/kinds)))}
               :run_id run-id}}
       (let [id (interventions/submit! conn run-id
                                       {:branch-id (:branch_id body)
@@ -273,4 +277,8 @@
           ;; accepted and applied is the thing a UI most easily lies about.
           :note "Queued. It applies at the branch's next turn boundary, not now."}})))))
 
-(defn kinds [] {:kinds interventions/kinds})
+(defn kinds
+  "Every directive kind with what it does — the names from the store, the
+  words from wordlists.edn :directive-kinds."
+  []
+  {:kinds (lexicon/wordlist :directive-kinds)})

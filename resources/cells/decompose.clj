@@ -21,13 +21,23 @@
             [samizdat.agent.skills :as skills]
             [samizdat.agent.state :as state]
             [samizdat.llm.client :as llm]
+            [samizdat.agent.tools.tasks :as task-tool]
             [samizdat.store.journal :as journal]
+            [samizdat.store.tasks :as tasks]
             [samizdat.store.runs :as runs]
             [samizdat.workflow :as wf]))
 
 (defn- branch-id [node]
   (str "D" (str/replace (str (:id node)) #"[^A-Za-z0-9]" "_")
        (cond (:assembly node) "-a" (:hint node) "-h" :else "")))
+
+(defn- title-of
+  "A task title from a unit's problem text: one line, bounded. Same shape the
+  board and the team use — a title is an index entry, and the contract is what
+  a worker actually reads."
+  [s]
+  (let [t (str/trim (str/replace (str s) #"\s+" " "))]
+    (if (> (count t) 100) (str (subs t 0 100) "…") t)))
 
 (defn- attempt-suffix
   "The prompt an implementor gets for one unit: its role, the REPL/TDD workflow,
@@ -41,11 +51,9 @@
                        (str "## A prior attempt got stuck. Try this different approach:\n"
                             (:hint node)))
                      (when (:assembly node)
-                       (str "## This is an ASSEMBLY step\n"
-                            "The sub-units below are already built and tested. Your job is the "
-                            "small piece that composes them to satisfy this unit — do not rebuild "
-                            "them.\n\nSub-units delivered:\n"
-                            (str/join "\n" (map #(str "- " %) (:child-answers node)))))])))
+                       (wf/prompt-text "assembly"))
+                     (when (:assembly node)
+                       (str/join "\n" (map #(str "- " %) (:child-answers node))))])))
 
 (defn- attempt-node
   "Build the unit directly: run an implementor worker on its own branch, then the
@@ -55,17 +63,40 @@
   [{:keys [conn run-id root] :as ctx} worker node]
   (let [bid (branch-id node)
         base (gitdiff/baseline root)
-        prob (:problem node)]
+        prob (:problem node)
+        ;; EVERY UNIT HOLDS A TASK, and that is what makes the rest work. The
+        ;; `split` tool hangs the pieces off the task the agent holds; the ship
+        ;; gate reads the contract's tests and stubs off it; the attempt count
+        ;; lives on it. A unit that held nothing was also told "No task
+        ;; claimed" on every turn — the instruction that ate the turns in run
+        ;; 938b4eb8, pointing at a board the decompose path never wrote to.
+        ;; A delegated piece arrives with its row; the root mints one.
+        task-id (or (:task-id node)
+                    (tasks/create! conn {:title (title-of prob) :body (str prob)
+                                         :contract (str (:contract node))
+                                         ;; An architect-made unit hangs off
+                                         ;; the row its parent holds, so the
+                                         ;; fallback path records the same
+                                         ;; nesting the split path does.
+                                         :parent-id (:parent-task node)
+                                         :run-id run-id}))
+        held (tasks/claim! conn task-id run-id bid)
+        attempts (tasks/attempted! conn task-id)]
     (try
       ;; The unit's contract is the branch's OWN problem, durably — what a
       ;; resume rebuilds this branch's opening messages from (blt.23).
       (runs/open-branch! conn run-id {:branch-id bid :problem prob})
-      (let [b (assoc (state/new-branch
-                      {:id bid :problem prob
-                       ;; Scoped and enforced, as the board's owners are.
-                       :messages (turn/initial-messages prob (attempt-suffix node)
-                                                        :implementor)})
-                     :role :implementor)
+      (let [b (cond-> (assoc (state/new-branch
+                              {:id bid :problem prob
+                               ;; Scoped and enforced, as the board's owners are.
+                               :messages (turn/initial-messages prob (attempt-suffix node)
+                                                                :implementor)})
+                             :role :implementor)
+                ;; Opens HOLDING its piece, so the contract and the tests it
+                ;; must satisfy are pinned in its context rather than restated
+                ;; once at turn zero and never again.
+                held (assoc :task {:id (:id held) :title (:title held)})
+                held (task-tool/task-statement held))
             ;; The attempt's own baseline reaches the worker's ship gate, so the
             ;; done tool's test rung diffs against exactly what THIS attempt
             ;; changed (a green suite with no diff of its own is not a ship).
@@ -74,14 +105,45 @@
                                   {:branch b :turn 1})
             done? (= :done (:verdict out))
             changed (gitdiff/changed-files root base)
-            passed? (and done? (or (nil? changed) (seq changed)))]
-        {:passed? passed?
-         :answer (get-in out [:branch :final-answer])
-         :failure (when-not passed?
-                    (if done? "the worker shipped but changed no files"
-                        "the worker did not finish"))})
+            ;; DID IT DELEGATE? The agent splits by writing stubs and calling
+            ;; the split tool, which verified them against the tree and turned
+            ;; them into child rows under this unit's task. Walking them is how
+            ;; the recursion finds the pieces — the tool reports nothing out of
+            ;; band, so a split that survived a crash is still found here.
+            ;;
+            ;; ONLY ROWS THE SPLIT TOOL WROTE COUNT, and `stubs` is the
+            ;; evidence: it is the one column split sets and nothing else does
+            ;; (board and team write contract and tests, never this). Reading
+            ;; every child as a delegation let an agent bypass the whole
+            ;; verification with `task create {parentId}` — a child with no
+            ;; stubs behind it, which is exactly the unchecked hand-off the
+            ;; split tool exists to refuse. Found by run 3b3ce405, where the
+            ;; agent did create a loose task and only the missing parent kept
+            ;; it from being read as a split.
+            kids (filterv #(seq (str/trim (str (:stubs %))))
+                          (tasks/children-of conn task-id))]
+        (if (seq kids)
+          {:task-id task-id
+           :split (mapv (fn [k]
+                          {:id (str (:id node) "/" (:title k))
+                           :name (:title k)
+                           :problem (:body k)
+                           :contract (:contract k)
+                           :task-id (:id k)
+                           :parent (:id node)})
+                        kids)
+           :attempts attempts}
+          (let [passed? (and done? (or (nil? changed) (seq changed)))]
+            {:passed? passed?
+             :task-id task-id
+             :answer (get-in out [:branch :final-answer])
+             :attempts attempts
+             :failure (when-not passed?
+                        (if done? "the worker shipped but changed no files"
+                            "the worker did not finish"))})))
       (catch Throwable e
-        {:passed? false :failure (str "attempt crashed: " (ex-message e))}))))
+        {:passed? false :attempts attempts :task-id task-id
+         :failure (str "attempt crashed: " (ex-message e))}))))
 
 (defn- recover-node
   "The architect call on a stuck unit: decompose vs fresh-approach, from the
@@ -107,6 +169,23 @@
                  (apply str (for [c (:children r)] (str "\n" (line c (inc ind)))))))]
     (str "Decompose-on-stuck result:\n" (line result 0))))
 
+(defn- unit-results
+  "The decompose tree flattened into the FAN-OUT's per-owner vocabulary, one
+  entry per unit, so a decompose round describes itself the way a board or
+  team round does (karamazov-u5uy).
+
+  EVERY unit, not just the root. The root is one attempt among several — it
+  is `:landed` only once its children landed and the assembly passed — so
+  counting it alone would report a round that landed three of four pieces as
+  having shipped nothing. The tree is the same one `summarize` walks."
+  [result]
+  (letfn [(walk [r]
+            (cons {:status (if (= :landed (:status r)) :done :abandoned)
+                   :subtask (get-in r [:node :id])
+                   :answer (:answer r)}
+                  (mapcat walk (:children r))))]
+    (vec (walk result))))
+
 (cell/defcell :decompose/run
   {:doc "Solve the branch's problem by decompose-on-stuck: attempt it directly;
         when a unit is stuck, split it (architect) and solve the sub-units first,
@@ -130,6 +209,10 @@
       (journal/note! conn run-id :decompose
                      {:data {:status (:status result)
                              :children (count (:children result))}})
+      (journal/note! conn run-id :implement-round
+                     {:data {:strategy "decompose"
+                             :revision (:feature/revisions data 0)
+                             :results (unit-results result)}})
       (assoc data
              :verdict (if landed? :done :abandoned)
              :branch (assoc branch

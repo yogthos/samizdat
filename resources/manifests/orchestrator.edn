@@ -42,11 +42,11 @@
                   :revise :retry}
          :finish :end}
 
- :dispatches {:start  [[:done      (fn [d] (= :done (:verdict d)))]
-                       [:abandoned (fn [d] (= :abandoned (:verdict d)))]
-                       [:exhausted (fn [d] (= :exhausted (:verdict d)))]]
-              :retry  [[:done      (fn [d] (= :done (:verdict d)))]
-                       [:abandoned (fn [d] (= :abandoned (:verdict d)))]
-                       [:exhausted (fn [d] (= :exhausted (:verdict d)))]]
-              :critic [[:ship   (fn [d] (= :ship (:critic/decision d)))]
-                       [:revise (fn [d] (= :revise (:critic/decision d)))]]}}
+ :dispatches {:start  [[:done      {:verdict :done}]
+                       [:abandoned {:verdict :abandoned}]
+                       [:exhausted {:verdict :exhausted}]]
+              :retry  [[:done      {:verdict :done}]
+                       [:abandoned {:verdict :abandoned}]
+                       [:exhausted {:verdict :exhausted}]]
+              :critic [[:ship   {:critic/decision :ship}]
+                       [:revise {:critic/decision :revise}]]}}

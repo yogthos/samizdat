@@ -9,6 +9,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
             [samizdat.workflow :as workflow]))
 
 (defn- done-call [answer]
@@ -102,3 +103,28 @@
         (is (contains? b "DT_part_a") "then it was split — sub-unit a")
         (is (contains? b "DT_part_b") "sub-unit b")
         (is (contains? b "DT-a") "and assembled")))))
+
+(deftest decompose-reports-its-round-in-the-shared-outcome-vocabulary
+  ;; karamazov-u5uy. The three implement strategies must report a round's
+  ;; outcome in ONE vocabulary or the supervisor cannot read the round it is
+  ;; supervising. decompose used to report only :verdict and :branch, so on
+  ;; that strategy the digest counted nothing; now every unit of the tree is
+  ;; an entry in the :implement-round note, keyed the way the fan-out keys
+  ;; its workers.
+  (with-redefs [llm/chat roles
+                gitdiff/baseline (constantly "HEAD")
+                gitdiff/changed-files (constantly ["src/piece.clj"])]
+    (let [conn (db/open! ":memory:")
+          r (workflow/run! {:conn conn :config {:run {:loop "decompose"}}
+                            :llm-adapter :a :llm-config {:max-tokens 16384}
+                            :problem "the big feature" :max-turns 6})
+          note (journal/last-note conn (:run-id r) :implement-round)
+          results (:results note)]
+      (is (= "decompose" (:strategy note)))
+      (testing "every unit of the tree is an owner, not just the root"
+        (is (<= 3 (count results)) "the root and its two sub-units at least")
+        (is (contains? (set (map :subtask results)) "T/part-a"))
+        (is (contains? (set (map :subtask results)) "T/part-b")))
+      (testing "statuses are the fan-out's, so the digest counts them unchanged"
+        (is (every? #{"done" "abandoned"} (map :status results)))
+        (is (some #(= "done" (:status %)) results))))))

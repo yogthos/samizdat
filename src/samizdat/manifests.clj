@@ -255,6 +255,8 @@
   project should do with it."
   #{;; RFC-002's documented set
     :conn :run-id :config :llm-adapter :llm-config :root :max-turns :abort
+    ;; The run's token budget, nil when unbounded (karamazov-aqsr.3)
+    :token-budget
     ;; What the beam driver adds
     :problem :beam? :beam-width :turn-workflow :iterating-loop? :git-baseline
     :repl-session :live-branches :in-flight})
@@ -524,6 +526,23 @@
                           (:edges definition))]
     (boolean (and (contains? cells :llm/infer) loops-back?))))
 
+(defn turn-sliceable?
+  "Whether this manifest may be cut into per-turn slices at all.
+
+  A PROPERTY OF THE MANIFEST, declared, rather than a fact about which call
+  site happens to load it. `beam.edn` routes :tick back to :start and is
+  non-iterating by the same test that refuses that shape — it schedules the
+  branches that make model calls rather than making one — and was safe only
+  because nothing ever called `turn-manifest` on the scheduler. That is an
+  invariant held by absence, and `repl.edn` is what it cost: the same shape,
+  no exemption, catalogued, and refused the moment a run named it
+  (karamazov-4sx).
+
+  Default TRUE, so a manifest says nothing unless it is the exception, and
+  declaring it is a decision a reader can find in the file it is about."
+  [definition]
+  (not (false? (:turn-sliceable? definition))))
+
 (defn start-back-edge
   "The `[node label]` of an edge routing back to the start node, or nil."
   [definition]
@@ -583,6 +602,16 @@
   check-entry-back-edge!. This is the operation that turns that edge into
   silent data loss, so it is the operation that must not perform it."
   [definition]
+  (when-not (turn-sliceable? definition)
+    (throw (ex-info
+            (str "this manifest declares :turn-sliceable? false and cannot be"
+                 " turn-sliced, so it cannot be a run's loop. Slicing cuts"
+                 " every edge that returns to " start-node " into :end, which"
+                 " for these is not one turn but a different workflow. Point"
+                 " the run at a manifest that slices, or drop the declaration"
+                 " if the graph has since been given a re-entry node of its"
+                 " own.")
+            {:turn-sliceable? false})))
   (check-entry-back-edge! definition)
   (let [finish (finish-nodes definition)
         terminal (conj finish start-node)
@@ -638,5 +667,11 @@
                                (some-> (io/resource (manifest-resource nm)) slurp))]
                    (when edn
                      (let [d (try (read-definition edn) (catch Throwable _ nil))]
-                       {:name nm :description (str (:description d))})))))
+                       {:name nm :description (str (:description d))
+                        ;; Carried, not filtered here: the catalogue is the
+                        ;; full inventory (the mutation tools and the
+                        ;; selectability test read it), and it is the SWITCH
+                        ;; MENU that must not offer a workflow no run can be
+                        ;; pointed at. render-catalog does that filtering.
+                        :turn-sliceable? (turn-sliceable? d)})))))
          vec)))

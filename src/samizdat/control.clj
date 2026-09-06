@@ -26,7 +26,7 @@
   first\", \"stop and ship what you have\") you steer it without stopping it.
 
       (require '[samizdat.control :as ctl] '[samizdat.store.db :as db])
-      (def conn (db/open! \"samizdat.sqlite3\"))
+      (def conn (db/open! \".samizdat/samizdat.sqlite3\"))
       (ctl/runs conn)                         ; which runs are live
       (ctl/steer! conn run-id \"wire truncate-middle into the shell tool\")
       (ctl/watch conn run-id)                 ; the last few turns

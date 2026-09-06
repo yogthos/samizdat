@@ -149,22 +149,40 @@
                                          :response (:response call)})
     data))
 
-(cell/defcell :gate/arbiter
-  {:doc "Predictions settle, then the single boundary: at most one steer,
-        chosen in priority, plus the context block of shared artifacts and
-        similar failures."
+(cell/defcell :gate/settle
+  {:doc "Close out the predictions this turn resolved — before the arbiter
+        chooses, so a resolution closes against the gate that asked for it
+        and not the one about to. Deterministic; no model in the path."
    :effects [:db]
    :requires []
    ;; :before is REQUIRED and is the point: settling a prediction compares the
    ;; branch as it entered the turn against the branch now, and only
-   ;; :loop/assemble writes it. A manifest that routes around assemble has an
-   ;; arbiter steering on nil, and this is what refuses it.
+   ;; :loop/assemble writes it. A manifest that routes around assemble settles
+   ;; against nil, and this is what refuses it.
    :input  [:map [:before :map] [:branch :map] [:turn :int]
+            [:parsed {:optional true} :any]]
+   :output [:map [:branch :map] [:settled :map]]}
+  (fn [ctx {:keys [before branch turn parsed] :as data}]
+    (let [{:keys [branch closed]} (turn/settle-step ctx before branch turn
+                                                    {:parsed parsed})]
+      (assoc data :branch branch :settled {:turn turn :closed closed}))))
+
+(cell/defcell :gate/arbiter
+  {:doc "The single boundary: at most one steer, chosen in priority, plus the
+        context block of shared artifacts and similar failures."
+   :effects [:db]
+   :requires []
+   ;; :settled is REQUIRED and is the invariant: only :gate/settle writes it,
+   ;; so a manifest that reaches the arbiter without closing this turn's
+   ;; predictions first — crediting a gate with an outcome that preceded it —
+   ;; is refused by the schema chain, naming the path. It used to be one cell
+   ;; doing both in order, which no path-based check could see.
+   :input  [:map [:settled :map] [:branch :map] [:turn :int]
             [:parsed {:optional true} :any]
             [:result {:optional true} :any]]
    :output [:map [:branch :map]]}
-  (fn [ctx {:keys [before branch turn parsed result] :as data}]
-    (assoc data :branch (turn/steer-step ctx before branch turn
+  (fn [ctx {:keys [branch turn parsed result] :as data}]
+    (assoc data :branch (turn/steer-step ctx branch turn
                                          {:parsed parsed :result result}))))
 
 (cell/defcell :loop/route
@@ -194,7 +212,7 @@
       (cond-> (assoc data :verdict verdict)
         (= verdict :continue)
         (-> (update :turn inc)
-            (dissoc :before :call :parsed :signals :said :result :tool)
+            (dissoc :before :call :parsed :signals :said :result :tool :settled)
             ;; Each mycelium trace entry snapshots the whole data map — branch
             ;; message history included — so an uncapped trace grows
             ;; quadratically over a run. The journal is the durable record; the

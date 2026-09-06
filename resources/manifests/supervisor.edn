@@ -2,7 +2,7 @@
 ;; the per-turn worker graph (assemble -> infer -> parse -> dispatch -> journal
 ;; -> arbiter -> route), because the supervisor works the same way every role
 ;; does: a turn at a time until it decides. What makes it the SUPERVISOR is its
-;; role prompt (prompts/roles/supervisor.md, injected by :feature/supervise) and
+;; role prompt (prompts/roles/supervisor.md, injected by :oversight/reason) and
 ;; that it is handed a run-health digest to introspect on rather than a part to
 ;; build. It has the FULL tool surface on purpose — it must be able to read the
 ;; journal and transcripts to diagnose, and edit manifests / cells / prompts
@@ -34,6 +34,7 @@
          :no-call        :loop/no-call
          :dispatch       :tool/dispatch
          :journal        :journal/record
+         :settle         :gate/settle
          :arbiter        :gate/arbiter
          :route          :loop/route}
 
@@ -55,26 +56,29 @@
          :provider-error :route
          :no-call        :route
          :dispatch       :journal
-         :journal        :arbiter
+         :journal        :settle
+         :settle         :arbiter
          :arbiter        :route
          :route          {:continue  :start
                           :done      :end
                           :abandoned :end
                           :exhausted :end}}
 
- :dispatches {:measure [[:cap  (fn [d] (= :cap (:compaction/route d)))]
-                        [:none (fn [d] true)]]
-              :cap     [[:prune (fn [d] (= :prune (:compaction/route d)))]
-                        [:none  (fn [d] true)]]
-              :parse [[:provider-error (fn [d] (not (:ok (:call d))))]
-                      [:no-call (fn [d] (let [p (:parsed d)]
-                                          (or (nil? p)
-                                              (= "__parse_error__" (:name p)))))]
-                      [:tool (fn [d] true)]]
-              :route [[:continue  (fn [d] (= :continue (:verdict d)))]
-                      [:done      (fn [d] (= :done (:verdict d)))]
-                      [:abandoned (fn [d] (= :abandoned (:verdict d)))]
-                      [:exhausted (fn [d] (= :exhausted (:verdict d)))]]}
+ :dispatches {:measure [[:cap  {:compaction/route :cap}]
+                        [:none _]]
+              :cap     [[:prune {:compaction/route :prune}]
+                        [:none  _]]
+              ;; ORDER MATTERS here, as in loop.edn: a provider failure passes
+              ;; the data through with :parsed ABSENT, and a map pattern needs
+              ;; its key present, so :provider-error is tried first.
+              :parse [[:provider-error {:call {:ok false}}]
+                      [:no-call {:parsed nil}]
+                      [:no-call {:parsed {:name "__parse_error__"}}]
+                      [:tool _]]
+              :route [[:continue  {:verdict :continue}]
+                      [:done      {:verdict :done}]
+                      [:abandoned {:verdict :abandoned}]
+                      [:exhausted {:verdict :exhausted}]]}
 
  ;; EVERY ordering rule this turn claims, and which of them the compiler
  ;; catches. `:constraints` is DERIVED from the `:enforced true` entries
@@ -91,6 +95,12 @@
   {:type :must-precede :cell :dispatch :before :arbiter :enforced true
    :protects "The arbiter reads what the turn DID; a gate deciding before the
               tool ran would steer on the previous turn's state."}
+
+  {:type :must-precede :cell :settle :before :arbiter :enforced true
+   :protects "A gate cannot be credited with an outcome that preceded it:
+              :gate/settle closes this turn's open predictions BEFORE the
+              arbiter chooses, so a resolution closes against the gate that
+              asked for it and not the one about to."}
 
   {:type :must-precede :cell :parse :before :dispatch :enforced true
    :protects "Nothing is dispatched that was not parsed out of a reply."}]}

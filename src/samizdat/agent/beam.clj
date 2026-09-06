@@ -60,8 +60,7 @@
   The width is not treated as justified. The original never measured five
   branches against one branch at five times the turn budget, and
   `samizdat.bench.beam` is the comparison."
-  (:require [clojure.data.json :as json]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
             [mycelium.core :as myc]
             [samizdat.agent.critic :as critic]
@@ -119,8 +118,13 @@
 
   `gates.edn :fork-inherit` owns the decision, so switching a run back to
   fresh-tape forks — or forking from an older turn — is a data edit and not a
-  rebuild. See `state/fork-branch` for what is and is not inherited."
-  [{:keys [problem]} parent id thesis turn]
+  rebuild. See `state/fork-branch` for what is and is not inherited.
+
+  `:prompt-suffix` is the run manifest's own `:prompt`, and it applies to a
+  FRESH tape only: a child that inherits its parent's conversation inherits
+  the system message the suffix is already part of, and appending it again
+  would put the workflow's instructions in the transcript twice."
+  [{:keys [problem prompt-suffix]} parent id thesis turn]
   (let [{:keys [inherit? depth]} (gates/threshold :fork-inherit)]
     (if (and parent inherit?)
       (state/fork-branch parent {:id id :depth depth :turn turn
@@ -128,7 +132,7 @@
       (cond-> (state/new-branch
                {:id id :parent-id (:id parent) :problem problem
                 :created-at-turn turn
-                :messages (branch-loop/initial-messages problem)})
+                :messages (branch-loop/initial-messages problem prompt-suffix)})
         thesis (assoc :thesis thesis)))))
 
 (defn- open-branch!
@@ -261,9 +265,12 @@
       (gates/threshold :turn-deadline-ms)))
 
 (defn contended-width
-  "The beam width the provider can actually serve under the turn deadline,
-  from gates.edn :beam-contention — {:provider-concurrency :expected-turn-ms}
-  — or `width` unchanged when the policy names no provider.
+  "The beam width the run can actually carry: what the provider serves under
+  the turn deadline, and what the token budget could pay for if every branch
+  ran to the cap. From gates.edn :beam-contention — {:provider-concurrency
+  :expected-turn-ms :expected-turn-tokens} — against the run's limits
+  {:deadline-ms :max-turns :token-budget}; a limit any of whose numbers is
+  unknown does not apply. Returns widest-beam's answer, {:width :bound ...}.
 
   A local endpoint that answers one call at a time turns five concurrent
   branches into a queue, and the turn deadline then abandons whichever are
@@ -271,11 +278,23 @@
   every round. Narrowed HERE, before the first branch opens, so the run row
   records the width that will actually run. A turn that cannot fit at all
   runs at width one rather than not at all; the log says so."
-  [width {:keys [provider-concurrency expected-turn-ms]} deadline-ms]
-  (:width (sym/widest-beam {:requested width
-                            :concurrency provider-concurrency
-                            :turn-ms expected-turn-ms
-                            :deadline-ms deadline-ms})))
+  [width {:keys [provider-concurrency expected-turn-ms expected-turn-tokens]}
+   {:keys [deadline-ms max-turns token-budget]}]
+  (sym/widest-beam {:requested width
+                    :concurrency provider-concurrency
+                    :turn-ms expected-turn-ms
+                    :deadline-ms deadline-ms
+                    :turns max-turns
+                    :turn-tokens expected-turn-tokens
+                    :token-budget token-budget}))
+
+(defn spent-tokens
+  "What the run has spent against its token budget, or nil when it has none
+  — a run without a budget pays for no query. Summed from the journal, so
+  the number is what was actually billed rather than a projection."
+  [{:keys [conn run-id token-budget]}]
+  (when token-budget
+    (:total-tokens (journal/run-usage conn run-id))))
 
 (defn round-max-turns
   "The turn cap this round compares against: the run's, plus whatever `extend`
@@ -338,14 +357,6 @@
                           (prompt/render "directive-rejected" reason-ctx)
                           turn))
 
-(defn- directive-payload
-  "A directive's JSON payload as a map, or {} — a payload that will not parse
-  is a malformed request, not a reason to take the round down."
-  [d]
-  (or (try (json/read-str (str (:payload d)) :key-fn keyword)
-           (catch Throwable _ nil))
-      {}))
-
 (defn drain-directives!
   "Apply pending human directives at the boundary, and record what happened to
   each.
@@ -369,7 +380,13 @@
   to go, and rejecting them explicitly beat accepting them silently but left
   the control API promising something the scheduler would not do. `:max-turns`
   and `:paused?` are nil when no directive touched them, so the caller keeps
-  whatever it had."
+  whatever it had.
+
+  The WORKFLOW kinds (`interventions/workflow-kinds`) are left pending: they
+  decide a workflow's next round — the feature loop's implement strategy, its
+  owners' budget, whether it stops — and the workflow's own directives stage
+  is the boundary that applies them. Symmetric with the per-turn drain
+  leaving the scheduler's kinds for this one (karamazov-blt.10)."
   [{:keys [conn run-id]} branches directives turn]
   (reduce
    (fn [{:keys [branches] :as acc} d]
@@ -408,7 +425,7 @@
          ;; boundary like every other directive — a branch mid-turn is holding
          ;; a ledger it read before the change, and rewriting under it would
          ;; make the two disagree for exactly one turn.
-         (let [payload (directive-payload d)
+         (let [payload (interventions/payload d)
                aid (or (:artifact_id payload) (:artifact-id payload))]
            (if (and aid (artifacts/retract! conn run-id aid
                                             (or (:reason payload) "retracted by a human")))
@@ -423,10 +440,7 @@
              ;; at priority zero — above every machine gate. :payload-text is
              ;; the parsed human words; the raw column is a JSON blob and the
              ;; gate rendered it verbatim (blt.38).
-             (let [d' (assoc d :payload-text
-                             (let [payload (directive-payload d)]
-                               (or (:text payload)
-                                   (when (string? payload) payload))))]
+             (let [d' (assoc d :payload-text (interventions/text-of d))]
                (assoc acc :branches
                       (mapv #(if (matches? %) (assoc % :pending-directive d') %) bs))))
 
@@ -437,8 +451,8 @@
          ;; So a human's fork is the same object a branch's own
          ;; `branch_theses` call produces, and it inherits the cap, the
          ;; parent's conversation and the `:forked-at` stamp for free.
-         (let [payload (directive-payload d)
-               thesis (or (:thesis payload) (:goal payload))
+         (let [payload (interventions/payload d)
+               thesis (or (:thesis payload) (:goal payload) (interventions/text-of d))
                parents (filter #(and (matches? %) (state/active? %)) bs)]
            (if-not (and (seq (str thesis)) (seq parents))
              (do (rejected conn run-id d turn
@@ -467,14 +481,16 @@
          ;; scheduler loop compares against, a resume re-reads its budget from
          ;; the control API anyway, and a row that disagreed with the live
          ;; value would be the worse of the two to have.
-         (let [payload (directive-payload d)
-               by (or (:turns payload) (:by payload) (:max_turns payload))
-               n (when (number? by) (long by))]
-           (if-not (and n (pos? n))
+         (let [n (interventions/turns-asked d)]
+           (if-not n
              (do (rejected conn run-id d turn {:extend-no-turns true})
                  acc)
              (do (interventions/resolve! conn run-id (:id d) :applied nil turn)
                  (update acc :max-turns (fnil + 0) n))))
+
+         ("switch" "budget" "stop")
+         ;; The workflow's, not the scheduler's. Left for its own stage.
+         acc
 
          ("pause" "resume")
          ;; Run-level and last-writer-wins: two pauses are one pause, and a
@@ -817,8 +833,8 @@
         ;;
         ;; Started here for the same reason the watcher is: a supervisor wired
         ;; as a node in the workflow it supervises only runs where that
-        ;; workflow puts it, and `:feature/supervise` sits after the implement
-        ;; stage RETURNS. Runs fps5 and fps6 both ended having never reached
+        ;; workflow puts it, and `:feature/supervise` used to sit after the implement
+        ;; stage returned. Runs fps5 and fps6 both ended having never reached
         ;; it, because the implementer stalled and never returned — the
         ;; watchdog was downstream of the thing it watches for.
         ctx (assoc ctx :stop-oversight (oversight-stream ctx))]
@@ -860,6 +876,26 @@
         ;; neither would otherwise be reclaimed for the life of the process.
         (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
         (oversight/forget-run! run-id)
+        (session/forget-run! run-id)
+        ;; NOTHING IS LEFT PENDING ON A RUN NOBODY WILL DRAIN AGAIN. The
+        ;; drains leave workflow kinds (switch/budget/stop) for a workflow's
+        ;; own directives stage and only feature.edn has one, so on any other
+        ;; loop such a directive was neither applied nor rejected and sat
+        ;; pending after the run ended (karamazov-agbw). Guarded on the
+        ;; ending: an exhausted or failed run is over and still resumable, and
+        ;; its pending `extend` is what the resume will apply.
+        ;;
+        ;; Best effort, like everything else in this teardown: a failure to
+        ;; tidy the queue must not turn a finished run into a failed one.
+        (try
+          (let [status (str (:status (runs/get-run conn run-id)))]
+            (when (contains? runs/unresumable-statuses status)
+              (interventions/expire-pending!
+               conn run-id
+               (str "the run ended (" status ") before a boundary applied it"))))
+          (catch Throwable e
+            (log/warn "expiring the run's pending directives failed:" (ex-message e))))
+
         ;; SHORT-TERM BECOMES LONG-TERM. The session tally dies with the
         ;; process; a pattern that held across the run is a candidate for
         ;; something the next run should start out knowing, and this is the
@@ -915,8 +951,11 @@
   land a `done` wins and the rest are abandoned, since paying for four more
   provider calls after the answer exists is pure waste."
   [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
-           abort on-start seed-run quarantine] :as opts}]
+           token-budget abort on-start seed-run quarantine] :as opts}]
   (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
+        ;; Tokens the whole run may spend; nil is unbounded. Enforced by
+        ;; :beam/round-open against the journal, sized against below.
+        token-budget (or token-budget (get-in config [:run :token-budget]))
         ;; Which loop drives this run, compiled to its per-turn slice. Before
         ;; on-start, and so before POST /v1/runs returns, because the run row
         ;; records the width this decides and a compile failure must refuse
@@ -939,9 +978,15 @@
         ;; exists — the row records a width this compile decides — and
         ;; :on-trace is only accepted here.
         run-id* (atom nil)
-        {loop-version :version turn-wf :compiled iterating? :iterating?}
+        {loop-version :version turn-wf :compiled iterating? :iterating?
+         loop-def :definition}
         (workflow/compile-turn-loop conn loop-nm
                                     {:on-trace (events/tracer run-id*)})
+        ;; The manifest's OWN instructions, appended to the base system prompt
+        ;; of every branch this run opens. Read from the loaded definition
+        ;; rather than the file, so an agent's edit to the manifest is what
+        ;; frames the run.
+        prompt-suffix (workflow/workflow-prompt loop-def)
         ;; A non-iterating manifest (team, feature, decompose) is a whole-run
         ;; workflow: one "turn" is the branch's entire job, and it fans out
         ;; internally. Running five of those concurrently would multiply the
@@ -949,10 +994,15 @@
         ;; width 1 there regardless of what was asked for.
         requested-width (or beam-width (get-in config [:run :beam-width]) 5)
         forced-width (if iterating? requested-width 1)
-        ;; ...and no wider than the provider can serve under the deadline
-        ;; (gates.edn :beam-contention; Tier 2 of karamazov-41a).
+        ;; ...and no wider than the provider can serve under the deadline,
+        ;; or the token budget could pay for at the cap (gates.edn
+        ;; :beam-contention; Tier 2 of karamazov-41a).
         contention (lexicon/policy :beam-contention)
-        width (contended-width forced-width contention (turn-deadline-ms))
+        {width :width bound :bound}
+        (contended-width forced-width contention
+                         {:deadline-ms (turn-deadline-ms)
+                          :max-turns max-turns
+                          :token-budget token-budget})
         ;; Seeding forces sharing on for this run regardless of the config
         ;; flag: seeds enter through the shared log's context blocks, and
         ;; seeds nobody reads would be dead rows.
@@ -963,7 +1013,9 @@
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width width
-                                      :prompt-digest (branch-loop/prompt-digest)})
+                                      :token-budget token-budget
+                                      :prompt-digest (branch-loop/prompt-digest
+                                                      prompt-suffix)})
         ;; The tracer's steps can now say which run they belong to; the bus is
         ;; process-wide and the watcher filters on it.
         _ (reset! run-id* run-id)
@@ -991,7 +1043,10 @@
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
              :max-turns max-turns :beam? (> width 1) :beam-width width
+             :token-budget token-budget
              :root root
+             ;; What the manifest says this run is FOR — see seed-branch.
+             :prompt-suffix prompt-suffix
              ;; The compiled per-turn manifest advance-branch drives, and
              ;; whether it is a per-turn loop at all (which decides the turn
              ;; deadline; see advance-all).
@@ -1041,10 +1096,13 @@
                 "(asked for" (str requested-width ")")))
     (when (< width forced-width)
       (log/info "beam width narrowed from" forced-width "to" width
+                "by" (str/join " and " (map name (sort bound)))
                 "- the provider serves" (:provider-concurrency contention)
-                "call(s) at a time and a turn takes ~" (:expected-turn-ms contention)
-                "ms against a" (turn-deadline-ms) "ms turn deadline"
-                "(gates.edn :beam-contention)"))
+                "call(s) at a time, a turn takes ~" (:expected-turn-ms contention)
+                "ms and ~" (:expected-turn-tokens contention) "tokens, against a"
+                (turn-deadline-ms) "ms turn deadline and a token budget of"
+                token-budget "over" max-turns "turns"
+                "(gates.edn :beam-contention, config :run :token-budget)"))
     (let [initial (mapv #(open-branch! ctx (str "B" (inc %)) nil nil 0) (range width))
           result (try (run-rounds ctx initial 1)
                       (catch Throwable e

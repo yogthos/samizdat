@@ -72,7 +72,8 @@
 (defn create!
   "Insert a task and return its id. Unset fields take the dirge defaults:
   type task, status open, priority normal, no parent, backlog (no run)."
-  [conn {:keys [title body type status priority parent-id run-id contract tests]}]
+  [conn {:keys [title body type status priority parent-id run-id contract tests
+                stub-file stubs]}]
   (when (str/blank? (str title))
     (throw (ex-info "a task needs a title" {})))
   (when (and parent-id (nil? (get-task conn parent-id)))
@@ -88,11 +89,19 @@
                   (db/execute! conn
                                ["INSERT INTO tasks (id, title, body, type, status, priority,
                                                     parent_id, run_id, contract, tests,
+                                                    stub_file, stubs,
                                                     created_at, updated_at, closed_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                                 id (str title) (or body "") (or type "task")
                                 status priority parent-id run-id
                                 (or contract "") (or tests "")
+                                ;; The checkable half of the delegation spec:
+                                ;; which names, in which file. `contract` says
+                                ;; what to build and is for the model; these
+                                ;; two are how the ship gate asks whether it
+                                ;; was built (v21).
+                                (or stub-file "")
+                                (str/join "," (remove str/blank? (map str (or stubs []))))
                                 now now (when (terminal? status) now)]))
                 id
                 (catch Throwable e
@@ -206,6 +215,20 @@
      (when-not (terminal? status)
        (throw (ex-info (str "close! wants a terminal status, got " status) {})))
      (update! conn id {:status status}))))
+
+(defn attempted!
+  "Record one more attempt on `id`, and return the new count.
+
+  The number the recursion escalates on. It was kept in memory, so a resumed
+  run re-litigated every unit from zero and 'is this making progress' could
+  only be asked of a live branch, never of the task (v21). Incremented in the
+  UPDATE rather than read-then-written, for the reason `claim!` guards in the
+  row: two branches attempting one task would both read the same count."
+  [conn id]
+  (db/with-writer
+    (db/execute! conn ["UPDATE tasks SET attempts = attempts + 1, updated_at = ?
+                        WHERE id = ?" (db/now) id]))
+  (:attempts (first (db/fetch conn ["SELECT attempts FROM tasks WHERE id = ?" id]))))
 
 (defn children-of [conn id]
   (db/fetch conn ["SELECT * FROM tasks WHERE parent_id = ? ORDER BY created_at, id" id]))

@@ -223,6 +223,44 @@
                    FROM userspace WHERE kind = ? GROUP BY name ORDER BY name"
                   (kind-str kind)]))
 
+(defn prescription
+  "How much of this project's userspace is its OWN rather than the shipped
+  template, per kind: how many names it has overridden, how many versions it
+  wrote, and the character delta of its current bodies against the factory
+  bodies they replaced.
+
+  Metan's M9 (research/2608.24735v1) is that nothing measures accumulated
+  prescription across runs, so \"the loop is now over-specified\" is
+  undetectable — and the same paper's AlgoTune result is that richer context
+  made a pre-optimized kernel WORSE. A project that has rewritten nine prompts
+  and grown them by 40% has made a claim about itself that somebody should be
+  able to see."
+  [conn]
+  (let [rows (db/fetch conn
+                       ["SELECT u.kind AS kind, u.name AS name,
+                                LENGTH(u.body) AS chars,
+                                (SELECT LENGTH(f.body) FROM userspace f
+                                  WHERE f.kind = u.kind AND f.name = u.name
+                                    AND f.source = 'factory'
+                                  ORDER BY f.version LIMIT 1) AS factory_chars,
+                                (SELECT COUNT(*) FROM userspace v
+                                  WHERE v.kind = u.kind AND v.name = u.name
+                                    AND v.source <> 'factory') AS versions
+                          FROM userspace u
+                         WHERE u.source <> 'factory'
+                           AND u.version = (SELECT MAX(w.version) FROM userspace w
+                                             WHERE w.kind = u.kind AND w.name = u.name)
+                         ORDER BY u.kind, u.name"])]
+    (reduce (fn [acc {:keys [kind chars factory_chars versions]}]
+              (-> acc
+                  (update-in [(keyword (str kind)) :names] (fnil inc 0))
+                  (update-in [(keyword (str kind)) :versions] (fnil + 0) (or versions 0))
+                  (update-in [(keyword (str kind)) :chars] (fnil + 0) (or chars 0))
+                  (update-in [(keyword (str kind)) :factory-chars] (fnil + 0)
+                             (or factory_chars 0))))
+            {}
+            rows)))
+
 (defn latest-bodies
   "{name body} for every name at `kind`, at its newest version — one query for
   a loader that needs the whole kind (the cell loader does).

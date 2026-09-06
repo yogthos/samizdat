@@ -16,6 +16,15 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            ;; The java.time.* host shim. selmer.filters imports
+            ;; java.time.format.FormatStyle at load, and under jolt 0.8.1 that
+            ;; class exists only once jolt.time has installed it — 0.8.0 had it
+            ;; implicitly. system.clj loads the shim for tools.logging, which
+            ;; is why every path through `system` was fine and the sandbox
+            ;; battery (sandbox-test -> repl -> prompt, never touching system)
+            ;; was not. The same precedent as db.jdbc before jdbc.core: the
+            ;; shim is required where the library that needs it enters.
+            [jolt.time]
             [selmer.parser :as selmer]
             [selmer.util :as selmer-util]
             [samizdat.userspace :as userspace]))
@@ -35,7 +44,7 @@
   goes through the userspace seam, which is what decides whether the project's
   version or the template answers."
   [
-   "architect"
+   "architect" "assembly"
    "branch-cap"
    "branch-out"
    "cell-shadowed"
@@ -83,6 +92,9 @@
    "memory-unverified"
    "milestone"
    "no-call-imitation"
+   "no-call-withheld"
+   "no-call-exhausted"
+   "no-call-reason"
    "no-edits"
    "outside-role-surface"
    "intervene-tool"
@@ -114,7 +126,7 @@
    "session-block"
    "shared-artifacts"
    "shared-tree"
-   "shell-refused"
+   "shell-refused" "split-tool"
    "stale-write"
    "storm"
    "storm-force"
@@ -135,11 +147,12 @@
    "team-worker"
    "turn-deadline"
    "uncertain-effect"
-   "verify-red"
+   "verify-red" "verify-hollow"
    "workflow-select"
    "workflow-select-system"
    "verify-timeout"
    "verify-unknown"
+   "split-decision"
    "watch-intervention"
    "websearch-tool"
    "wind-down"   ])
@@ -207,7 +220,10 @@
   [{:keys [project file text] :as entry}]
   (cond
     (contains? entry :project)
-    (let [f (io/file project)]
+    ;; Against the bound project root, not the process cwd: a served harness
+    ;; with HARNESS_ROOT elsewhere never saw the project's own file. Unbound
+    ;; (a test, a bare REPL) the cwd is the root, as it always was.
+    (let [f (if-let [r (userspace/project-root)] (io/file r project) (io/file project))]
       (if (.exists f) (slurp f) ::absent))
 
     (contains? entry :file)

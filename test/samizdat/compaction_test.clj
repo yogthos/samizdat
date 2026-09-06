@@ -267,18 +267,22 @@
         (is (= :measure (get-in d [:edges :start])) m)
         (is (= :infer (get-in d [:edges :fold])) m)))))
 
-(deftest the-dispatch-predicates-only-read
+(deftest the-dispatch-patterns-only-read-the-route
   ;; A predicate that computed the tier would put the routing back inside code
-  ;; and leave the manifest describing something that is not what runs.
+  ;; and leave the manifest describing something that is not what runs. The
+  ;; tables are patterns now (karamazov-aqsr.4), which cannot compute at all;
+  ;; what this pins is that they read the ROUTE key and nothing else.
   (cells/load-cells!)
   (let [d (manifests/read-definition (manifests/manifest-body! "worker"))
-        preds (concat (get-in d [:dispatches :measure]) (get-in d [:dispatches :cap]))]
-    (is (seq preds))
-    (doseq [[_label form] preds]
-      (is (or (= '(fn [d] true) form)
-              (re-find #"^\(fn \[d\] \(= :\w+ \(:compaction/route d\)\)\)$" (pr-str form)))
-          (str "a dispatch predicate must read :compaction/route, not compute: "
-               (pr-str form))))))
+        entries (concat (get-in d [:dispatches :measure]) (get-in d [:dispatches :cap]))]
+    (is (seq entries))
+    (doseq [[_label pattern] entries]
+      (is (or (= '_ pattern)
+              (and (map? pattern)
+                   (= [:compaction/route] (keys pattern))
+                   (keyword? (:compaction/route pattern))))
+          (str "a dispatch pattern must read :compaction/route, not compute: "
+               (pr-str pattern))))))
 
 (deftest measure-writes-the-route-and-touches-nothing
   (cells/load-cells!)

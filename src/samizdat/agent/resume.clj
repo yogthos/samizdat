@@ -101,7 +101,9 @@
     table does hold the result text, but it holds the ESCALATED copy, which
     would not compare equal to the next clean one — replaying it would break
     the detection it was meant to restore."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
@@ -133,15 +135,20 @@
 
 (defn- messages-from-turns
   "The message history a continuing model needs: what it said, and what the
-  harness answered, over the system prompt and the problem."
-  [problem turns]
+  harness answered, over the system prompt and the problem.
+
+  `prompt-suffix` is the run manifest's own `:prompt`. The system message is
+  REBUILT here rather than replayed — the journal stores turns, not the
+  prompt — so a resume that omitted it dropped the workflow's framing at the
+  crash: a review run came back building features."
+  [problem prompt-suffix turns]
   (reduce (fn [msgs t]
             (cond-> msgs
               (seq (:assistant_text t))
               (conj {:role "assistant" :content (:assistant_text t)})
               (seq (:result t))
               (conj {:role "user" :content (:result t)})))
-          (branch-loop/initial-messages problem)
+          (branch-loop/initial-messages problem prompt-suffix)
           turns))
 
 (defn- rebuild-branch
@@ -149,7 +156,7 @@
 
   The green snapshot is not journalled, so a resumed branch always starts
   the safe-state rule from its 'otherwise' arm."
-  [run branch-row turns artifacts firings max-turns storm-pol]
+  [run branch-row turns artifacts firings max-turns storm-pol prompt-suffix]
   (let [branch-id (:id branch-row)
         ;; The branch's OWN problem where it has one — a decompose unit's
         ;; contract, a team worker's sub-task — else the run's. Rebuilding
@@ -170,6 +177,7 @@
                                     :problem problem
                                     :created-at-turn (:created_at_turn branch-row)
                                     :messages (messages-from-turns problem
+                                                                   prompt-suffix
                                                                    branch-turns)})
                  (assoc :status (keyword (:status branch-row))
                         :inactive-reason (:inactive_reason branch-row)
@@ -250,7 +258,7 @@
   exhausted process that never got to tear down — is resumable."
   [conn run-id]
   (when-let [r (runs/get-run conn run-id)]
-    (not (contains? #{"completed" "aborted"} (:status r)))))
+    (not (contains? runs/unresumable-statuses (str (:status r))))))
 
 (defn resume!
   "Rebuild a run's branches from the journal and continue the beam's round
@@ -301,11 +309,16 @@
           ;; silently fall back to the bare composition and finish a critic or
           ;; feature run on the factory loop.
           loop-nm (workflow/active-loop-name config)
-          {turn-wf :compiled iterating? :iterating?}
+          {turn-wf :compiled iterating? :iterating? loop-def :definition}
           (workflow/compile-turn-loop conn loop-nm)
+          ;; The manifest's own instructions, as beam/run! seeds them.
+          prompt-suffix (workflow/workflow-prompt loop-def)
           ctx {:conn conn :run-id run-id :config config :problem (:problem run)
                :llm-adapter llm-adapter :llm-config llm-config
                :max-turns max-turns :beam? (> width 1) :beam-width width
+               ;; The budget the run STARTED under, like max-turns: a resume
+               ;; continues the same bound, it does not re-grant it.
+               :token-budget (:token_budget run)
                :root root
                :turn-workflow turn-wf
                :iterating-loop? iterating?
@@ -321,7 +334,8 @@
                            :verify-cmd (get-in config [:run :verify-cmd]))
           branches (mapv (fn [row]
                            (let [b (rebuild-branch run row turns artifacts
-                                                   firings max-turns storm-pol)
+                                                   firings max-turns storm-pol
+                                                   prompt-suffix)
                                  ;; The task claim survives the crash on its
                                  ;; ROW; without restoring it here the branch
                                  ;; came back reading "No task claimed", could

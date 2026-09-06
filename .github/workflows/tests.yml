@@ -73,6 +73,70 @@ jobs:
         # No provider calls.
         run: jolt -M:test
 
+
+  cold-load:
+    name: namespaces load on their own
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: fast
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jolt
+        # raw.githubusercontent rate-limits ANONYMOUS Actions runners and answers
+        # 403, which bit us repeatedly. Fetch through the GitHub API with the
+        # runner's own GITHUB_TOKEN first: authenticated requests have a far
+        # higher rate limit and do not 403. Fall back to raw with curl's own
+        # retry. Either way the installer is written to a file first, so a
+        # rate-limit HTML page can never be fed to bash as the installer.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fetch() {
+            # 1) authenticated API (raw content), highest rate limit
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw+json" \
+              https://api.github.com/repos/jolt-lang/jolt/contents/install?ref=main \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            # 2) anonymous raw, with curl retry/backoff
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            return 1
+          }
+          for i in 1 2 3 4 5; do
+            fetch && break
+            echo "installer fetch attempt $i failed; retrying in $((i * 8))s" >&2
+            sleep $((i * 8))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          # An API/rate-limit response is JSON/HTML, not a shell script; a real
+          # installer starts with a shebang. Guard against running a stray page.
+          head -1 /tmp/jolt-install | grep -q '^#!' \
+            || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
+
+      - name: Fetch dependencies
+        run: jolt -P
+
+      - name: Cold load
+        # Every namespace that touches a shimmed library, loaded in its OWN
+        # process. jolt resolves java.time.* only once jolt.time has installed
+        # the host shim, so whether a path is safe depends on LOAD ORDER — and
+        # the suite cannot see that, because it loads everything in one process
+        # in one order. That is exactly how HEAD once shipped with the suite
+        # dead at load. Three occurrences before this rung existed, each found
+        # by a human hitting a wall (karamazov-kp7w).
+        run: ./dev/cold-load.sh
+
   smoke:
     name: platform probes
     runs-on: ubuntu-latest

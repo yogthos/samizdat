@@ -34,8 +34,8 @@
          :apply  :end
          :quiet  :end}
 
- :dispatches {:start [[:reason (fn [d] (:oversight/worth-a-look? d))]
-                      [:quiet  (fn [d] true)]]}
+ :dispatches {:start [[:reason {:oversight/worth-a-look? true}]
+                      [:quiet  _]]}
 
  :invariants
  [{:type :must-follow :if :reason :then :apply :enforced true

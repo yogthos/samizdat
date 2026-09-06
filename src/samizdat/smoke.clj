@@ -25,7 +25,9 @@
 
   Exits non-zero if any required probe fails. Lean is optional and reports
   as skipped when the toolchain is absent, since only Phase 5 needs it."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             ;; db.jdbc registers the java.sql shim clojure.jdbc compiles against and
             ;; points connection construction at the native driver; it has to load

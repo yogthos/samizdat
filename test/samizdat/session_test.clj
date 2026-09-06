@@ -427,3 +427,52 @@
   (session/mark-run! "clean-run")
   (is (empty? (session/findings (session/run-window "clean-run")))
       "a clean later run inherits none of it"))
+
+;; --- per-branch fitness (RFC-012 F3, karamazov-ts3o.2) ------------------------
+
+(deftest a-branch-has-its-own-tally-scored-by-the-same-fitness
+  ;; The number selection and evaluation share: the same counters cut per
+  ;; branch, the same function, the same weights. Keyed by run AND branch,
+  ;; because branch ids repeat across runs.
+  (session/observe-turn! {:tool "eval" :category :success :signals {} :branch ["r1" "B1"]})
+  (session/observe-turn! {:tool "eval" :category :success :signals {} :branch ["r1" "B1"]})
+  (session/observe-turn! {:tool "eval" :category :failure
+                          :signals {:parse-error true} :branch ["r1" "B2"]})
+  (session/observe! [:verify :green] ["r1" "B1"])
+  (session/observe! [:provider :empty-reply] ["r1" "B2"])
+  (session/observe-turn! {:tool "eval" :category :failure :signals {} :branch ["r2" "B1"]})
+  (testing "each branch's tally is the tally shape, cut to what it did"
+    (is (= 2 (:turns (session/branch-tally "r1" "B1"))))
+    (is (= {:success 2} (get-in (session/branch-tally "r1" "B1") [:tools "eval"])))
+    (is (= 1 (get-in (session/branch-tally "r1" "B1") [:verify :green])))
+    (is (= 1 (get-in (session/branch-tally "r1" "B2") [:signals :parse-error])))
+    (is (= 1 (get-in (session/branch-tally "r1" "B2") [:provider :empty-reply]))))
+  (testing "fitness is fitness-of over that tally, so it is comparable to the session's"
+    (is (= (session/fitness-of (session/branch-tally "r1" "B1"))
+           (session/branch-fitness "r1" "B1")))
+    (is (> (session/branch-fitness "r1" "B1") (session/branch-fitness "r1" "B2")))
+    (is (= ["B1" "B2"] (keys (session/branch-fitnesses "r1")))))
+  (testing "the same branch id in another run is another branch"
+    (is (= 1 (:turns (session/branch-tally "r2" "B1"))))
+    (is (= ["B1"] (keys (session/branch-fitnesses "r2")))))
+  (testing "a branch nothing was counted for has no fitness, not a neutral one"
+    (is (nil? (session/branch-fitness "r1" "B9")))
+    (is (nil? (session/branch-tally "r1" "B9"))))
+  (testing "the process-wide tally counts everything once and shows no branches"
+    (is (= 4 (:turns (session/snapshot))))
+    (is (nil? (:branches (session/snapshot))))
+    (session/mark! "m")
+    (session/observe-turn! {:tool "eval" :category :success :signals {} :branch ["r1" "B1"]})
+    (is (= {:turns 1 :tools {"eval" {:success 1}}} (session/since "m"))
+        "a delta is the process-wide counts and nothing per branch"))
+  (testing "a finished run's branch tallies are dropped, the session's counts stay"
+    (session/forget-run! "r1")
+    (is (nil? (session/branch-tally "r1" "B1")))
+    (is (= 1 (:turns (session/branch-tally "r2" "B1"))))
+    (is (= 5 (:turns (session/snapshot))))))
+
+(deftest a-count-with-no-branch-lands-in-the-process-tally-only
+  (session/observe-turn! {:tool "eval" :category :success :signals {}})
+  (session/observe! [:verify :green])
+  (is (= 1 (:turns (session/snapshot))))
+  (is (empty? (session/branch-fitnesses "r1"))))

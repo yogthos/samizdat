@@ -44,7 +44,7 @@
     (-> data
         (assoc :branch branch' :critic/decision :revise :critic/attempts attempts)
         (update :turn inc)
-        (dissoc :before :call :parsed :signals :said :result :tool)
+        (dissoc :before :call :parsed :signals :said :result :tool :settled)
         (update :mycelium/trace #(vec (take-last 20 %))))))
 
 (cell/defcell :gate/critic

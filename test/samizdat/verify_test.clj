@@ -93,6 +93,60 @@
     (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
                                     :changed ["src/x.clj"] :require-test? false})))))
 
+(deftest a-delegated-piece-is-pinned-by-the-tests-its-contract-names
+  ;; karamazov-ioo.15. A child gets its tests from the parent that split the
+  ;; work — they are already in the tree, and the child implements against
+  ;; them. So the TDD rung, which asks whether the branch CHANGED a test file,
+  ;; would refuse every delegated piece for not writing a test that was
+  ;; written for it. The contract's tests are the pinning test.
+  (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                  :changed ["src/example/core.clj"]
+                                  :require-test? true
+                                  :contracted-tests "test/example/core_test.clj"}))
+      "green against the contract's tests, having changed only source: ships")
+  (testing "and it does not excuse changing nothing at all"
+    (is (some? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                     :changed []
+                                     :require-test? true
+                                     :contracted-tests "test/example/core_test.clj"}))))
+  (testing "nor does it excuse a red run"
+    (is (some? (verify/verify-block {:verify-on? true
+                                     :result {:green? false :output "FAIL"}
+                                     :changed ["src/example/core.clj"]
+                                     :require-test? true
+                                     :contracted-tests "test/example/core_test.clj"}))))
+  (testing "an undelegated branch is unaffected"
+    (is (some? (verify/verify-block {:verify-on? true :result nil
+                                     :changed ["src/example/core.clj"]
+                                     :require-test? true
+                                     :contracted-tests nil}))))
+  (testing "an ASSEMBLY carries its own tests and every piece's"
+    (is (nil? (verify/verify-block
+               {:verify-on? true :result {:green? true :output ""}
+                :changed ["src/example/core.clj"]
+                :require-test? true
+                :contracted-tests ["test/example/core_test.clj"
+                                   "test/example/parse_test.clj"]})))))
+
+(deftest a-piece-that-left-its-stubs-hollow-has-not-delivered
+  ;; Green tests are not enough on their own. The parent's composition CALLS
+  ;; these names, so a child whose tests happen to pass around an unimplemented
+  ;; stub — or that deleted the stub instead of filling it — has not delivered
+  ;; the piece it was given. karamazov-ioo.15.
+  (let [b (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                :changed ["src/example/core.clj"]
+                                :require-test? true
+                                :contracted-tests "test/example/core_test.clj"
+                                :unfilled ["parse-line"]})]
+    (is (some? b) "a green run does not ship a hollow stub")
+    (is (str/includes? b "parse-line") "and it names the one still owed"))
+  (testing "with every stub filled, the same green run ships"
+    (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
+                                    :changed ["src/example/core.clj"]
+                                    :require-test? true
+                                    :contracted-tests "test/example/core_test.clj"
+                                    :unfilled []})))))
+
 (deftest verify-block-passes-a-green-tdd-change
   (is (nil? (verify/verify-block {:verify-on? true :result {:green? true :output ""}
                                   :changed ["src/samizdat/agent/tools/knowledge.clj"

@@ -6,13 +6,16 @@
   claim-evidence gates those methods share (answer-tokens,
   uncovered-tokens, engages-problem? and friends)."
   (:require [clojure.string :as str]
+            [samizdat.agent.files :as files]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.state :as state]
+            [samizdat.agent.stubs :as stubs]
             [samizdat.agent.verify :as verify]
             [samizdat.lexicon :as lexicon]
             [samizdat.store.journal :as journal]
+            [samizdat.store.tasks :as tasks]
             [samizdat.util :as util]
             [samizdat.session :as session]))
 
@@ -338,23 +341,82 @@
         verify-cmd (get-in ctx [:config :run :verify-cmd])
         verify-focused? (get-in ctx [:config :run :verify-focused?] false)
         require-test? (get-in ctx [:config :run :require-test?] true)
+        ;; THE TEST FILE THIS PIECE WAS DELEGATED, from the task it holds.
+        ;; A split leaves the tree RED on purpose — the stubs are the failing
+        ;; tests — so a child that ran the whole suite would drown in its
+        ;; siblings' unimplemented work and conclude it had broken something.
+        ;; Its contract names the tests that define ITS delivery, and those are
+        ;; the ones it is judged on (karamazov-ioo.15).
+        held (when (and (:conn ctx) (:run-id ctx) (:id branch))
+               (tasks/held-by (:conn ctx) (:run-id ctx) (:id branch)))
+        ;; THE HELD TASK AND ANY PIECES UNDER IT. A branch assembling a split
+        ;; is judged on its own contract AND on every child's, which is what
+        ;; makes the parent's freedom to adjust the pieces safe: it may reshape
+        ;; a signature that turned out awkward, and it may not quietly break a
+        ;; piece that met its contract. A branch with no children reduces to
+        ;; the plain delegated case, and a branch holding nothing to the old
+        ;; behaviour exactly.
+        specs (when held
+                (into [held] (when (:conn ctx) (tasks/children-of (:conn ctx) (:id held)))))
+        contracted-tests (->> specs
+                              (map #(str (:tests %)))
+                              (filter verify/test-file?)
+                              distinct
+                              vec
+                              not-empty)
+        ;; THE OTHER HALF OF THE CONTRACT, and the half green tests cannot see:
+        ;; are the functions it was handed implemented. The composition calls
+        ;; them by name, so a test passing around a hollow stub, or a stub
+        ;; deleted rather than filled, leaves that caller broken. Read off the
+        ;; tree at ship time rather than trusted.
+        source-of (fn [path]
+                    (when-let [abs (files/resolve-under-root (:root ctx) path)]
+                      (let [f (java.io.File. ^String abs)]
+                        (when (.isFile f) (slurp f)))))
+        unfilled (vec (distinct
+                       (mapcat (fn [t]
+                                 (let [file (not-empty (str (:stub_file t)))
+                                       owed (when (not-empty (str (:stubs t)))
+                                              (str/split (str (:stubs t)) #","))]
+                                   (when (and file (seq owed))
+                                     ;; A file gone or escaping the root leaves
+                                     ;; everything it should define unfilled:
+                                     ;; the honest answer, and the safe one.
+                                     (stubs/unfilled (source-of file) owed))))
+                               specs)))
+        stub-file (not-empty (str (:stub_file held)))
+        ;; A contract that names tests turns the rung ON by itself. The whole
+        ;; point of the delegation is that those tests define delivery, so a
+        ;; piece must not ship without them having been run — whether or not
+        ;; the run happened to configure verification.
         verify-on? (and (not advisory?)
                         (nil? block)
-                        (or verify-focused? (not (str/blank? (str verify-cmd)))))
+                        (or verify-focused? contracted-tests
+                            (not (str/blank? (str verify-cmd)))))
         changed (when verify-on? (gitdiff/changed-files (:root ctx) (:git-baseline ctx)))
         ;; Prefer the focused command; fall back to the configured one. Run only
         ;; when the cheap pre-checks (nothing changed / no test yet) haven't
         ;; already doomed the ship — a wasted suite run is a wasted minute.
-        cmd (when verify-on? (or (and verify-focused? (verify/focused-cmd changed)) verify-cmd))
+        ;;
+        ;; The contracted tests are focused on ALONGSIDE whatever the branch
+        ;; touched, not instead of it: a child that wrote extra tests of its own
+        ;; should have them run too, and a child that edited a sibling's test
+        ;; file should have to face it.
+        focus (distinct (concat contracted-tests
+                                (when (or verify-focused? contracted-tests) changed)))
+        cmd (when verify-on? (or (verify/focused-cmd focus) verify-cmd))
         pre-doomed? (or (and (some? changed) (empty? changed))
                         (and require-test? (some? changed) (seq changed)
-                             (not (some verify/test-file? changed))))
+                             (not (some verify/test-file? changed))
+                             (nil? contracted-tests)))
         vresult (when (and verify-on? cmd (not pre-doomed?))
                   (verify/run-verify (:root ctx) cmd
                                      (get-in ctx [:config :run :verify-timeout-ms])))
         verify-block (verify/verify-block
                       {:verify-on? verify-on? :result vresult
-                       :changed changed :require-test? require-test?})
+                       :changed changed :require-test? require-test?
+                       :contracted-tests contracted-tests
+                       :unfilled unfilled :stub-file stub-file})
         block (or block verify-block)]
     ;; Journalled whether the tests RAN or not. A rung that was configured on
     ;; and then did nothing used to leave no trace at all — the note fired only
@@ -365,10 +427,13 @@
     ;; The live tally, so a supervisor can see the gate being skipped WHILE it
     ;; is happening rather than by reading the journal afterwards.
     (when verify-on?
-      (session/observe! (if vresult
-                          [:verify (if (:green? vresult) :green :red)]
-                          [:verify :skipped]))
-      (when vresult (session/observe! [:verify :ran])))
+      (let [on-branch (when (and (:run-id ctx) (:id branch))
+                        [(:run-id ctx) (:id branch)])]
+        (session/observe! (if vresult
+                            [:verify (if (:green? vresult) :green :red)]
+                            [:verify :skipped])
+                          on-branch)
+        (when vresult (session/observe! [:verify :ran] on-branch))))
     (when (and verify-on? (:conn ctx) (:run-id ctx))
       (journal/note! (:conn ctx) (:run-id ctx) :ship-verify
                      {:branch-id (:id branch) :turn (:turn ctx)

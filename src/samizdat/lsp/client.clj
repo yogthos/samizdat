@@ -32,7 +32,9 @@
   shared stream itself let two callers steal each other's frames
   (provenance CR1-4). Each request is bounded by a timeout so a
   wedged server costs a known amount rather than the run."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [jolt.process :as jp]

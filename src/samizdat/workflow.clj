@@ -57,6 +57,7 @@
             [samizdat.session :as session]
             [samizdat.userspace :as userspace]
             [samizdat.agent.state :as state]
+            [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.store.runs :as runs]
@@ -148,6 +149,7 @@
 (def start-node manifests/start-node)
 (def finish-nodes manifests/finish-nodes)
 (def iterating? manifests/iterating?)
+(def turn-sliceable? manifests/turn-sliceable?)
 (def turn-manifest manifests/turn-manifest)
 
 (defn compile-turn-loop
@@ -194,7 +196,12 @@
   "The workflow catalog as a text menu — one `- name — description` line each —
   for injecting into the supervisor's context."
   [conn]
-  (str/join "\n" (for [{:keys [name description]} (catalog conn)]
+  (str/join "\n" (for [{:keys [name description turn-sliceable?]} (catalog conn)
+                       ;; A workflow a run cannot be pointed at is not an
+                       ;; option, and offering it is worse than omitting it:
+                       ;; the supervisor is told it may switch, and the switch
+                       ;; fails at run start (karamazov-4sx).
+                       :when turn-sliceable?]
                    (str "- " name (when (seq description) (str " — " description))))))
 
 (defn workflow-prompt
@@ -297,12 +304,24 @@
   (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
         loop-nm (active-loop-name config)
         {:keys [version compiled definition]} (load-loop! conn loop-nm)
+        ;; THIS DRIVER TOO, and it is the reason the check is here rather
+        ;; than only inside turn-manifest: this path never slices, so an
+        ;; unsliceable manifest does not throw here, it RUNS — and `repl`,
+        ;; whose four cells are pure functions of an unchanging branch, spins
+        ;; forever on the :empty edge back to :start with no model call to
+        ;; break the cycle and no step cap to stop it. A hang is a worse
+        ;; failure than the beam's refusal, not a milder one (karamazov-4sx).
+        _ (when-not (turn-sliceable? definition)
+            (throw (ex-info (str "'" loop-nm "' cannot be turn-sliced, so it"
+                                 " cannot be a run's loop")
+                            {:loop loop-nm :turn-sliceable? false})))
         run-id (runs/start-run! conn {:problem problem
                                       :provider (:provider llm-config)
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width 1
-                                      :prompt-digest (branch-loop/prompt-digest)})
+                                      :prompt-digest (branch-loop/prompt-digest
+                                                      (workflow-prompt definition))})
         branch (state/new-branch {:id "B1" :problem problem
                                   :messages (branch-loop/initial-messages
                                              problem (workflow-prompt definition))})
@@ -380,6 +399,25 @@
             (assoc :run-id run-id)))
       (finally
         (stop-watch)
+        ;; NOTHING IS LEFT PENDING ON A RUN NOBODY WILL DRAIN AGAIN. The
+        ;; drains leave workflow kinds (switch/budget/stop) for a workflow's
+        ;; own directives stage and only feature.edn has one, so on any other
+        ;; loop such a directive was neither applied nor rejected and sat
+        ;; pending after the run ended (karamazov-agbw). Guarded on the
+        ;; ending: an exhausted or failed run is over and still resumable, and
+        ;; its pending `extend` is what the resume will apply.
+        ;;
+        ;; Best effort, like everything else in this teardown: a failure to
+        ;; tidy the queue must not turn a finished run into a failed one.
+        (try
+          (let [status (str (:status (runs/get-run conn run-id)))]
+            (when (contains? runs/unresumable-statuses status)
+              (interventions/expire-pending!
+               conn run-id
+               (str "the run ended (" status ") before a boundary applied it"))))
+          (catch Throwable e
+            (log/warn "expiring the run's pending directives failed:" (ex-message e))))
+
         ;; SHORT-TERM BECOMES LONG-TERM, here too. This driver runs the factory
         ;; loop, which is what most runs use; distilling only in the beam meant
         ;; the common path measured everything and remembered none of it.
