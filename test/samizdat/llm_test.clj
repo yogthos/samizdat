@@ -709,6 +709,24 @@
         (is (= "r" (:reasoning (adapter/parse-chat (registry/adapter-for :deepseek) reply))))
         (is (nil? (:reasoning (adapter/parse-chat (registry/adapter-for :openai) reply))))))
 
+    (testing "a local endpoint's reasoning is read, not dropped"
+      ;; :local had no :reasoning-key, so it fell to the sentinel and every
+      ;; reasoning stream a locally-served model produced was discarded. The
+      ;; cost is not cosmetic: turns.reasoning_text stayed empty for every
+      ;; local run, fence.clj's handling of a tool call emitted INSIDE the
+      ;; reasoning stream was unreachable, and a turn that spent its budget
+      ;; thinking became a fatal :empty-reply — client.clj blanks on
+      ;; content+reasoning, and reasoning was always nil here. Measured
+      ;; against llama-server serving Qwen3.8, which returns reasoning_content
+      ;; on the OpenAI-compatible surface exactly as DeepSeek does.
+      (let [reply {:choices [{:message {:content "c" :reasoning_content "r"}
+                              :finish_reason "stop"}]}]
+        (is (= "r" (:reasoning (adapter/parse-chat (registry/adapter-for :local) reply)))))
+      ;; A local model that reasons in no separate field is unaffected: the
+      ;; key is simply absent, which is what it already was.
+      (let [reply {:choices [{:message {:content "c"}} ]}]
+        (is (nil? (:reasoning (adapter/parse-chat (registry/adapter-for :local) reply))))))
+
     (testing "Ollama reads content and usage from its own field names"
       (let [reply {:message {:content "c" :thinking "t"} :done_reason "stop"
                    :prompt_eval_count 3 :eval_count 7}

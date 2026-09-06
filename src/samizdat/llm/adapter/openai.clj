@@ -272,5 +272,11 @@
   (openai-family {:id :openai :label "OpenAI"}))
 
 ;; A local llama-server / vLLM / LM Studio endpoint. Same wire format, no key.
+;;
+;; `:reasoning_content` because what a local endpoint SERVES is a model, not a
+;; provider: llama-server hands back reasoning_content for a reasoning model
+;; exactly as DeepSeek does, and this adapter carried the sentinel, so every
+;; local reasoning stream was dropped. Absent for a model that does not reason,
+;; which reads as nil — the behaviour this had before.
 (def local
-  (openai-family {:id :local :label "local"}))
+  (openai-family {:id :local :label "local" :reasoning-key :reasoning_content}))
