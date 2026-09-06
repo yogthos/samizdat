@@ -14,8 +14,8 @@
         ;; fixed-arity binding silently corrupts the stack-passed argument).
         jolt-lang/http-client
         {:git/url "https://github.com/jolt-lang/http-client"
-         :git/tag "v0.0.6"
-         :git/sha "177b1ce4e529ffe052e6a1b7b103ed924de535f6"}
+         :git/tag "v0.0.7"
+         :git/sha "a9c5d89054c9cdb84b7905e0dfd7cf9ca82793c6"}
 
         ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
         jolt-lang/db
