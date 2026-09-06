@@ -76,12 +76,19 @@
 
 (defn child-node
   "A sub-unit node from the parent and an architect subtask spec. Its id encodes
-  lineage; its problem is the subtask's one-paragraph contract."
+  lineage; its problem is the subtask's one-paragraph contract.
+
+  `:parent-task` carries the PARENT'S task id, not its node id, so the row the
+  child mints hangs off the row the parent holds. Without it the fallback
+  path's task tree was flat — every architect-made unit an orphan — while the
+  split path's was properly nested, so the same run recorded its work two
+  different ways depending on which path produced a unit (run 3b3ce405)."
   [parent {:keys [name description]}]
   {:id (str (:id parent) "/" name)
    :name name
    :problem description
-   :parent (:id parent)})
+   :parent (:id parent)
+   :parent-task (:task-id parent)})
 
 (defn- can-split?
   "Whether a unit at this depth may still be decomposed. Below the budget a stuck
@@ -164,7 +171,12 @@
   composes it never re-litigates it."
   [node depth {:keys [attempt recover fan max-depth] :as ops}]
   (let [max-d (or max-depth (samizdat.agent.decompose/max-depth))
-        r (attempt node)]
+        r (attempt node)
+        ;; The attempt is what learns this unit's task id — the root's row is
+        ;; minted when it is first tried — so the node only knows it afterwards.
+        ;; Threading it back is what lets child-node point a sub-unit's row at
+        ;; its parent's.
+        node (cond-> node (:task-id r) (assoc :task-id (:task-id r)))]
     (cond
       ;; THE AGENT SPLIT ITS OWN TASK. It wrote the stubs, the harness verified
       ;; them against the tree, and the child tasks exist — so there is nothing

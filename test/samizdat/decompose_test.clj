@@ -244,3 +244,24 @@
                 :recover (fn [_ ev] (reset! seen (:attempts ev)) nil)
                 :fan seq-fan})
     (is (= 4 @seen) "the architect sees the durable count, not a fresh one")))
+
+(deftest a-child-row-hangs-off-its-parents-row-on-the-fallback-path-too
+  ;; Run 3b3ce405: the split path nested its task rows properly and the
+  ;; architect path left every unit an orphan, so one run recorded its work two
+  ;; different ways depending on which path produced a unit. The attempt is
+  ;; what learns a unit's task id, so it has to travel back to the node before
+  ;; the children are built from it.
+  (let [seen (atom [])]
+    (dec/solve {:id "root" :problem "big"} 0
+               {:attempt (fn [node]
+                           (swap! seen conj [(:id node) (:parent-task node)])
+                           (if (= "root" (:id node))
+                             {:passed? false :failure "too big" :task-id "sz-root"}
+                             {:passed? true :answer "built" :task-id "sz-kid"}))
+                :recover (fn [& _] {:kind :decompose
+                                    :subtasks [{:name "a" :description "do a"}]})
+                :fan seq-fan})
+    (is (= ["root" "root/a" "root"] (mapv first @seen))
+        "root, then its piece, then root again as the assembly")
+    (is (= [nil "sz-root" nil] (mapv second @seen))
+        "the child is told which row to hang off; the root has none to hang off")))

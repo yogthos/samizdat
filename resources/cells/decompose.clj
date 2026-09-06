@@ -74,6 +74,11 @@
         task-id (or (:task-id node)
                     (tasks/create! conn {:title (title-of prob) :body (str prob)
                                          :contract (str (:contract node))
+                                         ;; An architect-made unit hangs off
+                                         ;; the row its parent holds, so the
+                                         ;; fallback path records the same
+                                         ;; nesting the split path does.
+                                         :parent-id (:parent-task node)
                                          :run-id run-id}))
         held (tasks/claim! conn task-id run-id bid)
         attempts (tasks/attempted! conn task-id)]
@@ -101,13 +106,25 @@
             done? (= :done (:verdict out))
             changed (gitdiff/changed-files root base)
             ;; DID IT DELEGATE? The agent splits by writing stubs and calling
-            ;; `split`, which the harness verified and turned into child rows
-            ;; under this unit's task. Walking them is how the recursion finds
-            ;; the pieces — the tool reports nothing out of band, so a split
-            ;; that survived a crash is still found here.
-            kids (tasks/children-of conn task-id)]
+            ;; the split tool, which verified them against the tree and turned
+            ;; them into child rows under this unit's task. Walking them is how
+            ;; the recursion finds the pieces — the tool reports nothing out of
+            ;; band, so a split that survived a crash is still found here.
+            ;;
+            ;; ONLY ROWS THE SPLIT TOOL WROTE COUNT, and `stubs` is the
+            ;; evidence: it is the one column split sets and nothing else does
+            ;; (board and team write contract and tests, never this). Reading
+            ;; every child as a delegation let an agent bypass the whole
+            ;; verification with `task create {parentId}` — a child with no
+            ;; stubs behind it, which is exactly the unchecked hand-off the
+            ;; split tool exists to refuse. Found by run 3b3ce405, where the
+            ;; agent did create a loose task and only the missing parent kept
+            ;; it from being read as a split.
+            kids (filterv #(seq (str/trim (str (:stubs %))))
+                          (tasks/children-of conn task-id))]
         (if (seq kids)
-          {:split (mapv (fn [k]
+          {:task-id task-id
+           :split (mapv (fn [k]
                           {:id (str (:id node) "/" (:title k))
                            :name (:title k)
                            :problem (:body k)
@@ -118,13 +135,14 @@
            :attempts attempts}
           (let [passed? (and done? (or (nil? changed) (seq changed)))]
             {:passed? passed?
+             :task-id task-id
              :answer (get-in out [:branch :final-answer])
              :attempts attempts
              :failure (when-not passed?
                         (if done? "the worker shipped but changed no files"
                             "the worker did not finish"))})))
       (catch Throwable e
-        {:passed? false :attempts attempts
+        {:passed? false :attempts attempts :task-id task-id
          :failure (str "attempt crashed: " (ex-message e))}))))
 
 (defn- recover-node
