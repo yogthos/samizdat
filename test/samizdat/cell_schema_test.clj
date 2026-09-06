@@ -94,9 +94,10 @@
           ":verdict is what :finish routes on"))))
 
 (deftest a-cell-reading-a-key-nothing-produces-is-refused
-  ;; The check earning its keep. :gate/arbiter reads :before, which only
-  ;; :loop/assemble writes; a manifest that routes around assemble is a
-  ;; manifest whose arbiter steers on nil. Compiled through the loader's own
+  ;; The check earning its keep. :gate/arbiter reads :settled, which only
+  ;; :gate/settle writes, and settle reads :before, which only :loop/assemble
+  ;; writes; a manifest that routes around either is a manifest whose
+  ;; arbiter steers on nil. Compiled through the loader's own
   ;; pipeline, so this is the error an agent-authored manifest would get from
   ;; `manifest save`.
   (cells/load-cells!)
@@ -214,15 +215,24 @@
     (finally (cell/remove-cell! :schema-test/boom))))
 
 (deftest the-validate-mode-is-policy-rather-than-a-constant
-  (testing "the shipped default"
-    (is (= :warn (manifests/validate-mode))))
+  (testing "the shipped default, now :strict"
+    ;; Flipped on the evidence the staging was built to collect: run 89f6487a
+    ;; ran 280 turns across 3 branches under :warn against a real endpoint and
+    ;; emitted ZERO schema warnings — real responses, real tool results, real
+    ;; compaction, and a branch that spent 57 turns in a no-call loop, which
+    ;; is the ugliest shape the data takes. The suite's 1860 mocked tests had
+    ;; already shown zero; this is the half they could not give
+    ;; (karamazov-6y7).
+    (is (= :strict (manifests/validate-mode))))
   (testing "an edit to gates.edn moves it"
-    (with-redefs [lexicon/policy (fn [k] (when (= k :schema-validation) {:mode :strict}))]
-      (is (= :strict (manifests/validate-mode)))))
+    (with-redefs [lexicon/policy (fn [k] (when (= k :schema-validation) {:mode :warn}))]
+      (is (= :warn (manifests/validate-mode)))))
   (testing "and a MISSING policy does not silently switch checking off"
-    ;; :off would be the dangerous default — nobody finds out. :strict would
-    ;; be the other kind of wrong, halting runs over declarations the rollout
-    ;; has not finished tightening.
+    ;; :off would be the dangerous default — nobody finds out. The CODE
+    ;; fallback stays :warn even though the shipped file now says :strict, and
+    ;; that asymmetry is deliberate: a project whose gates.edn failed to load
+    ;; should still be checked, but should not have its runs halted by a
+    ;; policy it never got to read.
     (with-redefs [lexicon/policy (constantly nil)]
       (is (= :warn (manifests/validate-mode))))))
 
@@ -422,12 +432,40 @@
         u (first (:unsatisfied r))]
     (is (= :data (:kind u)))
     (is (= :arbiter (:node u)))
-    (is (contains? (:missing u) :before))
+    (is (contains? (:missing u) :settled))
     (is (= [:start :arbiter] (:path u)))
     (testing "and the compile refusal quotes the same path"
       (let [e (try (manifests/compile-definition broken) nil
                    (catch Throwable t t))]
         (is (re-find #"\[:start :arbiter\]" (str (ex-message e))))))))
+
+(deftest an-arbiter-reached-before-settle-is-refused-at-compile
+  ;; karamazov-aqsr.2: settle-before-fire was the one invariant declared
+  ;; :enforced false, because it ordered two steps inside one cell. It is
+  ;; two nodes now — :gate/settle writes :settled, :gate/arbiter requires
+  ;; it, and every turn-shaped manifest declares :must-precede — so a
+  ;; manifest that fires before it settles, or never settles, is refused
+  ;; when it is compiled rather than discovered when a gate is credited
+  ;; with an outcome that preceded it.
+  (cells/load-cells!)
+  (let [def (shipped-definition "loop")
+        fire-first (-> def
+                       (assoc-in [:edges :journal] :arbiter)
+                       (assoc-in [:edges :arbiter] :settle)
+                       (assoc-in [:edges :settle] :route))
+        never (-> def
+                  (update :cells dissoc :settle)
+                  (assoc-in [:edges :journal] :arbiter)
+                  (update :edges dissoc :settle))]
+    (is (some? (manifests/compile-definition def)) "the shipped loop compiles")
+    (doseq [[label broken] [["fire before settle" fire-first]
+                            ["never settle" never]]]
+      (testing label
+        (let [e (try (manifests/compile-definition broken) nil
+                     (catch Throwable t t))]
+          (is (some? e) "compiled a manifest whose arbiter fires unsettled")
+          (is (re-find #"(?i)settle" (str (ex-message e)))
+              (str "the refusal names settle: " (ex-message e))))))))
 
 (deftest a-ctx-key-no-driver-provides-is-an-unsatisfied-precondition-too
   (cell/register-spec! :test/wants-ctx

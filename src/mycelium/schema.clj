@@ -4,6 +4,16 @@
    and async callback wrappers for async cells."
   (:require [clojure.set :as set]
             [clojure.string :as str]
+            ;; The java.time.* host shim, before malli. malli.transform builds
+            ;; a DateTimeFormatter for its date decoders AT NAMESPACE LOAD,
+            ;; and under jolt 0.8.1 those classes resolve only once jolt.time
+            ;; has installed them — 0.8.0 had them implicitly. Same regression
+            ;; and same fix as selmer in samizdat.prompt: the shim is required
+            ;; where the library that needs it enters. Without this, loading
+            ;; anything that reaches mycelium's schema layer throws
+            ;; "No matching ctor found for class DateTimeFormatterBuilder",
+            ;; which is every path into the harness and the whole test suite.
+            [jolt.time]
             [malli.core :as m]
             [malli.error :as me]
             [malli.experimental.lite :as l]

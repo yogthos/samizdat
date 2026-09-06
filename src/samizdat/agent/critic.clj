@@ -112,15 +112,35 @@
    #(let [cumulative (set (gates/threshold :critic-cumulative-objectives))]
       (vec (remove cumulative (objectives))))))
 
+(def fitness-objective
+  "The MEASURED objective on the retention frontier (RFC-012 F3): the branch's
+  session fitness, `samizdat.session/branch-fitness`, carried in the score
+  map under this key beside the critic's judged ones. A key rather than a
+  separate argument so `dominated?` reads it like any other objective."
+  :fitness)
+
 (defn dominated?
-  "True when some sibling is at least as good on every survival objective
-  and strictly better on one. Equal vectors do not dominate."
+  "True when some sibling is at least as good on every objective the two
+  share and strictly better on one. Equal vectors do not dominate.
+
+  The objectives are the survival objectives plus `fitness-objective`, and
+  an objective counts only when BOTH vectors carry it: fitness is measured
+  per branch and may be unknown for either side (a resumed run, a branch
+  that has not taken a turn), and an unknown must neither protect nor
+  condemn — the comparison falls back to what both sides do have, which for
+  two critic vectors is what it always was. So the branch with the best
+  measured trajectory is never Pareto-culled by a sibling the critic merely
+  prefers, and a branch the critic likes but that measurably fails still
+  can be."
   [scores sibling-scores]
-  (boolean
-   (some (fn [o]
-           (and (every? #(>= (get o % 0) (get scores % 0)) (survival-objectives))
-                (some #(> (get o % 0) (get scores % 0)) (survival-objectives))))
-         sibling-scores)))
+  (let [objectives (conj (vec (survival-objectives)) fitness-objective)]
+    (boolean
+     (some (fn [o]
+             (let [shared (filter #(and (contains? o %) (contains? scores %)) objectives)]
+               (and (seq shared)
+                    (every? #(>= (get o %) (get scores %)) shared)
+                    (some #(> (get o %) (get scores %)) shared))))
+           sibling-scores))))
 
 (defn- summary
   "The deterministic facts the critic judges from. Compact on purpose: the

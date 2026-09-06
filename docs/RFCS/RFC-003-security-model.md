@@ -116,6 +116,11 @@ flowchart LR
     toolcall --> reads
     reads --> readroots
     readroots --> redact
+
+    split[split: verifies a delegation against the tree]
+    toolcall --> split
+    split --> root
+    root --> redact
 ```
 
 The `eval` node and its three edges were absent from this graph until this RFC
@@ -130,6 +135,13 @@ confinement every file tool enforces. Both fixed in the 2026-08 audit
 (karamazov-blt.27, blt.28): it spawns through `scrub` and its paths go
 through `resolve-under-root`; its replies were already inside the envelope
 redaction.
+
+`split` reads the tree to verify a delegation — the stubs the parent wrote and
+the tests it sketched — so it is a read tool for confinement purposes even
+though its only write is to the task board. It goes through
+`resolve-under-root` rather than the wider read roots: a delegation is about
+THIS project's own code, and a stub a child is told to fill has to be somewhere
+that child can write.
 
 **Reads and writes no longer share one boundary** (karamazov-1an). Writes keep
 `resolve-under-root` unchanged: one root, canonicalized, fails closed. Reads go

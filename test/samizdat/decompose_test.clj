@@ -113,6 +113,43 @@
     (is (contains? (set @attempts) "root/a") "each sub-unit was attempted")
     (is (contains? (set @attempts) "root/b"))))
 
+(deftest solve-follows-a-split-the-agent-made-itself
+  ;; UNIFORM RECURSION (karamazov-ioo.15). The agent working the task is the
+  ;; agent that decides to break it up: it writes the stubs, calls `split`, and
+  ;; the harness verifies and opens the child tasks. There is no separate
+  ;; architect deciding from outside, and no stuck-detection involved — this
+  ;; unit was never stuck, it was DELEGATED on the first attempt.
+  (let [seen (atom [])
+        r (dec/solve {:id "root" :problem "big task"} 0
+                     {:attempt (fn [node]
+                                 (swap! seen conj (:id node))
+                                 (cond
+                                   (:assembly node) {:passed? true :answer "assembled"}
+                                   (= "root" (:id node))
+                                   {:split [{:id "root/a" :problem "do a" :task-id "T1"}
+                                            {:id "root/b" :problem "do b" :task-id "T2"}]}
+                                   :else {:passed? true :answer (str "built " (:id node))}))
+                      :recover (fn [& _]
+                                 (throw (ex-info "a unit that split was never stuck" {})))
+                      :fan seq-fan})]
+    (is (= :landed (:status r)))
+    (is (= ["root/a" "root/b"] (mapv #(get-in % [:node :id]) (:children r))))
+    (is (= #{"root" "root/a" "root/b"} (set @seen))
+        "the children were attempted, and the root twice — once to split, once to assemble")))
+
+(deftest a-split-that-lost-a-child-fails-rather-than-assembling-over-it
+  (let [r (dec/solve {:id "root" :problem "big"} 0
+                     {:attempt (fn [node]
+                                 (cond
+                                   (:assembly node)
+                                   (throw (ex-info "must not assemble over a failed piece" {}))
+                                   (= "root" (:id node))
+                                   {:split [{:id "root/a" :problem "do a"}]}
+                                   :else {:passed? false :failure "could not build it"}))
+                      :recover (constantly nil)
+                      :fan seq-fan})]
+    (is (= :failed (:status r)))))
+
 (deftest solve-fails-hard-at-the-depth-budget
   (let [r (dec/solve {:id "x" :problem "p"} (dec/max-depth)
                      {:attempt (constantly {:passed? false :failure "nope"})
@@ -197,3 +234,34 @@
                       :max-depth 1})]
     (is (= :failed (:status r)))
     (is (> (count @ids) 1) "it split before giving up")))
+
+(deftest the-architect-is-told-how-many-times-this-was-really-attempted
+  ;; v21: the count comes off the task row, so a resumed run diagnoses a unit
+  ;; on its fourth try as one rather than starting the tally over.
+  (let [seen (atom nil)]
+    (dec/solve {:id "x" :problem "p"} 0
+               {:attempt (constantly {:passed? false :failure "no" :attempts 4})
+                :recover (fn [_ ev] (reset! seen (:attempts ev)) nil)
+                :fan seq-fan})
+    (is (= 4 @seen) "the architect sees the durable count, not a fresh one")))
+
+(deftest a-child-row-hangs-off-its-parents-row-on-the-fallback-path-too
+  ;; Run 3b3ce405: the split path nested its task rows properly and the
+  ;; architect path left every unit an orphan, so one run recorded its work two
+  ;; different ways depending on which path produced a unit. The attempt is
+  ;; what learns a unit's task id, so it has to travel back to the node before
+  ;; the children are built from it.
+  (let [seen (atom [])]
+    (dec/solve {:id "root" :problem "big"} 0
+               {:attempt (fn [node]
+                           (swap! seen conj [(:id node) (:parent-task node)])
+                           (if (= "root" (:id node))
+                             {:passed? false :failure "too big" :task-id "sz-root"}
+                             {:passed? true :answer "built" :task-id "sz-kid"}))
+                :recover (fn [& _] {:kind :decompose
+                                    :subtasks [{:name "a" :description "do a"}]})
+                :fan seq-fan})
+    (is (= ["root" "root/a" "root"] (mapv first @seen))
+        "root, then its piece, then root again as the assembly")
+    (is (= [nil "sz-root" nil] (mapv second @seen))
+        "the child is told which row to hang off; the root has none to hang off")))

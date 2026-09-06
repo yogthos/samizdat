@@ -28,7 +28,9 @@
   Every call returns {:ok true :body ...} or {:ok false :error ...} — a
   dead or absent server is a value the UI renders, never a throw that
   takes the window down."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [jolt.http-client :as http]))
 
 (def ^:private opts

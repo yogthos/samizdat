@@ -8,7 +8,8 @@
   config IS the property under test: the step is a pure function of a tape
   plus an injected `complete`. Before the refactor there was no way to ask
   what a turn would do without running one."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [samizdat.agent.infer :as infer]
             [samizdat.agent.loop :as aloop]
             [samizdat.agent.state :as state]
@@ -88,6 +89,29 @@
     (is (= "done" (:name parsed))
         "without the prefill this parses as a no-call — the failure prefill exists to prevent")
     (is (nil? (:prefill tape)) "the knob is cleared by absorb, not by its caller")))
+
+(deftest absorb-does-not-reattach-a-prefill-the-adapter-dropped
+  ;; The tape asked for a prefill, but the client reports :prefilled nil
+  ;; because the adapter could not continue a trailing assistant message (GLM,
+  ;; DeepSeek /v1). The model therefore emitted its OWN complete fence, and
+  ;; reattaching the tape's opener would store a DOUBLED ```tool-call that the
+  ;; model then imitates on every later turn (karamazov-0r8s).
+  (let [t (assoc base-tape :prefill "```tool-call\n")
+        content "```tool-call\n{\"name\": \"done\", \"args\": {}}\n```"
+        {:keys [tape parsed said]}
+        (infer/absorb t {:content content :finish-reason "stop" :prefilled nil})]
+    (is (= "done" (:name parsed)) "the model's own fence still parses")
+    (is (= content said) "stored exactly as said — no second opener glued in front")
+    (is (not (str/includes? said "```tool-call\n```tool-call"))
+        "the doubled opener the bug produced is gone"))
+  (testing "and when the client DID send the prefill, :prefilled reattaches it"
+    (let [t (assoc base-tape :prefill "```tool-call\n")
+          {:keys [said parsed]}
+          (infer/absorb t {:content "{\"name\": \"done\", \"args\": {}}\n```"
+                           :finish-reason "stop" :prefilled "```tool-call\n"})]
+      (is (= "done" (:name parsed)))
+      (is (str/starts-with? said "```tool-call\n{\"name\"")
+          "the opener the provider continued is put back exactly once"))))
 
 ;; --- the step ---------------------------------------------------------------
 

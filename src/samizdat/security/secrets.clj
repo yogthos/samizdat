@@ -156,16 +156,33 @@
        (remove str/blank?)
        set))
 
+(def parent-only-vars
+  "Variables that describe THE PARENT PROCESS and are wrong for any child.
+
+  JOLT_PWD: jolt's source-tree wrapper (bin/jolt) exports it as the directory
+  that is THE PROJECT, and the runtime resolves relative files against it and
+  reads deps.edn from it. The installed binary sets none of it, so a harness
+  run from `/opt/homebrew/bin/jolt` never leaked it — and a harness run from a
+  checkout handed every child the harness's OWN checkout as its project. A
+  project image rooted at the run's root then answered `(slurp \"README.md\")`
+  with the harness's README, and `jolt -M:test` inside it would have run the
+  harness's suite as the run's verification. That is the confinement the image
+  exists to provide, quietly inverted. Dropped here rather than overwritten
+  because scrub-env does not know the child's root; the child's own wrapper
+  sets JOLT_PWD from the cwd `:dir` gave it, which is the right answer."
+  #{"JOLT_PWD"})
+
 (defn scrub-env
-  "The environment a subprocess is allowed to see. Name-sensitive vars are
-  removed; any remaining var whose value is credential-shaped OR contains a
-  known stripped value is replaced with [REDACTED]. Pure over the env map so
-  it is testable without a spawn."
+  "The environment a subprocess is allowed to see. Name-sensitive vars and
+  `parent-only-vars` are removed; any remaining var whose value is
+  credential-shaped OR contains a known stripped value is replaced with
+  [REDACTED]. Pure over the env map so it is testable without a spawn."
   [env]
   (let [known (stripped-values env)]
     (into {}
           (keep (fn [[k v]]
                   (cond
+                    (contains? parent-only-vars (str k)) nil
                     (sensitive-name? k) nil
                     (or (sensitive-value? v)
                         (some #(str/includes? (str v) %) known))

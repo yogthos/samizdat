@@ -4,6 +4,8 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [samizdat.agent.tools.base :as base]
              [samizdat.agent.tools.lsp]
+             ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+             [jolt.time]
              [clojure.data.json :as json]
              [samizdat.lsp.client :as client]
              [samizdat.security.secrets :as secrets]))

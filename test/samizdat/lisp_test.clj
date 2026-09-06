@@ -166,3 +166,56 @@
       "balanced quotes report nothing")
   (is (nil? (lisp/first-odd-quote-line "(def a \\\" 1)"))
       "an escaped quote is not a string delimiter"))
+
+;; --- repair from INDENTATION, not just from the stack (karamazov-5wb) -------
+
+(deftest a-closer-the-indentation-implies-is-inserted-where-it-belongs
+  ;; The delimiter stack can only ever append at the END, so it answers "how
+  ;; many are missing" and never "where does the missing one go". For the
+  ;; commonest shape a model actually emits — a binding vector never closed,
+  ;; the body indented under it — the stack's answer is a MISMATCH and the
+  ;; whole write is refused. Indentation carries the missing information: the
+  ;; body is indented less than the bindings, so the vector ended before it.
+  (let [broken "(let [x 1\n      y 2\n  (+ x y))"
+        r (lisp/balance broken)]
+    (is (= :repaired (:status r)))
+    (is (= :auto-indented (:reason r)))
+    (is (= "(let [x 1\n      y 2]\n  (+ x y))" (:content r))
+        "the ] goes at the end of the bindings, not at the end of the text")
+    (testing "and the repair reads, which is what earns it the write"
+      (is (= :balanced (:status (lisp/balance (:content r))))))))
+
+(deftest an-indent-repair-may-only-add-delimiters-never-remove-anything
+  ;; The accept gate, and the reason this rung sits BELOW the stack's own.
+  ;; Parinfer in indent mode will happily delete a closer that indentation
+  ;; disagrees with, and deleting from a model's text is how a repair becomes
+  ;; a corruption. samizdat's standing rule is that a mid-file imbalance is
+  ;; the model's to fix, because closing or dropping one re-parents the forms
+  ;; around it — so an indent repair is accepted only when every change it
+  ;; made was an INSERTED delimiter.
+  (testing "a mid-file stray is still refused, though parinfer would remove it"
+    (let [r (lisp/balance "(defn a [] 1)\n)\n(defn b [] 2)")]
+      (is (= :unbalanced (:status r)))
+      (is (= :stray (:reason r)))))
+  (testing "a mismatched closer is still refused, though parinfer would swap it"
+    (let [r (lisp/balance "(defn f [x}\n  x)")]
+      (is (= :unbalanced (:status r)))
+      (is (= :mismatch (:reason r))))))
+
+(deftest an-unterminated-string-is-never-indent-repaired
+  ;; Quote imbalance is the one thing paren repair can never fix, and it is
+  ;; also the input that used to throw straight out of parse on Jolt. Both
+  ;; halves matter: it must still be REFUSED, and refusing it must not depend
+  ;; on the repair engine surviving it.
+  (let [r (lisp/balance "(defn f []\n  \"unterminated\n  (+ 1 2))")]
+    (is (= :unbalanced (:status r)))
+    (is (= :unterminated-string (:reason r)))))
+
+(deftest a-trailing-truncation-still-takes-the-cheaper-stack-repair
+  ;; The stack rung stays first where it applies: it is exact for a trailing
+  ;; truncation and says so as :auto-closed, which is the note the model has
+  ;; been reading. Indentation repair is the fallback for what the stack has
+  ;; to refuse, not a replacement for it.
+  (let [r (lisp/balance "(defn f []\n  (+ 1 2")]
+    (is (= :repaired (:status r)))
+    (is (= :auto-closed (:reason r)))))

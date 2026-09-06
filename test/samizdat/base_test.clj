@@ -214,6 +214,20 @@
                      passes one to the 3-arity, the same seam api/runs.clj uses
                      for page sizes."}}
 
+   "src/samizdat/escapes.clj"
+   {:threshold {:all "Unicode's own numbers, not this project's. The ASCII hex
+                      digit boundaries (48/57, 65/70, 97/102), U+00A0 as the
+                      floor below which an escape is load-bearing rather than
+                      drift, and the surrogate ranges (0xD800-0xDBFF,
+                      0xDC00-0xDFFF) are facts about the encoding. Retuning any
+                      of them at runtime cannot express a different policy, only
+                      a decoder that is wrong: shifting the ASCII range makes it
+                      read hex it should not, and moving the surrogate bounds
+                      makes it build code points that do not exist. What IS
+                      policy here — which categories may be decoded INTO — is
+                      already named rather than numbered, as
+                      `undecodable-categories`."}}
+
    "src/samizdat/agent/tournament.clj"
    {:threshold {1103515245 "The LCG multiplier — a PRNG's algorithm constants,
                             like a hash function's primes. Retuning them at
@@ -235,7 +249,13 @@
    {:threshold {:all "HTTP status classes (200/299/500) and the retry ladder's
                       wall-clock bounds, which RFC-005 fixes deliberately: the
                       ladder is the one thing a provider adapter may not
-                      diverge from, so it is not per-project tunable."}}
+                      diverge from, so it is not per-project tunable."}
+    :vocabulary {"\\.gguf$" "llama.cpp's model container extension, stripped
+                              from the model_path /props reports so the file
+                              stem can name the model. A fact about the file
+                              format the endpoint serves, not a choice a
+                              project makes; a different container would be a
+                              different server and a different probe."}}
 
    "src/samizdat/api/runs.clj"
    {:threshold {:all "Page sizes for a read API. A client that wants fewer
@@ -281,6 +301,13 @@
                      caller passes the value from `:context-budget` — and the
                      namespace takes no configuration by design (RFC-004: the
                      tape decides nothing)."}}
+
+   "src/samizdat/security/sandbox.clj"
+   {:threshold {65536 "CLONE_THREAD, the kernel's flag bit for a clone that
+                       makes a thread rather than a process. A Linux ABI
+                       constant, and the seccomp filter that reads it is a
+                       security control: a value the agent could retune is
+                       not a control (see policy.clj below)."}}
 
    "src/samizdat/security/policy.clj"
    {:threshold {120000 "Shell command timeout. A security bound, and see the
@@ -384,7 +411,12 @@
                   samizdat's vocabulary."}}
 
    "src/samizdat/llm/fence.clj"
-   {:vocabulary {:all "The tool-call fence is the ABI between the harness and
+   {:threshold {40 "How many characters of the model's own text a parse
+                    error quotes on each side of the failure. The width of a
+                    quotation, not a decision: the model recognises its text
+                    at any width past a few words, and a project has nothing
+                    to gain by retuning it."}
+    :vocabulary {:all "The tool-call fence is the ABI between the harness and
                        the model — the one format the base must be able to
                        read before any resource has been loaded. It is
                        documented to the model in prompts/system.md, and the
@@ -724,14 +756,6 @@
    "src/samizdat/store/artifacts.clj"
    #{
     " branches have this; it does not need another)"
-    }
-   "src/samizdat/store/interventions.clj"
-   #{
-    "Open a sibling branch on a stated thesis."
-    "Raise the run's turn cap."
-    "Stop a branch. Refused if it is the last one running."
-    "Tell a branch to cross-check and ship what it has."
-    "Un-confirm an artifact that was not what it claimed. Payload: {\"artifact_id\": N, \"reason\": \"...\"}."
     }
    "src/samizdat/store/runs.clj"
    #{

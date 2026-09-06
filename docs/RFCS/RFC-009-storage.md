@@ -19,8 +19,11 @@ gate fired. It stores what it is handed.
 
 ## Model
 
-One SQLite database per project, cwd-relative (`samizdat.sqlite3`), so a project
-*is* a directory (RFC-001).
+One SQLite database per project at `<root>/.samizdat/samizdat.sqlite3`,
+root-relative, so a project *is* a directory (RFC-001). `db/open!` creates the
+parent directory; `config/db-location` decides the path (env, existing,
+legacy root file, or the default) and start! logs a legacy file rather than
+moving it.
 
 ```
 runs ──┬── branches ──┬── turns          every model call and tool result

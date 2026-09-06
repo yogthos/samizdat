@@ -45,6 +45,7 @@
             [samizdat.manual :as manual]
             [samizdat.agent.roles :as roles]
             [samizdat.prompt :as prompt]
+            [samizdat.store.journal :as journal]
             [samizdat.store.userspace]
             [samizdat.userspace :as userspace]))
 
@@ -119,6 +120,18 @@
       (userspace/save! :policy name (userspace/template :policy name) why)))
   (reload-and-verify! name))
 
+(defn- safely-note
+  "Record a self-grading edit on the run's journal. Best effort: an audit note
+  must never be able to fail the edit it is auditing."
+  [{:keys [conn run-id]} changed why]
+  (try
+    (when (and conn run-id)
+      (journal/note! conn run-id :self-graded
+                     {:data {:keys (mapv name (keys changed))
+                             :changes (pr-str changed)
+                             :rationale (str why)}}))
+    (catch Throwable _ nil)))
+
 (defmethod base/run-tool "policy" [{:keys [branch] :as ctx}]
   (let [action (some-> (base/arg ctx :action) str str/trim str/lower-case not-empty)
         name (some-> (base/arg ctx :name) str str/trim not-empty)]
@@ -179,6 +192,25 @@
                 ;; Warm the cache so the seed exists and the version we might
                 ;; roll back to is real, then store and recompile.
                 (do (userspace/body :policy name)
+                    ;; SELF-GRADING IS NAMED, not refused (karamazov-7mo M10).
+                    ;; A run may rewrite the gates it is judged by — that is
+                    ;; the standing premise and it is not being narrowed here
+                    ;; — but an edit to :fitness or :verify-unknown changes the
+                    ;; SCORE rather than the behaviour, so it goes on the
+                    ;; record where a reader of the run can see it. Journalled
+                    ;; before the save so a rollback still leaves the attempt
+                    ;; visible.
+                    (when (= "gates" name)
+                      ;; Against the STORED current body rather than
+                      ;; gates/config: the cache is a process global and can
+                      ;; lag what this project has in force, which would name
+                      ;; an edit that did not happen (or miss one that did).
+                      (let [changed (gates/self-graded-changes
+                                     (try (userspace/edn-body :policy "gates")
+                                          (catch Throwable _ nil))
+                                     (:ok parsed))]
+                        (when (seq changed)
+                          (safely-note ctx changed why))))
                     (let [v (userspace/save! :policy name (str body) why)]
                       (if (nil? v)
                         (base/fail branch (msg {:unbound true :name name}))

@@ -90,46 +90,85 @@
 (defn snapshot
   "The tally as it stands. A plain map — safe to hold, diff, or render.
 
-  Marks and experiments are excluded: they hold whole tallies of their own, and
-  including them would make a snapshot grow with every intervention and a diff
-  compare a tally against a tally containing itself."
+  Marks, experiments and the per-branch tallies are excluded: the first two
+  hold whole tallies of their own, and including them would make a snapshot
+  grow with every intervention and a diff compare a tally against a tally
+  containing itself; the branch tallies are the same counts again, cut per
+  branch, and belong to `branch-tally` rather than to the process-wide view."
   []
-  (dissoc @tally :marks :experiments))
+  (dissoc @tally :marks :experiments :branches))
+
+;; --- per-branch tallies (RFC-012 F3, karamazov-ts3o.2) ------------------------
+;;
+;; The same counters, cut per branch, so that the number the beam culls on and
+;; the number the supervisor evaluates on are ONE number: `fitness-of` over a
+;; branch's own tally, with the same weights. Keyed by [run-id branch-id],
+;; because branch ids repeat across runs and a serve process outlives many.
+;; Fed by the same observe calls, when the caller can say which branch — a
+;; count with no branch still lands in the process-wide tally and nowhere
+;; else, so nothing that could be counted before is counted less now.
+
+(defn- count-at
+  "`f` applied at the root of the tally and, when `branch` is given, at that
+  branch's tally too."
+  [t branch f]
+  (cond-> (f t)
+    branch (update-in [:branches branch] #(f (or % {})))))
 
 (defn observe!
   "Record one thing that happened. `path` is a key path into the tally and the
-  count at it goes up by one.
+  count at it goes up by one — for the process and, when `branch` ([run-id
+  branch-id]) is given, for that branch.
 
   Deliberately total and forgiving: an unknown path just creates itself. A
   counter that threw on an unrecognised event would make adding a new signal a
   change to this namespace, and the whole value of the tally is that anywhere
   in the loop can contribute to it cheaply."
-  [path]
-  (swap! tally update-in (vec path) (fnil inc 0))
-  nil)
+  ([path] (observe! path nil))
+  ([path branch]
+   (swap! tally count-at branch #(update-in % (vec path) (fnil inc 0)))
+   nil))
+
+(defn- count-turn
+  [t {:keys [tool category signals]}]
+  (cond-> (update t :turns (fnil inc 0))
+    (and tool category)
+    (update-in [:tools (str tool) (keyword (name category))] (fnil inc 0))
+
+    :always
+    (update :signals
+            (fn [s]
+              (reduce (fn [acc [k v]] (if v (update acc k (fnil inc 0)) acc))
+                      (or s {})
+                      (select-keys signals
+                                   [:no-fence :truncated :parse-error
+                                    :auto-repaired :multiple-fences]))))))
 
 (defn observe-turn!
   "One completed turn: the tool it called and how that went, plus whatever the
-  fence had to say about the reply.
+  fence had to say about the reply — and, when `:branch` ([run-id branch-id])
+  is given, the same for that branch's own tally.
 
   One call rather than several, because this is on the hot path of every turn
   and a partial record — the tool counted, the signals lost — would be worse
   than none: it would look like a clean turn."
-  [{:keys [tool category signals]}]
-  (swap! tally
-         (fn [t]
-           (cond-> (update t :turns (fnil inc 0))
-             (and tool category)
-             (update-in [:tools (str tool) (keyword (name category))] (fnil inc 0))
+  [{:keys [branch] :as turn}]
+  (swap! tally count-at branch #(count-turn % turn))
+  nil)
 
-             :always
-             (update :signals
-                     (fn [s]
-                       (reduce (fn [acc [k v]] (if v (update acc k (fnil inc 0)) acc))
-                               (or s {})
-                               (select-keys signals
-                                            [:no-fence :truncated :parse-error
-                                             :auto-repaired :multiple-fences])))))))
+(defn branch-tally
+  "The tally of one branch — the same shape as `snapshot`, so everything that
+  reads a tally reads this — or nil when nothing has been counted for it."
+  [run-id branch-id]
+  (get-in @tally [:branches [run-id branch-id]]))
+
+(defn forget-run!
+  "Drop a finished run's branch tallies, so a long-lived serve process does not
+  keep one per branch it has ever driven. The process-wide counts stay: that
+  is the cross-run view, and dilution is its point."
+  [run-id]
+  (swap! tally update :branches
+         (fn [bs] (into {} (remove (fn [[[r _] _]] (= r run-id))) bs)))
   nil)
 
 (defn mark!
@@ -228,6 +267,25 @@
   "The session's fitness as it stands."
   []
   (fitness-of (snapshot)))
+
+(defn branch-fitness
+  "One branch's fitness, per turn, by the SAME function and weights the session
+  and every experiment are scored with — the number selection and evaluation
+  share (RFC-012 F3). nil when nothing has been counted for the branch: not a
+  score of zero but the absence of one, and a cull or a digest reading nil
+  reads it as unknown."
+  [run-id branch-id]
+  (some-> (branch-tally run-id branch-id) fitness-of))
+
+(defn branch-fitnesses
+  "Every measured branch of a run: {branch-id fitness}, only the ones with a
+  fitness to report."
+  [run-id]
+  (into (sorted-map)
+        (keep (fn [[[r b] t]]
+                (when (= r run-id)
+                  (when-let [f (fitness-of t)] [b f]))))
+        (:branches @tally)))
 
 ;; --- experiments: a change, its hypothesis, and what happened ---------------
 

@@ -19,7 +19,9 @@
 (ns samizdat.judge-test
   "The finalization critic: the pure judge core, and the block-then-ship loop
   behavior on the `critic` manifest."
-  (:require [clojure.data.json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]

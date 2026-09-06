@@ -21,7 +21,9 @@
   Pure here — the architect prompt and the decision parsing; the orchestration
   (attempt, recurse, assemble, depth cap) lives in cells/decompose.clj. Same
   split as planner.clj vs cells/team.clj."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [samizdat.agent.gates :as gates]
             [samizdat.prompt :as prompt]))
@@ -74,12 +76,19 @@
 
 (defn child-node
   "A sub-unit node from the parent and an architect subtask spec. Its id encodes
-  lineage; its problem is the subtask's one-paragraph contract."
+  lineage; its problem is the subtask's one-paragraph contract.
+
+  `:parent-task` carries the PARENT'S task id, not its node id, so the row the
+  child mints hangs off the row the parent holds. Without it the fallback
+  path's task tree was flat — every architect-made unit an orphan — while the
+  split path's was properly nested, so the same run recorded its work two
+  different ways depending on which path produced a unit (run 3b3ce405)."
   [parent {:keys [name description]}]
   {:id (str (:id parent) "/" name)
    :name name
    :problem description
-   :parent (:id parent)})
+   :parent (:id parent)
+   :parent-task (:task-id parent)})
 
 (defn- can-split?
   "Whether a unit at this depth may still be decomposed. Below the budget a stuck
@@ -107,19 +116,36 @@
 
 (declare solve)
 
-(defn- decompose-node
-  "Split `node` per `decision`, solve each sub-unit (recursively, so a stuck
-  sub-unit splits again), then — if they all land — re-attempt the parent as the
-  thin assembly that composes them, judged against the parent's OWN tests."
-  [node depth {:keys [attempt fan] :as ops} decision]
-  (let [children (:subtasks decision)
-        results (fan (mapv (fn [c] #(solve (child-node node c) (inc depth) ops)) children))]
+(defn- assemble
+  "Solve `children` (recursively, so a stuck sub-unit splits again), then — if
+  they all land — re-attempt the parent as the assembly that composes them,
+  judged against the parent's OWN tests.
+
+  The parent may ADJUST what the pieces delivered at this step. Seeing them
+  compose is the first time anyone can tell whether the boundary was right, so
+  assembly is where the design gets checked rather than only where the glue
+  goes (prompts/assembly.md). What it must not do is discard a piece that met
+  its contract."
+  [node depth {:keys [attempt fan] :as ops} children]
+  (let [results (fan (mapv (fn [c] #(solve c (inc depth) ops)) children))]
     (if-not (every? #(= :landed (:status %)) results)
       {:status :failed :reason "a sub-unit did not land" :node node :children results}
       (let [asm (attempt (assoc node :assembly true :child-answers (mapv :answer results)))]
         (if (:passed? asm)
           {:status :landed :answer (:answer asm) :node node :children results}
           {:status :failed :reason "assembly did not land" :node node :children results})))))
+
+(defn- decompose-node
+  "Assemble from an ARCHITECT's decision rather than the agent's own split.
+
+  This is the recovery path: a unit that got stuck, could not be talked into a
+  different approach, and is being broken up from outside. Its children are
+  described rather than stubbed — the architect has no tools and cannot write
+  code — so they carry a paragraph where a delegated piece carries a signature.
+  That is a weaker contract, and it is why this is the fallback and the agent's
+  own `split` is the ordinary path."
+  [node depth ops decision]
+  (assemble node depth ops (mapv #(child-node node %) (:subtasks decision))))
 
 (defn solve
   "Recursive decompose-on-stuck for one node. Pure control flow over injected
@@ -145,10 +171,29 @@
   composes it never re-litigates it."
   [node depth {:keys [attempt recover fan max-depth] :as ops}]
   (let [max-d (or max-depth (samizdat.agent.decompose/max-depth))
-        r (attempt node)]
-    (if (:passed? r)
-      {:status :landed :answer (:answer r) :node node}
-      (let [ev {:last-answer (:answer r) :last-failure (:failure r) :depth depth}
+        r (attempt node)
+        ;; The attempt is what learns this unit's task id — the root's row is
+        ;; minted when it is first tried — so the node only knows it afterwards.
+        ;; Threading it back is what lets child-node point a sub-unit's row at
+        ;; its parent's.
+        node (cond-> node (:task-id r) (assoc :task-id (:task-id r)))]
+    (cond
+      ;; THE AGENT SPLIT ITS OWN TASK. It wrote the stubs, the harness verified
+      ;; them against the tree, and the child tasks exist — so there is nothing
+      ;; to diagnose and no architect to ask. This is the recursion's ordinary
+      ;; path, not its recovery path: a unit that split was never stuck.
+      (seq (:split r)) (assemble node depth ops (:split r))
+
+      (:passed? r) {:status :landed :answer (:answer r) :node node}
+
+      :else
+      (let [ev {:last-answer (:answer r) :last-failure (:failure r) :depth depth
+                ;; From the TASK ROW (v21), not a counter in this process. A
+                ;; resumed run picks up the tally its predecessor left, so a
+                ;; unit on its fourth try is diagnosed as one — the architect
+                ;; is told how many times this has been attempted, and that
+                ;; number used to reset to zero on every crash.
+                :attempts (:attempts r)}
             decision (recover node ev)]
         (case (:kind decision)
           ;; The architect wants a split. Honour it if the budget allows; at the

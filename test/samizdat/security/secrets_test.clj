@@ -216,3 +216,20 @@
           (str prefix " is a high-confidence credential shape"))
       (is (not (str/includes? (secrets/redact (str "token: " tok)) tok))
           (str prefix " is caught by the regex rail with no known-values")))))
+
+(deftest scrub-env-drops-the-parents-own-project-dir
+  ;; JOLT_PWD is the variable jolt's dev wrapper (bin/jolt) exports to say
+  ;; which directory is THE PROJECT, and the runtime resolves relative files
+  ;; against it. It describes the parent and must never reach a child: a
+  ;; project image or a shell tool spawned by a harness that was itself
+  ;; started from a source-tree jolt inherited the HARNESS checkout as its
+  ;; project dir, so `(slurp "README.md")` inside a run read the harness's
+  ;; README and `jolt -M:test` would have run the harness's suite — exactly
+  ;; what the project image exists to prevent. Dropping it lets the child's
+  ;; own wrapper set it from the cwd `:dir` gave it.
+  (let [scrubbed (secrets/scrub-env {"JOLT_PWD" "/Users/someone/src/samizdat"
+                                     "PATH" "/usr/bin"
+                                     "HOME" "/Users/someone"})]
+    (is (not (contains? scrubbed "JOLT_PWD")))
+    (is (= "/usr/bin" (get scrubbed "PATH")) "ordinary vars pass through")
+    (is (= "/Users/someone" (get scrubbed "HOME")))))

@@ -217,7 +217,8 @@
             {:ok false :error-type "image-down"
              :error (prompt/render "image-down" {})})
         (let [backend (sandbox/backend-for (config/eval-sandbox root)
-                                           (System/getProperty "os.name"))]
+                                           (System/getProperty "os.name")
+                                           (some? (fs/which "bwrap")))]
           (if-let [im (image-for! root backend)]
           ;; The transport is an FFI socket with no read timeout, so the bound
           ;; is a deadline on a future. On expiry the IMAGE goes: a runaway

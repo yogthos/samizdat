@@ -21,7 +21,9 @@
   mycelium's checks, and the manifest-driven driver produces the same runs the
   hand-written loop did. Editing the stored definition changes the next run —
   that is the whole point."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.introspect]
@@ -107,9 +109,11 @@
   (let [def (workflow/read-definition (slurp (clojure.java.io/resource "manifests/loop.edn")))
         ;; Route the tool path around the journal while keeping :journal
         ;; reachable from the no-call path, so the unreachable check cannot
-        ;; catch it first — only the constraint can.
+        ;; catch it first — only the constraint can. Around the journal ONLY:
+        ;; skipping :settle as well would be caught earlier by the schema
+        ;; chain, since the arbiter requires what settle writes.
         broken (-> def
-                   (assoc-in [:edges :dispatch] :arbiter)
+                   (assoc-in [:edges :dispatch] :settle)
                    (assoc-in [:edges :no-call] :journal))]
     (is (thrown-with-msg? Exception #"must-follow"
                           (workflow/compile-loop broken)))))

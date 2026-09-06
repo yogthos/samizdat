@@ -16,6 +16,7 @@
             [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.store.runs :as runs]
+            [samizdat.userspace :as userspace]
             [samizdat.workflow :as wf]
             [mycelium.core :as myc]))
 
@@ -49,7 +50,7 @@
 (defn worth-a-look?
   "Whether this moment deserves a model call.
 
-  PURE, and the whole cost control of the stream. Three things make a pass
+  PURE, and the whole cost control of the stream. Five things make a pass
   worth its price, and none of them is 'time has passed':
 
   - the run is being STEERED AND IGNORING IT. A gate firing unmet is the
@@ -59,13 +60,60 @@
     no file written.
   - something CRASHED. A stage error is a harness bug the loop survived, and
     it will happen again on the next run if nobody looks.
+  - the outer loop is AT ITS SOFT CAP. The feature loop keeps solving past
+    it on its own ladder, and the cap is its notice that whether to switch,
+    re-budget or stop is now a decision — the supervisor's, and there is one
+    supervisor to hand it to (RFC-012 F1).
+  - NOBODY SHIPPED. The sharpest form of the second one: a round where every
+    owner abandoned, gave up or crashed is producing nothing, and says so in
+    its own outcomes rather than by the proxy of turns since a write
+    (karamazov-u5uy). No floor, because zero out of a positive total is not
+    a matter of degree.
 
   A healthy run that is shipping gets no supervision, which is correct: there
   is nothing to tune and saying so costs a turn of somebody's budget."
-  [{:keys [unmet-gates idle-turns errors]} {:keys [unmet-floor idle-floor]}]
+  [{:keys [unmet-gates idle-turns errors at-cap? nothing-shipped?]}
+   {:keys [unmet-floor idle-floor]}]
   (boolean (or (>= (or unmet-gates 0) unmet-floor)
                (>= (or idle-turns 0) idle-floor)
-               (seq errors))))
+               (seq errors)
+               at-cap?
+               nothing-shipped?)))
+
+(defn at-cap?
+  "Whether the outer loop's last round was at or past its soft cap, read from
+  the :route note the feature loop leaves each round."
+  [round]
+  (boolean (and round (:soft-cap round)
+                (>= (or (:revision round) 0) (:soft-cap round)))))
+
+(defn round-results
+  "The implement round's per-owner outcomes, read off the journal.
+
+  Every implement strategy — board, team and decompose — writes the round it
+  finished as an :implement-round note in the FAN-OUT's vocabulary, and this
+  is the one place that vocabulary is read back. The status makes the trip as
+  a string, because a journal note is JSON and JSON has no keywords, so it is
+  put back as a keyword here: the digest counts `(= :done (:status %))` and a
+  silent string would count as zero shipped forever, which is the shape of
+  the bug this fixes (karamazov-u5uy)."
+  [note]
+  (mapv (fn [r] (update r :status #(some-> % name keyword)))
+        (:results note)))
+
+(defn nothing-shipped?
+  "Whether an implement round produced nothing at all. Guarded on a non-empty
+  round: no round is not the same fact as a failed round, and only the second
+  is worth a model call."
+  [results]
+  (boolean (and (seq results)
+                (not-any? #(= :done (:status %)) results))))
+
+(defn- crash-line
+  "A :stage-error note as the one-line form the digest's layer classifier
+  reads — the same shape the feature loop's stage guard accumulates."
+  [{:keys [stage node error]}]
+  (str stage (when (seq (str node)) (str "/" node)) ": " error))
 
 (cell/defcell :oversight/gather
   {:doc "Read the run's health from the JOURNAL rather than from a stage's data
@@ -86,7 +134,10 @@
    :output [:per-transition
             {:reason [:map [:oversight/turns :any] [:oversight/firings :any]
                       [:oversight/findings :any] [:oversight/unmet :any]
-                      [:oversight/idle :any] [:oversight/worth-a-look? :boolean]]
+                      [:oversight/idle :any] [:oversight/round :any]
+                      [:oversight/crashes :any] [:oversight/results :any]
+                      [:oversight/self-graded :any]
+                      [:oversight/worth-a-look? :boolean]]
              :quiet  [:map [:oversight/worth-a-look? :boolean]]}]}
   (fn [{:keys [conn run-id]} data]
     (safely :gather
@@ -100,16 +151,42 @@
              writes (gates/tool-vocab :file-write)
              since (count (take-while #(not (contains? writes (str (:tool_name %))))
                                       (reverse turns)))
-             findings (session/findings (session/run-window run-id))]
+             findings (session/findings (session/run-window run-id))
+             ;; THE ROUND, off the journal. The feature loop's stage used to
+             ;; hand a supervisor of its own the round's facts in a data map;
+             ;; the one supervisor reads them where the loop writes them
+             ;; (RFC-012 F1): the last :route note is the round's outcome and
+             ;; its cap, and every :stage-error note is a crash the loop
+             ;; survived and nobody else will look at.
+             round (journal/last-note conn run-id :route)
+             ;; THE ROUND'S OUTCOMES, per owner. The strategies used to hand
+             ;; these to a supervisor stage of their own in a data map; that
+             ;; stage is gone, so they are journalled and read here like
+             ;; everything else the stream needs (karamazov-u5uy). Without
+             ;; this the digest counted an empty vector on EVERY strategy and
+             ;; every brief read `Implementors: 0/0 shipped`.
+             results (round-results (journal/last-note conn run-id :implement-round))
+             ;; Every evaluator edit this run made, so a run that regraded
+             ;; itself says so in its own brief and its own record
+             ;; (karamazov-7mo M10). Named, never refused.
+             self-graded (into [] (comp (mapcat :keys) (distinct))
+                               (journal/notes conn run-id :self-graded))
+             crashes (journal/notes conn run-id :stage-error)]
          (assoc data
                 :oversight/turns turns
                 :oversight/firings firings
                 :oversight/findings findings
                 :oversight/unmet unmet
                 :oversight/idle since
+                :oversight/round round
+                :oversight/results results
+                :oversight/self-graded self-graded
+                :oversight/crashes crashes
                 :oversight/worth-a-look?
                 (worth-a-look? {:unmet-gates unmet :idle-turns since
-                                :errors (seq (filter :error findings))}
+                                :errors (seq (concat (filter :error findings) crashes))
+                                :at-cap? (at-cap? round)
+                                :nothing-shipped? (nothing-shipped? results)}
                                {:unmet-floor (gates/threshold :oversight-unmet-floor)
                                 :idle-floor (gates/threshold :oversight-idle-floor)}))))
      (assoc data :oversight/worth-a-look? false))))
@@ -135,16 +212,17 @@
 
         The branch id is stable for the whole run (`SUP`), not minted per pass,
         so the supervisor accumulates a memory of what it already noticed and
-        already tried. `:feature/supervise` opens `S<revision>` — a new context
-        every time — which is why the supervisor there re-derives the same
-        diagnosis on every look and can never say 'I changed that last time and
-        it did not help'.
+        already tried — it can say 'I changed that last time and it did not
+        help', which a supervisor opened cold per look never could.
 
-        `SUP` and not `S0`, which is what this used to open and what
-        `:feature/supervise` opens on revision zero. Two writers on one branch
-        id: run 498450e1's S0 holds 26 turn rows numbered up to 14, the stream
-        and the stage overwriting each other's turn numbers, and a record that
-        cannot say which supervisor said what is a record of neither."
+        THE ONE SUPERVISOR (RFC-012 F4). `:feature/supervise` used to open
+        `S<revision>` and run this same role from a second context, and before
+        that this stream opened `S0`, which is what the stage opens on revision
+        zero: run 498450e1's S0 holds 26 turn rows numbered up to 14, the
+        stream and the stage overwriting each other's turn numbers, and a
+        record that cannot say which supervisor said what is a record of
+        neither. The stage runs no role now; its say is what this pass sends
+        through `intervene`."
    :effects [:net :db]
    :requires [:conn :run-id :config]
    ;; The telemetry gather produced, which only reaches here on the :reason
@@ -152,6 +230,15 @@
    ;; halves of the same claim.
    :input  [:map [:oversight/turns :any] [:oversight/firings :any]
             [:oversight/unmet :any] [:oversight/idle :any]
+            ;; Required, like the other four gather always writes on this
+            ;; edge: the round's per-owner outcomes are what the digest counts
+            ;; for `N/M shipped` and :nobody-shipped, and a supervisor brief
+            ;; that silently reports 0/0 because nobody declared the key is
+            ;; the bug this closes (karamazov-u5uy).
+            [:oversight/results :any]
+            [:oversight/self-graded {:optional true} :any]
+            [:oversight/round {:optional true} :any]
+            [:oversight/crashes {:optional true} :any]
             [:oversight/carry {:optional true} :any]]
    ;; :oversight/branch only on the path that ran — the fallback records a
    ;; verdict and an explanation, and there is no branch to carry.
@@ -160,12 +247,47 @@
   (fn [{:keys [conn run-id] :as ctx} data]
     (safely :reason
      (fn []
-       (let [dig (telemetry/digest {:idle-turns (:oversight/idle data)
-                                    :unmet-gates (:oversight/unmet data)}
+       (let [round (:oversight/round data)
+             ;; The mark the supervisor's deltas are measured from, stamped
+             ;; BEFORE it is shown anything, so `since` covers the interval
+             ;; from its last look to now — the interval its last change was
+             ;; in force for (RFC-012 protocol rule 4). Named per run so two
+             ;; runs in one process do not read each other's deltas.
+             mark (str "supervisor:" run-id)
+             live (session/render mark)
+             _ (session/mark! mark)
+             dig (telemetry/digest {:idle-turns (:oversight/idle data)
+                                    :unmet-gates (:oversight/unmet data)
+                                    ;; The round's per-owner outcomes, which
+                                    ;; is what :nobody-shipped counts and what
+                                    ;; the brief's `N/M shipped` line reports.
+                                    :results (:oversight/results data)
+                                    :self-graded (:oversight/self-graded data)
+                                    ;; What this project has already
+                                    ;; prescribed for itself (M9).
+                                    :prescription (userspace/prescription-mass)
+                                    ;; Each branch's session fitness: the
+                                    ;; number the cull reads, shown to the
+                                    ;; role that tunes (RFC-012 F3).
+                                    :fitness (session/branch-fitnesses run-id)
+                                    ;; The round, as the feature loop left it
+                                    ;; — what its own supervisor stage used
+                                    ;; to be handed (F1).
+                                    :revision (:revision round)
+                                    :soft-cap (:soft-cap round)
+                                    :at-cap? (at-cap? round)
+                                    :hollow? (:hollow round)
+                                    :tests-passed? (:tests-passed round)
+                                    :review (some-> (journal/last-note conn run-id :review)
+                                                    :decision keyword)
+                                    :critic (some-> (journal/last-note conn run-id :critique)
+                                                    :decision)
+                                    :errors (mapv crash-line (:oversight/crashes data))}
                                    (:oversight/turns data)
                                    (:oversight/firings data))
              prob (prompt/render "oversight-pass"
                                  {:digest dig
+                                  :since (not-empty (str live))
                                   :learned (seq (knowledge/standing conn))
                                   :catalog (safely :catalog #(wf/render-catalog conn) "")})
              ;; ONE branch for the run, carried by the stream. Opened once;
@@ -210,9 +332,8 @@
         indistinguishable from a pass that never ran.
 
         The NEXT PASS does not read this — it inherits the branch's messages,
-        which carry more than a clipped note ever could. Its readers are the
-        operator and `:feature/supervise`, which quotes the stream's last
-        conclusion rather than deriving a second one of its own."
+        which carry more than a clipped note ever could. Its reader is the
+        operator, in the run view."
    :effects [:db]
    :requires [:conn :run-id]
    :input  [:map [:oversight/verdict :keyword] [:oversight/answer :any]

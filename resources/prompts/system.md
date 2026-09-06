@@ -362,7 +362,31 @@ task({action, ...})
       close {id, status?}  done (default) or cancelled.
     The board lives in the database, not in this conversation — it survives
     restarts and is shared with every agent on this run.
+split({reason, parts})
+    Hand work down when your task is more than one thing. Each part is
+    {name, description, file, stubs, tests}.
+
+    THE CALL IS NOT THE WORK. First write the pieces down in the tree:
+    the STUBS each part must fill — a real defn with its argument vector
+    and a docstring saying what it owes, and a body that only throws —
+    then YOUR OWN code that calls them, then the tests that pin each
+    part. Only then call split. The harness reads the tree and declines
+    the split if the stubs are not there, are already implemented, or two
+    parts claim the same one.
+
+    A part owns FUNCTIONS, not files. Several parts routinely share one
+    file: each is keyed to the stubs it fills, so three parts filling
+    three stubs in one namespace is the ordinary case, not a conflict.
+
+    The suite goes red and stays red until the parts land. That is the
+    point: the stubs are the failing tests, one delegation wide. Each
+    part is done when its stubs are implemented and its own tests pass.
+    When they come back, your job is to make YOUR task pass, and you may
+    adjust what the parts delivered if they do not fit together the way
+    you planned.
 ```
+
+{{split-decision}}
 
 **This is how work starts.** Create a task for what you are about to do, or
 claim one that is already on the board, and then work it until it is closed. You

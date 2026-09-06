@@ -105,8 +105,27 @@
   arm was culled at turn 9 of 12 and the run ended there. The last branch
   standing is never culled; the stuck and emergency-review gates keep
   talking to it instead."
-  [{:keys [conn run-id turn]} branch survivors sibling-scores]
+  ([ctx branch survivors sibling-scores]
+   (cull-or-keep ctx branch survivors sibling-scores nil))
+  ([{:keys [conn run-id turn]} branch survivors sibling-scores fitness]
   (let [threshold (gates/threshold :cull-threshold)
+        ;; THE MEASURED OBJECTIVE (RFC-012 F3). `fitness` is {:own f
+        ;; :siblings {id f}}: the branch's session fitness and its living
+        ;; siblings', by the same function the supervisor judges its own
+        ;; changes with. It joins the critic's vector as one more objective,
+        ;; so the frontier is judged AND measured; unknown on either side, it
+        ;; simply does not take part (critic/dominated?).
+        own-fit (:own fitness)
+        with-fit (fn [m f] (cond-> m (some? f) (assoc critic/fitness-objective f)))
+        fittest-sibling (when (seq (:siblings fitness))
+                          (apply max (vals (:siblings fitness))))
+        fit-text (fn []
+                    (when (some? own-fit)
+                      (str " (fitness " (format "%.2f" (double own-fit)) "/turn"
+                           (when fittest-sibling
+                             (str " against a sibling's "
+                                  (format "%.2f" (double fittest-sibling))))
+                           ")")))
         fails (or (:consecutive-failures branch) 0)
         mech (or (:consecutive-mechanics-failures branch) 0)
         pol (or (:consecutive-policy-refusals branch) 0)
@@ -213,24 +232,40 @@
              ;; Tier 2d: the spare's prose is prompts/juvenile-grace.md.
              (prompt/render "juvenile-grace" {:failures fails})))
 
-      (nil? scores)
+      ;; No critic and no measurement: the scalar rule stands, as it always
+      ;; did. No critic but a measurement: the fittest line in the beam is
+      ;; not culled for failing while nobody is doing better — culling exists
+      ;; to reallocate budget to a branch doing better, and the tally says
+      ;; whether one exists.
+      (and (nil? scores) (nil? own-fit))
       (cull-fail (str "culled after " fails
                       " consecutive failures with no recent confirmed work"))
 
-      (critic/dominated? scores sibling-scores)
+      (and (nil? scores) fittest-sibling (> fittest-sibling own-fit))
+      (cull-fail (str "culled after " fails
+                      " consecutive failures; a sibling is measurably fitter"
+                      (fit-text)))
+
+      (and scores
+           (critic/dominated? (with-fit scores own-fit)
+                              (map (fn [s] (with-fit s (get (:siblings fitness) (:id s))))
+                                   sibling-scores)))
       (cull-fail (str "culled after " fails
                       " consecutive failures; dominated by a sibling on every"
-                      " critic objective"))
+                      " critic objective"
+                      (when (some? own-fit) " and on measured fitness")
+                      (fit-text)))
 
       :else
       (do (when (and conn run-id)
             (journal/note! conn run-id :cull-spared
                            {:branch-id (:id branch)
-                            :data {:scores scores :failures fails}}))
+                            :data {:scores scores :failures fails
+                                   :fitness own-fit}}))
             (state/add-message
              branch "user"
              ;; Tier 2d: the reprieve's prose is prompts/cull-reprieve.md.
-             (prompt/render "cull-reprieve" {:failures fails :hard-floor hard-floor}))))))
+             (prompt/render "cull-reprieve" {:failures fails :hard-floor hard-floor})))))))
 
 ;; --- the repopulation policy -------------------------------------------------
 
@@ -309,12 +344,15 @@
         Four verdicts. :aborted — the abort flag is set; checked FIRST and at
         the top, because a stop must not need the run's cooperation. :completed
         — a branch shipped and the campaign policy says that ends the run.
-        :exhausted — nobody is left to explore, or the turn cap is spent.
+        :exhausted — nobody is left to explore, the turn cap is spent, or
+        the token budget is: the journal's summed usage has crossed
+        :token-budget, checked here at the top of every round because this
+        is the one place a round can be refused before it costs anything.
         :continue — do the round.
 
-        Reads the abort flag, so not pure."
+        Reads the abort flag and the journal, so not pure."
    :effects [:db]
-   :requires [:abort]
+   :requires [:abort :conn :run-id :token-budget]
    ;; The ROUND's shape. Every beam cell reads and writes the same working
    ;; set, so these declarations are the round's data flow written down: what
    ;; each stage needs to have happened before it, and what it leaves for the
@@ -324,9 +362,12 @@
    ;; :verdict as well, and it is the one that matters: beam.edn's :start
    ;; dispatches the entire round on it, four ways. Omitting it left the
    ;; scheduler's single routing key the one thing the chain could not see.
+   ;; :exhausted-because travels with an :exhausted verdict only: which limit
+   ;; ended the run, for the branch close reasons and the run's record.
    :output [:map [:active :any] [:done-branch :any]
-            [:multi-candidate? :boolean] [:verdict :keyword]]}
-  (fn [{:keys [abort] :as ctx} {:keys [branches turn] :as data}]
+            [:multi-candidate? :boolean] [:verdict :keyword]
+            [:exhausted-because {:optional true} :any]]}
+  (fn [{:keys [abort token-budget] :as ctx} {:keys [branches turn] :as data}]
     ;; A paused run waits HERE, at the top of the round, before anything is
     ;; scheduled — which is what `pause` promises: no new turns, and whatever
     ;; is in flight finishes (it already has, a round ago). The wait polls the
@@ -336,16 +377,25 @@
     (let [cap (beam/round-max-turns ctx data)
           active (filterv state/active? branches)
           candidates (filterv :final-answer branches)
-          done (beam/finish-now? ctx (beam/select-done-branch ctx candidates) branches)]
-      (assoc data
-             :active active
-             :done-branch done
-             :multi-candidate? (< 1 (count candidates))
-             :verdict (cond
-                        (and abort @abort) :aborted
-                        done :completed
-                        (or (empty? active) (> turn cap)) :exhausted
-                        :else :continue)))))
+          done (beam/finish-now? ctx (beam/select-done-branch ctx candidates) branches)
+          spent (beam/spent-tokens ctx)
+          over-budget? (boolean (and spent (>= spent token-budget)))
+          verdict (cond
+                    (and abort @abort) :aborted
+                    done :completed
+                    (or (empty? active) (> turn cap) over-budget?) :exhausted
+                    :else :continue)]
+      (cond-> (assoc data
+                     :active active
+                     :done-branch done
+                     :multi-candidate? (< 1 (count candidates))
+                     :verdict verdict)
+        (= verdict :exhausted)
+        (assoc :exhausted-because
+               (cond over-budget? {:reason :token-budget
+                                   :spent spent :budget token-budget}
+                     (> turn cap) {:reason :turn-cap :cap cap}
+                     :else {:reason :nobody-active}))))))
 
 ;; --- the round --------------------------------------------------------------
 
@@ -447,10 +497,10 @@
         branch standing is never culled, so whether THIS branch survives
         depends on what happened to the ones before it."
    :effects [:db]
-   :requires []
+   :requires [:run-id]
    :input  [:map [:advanced :any] [:turn :int]]
    :output [:map [:culled :any]]}
-  (fn [ctx {:keys [advanced turn] :as data}]
+  (fn [{:keys [run-id] :as ctx} {:keys [advanced turn] :as data}]
     ;; Only ACTIVE branches face the rule, and only they count as survivors.
     ;; `advanced` also holds branches that went done/abandoned during this
     ;; round's advance: counting them seeded `alive` high, so the LAST active
@@ -464,12 +514,22 @@
                   (reduce (fn [[acc alive] b]
                             (if-not (state/active? b)
                               [(conj acc b) alive]
-                              (let [sibs (keep #(when (and (state/active? %)
-                                                           (not= (:id %) (:id b)))
-                                                  (get-in % [:critic :scores]))
-                                               advanced)
+                              (let [living (filter #(and (state/active? %)
+                                                         (not= (:id %) (:id b)))
+                                                   advanced)
+                                    ;; Each sibling's scores carry its id, so
+                                    ;; the cull can pair them with its fitness.
+                                    sibs (keep #(some-> (get-in % [:critic :scores])
+                                                        (assoc :id (:id %)))
+                                               living)
+                                    fitness {:own (session/branch-fitness run-id (:id b))
+                                             :siblings (into {}
+                                                             (keep (fn [s]
+                                                                     (when-let [f (session/branch-fitness run-id (:id s))]
+                                                                       [(:id s) f])))
+                                                             living)}
                                     b' (cull-or-keep (assoc ctx :turn turn)
-                                                     b (dec alive) sibs)]
+                                                     b (dec alive) sibs fitness)]
                                 [(conj acc b') (if (state/active? b') alive (dec alive))])))
                           [[] (count (filter state/active? advanced))]
                           advanced))]
@@ -632,26 +692,34 @@
                     :run-id run-id :branches branches})))
 
 (cell/defcell :beam/exhaust
-  {:doc "Nobody is left to explore, or the turn cap is spent. Every active
-        branch is closed as exhausted and each branch's RESIDUAL is journalled:
-        what it believed it was close to when the budget ran out, so a resume
-        does not re-derive scope from the transcript."
+  {:doc "Nobody is left to explore, or the turn cap or the token budget is
+        spent. Every active branch is closed as exhausted, naming which, and
+        each branch's RESIDUAL is journalled: what it believed it was close
+        to when the budget ran out, so a resume does not re-derive scope
+        from the transcript."
    :effects [:db]
    :requires [:conn :max-turns :run-id]
-   :input  [:map [:branches :any] [:active :any]]
+   :input  [:map [:branches :any] [:active :any]
+            [:exhausted-because {:optional true} :any]]
    ;; A last look for a finished branch, so this ending may still report
    ;; :completed with a winner — hence :done-branch on the way out.
    :output [:map [:status :keyword] [:result :any]
             [:done-branch {:optional true} :any]]}
-  (fn [{:keys [conn run-id max-turns] :as ctx} {:keys [branches active] :as data}]
+  (fn [{:keys [conn run-id max-turns] :as ctx}
+       {:keys [branches active exhausted-because] :as data}]
     ;; A branch may have SHIPPED rounds ago while :stop-on-first-done? kept
     ;; the beam exploring. The cap expiring is not a failure then: the banked
     ;; answer ends the run, ranked by the same rubric :beam/complete uses.
     ;; finish-run! :failed nil here discarded it (karamazov-blt.20).
-    (let [winner (beam/select-done-branch ctx (filterv :final-answer branches))]
+    (let [winner (beam/select-done-branch ctx (filterv :final-answer branches))
+          {:keys [reason spent budget]} exhausted-because
+          why (if (= :token-budget reason)
+                (str "token budget of " budget " spent (" spent " tokens)")
+                (str "turn cap of " max-turns " reached"))]
+      (when exhausted-because
+        (journal/note! conn run-id :run-exhausted {:data exhausted-because}))
       (doseq [b active]
-        (runs/close-branch! conn run-id (:id b) :exhausted
-                            (str "turn cap of " max-turns " reached")))
+        (runs/close-branch! conn run-id (:id b) :exhausted why))
       (if winner
         (do (runs/finish-run! conn run-id :completed (:final-answer winner))
             (assoc data :status :completed :done-branch winner

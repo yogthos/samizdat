@@ -389,6 +389,34 @@
  ;; resources/prompts/storm*.md. Everything tunable is HERE, because dirge
  ;; hardcodes its 6/3 window and cannot tune it at runtime — we can.
 
+ :no-call-ladder
+ {:value {:withhold-at 3 :end-at 8}
+  :kind :threshold :capability-tunable? true
+  :doc "WHAT HAPPENS WHEN A BRANCH KEEPS PRODUCING NO USABLE CALL.
+
+        The no-call route reaches neither :dispatch nor :arbiter, and that is
+        deliberate — the arbiter reads what the turn DID and a no-call turn did
+        nothing, which loop.edn's :must-precede invariant says in its own
+        :protects text. So no gate can answer this, and the only response was
+        the complaint appended in no-call-step. On run 89f6487a that complaint
+        went 0-FOR-42: branch T0 spent turns 193-250 emitting nothing, every
+        turn correctly diagnosed as a compaction-digest imitation and told so.
+
+        A ladder inside the step instead, since that is where the streak is
+        already known:
+
+        :withhold-at   drop the [unloaded] digests from the branch's context.
+                       A model copying them is copying what is in front of it,
+                       so this takes the exemplar away rather than asking
+                       again. Bookkeeping only; fetch_turn reopens any of it.
+        :end-at        end the branch honestly. The work goes back with an
+                       account rather than the branch burning to its cap
+                       emitting nothing — the same outcome :mechanics-streak
+                       predicts, on the path that gate cannot reach.
+
+        Counted on :consecutive-mechanics-failures, which record-outcome zeroes
+        the moment any real call lands, so an isolated no-call costs nothing."}
+
  :storm-enabled
  {:value true :kind :threshold :capability-tunable? true
   :doc "Whether the storm guard withholds calls at all. The off switch is
@@ -816,6 +844,14 @@
 
         Per TURN, not per run, so runs of different lengths compare.
 
+        PER BRANCH AS WELL AS PER SESSION (RFC-012 F3). The same counters
+        are kept cut per branch, and session/branch-fitness scores them with
+        these weights. That per-branch number is what the beam's cull reads
+        as a measured objective beside the critic's judged ones, and what
+        the supervisor's digest shows for each branch — one scale for the
+        selection step and the evaluation step, so retuning a weight here
+        moves both.
+
         :max-open-experiments — how many measured-but-unsettled changes may be
         in flight. One, because two changes measured over the same interval
         tell you nothing about either, and this is ENFORCED rather than asked:
@@ -831,25 +867,34 @@
  :oversight
  {:value {:enabled? true
           :poll-ms 5000
-          ;; A pass is a model call, so the cadence is minutes and the budget
-          ;; is small. The stream is meant to be the thing that notices, not
-          ;; the thing that runs.
+          ;; A pass may be a model call, so the spacing is minutes and the
+          ;; budget is small. The stream is meant to be the thing that
+          ;; notices, not the thing that runs.
           :every-ms 120000
           :budget 12}
   :kind :policy :capability-tunable? false
   :doc "THE SUPERVISOR STREAM: the harness reasoning about itself, in parallel
-        with the run, in its own context.
+        with the run, in its own context. The ONE supervisor a run has
+        (RFC-012): the feature loop no longer runs a second one as a stage.
 
-        Distinct from :watch, which is a REFLEX — rule-based, every few
-        seconds, steering only, and never a model call. This is DELIBERATION:
-        it runs the supervisor role over the run's health and may tune the
+        Distinct from :watch, which is the stream's REFLEX — rule-based, every
+        poll, steering only, and never a model call. This is DELIBERATION: it
+        runs the supervisor role over the run's health and may tune the
         harness (prompts, thresholds, manifests, cells) as well as steer the
-        run. Different costs, so different cadences and different evidence
+        run — including the feature loop's own levers, `switch`, `budget` and
+        `stop`, through `intervene`. Different costs, so different evidence
         bars: a steer is wrong for one turn, a userspace edit is wrong for
         every run until somebody changes it back.
 
-        :budget bounds the model calls one run may spend supervising itself.
-        Twelve is roughly one look every two minutes across a long run, and it
+        WHEN A PASS RUNS (RFC-012 F2): on the run's TURN BOUNDARY. A pass
+        evaluates the turn that just ended, so it is due when one has — a
+        turn record on the event bus — and not before. :every-ms is the
+        minimum spacing between passes, not a trigger: it used to fire a pass
+        every two minutes whether or not the implementer had done anything.
+        Zero means every turn. The first pass is immediate regardless.
+
+        :budget bounds the model calls one run may spend supervising itself;
+        a pass that looked and found nothing worth a call is free. Twelve
         binds unconditionally — a bound a distress signal can lift is not a
         bound."}
 
@@ -859,20 +904,24 @@
           :severities ["high"]
           :max-interventions 3}
   :kind :policy :capability-tunable? false
-  :doc "THE WATCHER: a thread that observes a run while it runs and speaks when
-        something is going wrong, the way a person watching a coding harness
-        does.
+  :doc "THE REFLEX: the supervisor stream's cheap phase (RFC-012). It looks
+        every poll at what the run's events say the implementer just did and
+        speaks when something is going wrong, the way a person watching a
+        coding harness does — rule-based, no model call, steering only.
 
-        The supervisor ROLE is a manifest node, so it runs between rounds, in
-        sequence, and only in the workflows that wire it. A run losing every
-        turn to empty provider replies reaches no round boundary quickly, and
-        the node never gets a look. This is the other half: continuous
-        observation, reacting while the pattern is still forming.
+        It exists because a supervisor that only reasons on a boundary misses
+        the run that never reaches one: a run losing every turn to empty
+        provider replies. This is the other half: continuous observation,
+        reacting while the pattern is still forming.
 
-        It intervenes through the same interventions queue a human uses, so a
-        directive still lands on a turn boundary and never touches a branch
-        mid-turn. `issued-by` is `watch` instead of `human`; nothing else
-        differs.
+        It intervenes through the same interventions queue a human and the
+        supervisor's reasoning pass use, so a directive still lands on a turn
+        boundary and never touches a branch mid-turn. `issued-by` is `watch`,
+        and the branch is told so; nothing else differs.
+
+        :poll-ms here is unused — the reflex runs on the stream's own poll
+        (:oversight :poll-ms); it is kept so a project that tuned it does not
+        lose the number.
 
         :severities — only these are worth interrupting for. Most findings are
         worth SEEING and only some are worth a turn: a supervisor reading a
@@ -1040,10 +1089,11 @@
         the set of machinery it may be driven by."}
 
  :beam-contention
- {:value {:provider-concurrency nil :expected-turn-ms nil}
+ {:value {:provider-concurrency nil :expected-turn-ms nil :expected-turn-tokens nil}
   :kind :policy :capability-tunable? false
-  :doc "WHAT THE PROVIDER CAN SERVE AT ONCE, so the beam is no wider than one
-        turn deadline can carry.
+  :doc "WHAT THE PROVIDER CAN SERVE AT ONCE, and what a turn costs, so the
+        beam is no wider than one turn deadline can carry or the run's token
+        budget could ever pay for.
 
         A local llama-server answers one call at a time; five branches then
         queue, a round takes five turn-times of wall clock, and the turn
@@ -1055,14 +1105,26 @@
         once per run start. Either nil means unknown, and an unknown provider
         is not a constraint: the requested width stands.
 
+        The token budget is the second limit (karamazov-aqsr.3). A run
+        started with a budget (config :run :token-budget, HARNESS_TOKEN_BUDGET,
+        or token_budget on POST /v1/runs) is ended :exhausted by the beam once
+        the journal's summed usage crosses it — that is the enforcement, and
+        it needs no estimate. With :expected-turn-tokens set as well, the
+        width is ALSO narrowed at start to what width * max-turns *
+        expected-turn-tokens keeps within the budget: a projection at the
+        cap, so the beam never opens wider than the budget could carry if
+        every branch ran to it.
+
         :provider-concurrency  calls the endpoint serves concurrently
         :expected-turn-ms      a typical turn's wall time against it, which
                                the events table can tell you for a past run
+        :expected-turn-tokens  a typical turn's total_tokens, which the turns
+                               table can tell you for a past run
 
         Not capability-tunable: it describes the provider, not the branch."}
 
  :schema-validation
- {:value {:mode :warn}
+ {:value {:mode :strict}
   :kind :policy :capability-tunable? false
   :doc "WHAT A CELL WHOSE DATA DOES NOT MATCH ITS DECLARED SHAPE COSTS AT RUN
         TIME.
@@ -1085,10 +1147,20 @@
         {:missing :extra} and :failed-keys, which is the part worth reading —
         it names the rename rather than reporting that something did not match.
 
-        Move to :strict once the warnings stop arriving on a real run. That is
-        the point of the staging: :warn measures whether the declarations are
-        right, and :strict is only worth having once they are. Going straight
-        to :strict makes every imprecise declaration an outage.
+        NOW :strict, on the evidence the staging was built to collect. Run
+        89f6487a (2026-09-03, Qwen3.8-27B-Q8_0 via llama-server, the feature
+        loop over mdlite) ran 280 turns across 3 branches under :warn and
+        emitted ZERO schema warnings — real model responses, real tool
+        results, real compaction, and a branch that degenerated into a 57-turn
+        no-call loop, which is the ugliest shape the shapes get. The suite had
+        already shown zero across 1860 mocked tests; this is the half the
+        suite could not give, because a declaration that is right for a
+        stubbed response can still be wrong for a live one.
+
+        Going straight to :strict without that would have made every imprecise
+        declaration an outage. If one turns up now it halts a run, and
+        karamazov-6y7.5 made that land as a clean branch outcome rather than
+        an FSM dump — put the mode back to :warn and file what halted.
 
         Not capability-tunable: a tier under observation should not be able to
         stop its own shapes being checked."}
@@ -1240,6 +1312,7 @@
    :signals
    {:stage-crashed "STAGE CRASHED — {{detail}}{% if layer %} [layer: {{layer}}{% if base? %} — the base is compiled and unreachable from here: name it, record it with `remember` so a later run inherits it, and move on. Do NOT go looking for the source{% endif %}{% if userspace? %} — userspace, so this one IS yours: the cell/manifest/prompt tools can fix it{% endif %}]{% endif %}"
     :hollow "NO FILES CHANGED — done was called but the working tree is unchanged; nothing was actually built"
+    :self-graded "YOU CHANGED HOW THIS RUN IS SCORED — this run edited {{keys}} in its own gates. That is allowed and it is on the record. Say in your answer why the old scoring was wrong, so a reader can tell a real correction from a run grading itself green."
     :nobody-shipped "NO IMPLEMENTOR SHIPPED — the implement round produced nothing verified"
     :tests-failing "TESTS FAILING — {{detail}}"
     :tests-failing-fallback "the tests did not pass"
@@ -1276,7 +1349,8 @@
         in trouble is the last one that should be shown less of it."}
 
  :supervisor-digest
- {:value {:per-kind 4 :chars 220 :wins 2}
+ {:value {:per-kind 4 :chars 220 :wins 2 :floor 6 :patterns 6
+          :prescription-floor 3}
   :kind :threshold :capability-tunable? true
   :doc "How many failure exemplars of each kind the run-health digest shows
         the supervisor, and how much of each failure's text. The digest used
@@ -1287,6 +1361,15 @@
         per kind, because the three kinds are fixed in different places (a
         parse failure in the prompt/format, a provider failure at the
         endpoint, a tool failure in the work itself).
+
+        :floor and :patterns are the DISTRIBUTION half (Metan App. E.2, M7).
+        Below :floor failures the exemplars already say everything and a
+        histogram of ones is noise; at or above it the digest also shows the
+        commonest :patterns failure shapes with their counts, so twelve
+        instances of one bug read as one fix rather than as four arbitrary
+        recent lines. Signatures are crude on purpose — numbers, quoted
+        strings and paths are stripped — because over-merging costs one
+        fetch_turn and under-merging costs the pattern.
 
         :wins is how many SUCCESSES ride along with them, and it is not
         decoration. Metan (research/2608.24735v1, App. D) ablated the ratio
@@ -1657,6 +1740,16 @@
  :decompose-max-parts
  {:value 4 :kind :cost-ceiling :capability-tunable? false
   :doc "Most sub-units the architect may split one unit into."}
+
+ :split-parts
+ {:value {:min-parts 2 :max-parts 4}
+  :kind :cost-ceiling :capability-tunable? false
+  :doc "How many pieces the `split` tool accepts. The floor is the definition
+        of a split rather than a budget: one piece is not a decomposition, it
+        is the same task with a new name, and accepting it would let an agent
+        recurse without ever getting smaller. The ceiling is the cost one, and
+        it matches :decompose-max-parts — each piece is an agent, and a parent
+        that lists eight has not thought about the boundary."}
 
  :judge-rules
  ;; drg-4026 #55: the judge's deterministic finalization rules — what counts
@@ -2105,14 +2198,24 @@
   {:gate :human-directive
    :priority 0
    :budget nil
-   :doc "A human told the branch to do something. Outranks every machine gate,
-         which is dirge PR 717's finding arriving as a design property rather
-         than a bug fix."
+   :doc "A directive from the queue reached the branch: a human's, the
+         supervisor's, or the reflex's — the one write path into a run, and
+         this gate is where it lands (RFC-012 F5). Outranks every machine
+         gate, which is dirge PR 717's finding arriving as a design property
+         rather than a bug fix. The message names the ISSUER: the gate
+         firing is the one ledger of what was said to a branch and by whom,
+         and it used to say `a human` whatever wrote the directive."
    :when (some? directive)
    ;; :payload-text is attached by the drains — the payload column is a JSON
    ;; blob ({"text": "..."}), and rendering it raw framed `{"text":"[watch]
-   ;; ..."}` as the human's words (blt.38).
-   :message-form (str "**A human has intervened in this run.**\n\n"
+   ;; ..."}` as the human's words (blt.38). An unattributed directive is the
+   ;; operator's: the REPL path predates issued_by.
+   :message-form (str "**"
+                      (case (str (:issued_by directive))
+                        "supervisor" "The supervisor"
+                        "watch"      "The harness's reflex"
+                        "A human")
+                      " has intervened in this run.**\n\n"
                       (or (:payload-text directive) (:payload directive))
                       "\n\nThis takes precedence over anything the harness has told"
                       " you. Act on it on this turn.")

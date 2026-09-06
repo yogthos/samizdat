@@ -261,3 +261,72 @@
         (userspace/bind-root! prev)
         (fs/delete-tree root)
         (fs/delete-tree examples)))))
+
+;; --- files resolve against the PROJECT root, not the cwd --------------------
+
+(deftest a-project-chain-level-resolves-against-the-bound-root
+  ;; {:project ".samizdat/prompts/system.md"} used to be read relative to the
+  ;; process working directory, so a served harness with HARNESS_ROOT set
+  ;; elsewhere never saw the project's own file.
+  (let [root (str (java.nio.file.Files/createTempDirectory
+                   "samizdat-chain-root"
+                   (make-array java.nio.file.attribute.FileAttribute 0)))
+        f (java.io.File. root ".samizdat/prompts/system.md")
+        prev (userspace/project-root)]
+    (.mkdirs (.getParentFile f))
+    (spit f "THE PROJECT'S OWN SYSTEM PROMPT")
+    (try
+      (userspace/bind-root! root)
+      (is (= "THE PROJECT'S OWN SYSTEM PROMPT"
+             (prompt/resolve-chain [{:project ".samizdat/prompts/system.md"}
+                                    {:file "system"}])))
+      (userspace/bind-root! "/tmp")
+      (is (str/includes? (prompt/resolve-chain [{:project ".samizdat/prompts/system.md"}
+                                                {:file "system"}])
+                         "tool call")
+          "with the root elsewhere the level is absent and the shipped file answers")
+      (finally
+        (userspace/bind-root! prev)
+        (.delete f)
+        (.delete (.getParentFile f))
+        (.delete (.getParentFile (.getParentFile f)))
+        (.delete (java.io.File. root))))))
+
+;; --- the split decision is its own prompt, injected --------------------------
+
+(deftest the-split-decision-is-a-named-section-a-model-file-can-replace
+  ;; system.md is ~500 lines and the measured per-model finding is an 8-line
+  ;; block. A per-model system.md would be a fork that drifts; the overridable
+  ;; unit has to be smaller than the file. So the block is its own prompt,
+  ;; injected where it sat, and a provider/model file replaces THAT.
+  (let [root (str (java.nio.file.Files/createTempDirectory
+                   "samizdat-split-section"
+                   (make-array java.nio.file.attribute.FileAttribute 0)))
+        f (java.io.File. root ".samizdat/prompts/local/qwen3/split-decision.md")
+        prev-root (userspace/project-root)
+        prev-model (userspace/model-context)]
+    (.mkdirs (.getParentFile f))
+    (spit f "QWEN DECISION BLOCK")
+    (try
+      (testing "shipped: the block is in the system prompt through the seam"
+        (userspace/bind-root! "/tmp")
+        (userspace/bind-model! nil)
+        (is (str/includes? (prompt/prompt "split-decision") "ONE thing or SEVERAL"))
+        (is (str/includes? (loop/system-prompt) "ONE thing or SEVERAL")))
+      (testing "a provider/model file replaces the block and nothing else"
+        (userspace/bind-root! root)
+        (userspace/bind-model! {:provider :local :model "Qwen3.8-27B-Q8_0"})
+        (let [p (loop/system-prompt)]
+          (is (str/includes? p "QWEN DECISION BLOCK"))
+          (is (not (str/includes? p "ONE thing or SEVERAL")))
+          (is (str/includes? p "```tool-call") "the rest of the prompt is intact")
+          (is (str/includes? p "split({reason, parts})"))))
+      (testing "another model on the same project keeps the shipped block"
+        (userspace/bind-model! {:provider :deepseek :model "deepseek-v4-flash"})
+        (is (str/includes? (loop/system-prompt) "ONE thing or SEVERAL")))
+      (finally
+        (userspace/bind-root! prev-root)
+        (userspace/bind-model! prev-model)
+        (.delete f)
+        (doseq [d (take 4 (iterate #(.getParentFile ^java.io.File %) (.getParentFile f)))]
+          (.delete ^java.io.File d))))))

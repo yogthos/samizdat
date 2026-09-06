@@ -31,7 +31,9 @@
   because `db/fts5-available?` is a real question about the library that
   happens to be loaded, not a formality, and a harness that cannot remember
   is worse than one that remembers slowly."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.lexicon :as lexicon]

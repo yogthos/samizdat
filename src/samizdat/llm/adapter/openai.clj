@@ -29,7 +29,9 @@
   return `reasoning_content` alongside `content`; others return nothing. The
   field name is configurable and the client folds it into <think> framing so
   the fence parser sees one string either way."
-  (:require [clojure.data.json :as json]
+  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
             [clojure.string :as str]
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]
@@ -129,6 +131,37 @@
       (and cache-key (get (:slots config) cache-key))
       (assoc :id_slot (get (:slots config) cache-key)))))
 
+(defn- reasoning-wire
+  "The reasoning fields for a resolved `effort` on `provider-id`.
+
+  `effort` is non-nil here — the caller only reaches this when the run stated
+  something. Any ordinary tier (`low`/`high`/`max`) is the same top-level
+  `reasoning_effort` string every OpenAI-compatible member of the family
+  honours (verified live 2026-09-06: GLM and DeepSeek both act on it).
+
+  The OFF value `\"none\"` is the runaway breaker asking for no reasoning, and
+  the wire for that is per-provider because the providers differ:
+
+  - `:deepseek` — `{:thinking {:type \"disabled\"}}`. Its documented, reliable
+    disable (3/3 zero reasoning tokens live); `reasoning_effort` is dropped so
+    the two knobs cannot disagree.
+  - `:glm` — `{:reasoning_effort \"low\"}`. GLM-5.3 CANNOT be turned off
+    (z.ai's own migration note; `thinking disabled` measured 0/0/15 reasoning
+    tokens, i.e. no effect), so `low` is the least it will think.
+  - everything else — `{:reasoning_effort \"none\"}`, unchanged from before.
+
+  This is a provider WIRE fact (how the API spells 'do not think'), not a model
+  trait, which is why it lives keyed by provider — the same split dirge draws
+  with its DisableWire enum. The fuller per-provider effort table is
+  karamazov-07d."
+  [provider-id effort]
+  (if (= "none" effort)
+    (case provider-id
+      :deepseek {:thinking {:type "disabled"}}
+      :glm      {:reasoning_effort "low"}
+      {:reasoning_effort "none"})
+    {:reasoning_effort effort}))
+
 (defrecord OpenAIAdapter [provider-id label reasoning-key max-tokens-key]
   adapter/Adapter
   (id [_] provider-id)
@@ -150,11 +183,22 @@
       {}))
 
   (chat-body [this config {:keys [messages max-tokens temperature prefill force-tool
-                                  cache-key]}]
+                                  cache-key reasoning-effort]}]
    ;; The gate is the protocol method on THIS adapter (provenance R3-14), so the
    ;; answer a caller can query and the answer chat-body acts on are one
    ;; path and cannot drift apart.
-   (let [use-prefill? (and prefill (adapter/prefill-support? this config))]
+   (let [use-prefill? (and prefill (adapter/prefill-support? this config))
+         ;; The per-call effort wins over the run's default, so a side call
+         ;; (a critic, a reflector, the workflow chooser) can ask for less
+         ;; thinking than the run is configured for — GLM-5.3 defaults to
+         ;; `max`, which spent 24-31s on sub-1k-token prompts. nil means the
+         ;; run stated nothing, and the model does whatever it does by default.
+         effort (or reasoning-effort (:reasoning-effort config))
+         ;; Force a specific finishing tool with native tool_choice — the way
+         ;; to make a prefill-less provider (GLM) call `done`/`give_up`. Only
+         ;; as a FALLBACK: where a prefill will force the call it is preferred,
+         ;; because tool_choice is incompatible with DeepSeek's thinking mode.
+         forcing? (and force-tool (not use-prefill?))]
     (cond-> {:model (:model config)
              :messages (if use-prefill?
                          ;; `:prefix true` is what makes the provider CONTINUE
@@ -167,27 +211,28 @@
                          messages)}
       max-tokens (assoc max-tokens-key max-tokens)
       temperature (assoc :temperature temperature)
-      ;; Only when set. Whether a model thinks was previously a property of
-      ;; which one happened to be configured — deepseek-v4-pro does by
-      ;; default, deepseek-v4-flash does not — rather than something a run
-      ;; stated. This makes it explicit and recorded.
-      ;;
-      ;; `some?` rather than truthiness: "none" is how thinking is turned OFF
-      ;; and must reach the provider, and a provider that has never heard of
-      ;; the field rejects the request rather than ignoring it, so unset has
-      ;; to mean absent.
-      (some? (:reasoning-effort config))
-      (assoc :reasoning_effort (:reasoning-effort config))
+      ;; Only when the run stated something. Whether a model thinks was
+      ;; previously a property of which one happened to be configured rather
+      ;; than something a run stated; this makes it explicit and recorded. The
+      ;; OFF value takes each provider's documented disable — see
+      ;; `reasoning-wire`.
+      (some? effort)
+      (merge (reasoning-wire provider-id effort))
 
-      ;; Force a specific finishing tool with native tool_choice — the way to
-      ;; make a prefill-less provider (GLM) call `done`/`give_up`. Only as a
-      ;; FALLBACK: where a prefill will force the call it is preferred, because
-      ;; tool_choice is incompatible with some providers' thinking mode (DeepSeek
-      ;; /beta rejects it with a 400). Only the forced tool is exposed.
-      (and force-tool (not use-prefill?))
+      ;; Only the forced tool is exposed.
+      forcing?
       (assoc :tools [{:type "function" :function force-tool}]
              :tool_choice {:type "function"
                            :function {:name (:name force-tool)}})
+
+      ;; DeepSeek REJECTS tool_choice while thinking is on ("Thinking mode does
+      ;; not support this tool_choice", a 400) — measured live 2026-09-06 — so
+      ;; a native forced call on the /v1 endpoint, the one path where a prefill
+      ;; cannot force it instead, must turn thinking off for that one request.
+      ;; Overrides any effort wire set above, since the two would disagree.
+      (and forcing? (= :deepseek provider-id))
+      (-> (dissoc :reasoning_effort)
+          (assoc :thinking {:type "disabled"}))
 
       ;; Local llama-server prefix-cache reuse. Merged LAST and only for
       ;; :local, so no hosted provider's body changes.
@@ -270,5 +315,11 @@
   (openai-family {:id :openai :label "OpenAI"}))
 
 ;; A local llama-server / vLLM / LM Studio endpoint. Same wire format, no key.
+;;
+;; `:reasoning_content` because what a local endpoint SERVES is a model, not a
+;; provider: llama-server hands back reasoning_content for a reasoning model
+;; exactly as DeepSeek does, and this adapter carried the sentinel, so every
+;; local reasoning stream was dropped. Absent for a model that does not reason,
+;; which reads as nil — the behaviour this had before.
 (def local
-  (openai-family {:id :local :label "local"}))
+  (openai-family {:id :local :label "local" :reasoning-key :reasoning_content}))
