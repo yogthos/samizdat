@@ -454,6 +454,22 @@
       :max-response-ms (or (env-long "HARNESS_MAX_RESPONSE_MS") 600000)}
      overrides)))
 
+(defn role-llm
+  "The :llm config for `role`, when config :run :role-models assigns it one —
+  e.g. {:reader {:provider \"deepseek\" :model \"deepseek-chat\"}} — or nil when
+  it has no assignment and should run on the caller's own model.
+
+  `:provider` may be omitted to keep `default-llm`'s provider and change only
+  the model, and anything else in the spec (a :model, an :api-key, a
+  :temperature) overrides the provider's defaults. The one resolver behind
+  workflow/role-ctx (a role's whole sub-loop) and read_digest (one call), so
+  'which model does this role run on' has one answer (karamazov-b76m)."
+  [config default-llm role]
+  (when-let [spec (get-in config [:run :role-models role])]
+    (let [provider (or (some-> (:provider spec) name str/lower-case keyword)
+                       (:provider default-llm))]
+      (provider-llm provider (dissoc spec :provider)))))
+
 (defn redacted
   "The config with every :api-key masked, WHEREVER it sits, for logging and
   for /health.

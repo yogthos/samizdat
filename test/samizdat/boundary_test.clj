@@ -152,6 +152,14 @@
    ;; project declared in .samizdat/config.edn, which the agent may not write
    ;; (karamazov-1an). Still canonicalized, still refused outside all of them.
    "read_file"   {:reach :host-bytes}
+   ;; A read whose bytes LEAVE THE MACHINE: the files resolve under the same
+   ;; read roots as read_file, and are then sent whole to the reader model —
+   ;; the :reader role's provider when one is assigned, else the branch's
+   ;; own. The branch's own provider already sees every file the branch
+   ;; reads, one page at a time; what is new is that a second provider may,
+   ;; which is a decision for whoever assigns the role (karamazov-b76m).
+   "read_digest" {:reach :host-bytes
+                  :also "files/resolve-for-read like read_file; outbound HTTP to the reader's provider"}
    "grep"        {:reach :host-bytes}
    "lsp"         {:reach :host-bytes}
    "skill"       {:reach :host-bytes}

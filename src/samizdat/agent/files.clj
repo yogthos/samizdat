@@ -174,6 +174,32 @@
   (or (resolve-under-root root path)
       (some #(resolve-under-root % path) refs)))
 
+(defn large-untargeted-read?
+  "Whether this read_file call would page a file of at least `min-lines`
+  lines through the branch's context from the top — no offset, no limit —
+  which is the read the phases.edn rule steers toward read_digest
+  (karamazov-b76m).
+
+  A targeted read (a limit, or an offset past the top) passes: the branch
+  already knows which section it needs, usually to patch it, and a digest
+  carries no text to edit against. An offset of 0 with no limit is the whole
+  file under another name, and the first thing a model told to 'add an
+  offset' reaches for, so it does not pass. A path that does not resolve, or
+  a file that is not there, passes too — those are read_file's own to
+  report, and a refusal pointing at a digest of a missing file would be one
+  more unactionable message."
+  [{:keys [root args] :as ctx} min-lines]
+  (let [path (str (:path args))
+        offset (or (some-> (:offset args) str parse-long) 0)]
+    (boolean
+     (and min-lines
+          (not (str/blank? path))
+          (zero? offset)
+          (nil? (:limit args))
+          (when-let [abs (resolve-for-read (or root ".") (ctx-reference-roots ctx) path)]
+            (and (fs/exists? abs)
+                 (>= (count (str/split-lines (slurp abs))) min-lines)))))))
+
 (def run-config-path
   "The project-local run config, relative to the root — the file that defines
   :run :verify-cmd and :require-test?, i.e. the ship gates this run is judged

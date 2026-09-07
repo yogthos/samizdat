@@ -97,6 +97,19 @@
    :tools :all
    :message-file "storm-oscillation"}
 
+  ;; A whole-file read of a large file pages it through the branch's context
+  ;; at full price, and most of what a branch does with one is not reasoning
+  ;; (karamazov-b76m, after Spotify's shunt: their routing rules in a
+  ;; CLAUDE.md were ignored, and only a hook that refused the read stuck).
+  ;; Steered, not banned: the message names read_digest for the question
+  ;; and the paged read for the section, and a read with an offset or a
+  ;; limit never meets this rule. The threshold is gates.edn :digest.
+  {:rule :large-read-needs-a-digest
+   :when (samizdat.agent.files/large-untargeted-read?
+          ctx (:min-lines (samizdat.agent.gates/digest-policy)))
+   :tools #{"read_file"}
+   :message-file "read-too-large"}
+
   ;; THE REPL SESSION CONTRACT — its two conditions, as refusals rather than
   ;; as advice. Nudges are 0-for-6 across two model tiers (karamazov-qic); a
   ;; withhold is what actually holds.

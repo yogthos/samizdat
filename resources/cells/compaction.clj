@@ -31,7 +31,9 @@
             [samizdat.llm.client :as llm]
             [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
-            [samizdat.store.knowledge :as knowledge]))
+            [samizdat.store.knowledge :as knowledge]
+            ;; role-ctx, for the :summarizer role the fold's summary runs on.
+            [samizdat.workflow :as wf]))
 
 (defn- policy [] (gates/threshold :compaction))
 
@@ -267,9 +269,18 @@
    ;; promise — and it promises it because the success path replaces the
    ;; messages in place.
    :output [:map [:branch :map]]}
-  (fn [{:keys [conn run-id llm-adapter llm-config]} {:keys [branch] :as data}]
+  (fn [{:keys [conn run-id llm-config] :as ctx} {:keys [branch] :as data}]
     (try
       (let [p (policy)
+            ;; The summary is the most delegable call in the loop: old
+            ;; history in, a short structured summary out. It runs on the
+            ;; :summarizer role's model when config :run :role-models
+            ;; assigns one, the branch's own otherwise. The WINDOW math above
+            ;; and below stays on the branch's llm-config — it is the
+            ;; branch's context being measured, whoever writes the summary
+            ;; (karamazov-b76m).
+            {summarizer :llm-adapter summarizer-config :llm-config}
+            (wf/role-ctx ctx :summarizer)
             msgs (vec (:messages branch))
             tail (if (cmp/aggressive? (:compaction/tier data))
                    (:aggressive-tail p) (:protect-tail p))
@@ -282,7 +293,7 @@
                 budget (cmp/summary-budget
                         (cmp/estimate-tokens folded (:chars-per-token p))
                         (:summary p))
-                summary (summarize! llm-adapter llm-config folded budget)
+                summary (summarize! summarizer summarizer-config folded budget)
                 ok? (and summary
                          (cmp/validate-summary
                           summary

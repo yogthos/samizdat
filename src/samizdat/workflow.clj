@@ -228,11 +228,10 @@
   ;; exactly that question (samizdat.repl.route). A ctx with no role gets the
   ;; project image, which is the safe direction.
   (let [ctx (assoc ctx :role role)]
-    (if-let [spec (get-in (:config ctx) [:run :role-models role])]
-      (let [provider (or (some-> (:provider spec) name str/lower-case keyword)
-                         (:provider (:llm-config ctx)))
-            llm (config/provider-llm provider (dissoc spec :provider))]
-        (assoc ctx :llm-adapter (registry/adapter-for provider) :llm-config llm))
+    ;; Resolution is config/role-llm, shared with read_digest, so a role's
+    ;; model has one answer whether it runs a sub-loop or one call.
+    (if-let [llm (config/role-llm (:config ctx) (:llm-config ctx) role)]
+      (assoc ctx :llm-adapter (registry/adapter-for (:provider llm)) :llm-config llm)
       ctx)))
 
 (defn note-schema-warnings!

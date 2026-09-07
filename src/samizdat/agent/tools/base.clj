@@ -275,6 +275,10 @@
                                        ;; names back: a refusal that cannot
                                        ;; say WHICH file is outstanding is one
                                        ;; more unactionable message.
+                                       ;; The call's own arguments, so a
+                                       ;; message can name the file it is
+                                       ;; refusing (read-too-large.md).
+                                       :args (:args ctx)
                                        :role (some-> (:role branch) name)
                                        :role-doc (some-> (:role branch)
                                                          roles/doc)

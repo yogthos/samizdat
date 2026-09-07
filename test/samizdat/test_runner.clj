@@ -117,6 +117,7 @@
             [samizdat.lisp-test]
             [samizdat.lsp-test]
             [samizdat.cells-test]
+            [samizdat.digest-test]
             [samizdat.park-test]
             [samizdat.events-test]
             [samizdat.escapes-test]
@@ -276,6 +277,7 @@
     samizdat.lisp-test
     samizdat.lsp-test
     samizdat.cells-test
+    samizdat.digest-test
     samizdat.park-test
     samizdat.events-test
     samizdat.escapes-test
