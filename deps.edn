@@ -12,10 +12,14 @@
         ;; bounded through a non-blocking socket, which needs jolt 0.6.8's
         ;; :varargs FFI marker (fcntl is variadic, and on Apple arm64 a
         ;; fixed-arity binding silently corrupts the stack-passed argument).
+        ;; v0.0.8: reads are interruptible (poll in 250 ms slices, the
+        ;; interrupt flag checked between them), so a cancelled provider call
+        ;; returns within a slice rather than after the socket timeout
+        ;; (RFC-013, karamazov-3cll.10).
         jolt-lang/http-client
         {:git/url "https://github.com/jolt-lang/http-client"
-         :git/tag "v0.0.7"
-         :git/sha "a9c5d89054c9cdb84b7905e0dfd7cf9ca82793c6"}
+         :git/tag "v0.0.8"
+         :git/sha "ccce992d6e3d0035a5ffd1d4364cdb39df4af2f0"}
 
         ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
         jolt-lang/db
@@ -24,10 +28,15 @@
          :git/sha "d85f391ca521da389b935c38f3d78b30eaa23208"}
 
         ;; nREPL middleware (sessions, interruptible eval, completion, lookup) so
-        ;; an editor can drive the running harness. See core/start-nrepl!.
+        ;; an editor can drive the running harness. See core/start-nrepl!. The
+        ;; project image runs this same sha (repl/image.clj nrepl-sha, held
+        ;; equal by base-test). v0.1.2: the client transport's recv is
+        ;; interruptible, so a cancelled image eval frees its reader within a
+        ;; slice (RFC-013, karamazov-3cll.10).
         jolt-lang/nrepl
         {:git/url "https://github.com/jolt-lang/nrepl"
-         :git/sha "9cc45acc7a241ff9704e8f43e2c4fb90f7bd819c"}
+         :git/tag "v0.1.2"
+         :git/sha "6e8cfa214dbd43c9ed72358f3d1191bb29a695cd"}
 
         ;; OpenSSL/SecureRandom shims. http-client pulls this in too; jolt.deps
         ;; reconciles the duplicate libssl/libcrypto natives to a single load.
@@ -67,6 +76,19 @@
         ;; Requiring core.logic + fd + pldb + unifier costs ~40ms of boot.
         org.clojure/core.logic {:mvn/version "1.1.1"}
 
+        ;; ebb — missionary ported to jolt: cancellable tasks (sp, via blk,
+        ;; timeout, join) and flows (observe, relieve). The concurrency
+        ;; substrate RFC-013 specifies; adopted under karamazov-3cll. Pure
+        ;; Clojure, no deps of its own; requiring ebb.core costs ~60ms of
+        ;; boot (measured 2026-09-06, warm cache). The checkout at
+        ;; ~/src/jlt-commons/ebb is ours to change; pin a full sha here.
+        ;; v0.1.3 carries the fix for a cancelled ap spinning forever
+        ;; (ebb PR #7, found by the supervisor stream here).
+        jlt-commons/ebb
+        {:git/url "https://github.com/jlt-commons/ebb"
+         :git/tag "v0.1.3"
+         :git/sha "5f6a4f3adcfcb8cace4cbb691c7be6cb0d15724b"}
+
         ;; clojure.tools.logging ported to jolt (stderr backend, :info+ default)
         org.clojure/tools.logging
         {:git/url "https://github.com/jolt-lang/logging"
@@ -102,10 +124,12 @@
 
  :aliases {:test {:extra-paths ["test" "gui"]
                   :main-opts ["-m" "samizdat.test-runner"]}
-           ;; command-line nREPL client, plus the test tree, so the live
-           ;; process can run the suite over nREPL without paying startup:
-           ;;   (require 'samizdat.test-runner :reload-all)
-           ;;   (samizdat.test-runner/run)
+           ;; The dev tree (the nREPL client, the ebb spike) plus the tests, so
+           ;; a live image can run the suite without paying startup — with
+           ;; :test too, for the gui path: `jolt -A:dev:test nrepl-server 7899`,
+           ;; then (require 'samizdat.test-runner) (samizdat.test-runner/run).
+           ;; Not :reload-all on the runner: that dies inside jolt.time
+           ;; (karamazov-cc3a). See AGENTS.md, "Live development over nREPL".
            :dev  {:extra-paths ["dev" "test"]}
 
            ;; The GUI is an optional component and a strict HTTP client of the

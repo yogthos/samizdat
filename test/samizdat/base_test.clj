@@ -255,7 +255,15 @@
                               stem can name the model. A fact about the file
                               format the endpoint serves, not a choice a
                               project makes; a different container would be a
-                              different server and a different probe."}}
+                              different server and a different probe."
+                 "(?i)read timed out"
+                 "What jolt.http-client's SocketTimeoutException SAYS when
+                  SO_RCVTIMEO elapses mid-body (jolt/http/net.clj). A
+                  protocol string from the transport, like the LSP header and
+                  the kernel's refusal strings: a project cannot retune what
+                  the library throws. What the ladder DOES with it (fatal,
+                  not retried) is the RFC-005 ladder the :threshold entry
+                  above already fixes."}}
 
    "src/samizdat/api/runs.clj"
    {:threshold {:all "Page sizes for a read API. A client that wants fewer
@@ -801,6 +809,119 @@
     (println (str "  [base-test] model-facing sentences still in src/: " total
                   " across " (count prose-backlog) " files"))
     (is (pos? total) "if this is zero, delete prose-backlog and this test")))
+
+;; --- the fiber rules (RFC-013, ebb ADR-001) ---------------------------------
+
+(def ^:private ebb-aliases
+  ;; How ebb.core is referred to. The alias is a convention the ratchet
+  ;; depends on: a park spelled through another alias is invisible to it.
+  #{"m" "ebb" "ebb.core"})
+
+(def ^:private park-heads
+  ;; Every ebb operator that parks the fiber or hands work to a thread.
+  '#{? ! via sleep join race any timeout reduce})
+
+(def ^:private lazy-fn-heads
+  ;; Lazy HOFs: their FUNCTION argument runs when the seq is realized, under
+  ;; a counted lock, where a park hangs the carrier. Their collection
+  ;; arguments are evaluated eagerly and are not the hazard.
+  '#{map filter remove keep mapcat map-indexed keep-indexed take-while drop-while})
+
+(def ^:private lazy-body-heads
+  ;; Everything inside these is realized lazily.
+  '#{for lazy-seq lazy-cat iterate repeatedly})
+
+(defn- park-call? [x]
+  (and (seq? x)
+       (symbol? (first x))
+       (let [s (first x)]
+         (or (contains? '#{? !} s)
+             (and (namespace s)
+                  (contains? ebb-aliases (namespace s))
+                  (contains? park-heads (symbol (name s))))))))
+
+(defn- parks-under-lazy
+  "Every ebb park call in `form` whose realization would happen inside a lazy
+  sequence body: ADR-001 rule 5, the hang that is not an error."
+  [form]
+  (letfn [(head [x] (when (and (seq? x) (symbol? (first x))) (symbol (name (first x)))))
+          (go [x lazy? acc]
+            (cond
+              (and lazy? (park-call? x)) (conj acc x)
+              (seq? x)
+              (let [h (head x)]
+                (cond
+                  (contains? lazy-body-heads h)
+                  (reduce #(go %2 true %1) acc (rest x))
+                  (contains? lazy-fn-heads h)
+                  ;; the fn argument is lazy, the rest eager
+                  (let [[f & more] (rest x)]
+                    (reduce #(go %2 lazy? %1) (go f true acc) more))
+                  :else (reduce #(go %2 lazy? %1) acc (rest x))))
+              (coll? x) (reduce #(go %2 lazy? %1) acc x)
+              :else acc))]
+    (go form false [])))
+
+(defn- cell-files []
+  (sort (map str (fs/glob "resources/cells" "**.clj"))))
+
+(deftest no-park-inside-a-lazy-body
+  ;; Realizing a lazy seq takes a counted lock, and a fiber cannot leave the
+  ;; CPU while its carrier holds one, so an ebb park inside a map/for/lazy-seq
+  ;; body hangs rather than fails. Loops that park are loop/recur, mapv,
+  ;; doseq, reduce, run!. Over src/samizdat and the cells, because both run
+  ;; on the turn's fiber.
+  (let [found (for [file (concat (src-files) (cell-files))
+                    form (forms-of file)
+                    hit (parks-under-lazy form)]
+                {:file file :form (pr-str hit)})]
+    (is (empty? found)
+        (str "an ebb park inside a lazy body is a hang (RFC-013, ADR-001 rule 5); "
+             "realize the sequence eagerly (mapv, doseq, loop/recur, reduce):\n"
+             (str/join "\n" (map #(str "  " (:file %) "  " (:form %)) found))))))
+
+(deftest the-image-runs-the-same-nrepl-as-the-harness
+  ;; RFC-013: the project image is started with jolt-lang/nrepl merged over
+  ;; the project's deps so it carries interruptible-eval. The sha lives in
+  ;; image.clj because a subprocess argv cannot read the harness's deps.edn;
+  ;; this keeps the two pins equal so an nrepl bump reaches the image.
+  (let [deps (read-string (slurp "deps.edn"))
+        pinned (get-in deps [:deps 'jolt-lang/nrepl :git/sha])
+        in-image (some-> (re-find #"(?s)\(def nrepl-sha.*?\"([0-9a-f]{40})\"" (slurp "src/samizdat/repl/image.clj"))
+                         second)]
+    (is (string? pinned) "deps.edn pins jolt-lang/nrepl by sha")
+    (is (= pinned in-image) "and image.clj starts the image with the same one")))
+
+(deftest no-raw-future-in-a-cell
+  ;; RFC-013: a future spawned in a cell escapes the run's cancellation tree.
+  ;; Fan out with ebb's join over cancel/spawn (cells/team.clj is the shape).
+  (let [found (for [file (cell-files)
+                    form (forms-of file)
+                    hit (collect #(and (seq? %) (= 'future (first %))) form)]
+                {:file file :form (pr-str (take 2 hit))})]
+    (is (empty? found)
+        (str "a raw future in a cell escapes cancellation; fan out with ebb's join:\n"
+             (str/join "\n" (map #(str "  " (:file %) "  " (:form %)) found))))))
+
+(deftest mycelium-and-maestro-import-nothing-from-ebb
+  ;; RFC-013: mycelium is the machine, ebb is the scheduler. The three
+  ;; compile-time opts (:on-trace, :pre, :rethrow?) are the whole seam, so the
+  ;; vendored layer never names ebb.
+  ;; A text scan, not a read: the vendored files use ::fsm/… alias keywords
+  ;; the test's reader cannot resolve, and the rule is about a require line.
+  ;; Comments are stripped per line; a docstring mentioning ebb would trip it,
+  ;; and should — the vendored layer has no reason to talk about it either.
+  (let [files (sort (map str (concat (fs/glob "src/mycelium" "**.clj")
+                                     (fs/glob "src/maestro" "**.clj"))))
+        found (for [file files
+                    [i line] (map-indexed vector (str/split-lines (slurp file)))
+                    :let [code (str/replace line #";.*$" "")]
+                    :when (re-find #"\bebb[./]" code)]
+                {:file file :sym (str "line " (inc i) ": " (str/trim line))})]
+    (is (empty? found)
+        (str "the vendored layer must not require ebb; pass what it needs as a "
+             "compile-time opt:\n"
+             (str/join "\n" (map #(str "  " (:file %) "  " (:sym %)) found))))))
 
 (deftest nothing-in-src-decides-what-the-harness-does
   ;; The RFC-001 invariant table used to read "Nothing mechanical. Reviewed by

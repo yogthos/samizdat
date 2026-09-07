@@ -1,3 +1,6 @@
+;; Ported to jolt from github.com/mycelium-clj/mycelium. Divergences from
+;; upstream are registered in docs/divergences.md (+ docs/divergences.edn),
+;; checked by samizdat.divergences-test; a new one is recorded there.
 (ns mycelium.core
   "Public API for the Mycelium framework.
    Re-exports key functions from internal namespaces."
@@ -68,6 +71,10 @@
      :coerce?  — auto-coerce numeric types (int↔double)
      :propagate-keys? — auto-merge input keys into handler output (default true)
      :on-trace — callback (fn [trace-entry]) called after each cell completes
+     :rethrow? — (fn [throwable] -> bool). A throwable it accepts passes
+                 through every catch on the FSM path untouched instead of
+                 being routed to the error state: a control signal such as a
+                 cancellation, not a cell failure. Default: never.
      :malli/registry — local Malli registry captured during compilation"
   ([workflow-def] (pre-compile workflow-def {}))
   ([workflow-def opts]

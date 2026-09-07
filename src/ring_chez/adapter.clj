@@ -1,3 +1,5 @@
+;; Divergences from upstream are registered in docs/divergences.md, checked by
+;; samizdat.divergences-test.
 ;; Vendored from jolt-lang/ring-chez-adapter @07f14d9 and NOT ours to relicense,
 ;; so this file carries no veriframe copyright notice. Upstream is EPL-2.0,
 ;; which is what this project uses, so the vendored copy is redistributable on

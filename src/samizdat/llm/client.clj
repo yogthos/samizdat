@@ -42,7 +42,9 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [ebb.core :as ebb]
             [jolt.http-client :as http]
+            [samizdat.cancel :as cancel]
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.message :as message]
@@ -218,7 +220,14 @@
        :reason :rate-limit-latch
        :error (str (adapter/display-name adapter) " is rate-limited for another "
                    (long (Math/ceil (/ left 1000.0))) "s — not sent")}
-      (post-once* adapter config request url))))
+      ;; The blocking host call goes under via blk (RFC-013): the fiber is
+      ;; released for the read's duration, and a cancel that lands while it
+      ;; runs becomes Cancelled the moment it returns. The interrupt itself
+      ;; does not reach a :blocking recv (the spike), so the socket timeout
+      ;; remains the bound on this one wait.
+      (let [r (ebb/? (ebb/via ebb/blk (post-once* adapter config request url)))]
+        (cancel/after-blocking!)
+        r))))
 
 (defn- post-once* [adapter config request url]
   (let [;; Whether the prefill in the request was actually sent — the adapter
@@ -356,6 +365,10 @@
                             (effective-read-timeout-ms config (:max-tokens request)))
          retries (or max-retries (:max-retries config) default-max-retries)]
      (loop [attempt 0, errors []]
+       ;; Before every attempt, not only between them: a cancel that landed
+       ;; while the previous attempt or its backoff ran ends the ladder here
+       ;; rather than being spent on one more request (RFC-013).
+       (cancel/check!)
        (let [result (try
                       (post-once adapter call-config request)
                       (catch Throwable e
@@ -415,7 +428,11 @@
              (session/observe! [:provider :retried])
              (log/warn (adapter/display-name adapter) "attempt" (inc attempt)
                        "failed, retrying in" wait "ms:" (:error result))
-             (Thread/sleep wait)
+             ;; A park, not a Thread/sleep: on a task it sees a cancel at
+             ;; once, which is what makes an abort reach a sleeping ladder
+             ;; (samizdat.model.ratelimit-teardown-test enumerates the race
+             ;; the old sleep allowed).
+             (cancel/sleep! wait)
              (recur (inc attempt) errors))))))))
 
 (defn- file-stem

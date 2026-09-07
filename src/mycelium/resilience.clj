@@ -35,8 +35,9 @@
 
 (defn- make-retry
   "Retries the thunk on any thrown error. :max-attempts counts the first call,
-   matching resilience4j (max-attempts 5 with success on call 3 => 3 calls)."
-  [{:keys [max-attempts wait-ms]}]
+   matching resilience4j (max-attempts 5 with success on call 3 => 3 calls).
+   A throwable `rethrow?` accepts (a control signal) is rethrown, never retried."
+  [{:keys [max-attempts wait-ms]} rethrow?]
   (let [max-attempts (or max-attempts 3)
         wait-ms      (or wait-ms 500)]
     (fn [thunk]
@@ -44,6 +45,7 @@
         (let [r (try {:ok (thunk)} (catch Throwable t {:err t}))]
           (cond
             (nil? (:err r))          (:ok r)
+            (rethrow? (:err r))      (throw (:err r))
             (< attempt max-attempts) (do (Thread/sleep wait-ms)
                                          (recur (inc attempt)))
             :else                    (throw (:err r))))))))
@@ -71,7 +73,7 @@
    window reaches :failure-rate percent with at least :minimum-calls recorded;
    while open, calls fail fast without running the thunk; after
    :wait-in-open-ms one trial call runs half-open and closes or re-opens it."
-  [{:keys [wait-in-open-ms] :as cfg}]
+  [{:keys [wait-in-open-ms] :as cfg} rethrow?]
   (let [wait-in-open-ms (or wait-in-open-ms 60000)
         cb (atom {:state :closed :window [] :opened-at nil})]
     (fn [thunk]
@@ -81,6 +83,8 @@
             (swap! cb assoc :state :half-open)
             (throw (policy-error :circuit-open "circuit breaker is open"))))
         (let [r (try {:ok (thunk)} (catch Throwable t {:err t}))]
+          ;; a control signal is not a failure the window should count
+          (when-let [e (:err r)] (when (rethrow? e) (throw e)))
           (swap! cb cb-record cfg (some? (:err r)))
           (if-let [e (:err r)] (throw e) (:ok r)))))))
 
@@ -189,14 +193,17 @@
   ([handler cell-name policies opts]
    (let [async? (:async? opts)
          async-timeout-ms (:async-timeout-ms policies)
+         ;; pre-compile's :rethrow? — a control signal passes through every
+         ;; policy untouched: not retried, not counted, not classified.
+         rethrow? (or (:rethrow? opts) (constantly false))
          ;; Executors are built once here so their state is shared across runs
          ;; of a pre-compiled workflow. Applied innermost-first: circuit-breaker
          ;; → bulkhead → rate-limiter → retry (so the breaker sees every retry
          ;; attempt); :timeout bounds the whole chain, retries included.
-         executors (->> [(when-let [cfg (:circuit-breaker policies)] (make-circuit-breaker cfg))
+         executors (->> [(when-let [cfg (:circuit-breaker policies)] (make-circuit-breaker cfg rethrow?))
                          (when-let [cfg (:bulkhead policies)]        (make-bulkhead cfg))
                          (when-let [cfg (:rate-limiter policies)]    (make-rate-limiter cfg))
-                         (when-let [cfg (:retry policies)]           (make-retry cfg))
+                         (when-let [cfg (:retry policies)]           (make-retry cfg rethrow?))
                          (when-let [cfg (:timeout policies)]         (make-timeout cfg))]
                         (remove nil?))
          invoke (fn [resources data]
@@ -205,6 +212,7 @@
                              #(invoke-handler-sync handler async? resources data async-timeout-ms)
                              executors))
                     (catch Throwable e
+                      (when (rethrow? e) (throw e))
                       (assoc data :mycelium/resilience-error
                              (classify-error cell-name e)))))]
      (fn

@@ -193,6 +193,20 @@
         out of them by a third telling, and the honest next move is the
         implementation."}
 
+ :image-interrupt-grace-ms
+ {:value 2000 :kind :threshold :capability-tunable? true
+  :doc "How long a project-image eval that passed its deadline is given to
+        answer the interrupt before the image is restarted (RFC-013). The
+        image is started with jolt's interruptible nREPL, which aborts even a
+        tight loop at its next engine tick and replies in milliseconds, so the
+        image survives with its defs; an eval blocked in a foreign call (a
+        socket read, a sleep) aborts only when that call returns, and past
+        this grace the restart is the only way to get the image back.
+
+        Tunable because the trade is a project's: a longer grace keeps more
+        images alive through a slow foreign call, at the cost of a branch
+        waiting that much longer for a REPL that may never answer."}
+
  :image-connect-ms
  {:value 20000 :kind :threshold :capability-tunable? true
   :doc "How long to wait for the sandboxed project image's nREPL port to

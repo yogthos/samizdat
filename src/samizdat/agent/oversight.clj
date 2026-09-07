@@ -40,6 +40,8 @@
   implementer had done anything, which evaluated no turn in particular and
   spent looks on a run that was idle."
   (:require [clojure.tools.logging :as log]
+            [ebb.core :as ebb]
+            [samizdat.cancel :as cancel]
             [samizdat.events :as events]
             [samizdat.session :as session]
             [samizdat.store.interventions :as interventions]
@@ -241,53 +243,53 @@
    pass-fn]
   (if-not enabled?
     (constantly nil)
-    (let [running (atom true)
-          now (or now-fn #(System/currentTimeMillis))
+    (let [now (or now-fn #(System/currentTimeMillis))
           state (atom {:passes 0 :last-at nil :carry nil :turns-ended 0})
-          f (future
-              (while @running
-                (try
-                  (Thread/sleep (long poll-ms))
-                  ;; ONE DRAIN of the bus per poll, shared by both phases. The
-                  ;; bus is process-wide and two runs in one process publish
-                  ;; onto the same one, so narrowing by run is not tidiness.
-                  (let [arrived (when ch
-                                  (filterv #(= run-id (:run-id %)) (events/collect ch)))
-                        ended (count (filter #(= :turn (:kind %)) arrived))]
-                    (when (pos? ended)
-                      (swap! state update :turns-ended (fnil + 0) ended))
-                    ;; PHASE 1, every poll and unbudgeted (RFC-012). The reflex
-                    ;; is rule-based and cheap — it reads what the implementer
-                    ;; has done and may nudge — so it is not what :every-ms
-                    ;; and :budget exist to ration. Those bound MODEL CALLS,
-                    ;; which is phase 2 below. This used to be a second thread
-                    ;; of its own (samizdat.watch), which made two supervisors
-                    ;; where the design calls for one with two phases.
-                    (when (and @running reflex-fn)
-                      (try (reflex-fn (cond-> ctx ch (assoc :arrived arrived)))
-                           (catch Throwable e
-                             ;; The reflex must never cost the stream its
-                             ;; reasoning pass, nor the run anything at all.
-                             (when @running
-                               (log/warn "oversight reflex:" (ex-message e))))))
-                    ;; PHASE 2, on the run's turn boundary, no closer together
-                    ;; than the spacing, and against the budget.
-                    (when (and @running
-                               (due? @state {:now (now)
-                                             :every-ms every-ms
-                                             :budget budget
-                                             :boundary? (if ch
-                                                          (pos? (or (:turns-ended @state) 0))
-                                                          true)}))
-                      (swap! state assoc :last-at (now) :turns-ended 0)
-                      (pass! ctx state pass-fn)))
-                  (catch Throwable e
-                    ;; Guarded on @running: stop clears the flag and then
-                    ;; cancels, so an ordinary stop unwinds through here and
-                    ;; must not log a warning at the end of every clean run.
-                    (when @running
-                      (log/warn "oversight loop:" (ex-message e)))))))]
-      (fn stop []
-        (reset! running false)
-        (future-cancel f)
-        nil))))
+          tick (fn [batch]
+                 (try
+                   ;; ONE DRAIN of the bus per interval, shared by both phases:
+                   ;; the flow hands over everything that arrived since the
+                   ;; last batch. The bus is process-wide and two runs in one
+                   ;; process publish onto the same one, so narrowing by run
+                   ;; is not tidiness.
+                   (let [arrived (when ch (filterv #(= run-id (:run-id %)) batch))
+                         ended (count (filter #(= :turn (:kind %)) arrived))]
+                     (when (pos? ended)
+                       (swap! state update :turns-ended (fnil + 0) ended))
+                     ;; PHASE 1, every interval and unbudgeted (RFC-012). The
+                     ;; reflex is rule-based and cheap — it reads what the
+                     ;; implementer has done and may nudge — so it is not what
+                     ;; :every-ms and :budget exist to ration. Those bound
+                     ;; MODEL CALLS, which is phase 2 below. This used to be a
+                     ;; second thread of its own (samizdat.watch), which made
+                     ;; two supervisors where the design calls for one with
+                     ;; two phases.
+                     (when reflex-fn
+                       (try (reflex-fn (cond-> ctx ch (assoc :arrived arrived)))
+                            (catch Throwable e
+                              ;; The reflex must never cost the stream its
+                              ;; reasoning pass, nor the run anything at all —
+                              ;; except a cancellation, which is the stream's.
+                              (when (cancel/control-signal? e) (throw e))
+                              (log/warn "oversight reflex:" (ex-message e)))))
+                     ;; PHASE 2, on the run's turn boundary, no closer together
+                     ;; than the spacing, and against the budget.
+                     (when (due? @state {:now (now)
+                                         :every-ms every-ms
+                                         :budget budget
+                                         :boundary? (if ch
+                                                      (pos? (or (:turns-ended @state) 0))
+                                                      true)})
+                       (swap! state assoc :last-at (now) :turns-ended 0)
+                       (pass! ctx state pass-fn)))
+                   (catch Throwable e
+                     (when (cancel/control-signal? e) (throw e))
+                     (log/warn "oversight loop:" (ex-message e)))))
+          ;; THE STREAM IS ONE TASK (RFC-013): a reduce over the bus's timed
+          ;; batches, whose accumulator is the state above. Stopping is
+          ;; cancelling it; the park between batches sees the cancel at once.
+          ;; No thread, no running flag.
+          {:keys [cancel]} (cancel/start!
+                            (ebb/reduce (fn [_ batch] (tick batch) nil) nil
+                                        (events/batches ch poll-ms)))]
+      (fn stop [] (cancel) nil))))

@@ -34,11 +34,13 @@
   the point of no return. Once dolt lands (karamazov-ioo.17) a commit becomes a
   dolt commit and rollback a dolt revert; today the durable record is the cell
   file on disk plus the journal."
-  (:require [clojure.string :as str]
+  (:require [ebb.core :as ebb]
+            [clojure.string :as str]
             [clojure.tools.logging :as log]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
             [samizdat.agent.gates :as gates]
+            [samizdat.cancel :as cancel]
             [samizdat.cells :as cells]
             [samizdat.manifests :as manifests]
             [samizdat.prompt :as prompt]
@@ -124,16 +126,20 @@
       ;; map, and the soak reports it as "soak run threw: <dump>" instead of
       ;; the message naming the cell and the missing keys.
       (let [compiled (compile-fn loop-def)
-            fut (future
-                  (try {:result (myc/run-compiled compiled {:max-turns 1}
-                                                  (or soak-input {}))}
-                       (catch Throwable e {:error (or (ex-message e) (str e))})))
-            outcome (deref fut soak-timeout-ms ::timeout)]
-        (when (= ::timeout outcome)
-          ;; Best effort: a looping candidate otherwise burns a thread forever
-          ;; per rejected edit (blt.38). Cancellation may not interrupt a
-          ;; tight loop, but a cancellable wait dies here instead of never.
-          (try (future-cancel fut) (catch Throwable _ nil)))
+            ;; Bounded and detached (RFC-013): at the budget the soak task is
+            ;; cancelled and not waited for. A looping candidate otherwise
+            ;; burned a thread forever per rejected edit (blt.38), and a tight
+            ;; loop cannot be interrupted, so the wait has to end here.
+            [tag r] (cancel/with-deadline
+                     (ebb/via ebb/blk
+                       (try {:result (myc/run-compiled compiled {:max-turns 1}
+                                                       (or soak-input {}))}
+                            (catch Throwable e {:error (or (ex-message e) (str e))})))
+                     soak-timeout-ms)
+            outcome (case tag
+                      :timeout ::timeout
+                      :ok r
+                      :err {:error (or (ex-message r) (str r))})]
         (cond
           (= ::timeout outcome)
           "soak did not terminate within the time budget — the edited cell may loop"

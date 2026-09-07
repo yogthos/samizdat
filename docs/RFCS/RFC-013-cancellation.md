@@ -1,7 +1,13 @@
 # RFC-013 — Concurrency: the task tree and the event flow
 
-**Status:** draft, under review. Nothing below is implemented; the diagrams are
-what the implementation follows. Tracked as epic `karamazov-3cll`.
+**Status:** implemented for the turn, the round, the run, the three eval sites
+and the bus (karamazov-3cll.2, .3, .4, .5, .6, .7, .9), and the two blocking
+reads a cancel could not reach are interruptible upstream (3cll.10:
+http-client v0.0.8, nrepl v0.1.2). The LSP client's request wait uses the
+same deadline idiom (3cll.8); the vendored layer's unused async idioms stay as
+they are until an async cell exists, since the seam would have to be injected
+to keep mycelium and maestro free of ebb. The diagrams below are what the code
+does.
 
 ## Purpose
 
@@ -120,12 +126,12 @@ flowchart TD
     ADV["advance<br/>today: future per branch, deref with deadline, :in-flight<br/>ebb: sp per branch, timeout over its promise, :cancelling"]:::task
     TRN["turn FSM, loop.edn slice<br/>maestro run-sync on the branch's fiber"]
     INF["infer<br/>today: blocking recv, Thread/sleep between retries<br/>ebb: via blk recv, ebb sleep, (!) per attempt"]:::task
-    DSP["dispatch<br/>shell: proc/run, kills the tree on timeout, kept<br/>eval: today future, ebb timeout over via blk<br/>lsp: today promise per request, ebb dfv"]:::task
-    MUT["mutate tool, soak<br/>today: future, deref, future-cancel<br/>ebb: timeout over sp"]:::task
+    DSP["dispatch<br/>shell: proc/run, kills the tree on timeout, kept<br/>eval: today future, ebb with-deadline over via blk; the image is asked to interrupt first<br/>lsp: today promise per request, ebb dfv"]:::task
+    MUT["mutate tool, soak<br/>today: future, deref, future-cancel<br/>ebb: with-deadline over via blk"]:::task
     FAN["team fan-out<br/>today: future per worker, deref all<br/>ebb: join of worker tasks"]:::task
     SUB["nested manifests<br/>worker, board, reviewer, supervisor<br/>run-compiled on the same fiber, no new task"]
     JRN["journal/note!, turn rows<br/>sqlite, unchanged"]
-    BUS["event bus<br/>today: core.async mult, sliding taps<br/>ebb: observe, relieve per subscriber"]:::flow
+    BUS["event bus<br/>today: core.async mult, sliding taps<br/>ebb: a sliding window per subscriber, batches as a flow"]:::flow
     INT["interventions table<br/>durable, drained at boundaries, unchanged"]
 
     API --> ACT
@@ -218,11 +224,16 @@ flowchart LR
 ```
 
 The consumer is one task: `reduce` over the batches, whose accumulator is the
-state `oversight/start!` keeps today (`:passes`, `:last-at`, `:carry`). It is
-a child of the run task and is cancelled at teardown, which replaces the
-running atom and the `future-cancel`. The poll interval survives as the park
-between batches, so a batch is still everything that arrived in one interval
-and `gates.edn :oversight :poll-ms` keeps its meaning.
+state `oversight/start!` keeps (`:passes`, `:last-at`, `:carry`). Stopping it
+is cancelling it, which `run-rounds`'s `finally` does, replacing the running
+atom and the `future-cancel`. The poll interval survives as the park between
+batches, so a batch is still everything that arrived in one interval and
+`gates.edn :oversight :poll-ms` keeps its meaning. In code the hub keeps the
+sliding window per subscriber by hand rather than through `relieve`: the
+contract is identical, and a window a watcher can also drain on demand
+(`events/collect`) is what the tests and the REPL need. `events/batches` is
+the flow: an `ap` over an endless seed that parks for the interval and emits
+what arrived, empty batches included, so a quiet run still ticks.
 
 ### Every wait, today and after
 
@@ -234,17 +245,17 @@ and `gates.edn :oversight :poll-ms` keeps its meaning.
 | `beam wait-while-paused` | `Thread/sleep`, abort flag polled | ebb sleep, cancel check | 3cll.4 |
 | `beam advance-all` | future per branch, deref with deadline, `:in-flight` atom of zombies | sp per branch with a termination promise; `timeout` over the promise; `:cancelling` holds cancelled tasks until they stop | 3cll.2 |
 | `loop.edn` turn FSM | maestro `run-sync` | the same, plus the `:pre` check; every cell boundary is a cancel point between journal writes | 3cll.4 |
-| `llm/client` | blocking recv; `Thread/sleep` between retries; abort flag checked | `via blk` recv; ebb sleep; cancel check before each attempt and before the retry note | 3cll.4 |
+| `llm/client` | blocking recv; `Thread/sleep` between retries; abort flag checked | `via blk` recv, interruptible within a 250 ms slice since http-client v0.0.8; ebb sleep; cancel check before each attempt and before the retry note | 3cll.4, 3cll.10 |
 | `llm/ratelimit` | "never sleep here", because a sleep cannot be cancelled | the rule dissolves; the docstring says so | 3cll.4 |
 | `engine/proc run` | `waitFor` with timeout, kills the process tree | kept; a cancel takes the same kill path | 3cll.3 |
 | `repl eval-code` | future, deref, `future-cancel` best effort | `timeout` over `via blk` | 3cll.3 |
-| `repl/route` image eval | future, deref, restart the image on timeout | `timeout` over `via blk`; the restart stays if the FFI read is un-interruptible | 3cll.3 |
+| `repl/route` image eval | future, deref, restart the image on timeout | two stages: at the deadline the image is asked to interrupt the eval (its nREPL carries `interruptible-eval`, which stops even a tight loop) while the reader keeps waiting for the reply; past `:image-interrupt-grace-ms` the reader is cancelled (interruptible within a slice since nrepl v0.1.2) and the image restarted | 3cll.3, 3cll.10 |
 | `mutation` soak | future, deref, `future-cancel` best effort | `timeout` over sp | 3cll.3 |
 | `cells/team` fan-out | future per worker, deref all | `join` of worker tasks; workers already return rather than throw, so a join never fails early | 3cll.2 |
 | nested manifests | `run-compiled` inside a cell, same thread | unchanged; the check reads a process-local, so nesting inherits cancellation | none |
-| `oversight start!` | future loop, `Thread/sleep`, running atom, `future-cancel`, `collect` per poll | `reduce` over `ap` over `relieve` over `observe`; a child of the run task, cancelled at teardown | 3cll.9 |
-| `events` hub | core.async chan, mult, sliding-buffer taps | `observe`, `relieve` per subscriber with a sliding conj | 3cll.9 |
-| `lsp/client` | reader future, promise per request | `dfv` per request; the reader under `via blk` | 3cll.8 |
+| `oversight start!` | future loop, `Thread/sleep`, running atom, `future-cancel`, `collect` per poll | `reduce` over `events/batches`, a timed flow; stopped by cancelling it at teardown | 3cll.9 |
+| `events` hub | core.async chan, mult, sliding-buffer taps | a bounded sliding window per subscriber (relieve's semigroup by hand, so a watcher can also drain it on demand) and `batches`, an `ap` that emits each interval's arrivals | 3cll.9 |
+| `lsp/client` | reader future, promise per request; the deref blocks the turn's carrier for up to the read timeout | the deref runs under `via blk` inside `with-deadline`, so a cancel lands at once; the pending entry is released on every exit | 3cll.8 |
 | maestro and mycelium catches | `catch Throwable` routes everything to the error state | consult `:rethrow?` first; Cancelled passes through | 3cll.4 |
 | mycelium async, join, timeouts, resilience | three promise idioms, an abandoned thread, futures per member; unused by any manifest | unified over tasks, as a follow-on | 3cll.8 |
 
@@ -362,7 +373,8 @@ promise, cancels at the deadline, and moves on. The branch forfeits each round
 while the promise is unsettled. That is today's in-flight registry with one
 difference that matters: the entry is a task that has been told to stop and
 will at its next check, not a thread running to completion. The bound on
-`Cancelling` is the innermost blocking wait.
+`Cancelling` is the innermost blocking wait: one 250 ms slice for a provider
+or image read since http-client v0.0.8 and nrepl v0.1.2 (3cll.10).
 
 ### The run
 
@@ -427,15 +439,112 @@ turn tasks under it. Teardown is `run-rounds`'s existing `finally`.
 - **Numbers stay in resources.** *Enforced by* review; there is no constant to
   add.
 
-## Open question, answered by the spike
+### Rules for code that parks (ebb ADR-001)
 
-Does jolt's thread interrupt unblock a `:blocking` FFI read? Two rows:
-http-client's `recv` (`jolt/http/net.clj:16`) and the project image transport.
+Ebb's `doc/adr/001-fiber-affinity.md` states six disciplines for code on jolt
+fibers. Four of them are landmines for samizdat code the moment it parks, and
+they hold for `src/` and for cells alike:
 
-If yes, `Cancelling` lasts milliseconds and the registry is empty at every
-round. If no, `Cancelling` lasts up to the socket timeout, the registry holds
-for that long, and the image eval path keeps its restart. Either answer keeps
-every diagram in this RFC; only the length of one state changes.
+- **Never park inside a lazy sequence.** Realizing a lazy seq takes a counted
+  lock, and a fiber cannot leave the CPU while its carrier holds one, so a
+  `?`, `sleep`, `via blk`, `join` or `timeout` inside a `map`, `for`,
+  `filter`, `keep`, `mapcat`, `lazy-seq`, `iterate` or `repeatedly` body is a
+  hang, not an error. Loops that park are `loop/recur`, `mapv`, `doseq`,
+  `reduce`, `run!`. *Enforced by* the base-test ratchet
+  `no-park-inside-a-lazy-body` over `src/` and `resources/cells`.
+- **A continuation is bound to (thread, fiber), not fiber alone.** A timer
+  thread can resume a main-thread continuation undetected. Never move a task's
+  continuation across OS threads by hand; ebb's executors do it. *Unenforced*:
+  there is nothing in samizdat that could, and the rule is here so nothing
+  starts to.
+- **`finally` runs twice under a re-entered continuation.** `dynamic-wind`
+  after-thunks re-run, so a `finally` that lexically contains a fork point
+  (`ap`, `cp`) must be idempotent. `sp` bodies are safe. *Unenforced*:
+  samizdat uses no `ap` or `cp` on the implementer path; the bus consumer
+  (3cll.9) keeps its `finally` out of the `ap` body.
+- **Bindings do not cross fibers.** Ambient context is snapshotted and carried
+  by the handshake, not inherited, so a dynamic var bound on the caller is not
+  visible inside `via blk`. Pass what a blocking call needs as arguments.
+  *Enforced by* the spike's row for the nested check (`*process*` is carried);
+  for everything else, review.
+
+Two measured facts sit beside the rules: an `sp` runs its body on the caller
+until the first park and only then returns its canceller, and `via blk`
+delivers whatever the thunk produced and never substitutes `Cancelled`, so
+`(!)` follows every `via blk` return (the spike's answer, above).
+
+## The spike's answer (karamazov-3cll.1, measured 2026-09-06)
+
+The question was whether jolt's thread interrupt unblocks a `:blocking` FFI
+read. **It does not.** Measured with `dev/samizdat/dev/ebb_spike.clj` on jolt
+0.8.3, cancel at 500 ms, socket timeout and sleeps at 5 s; each wait under ebb
+`via blk` (whose cancel interrupts the thread) and under a jolt `future` +
+`future-cancel` (what the code does today):
+
+| wait | after cancel, under ebb | under future-cancel |
+|---|---|---|
+| http-client recv (`:blocking` FFI), v0.0.7 | blocked until SO_RCVTIMEO fired, 4499 ms; `SocketTimeoutException` delivered, not Cancelled | same, 4503 ms |
+| nrepl transport recv (`:blocking` FFI), v0.1.1 | blocked until SO_RCVTIMEO, 4498 ms; returned `nil` and the body **ran on** | same |
+| http-client recv, **v0.0.8** (reads in 250 ms slices) | 245 ms, `InterruptedException` | 2 ms |
+| nrepl transport recv, **v0.1.2** (reads in 250 ms slices) | 244 ms, `InterruptedException` | 249 ms |
+| `Thread/sleep` | 1 ms, `InterruptedException` | 1 ms |
+| ebb `sleep` on the fiber | 0 ms, Cancelled | n/a |
+| promise deref | 0 ms, `InterruptedException` | 0 ms |
+| subprocess `waitFor` | 27 ms; `waitFor` returned, `proc/run` reaped the tree, `{:timeout true}` | 17 ms |
+| tight loop, no check | never | never |
+| loop checking `isInterrupted` | 0 ms | |
+| sp loop with `(!)` and a 1 ms park | 0 ms, Cancelled | |
+| `(!)` inside a called fn, nested in sp | 0 ms, Cancelled | |
+| sp invocation with 300 ms of CPU before its first park | the canceller came back after 300 ms | |
+| `(timeout (via blk (Thread/sleep 5s)) 500)` | settled at 504 ms | |
+| `(timeout (via blk (http recv 5s)) 500)` | settled at 5002 ms: **the parent waited for the child** | |
+
+Ebb's own suite passed under jolt 0.8.3 (283 tests, 1199 assertions, 0
+failures); requiring `ebb.core` costs ~60 ms of boot, warm. `jolt build` of
+the spike harness (which requires ebb) produced a binary whose table matched
+the interpreted run line for line, so ebb survives AOT; the harness binary
+itself built and booted with the dependency declared, and ebb enters it the
+day `src/` first requires it.
+
+**What follows, and where it lands.**
+
+- `Cancelling` lasts up to the innermost blocking read. For the provider that
+  was `:socket-timeout` (300000 ms) until http-client v0.0.8 made the read
+  interruptible within a 250 ms slice (the last bullet). For the project image it used to be
+  **forever**: `repl/image.clj` connected with no `:recv-timeout-secs`, which
+  is why `repl/route.clj` killed the image on a deadline. A plain
+  `jolt nrepl-server` answers the `interrupt` op with `unknown-op`, so the
+  image is now started with jolt-lang/nrepl merged in over the project's own
+  deps (`-Sdeps`, the same sha deps.edn pins for the harness), which carries
+  `interruptible-eval`. Measured: the interrupt stopped a tight loop in 1 ms,
+  the eval replied `interrupted`, and the same session answered the next
+  eval. An eval blocked in a foreign call aborts only when the call returns,
+  and past `gates.edn :image-interrupt-grace-ms` the restart remains. The
+  detach decision above stands and is now measured, not argued.
+- `via blk` delivers what the thunk produced: an `InterruptedException`, a
+  `SocketTimeoutException`, or a value (the nrepl recv returned `nil` and the
+  body kept going). It never substitutes Cancelled. So child 3cll.4 calls
+  `(!)` immediately after every `via blk` returns, and `:rethrow?` accepts
+  `InterruptedException` as well as Cancelled.
+- An `sp` runs its body on the invoking fiber until the body's first park.
+  A turn's assemble and compaction run before the turn task hands back its
+  canceller, and five branches serialize that prefix on the round's fiber.
+  Child 3cll.2 measures the prefix on a real turn and, if it matters, starts
+  each turn task from `via cpu` so the prefix runs off the round's fiber.
+- A cancel now *does* reach both blocking reads (`karamazov-3cll.10`).
+  Jolt's interrupt sets the flag and does not signal a thread inside a
+  syscall — measured, a 5 s `poll` ran its full 5 s after an interrupt — so
+  the two libraries we own wait for readability in 250 ms slices and check
+  `Thread/interrupted` between them, throwing `InterruptedException` like an
+  interrupted sleep: http-client v0.0.8 (`recv-bytes`, TLS included) and
+  nrepl v0.1.2 (`transport/recv`). The socket timeout stays the bound on the
+  read as a whole. `Cancelling` is therefore one slice long for a turn parked
+  on the provider or the image, and the `:cancelling` registry is empty by
+  the next round in the ordinary case.
+- The lazy-seq audit (ADR-001 rule 5) found no park inside a lazy body on the
+  turn path: maestro's loop is `loop/recur`, cells are called directly, the
+  team fan-out uses `mapv`, and mycelium's lazy forms are compile-time. Child
+  3cll.7's ratchet is the durable check.
 
 ## What this RFC does not cover
 

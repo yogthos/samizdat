@@ -96,8 +96,19 @@
   ;; digest lines, the likeliest continuation is another digest.
   (is (nil? (:prefill (no-call "[unloaded] t70 cell → neutral")))
       "a clean slate to reason in")
-  (is (= "```tool-call\n" (:prefill (no-call "I think I should probably...")))
-      "an ordinary no-call still has prose withheld — that is what works"))
+  (is (nil? (:prefill (no-call "[unloaded] t70 cell → neutral" 1)))
+      "and still a clean slate on a repeat — the exemplar is withheld, not the prose"))
+
+(deftest the-no-call-ladder-prefills-on-the-second-rung
+  ;; Graduated recovery (no-call-step): a FIRST plain no-fence is a format slip
+  ;; the model can fix once told, so it keeps its reasoning — a content prefill
+  ;; makes DeepSeek /beta skip the thinking phase entirely. A REPEAT ends the
+  ;; request mid-fence so prose is not an available reply; message-only went
+  ;; 0-for-42 on a weak local model and that rung is what lifted it.
+  (is (nil? (:prefill (no-call "I think I should probably...")))
+      "first plain no-call: message-only, reasoning kept")
+  (is (= "```tool-call\n" (:prefill (no-call "I think I should probably..." 1)))
+      "second: prose withheld — that is the rung that works"))
 
 (deftest a-truncated-reply-is-still-a-truncation
   ;; Truncation outranks imitation: a reply cut off mid-digest wants more

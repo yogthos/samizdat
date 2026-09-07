@@ -1,3 +1,5 @@
+;; Divergences from upstream are registered in docs/divergences.md, checked by
+;; samizdat.divergences-test.
 ;; Vendored from oakes/parinferish (src/parinferish/core.cljc) and NOT ours to
 ;; relicense, so this file carries no samizdat copyright notice. Upstream
 ;; dedicates every file that originates from the project to the PUBLIC DOMAIN

@@ -33,10 +33,13 @@
 
 ;; --- pure -------------------------------------------------------------------
 
+(def ^:private image-cmd ["jolt" "-Sdeps" image/nrepl-sdeps "nrepl-server" "7888"])
+
 (deftest spawn-argv-wraps-for-the-backend
-  (is (= ["jolt" "nrepl-server" "7888"]
-         (image/spawn-argv :none {:profile "/p.sb"} 7888)))
-  (is (= ["sandbox-exec" "-f" "/p.sb" "jolt" "nrepl-server" "7888"]
+  ;; The image runs the harness's own nrepl (with interruptible-eval) merged
+  ;; over the project's deps, so a runaway eval is interrupted, not killed.
+  (is (= image-cmd (image/spawn-argv :none {:profile "/p.sb"} 7888)))
+  (is (= (into ["sandbox-exec" "-f" "/p.sb"] image-cmd)
          (image/spawn-argv :seatbelt {:profile "/p.sb"} 7888)))
   (testing "bwrap: the harness's own sh hands the filter to bwrap as fd 3,
             and the image's argv follows the --"
@@ -46,7 +49,7 @@
              (subvec argv 0 7)))
       (is (= ["--seccomp" "3"] (subvec argv (.indexOf argv "--seccomp")
                                        (+ 2 (.indexOf argv "--seccomp")))))
-      (is (= ["--" "jolt" "nrepl-server" "7888"] (subvec argv (- (count argv) 4)))))))
+      (is (= (into ["--"] image-cmd) (subvec argv (- (count argv) 6)))))))
 
 (deftest free-port-is-actually-free
   (let [p (image/free-port)]

@@ -30,6 +30,7 @@
             [clojure.tools.logging :as log]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.resume :as resume]
+            [samizdat.cancel :as cancel]
             [samizdat.llm.registry :as registry]
             [samizdat.store.grants :as grants]
             [samizdat.store.interventions :as interventions]
@@ -97,40 +98,38 @@
         adapter (registry/adapter-for (:provider llm-config))
         abort (atom false)
         promised (promise)
-        fut (future
-              (try
-                (let [r (beam/run! {:conn conn :config config
-                                    :llm-adapter adapter :llm-config llm-config
-                                    :problem problem
-                                    :max-turns max-turns
-                                    :beam-width beam-width
-                                    :token-budget token-budget
-                                    :seed-run seed-run
-                                    :quarantine quarantine
-                                     :abort abort
-                                     ;; Registered inside the run's own
-                                     ;; thread, BEFORE the run can finish:
-                                     ;; assoc'ing from the request thread
-                                     ;; after the future completes strands
-                                     ;; the entry, and the stranded entry
-                                     ;; let abort! rewrite a finished run
-                                     ;; to :aborted (provenance CR1-3).
-                                     :on-start (fn [rid]
-                                                 (swap! active assoc rid {:abort abort})
-                                                 (deliver promised rid))})]
-                  (swap! active dissoc (:run-id r))
-                  r)
-                (catch Throwable e
-                  (log/error "run failed:" (ex-message e))
-                  ;; beam/run! has already marked the row failed and journaled
-                  ;; the error; this only drops the in-memory handle, which is
-                  ;; otherwise leaked and leaves abort! reporting a dead run as
-                  ;; abortable. deref with 0 because by here the id has long
-                  ;; been delivered — unless the throw beat on-start, in which
-                  ;; case there is no id to forget.
-                  (when-let [rid (deref promised 0 nil)]
-                    (swap! active dissoc rid))
-                  {:status :error :error (ex-message e)})))
+        cancel* (atom nil)
+        ;; The run is a TASK (RFC-013): abort cancels it, and the cancel is
+        ;; observed at the round's next step or a turn's next check. The abort
+        ;; flag stays beside it for the waits a cancel cannot reach.
+        started (cancel/start!
+                 (cancel/spawn
+                  (fn []
+                    (try
+                      (let [r (beam/run! {:conn conn :config config
+                                          :llm-adapter adapter :llm-config llm-config
+                                          :problem problem
+                                          :max-turns max-turns
+                                          :beam-width beam-width
+                                          :token-budget token-budget
+                                          :seed-run seed-run
+                                          :quarantine quarantine
+                                          :abort abort
+                                          :on-start (fn [rid]
+                                                      (swap! active assoc rid
+                                                             {:abort abort
+                                                              :cancel (fn [] (some-> @cancel* (apply [])))})
+                                                      (deliver promised rid))})]
+                        (swap! active dissoc (:run-id r))
+                        r)
+                      (catch Throwable e
+                        (if (cancel/control-signal? e)
+                          (log/info "run aborted:" (ex-message e))
+                          (log/error "run failed:" (ex-message e)))
+                        (when-let [rid (deref promised 0 nil)]
+                          (swap! active dissoc rid))
+                        {:status :error :error (ex-message e)})))))
+        _ (reset! cancel* (:cancel started))
         run-id (deref promised 30000 nil)]
     (if run-id
       ;; Wrapped in :body like resume, so one route shape serves both the
@@ -147,12 +146,14 @@
        :body {:error {:message "the run did not start within 30s"}}})))))
 
 (defn abort!
-  "Stop a run without asking it to cooperate. The flag is checked at the top of
-  every scheduling round, and the run's finally block disposes every engine
-  session regardless of how it ended."
+  "Stop a run without asking it to cooperate. Cancels the run task, which is
+  observed at the round's next step or a turn's next check (RFC-013), and sets
+  the flag the waits a cancel cannot reach still read. The run's finally block
+  disposes every engine session regardless of how it ended."
   [conn run-id]
-  (if-let [{:keys [abort]} (get @active run-id)]
+  (if-let [{:keys [abort cancel]} (get @active run-id)]
     (do (reset! abort true)
+        (when cancel (cancel))
         (if (pos? (runs/finish-run! conn run-id :aborted nil))
           ;; :body, not a bare map: the run's own :status is the string
           ;; "aborting", and a route reading (:status r) as an HTTP code would
@@ -192,23 +193,28 @@
           adapter (registry/adapter-for (:provider llm-config))
           abort (atom false)
           max-turns (or (:max_turns body) (:max-turns body))]
-      (future
-        (try
-          ;; Registered inside the run's thread before any work, for the same
-          ;; reason as start-run! (provenance CR1-3): an assoc on the
-          ;; caller racing a completion dissoc stranded the entry.
-          (swap! active assoc run-id {:abort abort})
-          (let [r (resume/resume! {:conn conn :config config
-                                   :llm-adapter adapter
-                                   :llm-config llm-config
-                                   :run-id run-id :abort abort
-                                   :max-turns max-turns})]
-            (swap! active dissoc run-id)
-            r)
-          (catch Throwable e
-            (log/error "resume failed:" (ex-message e))
-            (swap! active dissoc run-id)
-            {:status :error :error (ex-message e)})))
+      (let [cancel* (atom nil)
+            started (cancel/start!
+                     (cancel/spawn
+                      (fn []
+                        (try
+                          (swap! active assoc run-id
+                                 {:abort abort
+                                  :cancel (fn [] (some-> @cancel* (apply [])))})
+                          (let [r (resume/resume! {:conn conn :config config
+                                                   :llm-adapter adapter
+                                                   :llm-config llm-config
+                                                   :run-id run-id :abort abort
+                                                   :max-turns max-turns})]
+                            (swap! active dissoc run-id)
+                            r)
+                          (catch Throwable e
+                            (if (cancel/control-signal? e)
+                              (log/info "resume aborted:" (ex-message e))
+                              (log/error "resume failed:" (ex-message e)))
+                            (swap! active dissoc run-id)
+                            {:status :error :error (ex-message e)})))))]
+        (reset! cancel* (:cancel started)))
       ;; The budget this resume is running under, from what the caller asked
       ;; for, falling back to the row as it stood BEFORE the future started.
       ;; Reading the row here unconditionally raced the resume that is

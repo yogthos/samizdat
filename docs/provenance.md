@@ -6,6 +6,10 @@ for one reason: about fifty comments in the code say a guard exists because of a
 specific past failure, and a reader has to be able to look that failure up.
 
 
+How the four in-tree libraries differ from their upstreams is a different
+record: `docs/divergences.md`, checked against `docs/divergences.edn` by
+`samizdat.divergences-test`.
+
 The citations read `(provenance R3-11)`, `(provenance A-4)`. The findings they
 name are below, one line each. The full original write-ups are in git
 history (`git log --diff-filter=D -- docs/`) if the one-line summary is not
