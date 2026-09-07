@@ -31,11 +31,25 @@
                          :else [(str v)])))
         files (coerce :files)
         tests (coerce :tests)
-        goal (some-> (base/arg ctx :goal) str not-empty)]
-    (if (empty? (concat files tests))
+        goal (some-> (base/arg ctx :goal) str not-empty)
+        ;; A declared entry is a PATH, and a path has no whitespace. Run
+        ;; e1b765e7's owner declared "test/flight/ghost_test.clj — ghost HUD
+        ;; text (GHOST <score>), …": declare-plan folds :tests into the files
+        ;; owed, the sentence became a file it could never write, and every
+        ;; `done` from turn 117 was refused for it after the real files had
+        ;; landed (karamazov-j9ow). Refused on the turn it is declared,
+        ;; naming the entry, rather than withheld a hundred turns later.
+        not-paths (filterv #(re-find #"\s" %) (concat files tests))]
+    (cond
+      (seq not-paths)
+      (base/malformed branch (msg {:not-a-path (first not-paths)}))
+
+      (empty? (concat files tests))
       ;; An empty plan is the state this tool exists to rule out, so it is a
       ;; malformed call rather than an accepted no-op.
       (base/malformed branch (msg {:needs-files true}))
+
+      :else
       (let [b (state/declare-plan branch {:files files :tests tests :goal goal})]
         (assoc (base/ok branch (msg {:declared true
                                      :files (clojure.string/join ", "

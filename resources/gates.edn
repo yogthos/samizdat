@@ -758,6 +758,24 @@
         tolerates a much wider split than one with a single build. Config
         :run :max-subtasks still overrides for one run."}
 
+ :board-owner-turns
+ {:value 150 :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-ghti" "run e1b765e7"]
+  :doc "How many turns one board owner may spend on one task before it is
+        exhausted and the task goes back to the board unowned.
+
+        Until this the owner's cap was the run's :max-turns, and on a
+        board-driven run that number bounds the beam's rounds rather than
+        any owner, so every owner in effect had the whole run: on run
+        e1b765e7 (GLM-5.3, 2026-09-07) parts 1 and 2 of a four-part task
+        shipped in 55 and 34 turns and part 3 ran past 140 with the fourth
+        part never started, every steer a suggestion and nothing able to end
+        it (karamazov-ghti). An exhausted owner is the case board-review's
+        give-up already handles: the task stays open, unattributed, and the
+        board moves on. A RUNAWAY GUARD, not a plan — it is above the
+        longest honest part this project has seen ship (~115 turns), and
+        the run's own cap still applies when it is lower."}
+
  :board-max-tasks
  {:value 40 :kind :threshold :capability-tunable? false
   :doc "How many tasks one board run will work before it stops and reports what
@@ -927,9 +945,16 @@
           ;; budget is small. The stream is meant to be the thing that
           ;; notices, not the thing that runs.
           :every-ms 120000
-          :budget 12}
+          :budget 12
+          ;; The read timeout for the supervisor's OWN model calls, in ms;
+          ;; nil keeps the run's. Its brief is a run-health digest plus a
+          ;; carried context, and on GLM-5.3 with thinking those calls ran
+          ;; past the run's 300 s three times running (run e1b765e7,
+          ;; 2026-09-07): every later pass ended abandoned with no note and
+          ;; the stream never steered again (karamazov-cz90).
+          :timeout-ms 600000}
   :kind :policy :capability-tunable? false
-  :provenance ["RFC-012 F2"]
+  :provenance ["RFC-012 F2" "karamazov-cz90"]
   :doc "THE SUPERVISOR STREAM: the harness reasoning about itself, in parallel
         with the run, in its own context. The ONE supervisor a run has
         (RFC-012): the feature loop no longer runs a second one as a stage.

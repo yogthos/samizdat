@@ -512,3 +512,49 @@
     (let [{:keys [gather prob]} (reasoning-over conn rid)]
       (is (empty? (:oversight/self-graded gather)))
       (is (not (str/includes? (str prob) "YOU CHANGED HOW THIS RUN IS SCORED"))))))
+
+;; --- a pass that died on the provider says so, and gets its own timeout ------
+;; karamazov-cz90 (run e1b765e7, GLM-5.3): from 17:21 every pass ended
+;; :abandoned with notes null because the supervisor's model calls hit the
+;; run's 300 s read timeout three times running. The record could not tell a
+;; dead stream from a quiet one, and the stream never steered again.
+
+(deftest an-abandoned-pass-carries-the-failure-that-ended-it
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        ctx {:conn conn :run-id rid :config {}}]
+    (runs/open-branch! conn rid {:branch-id "SUP"})
+    (journal/record-turn! conn rid {:branch-id "SUP" :turn 1 :tool-name "introspect"
+                                    :category :neutral :result "=== LOOP WIRING ==="})
+    (journal/record-turn! conn rid {:branch-id "SUP" :turn 2 :tool-name "__provider_error__"
+                                    :category :neutral
+                                    :result "GLM call failed: read timeout: Read timed out"})
+    ((:handler (cell/get-cell! :oversight/apply))
+     ctx {:oversight/idle 21 :oversight/unmet 5 :oversight/verdict :abandoned
+          :oversight/branch {:id "SUP"}})
+    (let [note (json/read-str
+                (str (:data (last (db/fetch conn ["SELECT data FROM events
+                                                    WHERE run_id = ? AND kind = 'oversight'
+                                                    ORDER BY id" rid]))))
+                :key-fn keyword)]
+      (is (= "abandoned" (:verdict note)))
+      (is (= "__provider_error__" (get-in note [:failure :tool])))
+      (is (str/includes? (str (get-in note [:failure :error])) "read timeout")
+          "the note names what ended the pass, in the provider's own words"))))
+
+(deftest the-supervisors-calls-get-the-streams-own-read-timeout
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        ctx {:conn conn :run-id rid :config {} :llm-config {:timeout-ms 300000}}
+        g ((:handler (cell/get-cell! :oversight/gather)) ctx {})
+        seen (atom nil)]
+    (with-redefs [myc/run-compiled (fn [_ ctx data]
+                                     (reset! seen ctx)
+                                     {:branch (assoc (:branch data) :final-answer "ok")
+                                      :verdict :done})]
+      ((:handler (cell/get-cell! :oversight/reason)) ctx g))
+    (is (= (:timeout-ms (gates/threshold :oversight))
+           (get-in @seen [:llm-config :timeout-ms]))
+        "gates.edn :oversight :timeout-ms reaches the pass's provider calls")))

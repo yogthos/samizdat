@@ -14,6 +14,7 @@
   closes until a critic has read what it changed."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.judge :as judge]
             [samizdat.cells :as cells]
@@ -307,3 +308,28 @@
         (is (some? @judged) "the judge was called")
         (is (str/includes? (str @judged) "Wire the error branch of the request handler")
             "and read the task's own text as the requirement")))))
+
+(deftest an-owner-that-spends-its-turn-budget-hands-the-task-back
+  ;; karamazov-ghti: an owner's cap was the run's :max-turns, which on a
+  ;; board-driven run bounds the beam's rounds and not any owner — so an
+  ;; owner had the whole run. gates.edn :board-owner-turns bounds one owner
+  ;; on one task; an exhausted owner is a give-up to the review and the task
+  ;; stays open, unowned, for the next round or a human.
+  (let [orig gates/threshold
+        turns-taken (atom 0)]
+    (with-redefs [gates/threshold (fn [k] (if (= k :board-owner-turns) 3 (orig k)))
+                  llm/chat (fn [& _]
+                             (swap! turns-taken inc)
+                             {:content "```tool-call\n{\"name\":\"task\",\"args\":{\"action\":\"list\"}}\n```"
+                              :finish-reason "stop"})]
+      (let [conn (db/open! ":memory:")
+            id (tasks/create! conn {:title "the endless one"})
+            r (run-board conn {:max-turns 40})
+            owner-turns (count (db/fetch conn ["SELECT id FROM turns WHERE branch_id LIKE 'T0%'"]))]
+        (is (<= owner-turns 3) "the owner stopped at its own budget, not the run's")
+        (is (not= "done" (:status (tasks/get-task conn id))) "the task is not closed")
+        (is (not= :completed (:status r)) "and the run does not claim success")
+        (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+              reviews (journal/notes conn rid :board-review)]
+          (is (some #(= "give-up" (str (:decision %))) reviews)
+              "the review recorded the give-up rather than a pass"))))))
