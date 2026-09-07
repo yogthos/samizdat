@@ -127,7 +127,8 @@ measured against it.
 
 | key | what it bounds |
 |---|---|
-| `:board-max-tasks` | how many tasks one run works before stopping to report — the only structural bound on a board whose owners may keep splitting. A runaway guard, not a plan. |
+| `:board-max-tasks` | how many tasks one run works before stopping to report — the structural bound on a board whose owners may keep splitting. A runaway guard, not a plan. |
+| `:board-owner-turns` | how many turns one owner may spend on one task before it comes back `:exhausted`, which the review reads as give-up: the task stays open, unowned, and the board moves on. Never wider than the run's own `:max-turns`. Added after run e1b765e7 (2026-09-07), where an owner's cap was the run's and one part ran past 140 turns while the last part never started (karamazov-ghti). |
 | `:board-review-attempts` | how many times the critic may bounce one task before the loop leaves it open and moves on. |
 
 ## Invariants

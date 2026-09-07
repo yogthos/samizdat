@@ -322,8 +322,17 @@
                            {:id bid :problem prob
                             :messages (turn/initial-messages prob suffix :supervisor)})
                           :advisory? true :role :supervisor))
+             ;; The stream's own read timeout for the supervisor's calls
+             ;; (gates.edn :oversight :timeout-ms), when set. Its brief is a
+             ;; digest plus a carried context, and on GLM-5.3 those calls
+             ;; ran past the run's 300 s three times running; every later
+             ;; pass ended abandoned and the stream never steered again
+             ;; (karamazov-cz90).
+             rctx (let [rc (wf/role-ctx ctx :supervisor)
+                        t (:timeout-ms (gates/threshold :oversight))]
+                    (cond-> rc t (assoc-in [:llm-config :timeout-ms] t)))
              out (myc/run-compiled (wf/compiled-manifest "supervisor")
-                                   (wf/role-ctx ctx :supervisor)
+                                   rctx
                                    {:branch b :turn 1})]
          (assoc data
                 :oversight/answer (get-in out [:branch :final-answer])
@@ -356,21 +365,39 @@
    :requires [:conn :run-id]
    :input  [:map [:oversight/verdict :keyword] [:oversight/answer :any]
             [:oversight/idle {:optional true} :any]
-            [:oversight/unmet {:optional true} :any]]
+            [:oversight/unmet {:optional true} :any]
+            [:oversight/branch {:optional true} :any]]
    ;; Returns `data`: the record is the effect, and the row is the product.
    :output [:map]}
   (fn [{:keys [conn run-id]} data]
     (safely :apply
      (fn []
-       (journal/note! conn run-id :oversight
-                      {:data {:idle (:oversight/idle data)
-                              :unmet (:oversight/unmet data)
-                              ;; A blank note means one of several things and
-                              ;; the verdict is which: `:done` said nothing,
-                              ;; `:exhausted` ran out of turns, `:error` threw.
-                              :verdict (some-> (:oversight/verdict data) name)
-                              :notes (some-> (:oversight/answer data)
-                                             (clip (gates/threshold :oversight-note-chars)))}})
+       (let [;; WHAT ENDED THE PASS, when something did: the supervisor
+             ;; branch's last turn if it was a provider error, a malformed
+             ;; call or a failure, in the record's own words. A pass that
+             ;; ended abandoned with notes null was indistinguishable from a
+             ;; quiet one, and on run e1b765e7 that hid a stream dead on
+             ;; read timeouts for two hours (karamazov-cz90).
+             bid (some-> (:oversight/branch data) :id)
+             failure (when bid
+                       (let [t (last (journal/branch-turns conn run-id bid))]
+                         (when (and t (or (str/starts-with? (str (:tool_name t)) "__")
+                                          (contains? #{"failure" "mechanics"}
+                                                     (str (:category t)))))
+                           {:turn (:turn t)
+                            :tool (:tool_name t)
+                            :error (clip (str (:result t))
+                                         (gates/threshold :oversight-note-chars))})))]
+         (journal/note! conn run-id :oversight
+                        {:data {:idle (:oversight/idle data)
+                                :unmet (:oversight/unmet data)
+                                ;; A blank note means one of several things and
+                                ;; the verdict is which: `:done` said nothing,
+                                ;; `:exhausted` ran out of turns, `:error` threw.
+                                :verdict (some-> (:oversight/verdict data) name)
+                                :notes (some-> (:oversight/answer data)
+                                               (clip (gates/threshold :oversight-note-chars)))
+                                :failure failure}}))
        data)
      data)))
 

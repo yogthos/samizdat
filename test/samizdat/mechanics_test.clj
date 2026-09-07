@@ -866,3 +866,33 @@
   (let [{:keys [end-at]} (gates/threshold :no-call-ladder)
         b (no-call "I think I should probably consider..." (dec end-at))]
     (is (= :abandoned (:status b)))))
+
+;; --- a declared file is a path, or it is refused ------------------------------
+;; Run e1b765e7 (2026-09-07): an owner declared its test as
+;; "test/flight/ghost_test.clj — ghost HUD text (GHOST <score>), …" — a path
+;; with a description after it. declare-plan folds :tests into the files owed,
+;; so that sentence became a file the branch could never write, and from turn
+;; 117 every `done` was refused for not writing it, after all the real files
+;; had landed. A declaration that cannot be discharged must fail on the turn
+;; it is made, naming the entry (karamazov-j9ow).
+
+(deftest a-plan-entry-that-is-a-sentence-is-refused-at-declaration
+  (let [b (state/new-branch {:id "b1" :problem "p"})
+        r (tools/run-tool {:tool-name "plan" :branch b
+                           :args {"files" ["src/flight/draw.clj"]
+                                  "tests" ["test/flight/ghost_test.clj — ghost HUD text (GHOST <score>)"]
+                                  "goal" "ghost in play"}})]
+    (is (= :mechanics (:category r)) "a malformed call, not a failure of the work")
+    (is (str/includes? (str (:result r)) "test/flight/ghost_test.clj — ghost HUD text")
+        "the refusal names the entry that is not a path")
+    (is (not (state/planned? (or (:branch r) b)))
+        "and nothing was declared — the branch is held to no sentence")))
+
+(deftest a-plan-of-bare-paths-still-declares
+  (let [b (state/new-branch {:id "b1" :problem "p"})
+        r (tools/run-tool {:tool-name "plan" :branch b
+                           :args {"files" ["src/flight/draw.clj" "./test/flight/ghost_test.clj"]
+                                  "goal" "ghost in play"}})]
+    (is (not= :mechanics (:category r)))
+    (is (= ["src/flight/draw.clj" "test/flight/ghost_test.clj"]
+           (:files (state/plan (:branch r)))))))

@@ -371,7 +371,19 @@
                  (str "\n\nA review of your last attempt sent this back."
                       " Address it:\n" findings))
           t (tasks/get-task conn task)
-          ictx (wf/role-ctx ctx :implementor)
+          ;; THE OWNER'S TURN CAP is gates.edn :board-owner-turns, never
+          ;; wider than the run's own. The run's :max-turns bounds the
+          ;; beam's rounds, not an owner, so an owner used to have the whole
+          ;; run: part 3 of run e1b765e7 ran past 140 turns while the fourth
+          ;; part never started (karamazov-ghti). An owner that spends its
+          ;; cap comes back :exhausted, which the review reads as give-up
+          ;; and the task goes back to the board unowned.
+          ictx (let [rc (wf/role-ctx ctx :implementor)
+                     cap (gates/threshold :board-owner-turns)]
+                 (cond-> rc
+                   cap (assoc :max-turns (if-let [run-cap (:max-turns rc)]
+                                           (min cap run-cap)
+                                           cap))))
           ;; One read, so the row and the message carry the same text.
           suffix (owner-prompt)
           out (try
