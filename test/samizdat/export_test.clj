@@ -177,3 +177,147 @@
       (is (= "glm-5.3" (:model row)))
       (is (vector? (:messages row)))
       (is (every? #(and (string? (:role %)) (string? (:content %))) (:messages row))))))
+
+;; --- verdicts: every judgement, labelled by what happened next --------------
+;;
+;; karamazov-3htz. A corpus of the harness's verdicts is only worth anything
+;; with the OUTCOME beside each one: a gate's prediction settled or not, the
+;; branch a critic scored shipped or culled, the round a review passed green
+;; or red on its tests. Trained on its own verdicts alone, a judge learns to
+;; imitate its guesses.
+
+(defn- judged-run!
+  "A run whose journal carries one of every judgement the harness makes — a
+  gate firing, a beam critic score and the reprieve it earned, a finalization
+  critic verdict, a board review, a round critique with its verify — on a
+  branch that then shipped green, or with `:fate :culled` was culled on a red
+  tree."
+  [{:keys [fate] :or {fate :shipped}}]
+  (let [shipped? (= fate :shipped)
+        rid (runs/start-run! @conn {:problem "build it" :provider "glm" :model "glm-5.3"})]
+    (runs/open-branch! @conn rid {:branch-id "B1"})
+    (turn! rid "B1" 1 {:tool-name "shell" :args {:command "ls"}
+                       :assistant-text "x" :result "src"})
+    (let [fid (journal/record-gate! @conn rid {:branch-id "B1" :turn 2 :gate :progress-stalled
+                                               :message "No progress in 4 turns (TOKEN=hunter2)."
+                                               :prediction "a write" :window 3})]
+      (journal/settle-gate! @conn fid (if shipped? :met :unmet) 4))
+    (journal/note! @conn rid :critic-score
+                   {:branch-id "B1" :turn 3
+                    :data {:scores {:progress 4 :momentum 3 :distinctness 5 :viability 4}
+                           :summary "BRANCH B1\nThesis: build it (TOKEN=hunter2)"
+                           :reply (str "Steady.\nSCORE progress: 4\nSCORE momentum: 3\n"
+                                       "SCORE distinctness: 5\nSCORE viability: 4")}})
+    (journal/note! @conn rid :cull-spared
+                   {:branch-id "B1" :turn 3
+                    :data {:scores {:progress 4 :momentum 3 :distinctness 5 :viability 4}
+                           :failures 3 :fitness 0.4}})
+    (journal/note! @conn rid :critic
+                   {:branch-id "B1" :turn 4
+                    :data {:branch-id "B1" :turn 4 :attempt 1 :verdict :incomplete :blocked true
+                           :findings "- [high] no test covers the new path (TOKEN=hunter2)"}})
+    (journal/note! @conn rid :board-review
+                   {:data {:task "t1" :attempt 1 :verdict :complete :decision :pass :landed true}})
+    (journal/note! @conn rid :critique {:data {:decision :ship :deterministic false}})
+    (journal/note! @conn rid :verify {:data {:passed shipped? :exit (if shipped? 0 1) :timeout false}})
+    ;; The shipping branch finishes with a successful done; the culled one
+    ;; with a failed verification — a culled branch never got its done.
+    (if shipped?
+      (turn! rid "B1" 4 {:tool-name "done" :args {:answer "did it"}
+                         :assistant-text "x" :result "Shipped."})
+      (turn! rid "B1" 4 {:tool-name "shell" :args {:command "jolt test"} :category :failure
+                         :assistant-text "x" :result "FAIL in (a-test)"}))
+    (journal/note! @conn rid :ship-verify {:branch-id "B1" :turn 4
+                                           :data {:ran true :green shipped? :timeout false}})
+    (if shipped?
+      (do (runs/close-branch! @conn rid "B1" :done "shipped")
+          (runs/finish-run! @conn rid :completed "did it"))
+      (do (runs/close-branch! @conn rid "B1" :culled "culled after 3 consecutive failures")
+          (runs/finish-run! @conn rid :exhausted "")))
+    rid))
+
+(deftest every-judgement-is-labelled-by-what-happened-next
+  (let [good (judged-run! {:fate :shipped})
+        bad (judged-run! {:fate :culled})
+        rows (export/verdicts @conn {:known-values #{"hunter2"}})
+        of (fn [rid kind] (first (filter #(and (= rid (:run-id %)) (= kind (:kind %))) rows)))]
+    (testing "a failed run is in the corpus — failure is the label, not noise"
+      (is (= #{good bad} (set (map :run-id rows)))))
+    (testing "a gate firing carries what it said, what it predicted, and how that settled"
+      (let [g (of good "gate")]
+        (is (= "B1" (:branch-id g)))
+        (is (= 2 (:turn g)))
+        (is (= "progress-stalled" (get-in g [:situation :gate])))
+        (is (str/includes? (get-in g [:situation :message]) "No progress"))
+        (is (= "a write" (get-in g [:verdict :prediction])))
+        (is (= "met" (get-in g [:outcome :settled])))
+        (is (= "unmet" (get-in (of bad "gate") [:outcome :settled])))))
+    (testing "a critic score carries the summary it judged from, its reply, and the branch's fate"
+      (let [c (of good "critic-score")]
+        (is (str/includes? (get-in c [:situation :summary]) "BRANCH B1"))
+        (is (= 4 (get-in c [:verdict :scores :progress])))
+        (is (str/includes? (get-in c [:verdict :reply]) "SCORE progress"))
+        (is (= "done" (get-in c [:outcome :branch-status])))
+        (is (true? (get-in c [:outcome :shipped?])))
+        (let [c' (of bad "critic-score")]
+          (is (= "culled" (get-in c' [:outcome :branch-status])))
+          (is (false? (get-in c' [:outcome :shipped?])))
+          (is (str/includes? (get-in c' [:outcome :inactive-reason]) "consecutive failures")))))
+    (testing "a cull reprieve is judged by whether the spared branch went on to ship"
+      (is (= 3 (get-in (of good "cull-spared") [:situation :failures])))
+      (is (true? (get-in (of good "cull-spared") [:outcome :shipped?])))
+      (is (false? (get-in (of bad "cull-spared") [:outcome :shipped?]))))
+    (testing "a finalization verdict carries its findings and is judged by the ship verification"
+      (let [j (of good "critic")]
+        (is (= "B1" (:branch-id j)))
+        (is (= "incomplete" (get-in j [:verdict :verdict])))
+        (is (true? (get-in j [:verdict :blocked?])))
+        (is (str/includes? (get-in j [:verdict :findings]) "no test covers"))
+        (is (true? (get-in j [:outcome :ship-verify-green?])))
+        (is (false? (get-in (of bad "critic") [:outcome :ship-verify-green?])))))
+    (testing "a board review and a round critique are judged by the test run that gated the round"
+      (is (= "pass" (get-in (of good "board-review") [:verdict :decision])))
+      (is (true? (get-in (of good "board-review") [:outcome :verify-passed?])))
+      (is (false? (get-in (of bad "board-review") [:outcome :verify-passed?])))
+      (is (= "ship" (get-in (of good "critique") [:verdict :decision])))
+      (is (true? (get-in (of good "critique") [:outcome :verify-passed?])))
+      (is (= "completed" (get-in (of good "critique") [:outcome :run-status])))
+      (is (= "exhausted" (get-in (of bad "critique") [:outcome :run-status]))))))
+
+(deftest a-secret-never-reaches-a-verdict
+  (judged-run! {:fate :shipped})
+  (let [rows (export/verdicts @conn {:known-values #{"hunter2"}})
+        text (pr-str rows)]
+    (is (not (str/includes? text "hunter2")))
+    (is (str/includes? text "No progress") "redacted, not dropped")
+    (is (str/includes? text "no test covers") "in every kind of judgement")))
+
+(deftest a-critic-score-recorded-before-the-situation-was-kept-still-exports
+  ;; The note's :data used to be the bare score map. An older journal must
+  ;; still project: scores under :scores, and no situation to show.
+  (let [rid (runs/start-run! @conn {:problem "p" :provider "glm" :model "m"})]
+    (runs/open-branch! @conn rid {:branch-id "B1"})
+    (journal/note! @conn rid :critic-score
+                   {:branch-id "B1" :turn 3
+                    :data {:progress 2 :momentum 2 :distinctness 2 :viability 2}})
+    (runs/finish-run! @conn rid :exhausted "")
+    (let [[c] (export/verdicts @conn {:known-values #{}})]
+      (is (= "critic-score" (:kind c)))
+      (is (= 2 (get-in c [:verdict :scores :progress])))
+      (is (nil? (get-in c [:situation :summary])))
+      (is (= "active" (get-in c [:outcome :branch-status]))
+          "a branch nobody closed reports as it is, not as a guess"))))
+
+(deftest verdicts-jsonl-is-one-judgement-per-line
+  (judged-run! {:fate :shipped})
+  (let [path (str (export/scratch-path "samizdat-verdicts-test") ".jsonl")
+        n (export/write-verdicts! path (export/verdicts @conn {:known-values #{}}))
+        lines (str/split-lines (slurp path))]
+    (is (pos? n))
+    (is (= n (count lines)))
+    (let [row (json/read-str (first lines) :key-fn keyword)]
+      (is (string? (:run_id row)))
+      (is (string? (:kind row)))
+      (is (map? (:situation row)))
+      (is (map? (:verdict row)))
+      (is (map? (:outcome row))))))

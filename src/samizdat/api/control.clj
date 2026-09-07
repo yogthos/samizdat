@@ -32,6 +32,7 @@
             [samizdat.agent.resume :as resume]
             [samizdat.cancel :as cancel]
             [samizdat.llm.registry :as registry]
+            [samizdat.prompt :as prompt]
             [samizdat.store.grants :as grants]
             [samizdat.store.interventions :as interventions]
             [samizdat.store.runs :as runs]))
@@ -130,7 +131,13 @@
                           (swap! active dissoc rid))
                         {:status :error :error (ex-message e)})))))
         _ (reset! cancel* (:cancel started))
-        run-id (deref promised 30000 nil)]
+        ;; How long the request waits for the run row before answering 503.
+        ;; gates.edn :run-start-deadline-ms: the selection model call runs
+        ;; BEFORE the row exists, and on GLM-5.3 with thinking it took 28 s
+        ;; live (2026-09-07), so a 30 s literal here answered 503 to a run
+        ;; that then started anyway.
+        start-deadline (lexicon/policy :run-start-deadline-ms)
+        run-id (deref promised start-deadline nil)]
     (if run-id
       ;; Wrapped in :body like resume, so one route shape serves both the
       ;; success and the refusal and neither has to be special-cased.
@@ -143,7 +150,9 @@
       ;; the status code read this as a started run, which is why gui.api's
       ;; start-run! had to unwrap the body to find out otherwise.
       {:status 503
-       :body {:error {:message "the run did not start within 30s"}}})))))
+       :body {:error {:message (str/trim
+                                (prompt/render "run-start-timeout"
+                                               {:seconds (quot start-deadline 1000)}))}}})))))
 
 (defn abort!
   "Stop a run without asking it to cooperate. Cancels the run task, which is

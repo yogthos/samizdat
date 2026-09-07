@@ -235,3 +235,37 @@
     ;; accommodate.
     (is (nil? (judge/source-block answer rows (tools/tool-names)))
         "and this harness now HAS one, so the block no longer fires")))
+
+(defn- judge-with-findings
+  "A model that ships on its own turn and answers the critic's judge call
+  first with an INCOMPLETE verdict carrying a FINDINGS section, then COMPLETE."
+  []
+  (let [calls (atom 0)]
+    (fn [_ _ messages & _]
+      (let [content (str/join " " (map :content messages))]
+        (if (str/includes? content "reviewer deciding")
+          (if (= 1 (swap! calls inc))
+            {:content "VERDICT: INCOMPLETE\nFINDINGS:\n- [high] the new path has no test"
+             :finish-reason "stop"}
+            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+          {:content "```tool-call\n{\"name\": \"done\", \"args\": {\"answer\": \"x\"}}\n```"
+           :finish-reason "stop"})))))
+
+(deftest the-critic-note-keeps-the-findings-it-blocked-on
+  ;; karamazov-3htz: the note said {:verdict :blocked} and nothing of WHY —
+  ;; the findings went to the branch and nowhere durable. A verdict corpus
+  ;; needs the reasoning beside the verdict, and the branch on the row.
+  (with-redefs [llm/chat (judge-with-findings)]
+    (let [conn (db/open! ":memory:")
+          r (workflow/run! {:conn conn :config {:run {:loop "critic"}}
+                            :llm-adapter :a :llm-config {:max-tokens 16384}
+                            :problem "p" :max-turns 8})
+          rows (db/fetch conn ["SELECT branch_id, data FROM events WHERE kind='critic' ORDER BY id"])
+          notes (map #(clojure.data.json/read-str (str (:data %)) :key-fn keyword) rows)
+          blocked (first (filter :blocked notes))]
+      (is (= :completed (:status r)))
+      (is (some? blocked) "the first verdict blocked")
+      (is (str/includes? (str (:findings blocked)) "no test")
+          "and the note carries the findings it blocked on")
+      (is (every? #(seq (str (:branch_id %))) rows)
+          "the branch is on the row, where every other per-branch note keeps it"))))

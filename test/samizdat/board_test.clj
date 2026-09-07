@@ -19,6 +19,7 @@
             [samizdat.cells :as cells]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
             [samizdat.store.tasks :as tasks]
             [samizdat.workflow :as workflow]))
@@ -264,3 +265,45 @@
       (is (not= "done" (:status (tasks/get-task conn id))))
       (is (not= :completed (:status r))
           "and a run that landed nothing does not report success"))))
+
+(deftest the-board-review-note-keeps-the-findings-the-owner-was-sent
+  ;; karamazov-3htz: the review note recorded verdict and decision; the
+  ;; findings went back to the owner and nowhere durable.
+  (let [critic-says (atom "REVISE\nFINDINGS:\n- [high] the handler ignores its error branch")]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (if (judge-call? messages)
+                      (let [reply @critic-says]
+                        (reset! critic-says "COMPLETE")
+                        {:content reply :finish-reason "stop"})
+                      (apply ships-its-task a c messages rest)))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "the handler"})
+        (run-board conn {})
+        (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+              notes (journal/notes conn rid :board-review)
+              bounced (first (filter #(= "revise" (str (:decision %))) notes))]
+          (is (some? bounced) "one review sent the task back")
+          (is (str/includes? (str (:findings bounced)) "error branch")
+              "and the note carries what it said"))))))
+
+(deftest the-review-judge-is-told-what-the-task-asked-for
+  ;; The judge's first live finding on the ghost-replay run (e1b765e7) was
+  ;; "The requirement section is empty in the prompt": this cell still passed
+  ;; the pre-requirement keys, so the judge was asked whether the work was
+  ;; complete with the task nowhere in the message and the answer in it
+  ;; twice. The requirement is the task's body or title — what the owner was
+  ;; handed.
+  (let [judged (atom nil)]
+    (with-redefs [llm/chat (fn [a c messages & rest]
+                             (if (judge-call? messages)
+                               (do (reset! judged (str/join " " (map :content messages)))
+                                   {:content "COMPLETE" :finish-reason "stop"})
+                               (apply ships-its-task a c messages rest)))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "wire the handler"
+                             :body "Wire the error branch of the request handler to the logger"})
+        (run-board conn {})
+        (is (some? @judged) "the judge was called")
+        (is (str/includes? (str @judged) "Wire the error branch of the request handler")
+            "and read the task's own text as the requirement")))))

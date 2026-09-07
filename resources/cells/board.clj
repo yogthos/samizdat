@@ -488,12 +488,21 @@
           det (when landed?
                 (try (judge/deterministic-block answer rows (tools/tool-names))
                      (catch Throwable _ nil)))
+          ;; WHAT THE TASK ASKED FOR, in the judge's own requirement slot.
+          ;; This call still passed the pre-requirement keys (:rules and
+          ;; the answer as :transcript), so the template's requirement
+          ;; section rendered EMPTY and the judge read the answer twice —
+          ;; and said so, in its first live finding on the ghost-replay run
+          ;; ("The requirement section is empty in the prompt", run
+          ;; e1b765e7, karamazov-iev2). The owner's problem is the task's
+          ;; body or title, the same text :board/claim hands the owner.
+          requirement (let [t (tasks/get-task conn task)]
+                        (str (or (not-empty (str (:body t))) (:title t))))
           reply (when (and landed? (not det))
                   (try (:content (llm/chat llm-adapter llm-config
                                            [{:role "user"
                                              :content (judge/critic-prompt
-                                                       {:rules (turn/system-prompt)
-                                                        :transcript answer
+                                                       {:requirement requirement
                                                         :evidence (judge/evidence rows)
                                                         :diff diff
                                                         :answer answer})}]))
@@ -518,7 +527,10 @@
                          :else :revise)]
       (journal/note! conn run-id :board-review
                      {:data {:task task :attempt attempts :verdict verdict
-                             :decision decision :landed (boolean landed?)}})
+                             :decision decision :landed (boolean landed?)
+                             ;; WHY, beside the verdict (karamazov-3htz).
+                             :reason (judge/for-the-record :reply-chars det)
+                             :findings (judge/for-the-record :reply-chars (judge/findings reply))}})
       (when pass? (tasks/close! conn task))
       (when (= :give-up decision)
         ;; back to the board, unattributed, so the next round or a human sees

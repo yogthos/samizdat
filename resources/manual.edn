@@ -243,4 +243,8 @@
   [{:name samizdat.export/trajectories
     :summary "The runs worth imitating (gates.edn :export), each shipping branch as the role-tagged tape its model saw, secrets redacted."}
    {:name samizdat.export/write-jsonl!
-    :summary "Write trajectories as JSONL, one conversation per line, for a fine-tuning pipeline."}]}]
+    :summary "Write trajectories as JSONL, one conversation per line, for a fine-tuning pipeline."}
+   {:name samizdat.export/verdicts
+    :summary "Every judgement the harness made — gate firings, critic scores, reprieves, finalization verdicts, board reviews, critiques — from every run, each labelled by what happened next (gates.edn :export :verdicts). The outcome is the label; a judge trained on its own verdicts alone imitates its guesses."}
+   {:name samizdat.export/write-verdicts!
+    :summary "Write verdicts as JSONL, one judgement per line: jolt export <db> [out.jsonl] --verdicts."}]}]

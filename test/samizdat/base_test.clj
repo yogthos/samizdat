@@ -42,10 +42,12 @@
   allow-list is the point of the check rather than a hole in it: a literal
   may stay in the base, but somebody has to write down why, and a new one
   cannot arrive silently."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [clojure.walk :as walk]
-            [jolt.fs :as fs]))
+            [jolt.fs :as fs]
+            [samizdat.agent.gates :as gates]))
 
 ;; --- reading src ------------------------------------------------------------
 
@@ -702,7 +704,6 @@
     "Applied now. Commands matching the pattern are allowed for the rest of this run; a hard deny still wins."
     "Queued. It applies at the branch's next turn boundary, not now."
     "a grant intervention needs payload.pattern — the shell glob to allow"
-    "the run did not start within 30s"
     }
    "src/samizdat/api/openai.clj"
    #{
@@ -821,11 +822,31 @@
   ;; Every ebb operator that parks the fiber or hands work to a thread.
   '#{? ! via sleep join race any timeout reduce})
 
+(def ^:private park-helpers
+  ;; Samizdat's own helpers that park, by alias: starting a task parks the
+  ;; caller at the spawn handshake, awaiting one parks it on the signal, and
+  ;; a provider call is a `via blk` underneath. The first live run on ebb
+  ;; died at `cancel/start!` inside a `mapv` (2026-09-07), which the ebb-only
+  ;; list above could not see.
+  {"cancel" '#{start! await-or-cancel with-deadline}
+   "llm" '#{chat}
+   "critic" '#{score!}})
+
 (def ^:private lazy-fn-heads
   ;; Lazy HOFs: their FUNCTION argument runs when the seq is realized, under
   ;; a counted lock, where a park hangs the carrier. Their collection
   ;; arguments are evaluated eagerly and are not the hazard.
-  '#{map filter remove keep mapcat map-indexed keep-indexed take-while drop-while})
+  ;;
+  ;; `mapv` and `filterv` are here because in jolt they ARE lazy underneath:
+  ;; jolt-core/clojure/core/00-kernel.clj defines mapv as (vec (apply map f
+  ;; colls)), so the function runs inside the lazy seq's realization, lock
+  ;; held. Measured 2026-09-07 with jolt-locks-held: mapv, filterv, vec/into/
+  ;; doall/first/set/count over a lazy map all run f at 1; reduce, loop,
+  ;; doseq, run!, some, every?, group-by, sort-by, reduce-kv and `into` with
+  ;; a transducer run it at 0. So the loops that may park are loop/recur,
+  ;; reduce, doseq, run! and (into [] (map f) coll) — NOT mapv.
+  '#{map filter remove keep mapcat map-indexed keep-indexed take-while drop-while
+     mapv filterv})
 
 (def ^:private lazy-body-heads
   ;; Everything inside these is realized lazily.
@@ -838,7 +859,9 @@
          (or (contains? '#{? !} s)
              (and (namespace s)
                   (contains? ebb-aliases (namespace s))
-                  (contains? park-heads (symbol (name s))))))))
+                  (contains? park-heads (symbol (name s))))
+             (and (namespace s)
+                  (contains? (get park-helpers (namespace s) #{}) (symbol (name s))))))))
 
 (defn- parks-under-lazy
   "Every ebb park call in `form` whose realization would happen inside a lazy
@@ -1003,3 +1026,103 @@
     (is (empty? missing)
         (str "base-test/allowed names files that do not exist: "
              (pr-str (vec missing))))))
+
+;; --- provenance on gates.edn ------------------------------------------------
+;;
+;; karamazov-h66o. A threshold is a number somebody chose for a reason, and
+;; the reason was living in :doc prose where nothing could check it. The
+;; `:provenance` key names the bead, review finding, or run that justified
+;; the entry. This is a ratchet, not a loader refusal: a load-time throw on a
+;; userspace file would brick the next reload after a runtime edit dropped the
+;; key, and a save already has to carry a rationale (karamazov-c58).
+
+(def gate-entries-that-predate-provenance
+  "The gates.edn entries with no `:provenance` on the day the key arrived
+  (2026-09-07). Grandfathered, not exempt: a key LEAVES this set when someone
+  finds the run or finding behind its number, and never joins it."
+  #{:anchor :board-max-tasks :board-review-attempts :branch-out-cooldown
+    :compaction :context-budget :corroboration :critic-cumulative-objectives
+    :critic-every :critic-objectives :critic-scale :crossover :cull-hard-multiple
+    :cull-mechanics-multiple :cull-recent-window :cull-threshold
+    :decompose-max-depth :decompose-max-parts :drift :explore-cap
+    :file-thrash-threshold :focused-verify :fork-inherit :fork-invite-cooldown
+    :fork-invite-floor :image-reap-ms :judge-rules :juvenile-grace
+    :max-branch-outs :max-branch-theses :max-done-blocks :max-emergency-reviews
+    :max-file-thrash-nudges :max-last-call-steers :max-mechanics-forces
+    :max-milestone-nudges :max-no-edit-nudges :max-repopulates
+    :max-safe-state-aborts :max-stall-nudges :max-storm-forces :max-stuck-hints
+    :max-studying-nudges :max-suspect-test-nudges :max-total-branches
+    :max-wind-down-steers :no-edit-turns :orient-turns
+    :oversight-idle-floor :oversight-note-chars :oversight-unmet-floor
+    :pause-poll-ms :planner-max-parts :prediction-grace-turns :progress-stall-threshold
+    :project-facts :reflection :review-blocking-severities :run-health
+    :safe-state-multiple :same-failure-chars :session-findings :split-parts
+    :storm-enabled :storm-error-digest-chars :storm-min-cycles
+    :storm-strikes-to-force :storm-threshold :storm-timeout-floor
+    :storm-verify-exempt :storm-window-size :supervisor-digest :thinking-budget
+    :timeout-failure-weight :tool-clip :tool-retry :turn-deadline-ms
+    :verify-timeout-ms :verify-unknown :wind-down-fraction :workflow-selection})
+
+(def steers-that-predate-provenance
+  "Same ratchet for the steer definitions under :gates."
+  #{:branch-out :done-blocked :emergency-review :no-edits :orienting
+    :progress-stalled :repopulate :safe-state :studying :wind-down})
+
+(defn- provenance-shape-problems
+  "Every `:provenance` that is not a non-empty vector of non-blank strings,
+  as [name value]."
+  [named]
+  (for [[nm v] named
+        :when (contains? v :provenance)
+        :let [p (:provenance v)]
+        :when (not (and (vector? p) (seq p) (every? #(and (string? %) (not (str/blank? %))) p)))]
+    [nm p]))
+
+(deftest a-new-gate-entry-names-the-finding-that-justified-it
+  (let [m (edn/read-string (slurp "resources/gates.edn"))
+        entries (into {} (filter (fn [[_ v]] (and (map? v) (contains? v :value))) m))
+        steers (into {} (map (juxt :gate identity)) (:gates m))
+        missing (fn [named grandfathered]
+                  (sort (for [[nm v] named
+                              :when (and (not (contains? v :provenance))
+                                         (not (contains? grandfathered nm)))]
+                          nm)))]
+    (is (empty? (missing entries gate-entries-that-predate-provenance))
+        (str "gate entries without :provenance that are not grandfathered — name the "
+             "bead, finding, or run behind the number:\n  "
+             (str/join "\n  " (missing entries gate-entries-that-predate-provenance))))
+    (is (empty? (missing steers steers-that-predate-provenance))
+        (str "steers without :provenance that are not grandfathered:\n  "
+             (str/join "\n  " (missing steers steers-that-predate-provenance))))
+    (is (empty? (provenance-shape-problems (merge entries steers)))
+        (str "a :provenance is a non-empty vector of identifiers:\n  "
+             (str/join "\n  " (map pr-str (provenance-shape-problems (merge entries steers))))))
+    (testing "the ratchet only turns one way: a grandfathered key that gained provenance leaves the set"
+      (let [regressed (sort (for [[nm v] entries
+                                  :when (and (contains? v :provenance)
+                                             (contains? gate-entries-that-predate-provenance nm))]
+                              nm))]
+        (is (empty? regressed)
+            (str "remove from gate-entries-that-predate-provenance: " (str/join ", " regressed)))))
+    (testing "and the citations in the prose are the ones on the key"
+      ;; A doc that names a bead the :provenance does not carry is a second
+      ;; copy drifting from the first.
+      (let [cite-re #"karamazov-[a-z0-9]+(?:\.[0-9]+)?|vf-[a-z0-9]+|dirge-[a-z0-9]+"
+            drift (for [[nm v] (merge entries steers)
+                        :when (contains? v :provenance)
+                        :let [in-doc (set (re-seq cite-re (str (:doc v))))
+                              on-key (set (:provenance v))]
+                        :when (seq (remove on-key in-doc))]
+                    [nm (vec (remove on-key in-doc))])]
+        (is (empty? drift)
+            (str "beads cited in :doc but missing from :provenance:\n  "
+                 (str/join "\n  " (map pr-str drift))))))))
+
+(deftest a-malformed-provenance-is-refused-at-save-time-not-at-load-time
+  ;; The mutation protocol's validate step is where a shape check belongs; the
+  ;; loader keeps serving whatever is on disk.
+  (is (nil? (gates/provenance-problems {:a {:value 1 :provenance ["karamazov-x"]}
+                                        :gates [{:gate :g :provenance ["vf-1"]}]})))
+  (is (seq (gates/provenance-problems {:a {:value 1 :provenance "karamazov-x"}})))
+  (is (seq (gates/provenance-problems {:a {:value 1 :provenance []}})))
+  (is (seq (gates/provenance-problems {:gates [{:gate :g :provenance [""]}]}))))

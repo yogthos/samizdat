@@ -17,6 +17,16 @@
 ;; to move the number. The tier observes tool-call mechanics only, so it may
 ;; tune argument-hygiene budgets and may never relax a verification or
 ;; progress guard (dirge PR 740).
+;;
+;; `:provenance` names the bead, review finding, or run that justified an
+;; entry or a steer (karamazov-h66o): a number somebody chose for a reason,
+;; with the reason where a test can see it. Optional on the entries that
+;; predate it and required on every new one — base-test's ratchet
+;; `a-new-gate-entry-names-the-finding-that-justified-it` holds the list of
+;; the grandfathered ones, and a shape that is not a vector of identifiers is
+;; refused at save time by the policy tool, never by the loader. A runtime
+;; edit's own reason lives on the userspace version it creates (its rationale,
+;; karamazov-c58); this key is the reason behind the shipped default.
 
 {:cull-threshold
  {:value 3 :kind :threshold :capability-tunable? false
@@ -28,6 +38,7 @@
 
  :stuck-threshold
  {:value 2 :kind :threshold :capability-tunable? false
+  :provenance ["vf-31m"]
   :doc "Consecutive unproductive verifications before the stuck gate fires.
 
         STRICTLY BELOW cull-threshold, and that is the whole point (vf-31m).
@@ -44,6 +55,7 @@
 
  :reframe-grace
  {:value 4 :kind :threshold :capability-tunable? false
+  :provenance ["vf-31m"]
   :doc "Turns a branch is spared the consecutive-failure cull after the stuck
         gate has dropped it into a reframe, and the window the withheld
         approach stays withheld for.
@@ -67,6 +79,7 @@
 
  :prologue-cap
  {:value 8 :kind :threshold :capability-tunable? false
+  :provenance ["dirge PR 739" "dirge-t5dh"]
   :doc "Turns a branch may take having produced nothing at all. The stall
         counter arms on a progress event, so a run that produced nothing never
         armed it and the monitor was structurally blind to the one case it most
@@ -145,6 +158,7 @@
 
  :same-failure-turns
  {:value 4 :kind :threshold :capability-tunable? true
+  :provenance ["run bd56a286"]
   :doc "How many times a branch may run the code and get back the SAME failure,
         without having changed the code in between, before the suspect-the-test
         steer fires.
@@ -165,6 +179,7 @@
 
  :mutation-diff-lines
  {:value 40 :kind :budget :capability-tunable? true
+  :provenance ["karamazov-mpd"]
   :doc "How many lines of a REJECTED cell edit are kept, per side, when the
         mutation protocol rolls it back.
 
@@ -195,6 +210,7 @@
 
  :image-interrupt-grace-ms
  {:value 2000 :kind :threshold :capability-tunable? true
+  :provenance ["RFC-013"]
   :doc "How long a project-image eval that passed its deadline is given to
         answer the interrupt before the image is restarted (RFC-013). The
         image is started with jolt's interruptible nREPL, which aborts even a
@@ -207,8 +223,24 @@
         images alive through a slow foreign call, at the cost of a branch
         waiting that much longer for a REPL that may never answer."}
 
+ :run-start-deadline-ms
+ {:value 120000 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-iev2"]
+  :doc "How long POST /v1/runs waits for the run row to exist before answering
+        503. The run itself is not stopped by this — it goes on in the
+        background either way — so the deadline only decides whether the
+        caller gets the run id or a refusal it then has to reconcile with a
+        run that started.
+
+        The row is created AFTER the workflow-selection model call, which on
+        GLM-5.3 with thinking took 28 s live (2026-09-07, karamazov-iev2), so
+        the 30 s literal this replaces answered 503 to a run that then ran.
+        Two minutes covers a slow selection call under load without letting a
+        client hang forever on a provider that never answers."}
+
  :image-connect-ms
  {:value 20000 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-zrq"]
   :doc "How long to wait for the sandboxed project image's nREPL port to
         answer before giving up on it. A cold jolt start is a second or two;
         this is generous for a loaded machine and short enough that a broken
@@ -228,6 +260,7 @@
 
  :studying-turns
  {:value 10 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-j5t"]
   :doc "Consecutive inspection-only turns (read/grep/eval/…), after the branch
         has shipped at least once, before the supervisor's studying gate fires.
         High enough that opening exploration is never nagged; a live run
@@ -261,6 +294,7 @@
 
  :turn-budget-notices
  {:value [0.6 0.85] :kind :threshold :capability-tunable? false
+  :provenance ["dirge PR 738"]
   :doc "Fractions of the turn cap at which the model is told where it stands.
         The cap was enforced but invisible to the model (dirge PR 738)."}
 
@@ -279,6 +313,7 @@
 
  :last-call-window
  {:value 2 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-pab"]
   :doc "How many of a branch's final turns the last-call rung fires in. The
         wind-down rung asks a branch to ship and is a soft nudge a model can
         ignore — a live team run (karamazov-pab) had every worker burn its whole
@@ -406,6 +441,7 @@
  :no-call-ladder
  {:value {:withhold-at 3 :end-at 8}
   :kind :threshold :capability-tunable? true
+  :provenance ["run 89f6487a"]
   :doc "WHAT HAPPENS WHEN A BRANCH KEEPS PRODUCING NO USABLE CALL.
 
         The no-call route reaches neither :dispatch nor :arbiter, and that is
@@ -482,6 +518,7 @@
 
  :mechanics-streak-threshold
  {:value 6 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-068"]
   :doc "Consecutive turns producing no usable tool call before the
         mechanics-streak rung forces an honest give_up. Matched to the bar
         the beam already uses to cull on mechanics (cull-threshold ×
@@ -561,6 +598,7 @@
      builds on the previous step's result. LOW: repeats of the same call,
      alternation between two calls, or unconnected jumps. Ignore verbosity."]}
   :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-fut"]
   :doc "Continuous trajectory scoring (karamazov-fut, llm-as-a-verifier's
         ProgressTracker): every :stride-th step judged on steps-so-far,
         :repeats letter-scale asks averaged, criteria per the verifier
@@ -581,6 +619,7 @@
  :share
  {:value {:statuses #{:confirmed} :require-relevance? true}
   :kind :threshold :capability-tunable? false
+  :provenance ["drg-4026 #5" "vf-8fl"]
   :doc "The shared-pool entry condition (drg-4026 #5): which claim statuses
         an artifact must carry to export to sibling branches, and whether the
         relevance filter (advances-thesis?) additionally gates it. Engine-
@@ -618,6 +657,7 @@
  :probe
  {:value {:width 3 :on-mechanics-failures 2 :variants []}
   :kind :cost-ceiling :capability-tunable? false
+  :provenance ["dirge PR 740"]
   :doc "The non-committing probe's budget (LR-2, LR-3).
 
         :width — how many candidate framings :probe/next-move tries against
@@ -740,6 +780,7 @@
  {:value {:events-hours 24
           :run-record-days nil}
   :kind :policy :capability-tunable? false
+  :provenance ["RFC-009"]
   :doc "HOW LONG THE DATABASE KEEPS A FINISHED RUN. One project, one file, and
         it only ever grew.
 
@@ -817,6 +858,7 @@
    :meaningful-delta 0.15
    :max-open-experiments 1}
   :kind :policy :capability-tunable? false
+  :provenance ["RFC-012 F3"]
   :doc "THE SELECTION PRESSURE. One number per turn saying how well the loop is
         running, so that a change to the loop can be judged against something
         other than a feeling.
@@ -887,6 +929,7 @@
           :every-ms 120000
           :budget 12}
   :kind :policy :capability-tunable? false
+  :provenance ["RFC-012 F2"]
   :doc "THE SUPERVISOR STREAM: the harness reasoning about itself, in parallel
         with the run, in its own context. The ONE supervisor a run has
         (RFC-012): the feature loop no longer runs a second one as a stage.
@@ -918,6 +961,7 @@
           :severities ["high"]
           :max-interventions 3}
   :kind :policy :capability-tunable? false
+  :provenance ["RFC-012"]
   :doc "THE REFLEX: the supervisor stream's cheap phase (RFC-012). It looks
         every poll at what the run's events say the implementer just did and
         speaks when something is going wrong, the way a person watching a
@@ -1105,6 +1149,7 @@
  :beam-contention
  {:value {:provider-concurrency nil :expected-turn-ms nil :expected-turn-tokens nil}
   :kind :policy :capability-tunable? false
+  :provenance ["karamazov-aqsr.3"]
   :doc "WHAT THE PROVIDER CAN SERVE AT ONCE, and what a turn costs, so the
         beam is no wider than one turn deadline can carry or the run's token
         budget could ever pay for.
@@ -1140,6 +1185,7 @@
  :schema-validation
  {:value {:mode :strict}
   :kind :policy :capability-tunable? false
+  :provenance ["karamazov-6y7" "karamazov-6y7.5"]
   :doc "WHAT A CELL WHOSE DATA DOES NOT MATCH ITS DECLARED SHAPE COSTS AT RUN
         TIME.
 
@@ -1249,6 +1295,7 @@
    :graduation-min-runs 3
    :graduation-limit 8}
   :kind :policy :capability-tunable? false
+  :provenance ["karamazov-h27r" "karamazov-4ay9"]
   :doc "HOW A MEMORY EARNS ITS PLACE. Adopted from dirge's salience model
         (src/extras/salience.rs), with one deliberate difference: there the
         constants are compiled, and here they are not — the supervisor is the
@@ -1346,10 +1393,30 @@
  {:value {:statuses ["completed"]
           :require-verified? true
           :branches :shipped
-          :skip-categories ["mechanics"]}
+          :skip-categories ["mechanics"]
+          ;; The VERDICTS projection (`jolt export --verdicts`): every
+          ;; judgement the harness made, labelled by what happened next. From
+          ;; EVERY run, whatever its status — a failed run is where the labels
+          ;; that say "this verdict was wrong" come from. :kinds names which
+          ;; journal kinds count as a judgement.
+          :verdicts {:kinds ["gate" "critic-score" "cull-spared" "critic"
+                             "board-review" "critique"]}}
   :kind :policy :capability-tunable? false
+  :provenance ["karamazov-5ge3" "karamazov-3htz"]
   :doc "WHICH RUNS ARE WORTH IMITATING, when the journal is exported as
-        training data (samizdat.export, karamazov-5ge3).
+        training data (samizdat.export, karamazov-5ge3), and which
+        judgements go out when it is exported as verdicts (karamazov-3htz).
+
+        Two projections, with opposite selection rules. A TRAJECTORY is the
+        tape a model saw and is worth imitating only when the run shipped
+        and verified, so it is filtered hard. A VERDICT is a judgement the
+        harness made — a gate's prediction, a critic's score, a review's
+        pass — and is only worth anything WITH the outcome beside it: whether
+        the prediction settled, whether the scored branch shipped or was
+        culled, whether the round's tests went green. That label needs the
+        failed runs as much as the good ones, so verdicts come from every
+        run. Trained on its own verdicts without the outcome, a judge learns
+        to imitate its guesses.
 
         The mechanism turns a run into the tape its model saw; this decides
         which tapes go out. :statuses names the terminal states that
@@ -1366,6 +1433,25 @@
         The system message exported is the CURRENT template, not the run's
         — the journal keeps a digest of it — which is the prompt a trained
         model will meet at inference."}
+
+ :verdict-record
+ {:value {:situation-chars 6000 :reply-chars 4000}
+  :kind :budget :capability-tunable? true
+  :provenance ["karamazov-3htz"]
+  :doc "How much of a judgement's INPUT and of the judge's REPLY the journal
+        keeps beside the verdict.
+
+        A verdict on its own — four SCORE lines, a PASS, a :blocked flag —
+        says nothing about whether the judge was right, and until this the
+        journal kept exactly that: the beam critic's summary was rebuilt from
+        live state on every call and never stored, its reply was parsed down
+        to the scores, and the finalization judge's findings went to the
+        branch and nowhere durable. Now every judgement journals what it was
+        shown (:situation-chars) and what it said (:reply-chars), clipped
+        head-and-tail so a critic's closing SCORE lines survive the clip.
+        The cap is what keeps a rambling judge from growing the events table
+        without bound; it is not what makes the record useful, which is the
+        outcome `jolt export --verdicts` labels each row with."}
 
  :prediction-grace-turns
  {:value 4
@@ -1484,6 +1570,7 @@
  :context-squeeze
  {:value {:factor 0.5 :min-keep-pairs 1 :min-compaction-chars 5000}
   :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-d41"]
   :doc "How hard a context-overflow squeezes a branch's compaction budget
         (karamazov-d41). When the provider reports the prompt outgrew its
         window — a DETERMINISTIC failure the retry ladder must not touch —
@@ -1500,6 +1587,7 @@
           :advisory 0.75
           :urgent 0.90}
   :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-d41" "karamazov-3y5"]
   :doc "WHEN A PROMPT IS GETTING TOO BIG, MEASURED BEFORE IT IS FATAL.
 
         TWO CEILINGS. The HARD one is the endpoint's context window — the
@@ -1976,6 +2064,7 @@
                         " what is left on the board (the task tool), so the"
                         " record is honest either way.")}]
    :kind :threshold :capability-tunable? false
+  :provenance ["drg-4026 #44"]
    :doc "The lexical ship rungs (drg-4026 #44) — adding a rung is a data
          edit; the evidence computation stays in ship.clj."}
 
@@ -2048,6 +2137,7 @@
  ;; compiles at load. :message-file names a prompts/ file; {{turn-count}}
  ;; and {{max-turns}} interpolate at fire time.
  [{:gate :prologue-cap
+   :provenance ["vf-9wx"]
    :priority 9
    :budget nil
    :doc "The branch has produced nothing at all. Every other guard is
@@ -2082,6 +2172,7 @@
   ;; without renumbering the ladder; priorities need only be distinct
   ;; (gate-config-is-coherent).
   {:gate :last-call
+   :provenance ["karamazov-pab"]
    :priority 2.5
    :budget :max-last-call-steers
    :tool "done"
@@ -2103,6 +2194,7 @@
    :window 2}
 
   {:gate :mechanics-streak
+   :provenance ["karamazov-068"]
    :priority 2.6
    :budget :max-mechanics-forces
    :tool "give_up"
@@ -2129,6 +2221,7 @@
    :window 2}
 
   {:gate :storm
+   :provenance ["karamazov-ekk" "karamazov-pab"]
    :priority 2.7
    :budget :max-storm-forces
    :tool "give_up"
@@ -2185,6 +2278,7 @@
    :window 3}
 
   {:gate :milestone
+   :provenance ["vf-8fl"]
    :priority 5
    :budget :max-milestone-nudges
    :doc "First confirmed artifact on this branch that engages what the branch
@@ -2268,6 +2362,7 @@
   ;; remember to thread it back, and on the first live run it did not — the
   ;; gate re-fired on every turn past 60%.
   {:gate :turn-budget
+   :provenance ["dirge PR 738"]
    :priority 12
    :budget nil
    ;; drg-4026 #4: the effect this gate has on branch state, applied by
@@ -2295,6 +2390,7 @@
   ;; prompt/threshold/state — evaluated at fire time.
 
   {:gate :human-directive
+   :provenance ["RFC-012 F5" "dirge PR 717"]
    :priority 0
    :budget nil
    :doc "A directive from the queue reached the branch: a human's, the
@@ -2366,6 +2462,7 @@
    :window 3}
 
   {:gate :stuck
+   :provenance ["vf-31m" "vf-49o"]
    :priority 8
    :budget :max-stuck-hints
    ;; drg-4026 #4: the effect this gate has on branch state, applied by
@@ -2408,6 +2505,7 @@
    :window 3}
 
   {:gate :file-thrash
+   :provenance ["karamazov-g86"]
    :priority 9.5
    :budget :max-file-thrash-nudges
    :doc "The same-file streak (karamazov-g86, dirge context_depth.rs):
@@ -2477,6 +2575,7 @@
    :window 3}
 
   {:gate :suspect-the-test
+   :provenance ["run bd56a286" "karamazov-70b"]
    ;; ABOVE :progress-stalled, :no-edits and :studying — all three of which
    ;; hold on this branch, and all three of which the branch can answer.
    ;; Lower number wins, and the ladder's own principle is the one :no-edits

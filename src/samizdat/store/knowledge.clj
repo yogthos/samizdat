@@ -474,13 +474,20 @@
   Successes are distilled too. A store that only remembers what went wrong
   teaches the next session that everything is broken."
   [conn findings {:keys [run-id]}]
-  (vec
-   (for [{:keys [kind severity detail evidence]} findings
-         :let [content (str "[" (name kind) "] " detail " " (pr-str evidence))
-               ;; Identity is the finding's KIND, in a column. The evidence
-               ;; differs every run and the pattern is what recurs.
-               pattern (str "finding:" (name kind))
-               existing (by-pattern conn pattern)]]
+  ;; reduce, not (vec (for …)) and not mapv: the body writes to the store,
+  ;; and a store call waits on the connection lock when another fiber holds
+  ;; it — a park, which is forbidden while a counted lock is held (ADR-001
+  ;; rule 1). Both `for` and jolt's `mapv` run the body under one (measured
+  ;; 2026-09-07; ratchet no-park-inside-a-lazy-body); the live symptom is
+  ;; "a fiber cannot leave the CPU while its carrier holds a counted lock".
+  (reduce
+   (fn [acc {:keys [kind severity detail evidence]}]
+    (let [content (str "[" (name kind) "] " detail " " (pr-str evidence))
+          ;; Identity is the finding's KIND, in a column. The evidence
+          ;; differs every run and the pattern is what recurs.
+          pattern (str "finding:" (name kind))
+          existing (by-pattern conn pattern)]
+     (conj acc
      (if existing
        ;; A recurring finding is a RE-OBSERVATION, and corroborate! is its
        ;; record. It is NOT an outcome: `record-outcome! (= :good severity)`
@@ -514,6 +521,8 @@
                              ;; and left to earn the rest.
                              :confidence 0.7})
         :kind kind :repeat? false :corroborations 1}))))
+   []
+   findings))
 
 (defn distill-verdicts!
   "Write what each experiment concluded into long-term memory, and return what
@@ -539,30 +548,37 @@
   concluded nothing, and recording it would teach the next session that the
   lever was tested when it was not."
   [conn experiments {:keys [run-id]}]
-  (vec
-   (for [{:keys [name change hypothesis verdict before after]} experiments
-         :when (and change (not= :too-early verdict))
-         :let [pattern (lever-key change)
-               content (str "[lever] " change " — " (clojure.core/name verdict)
-                            (when (and before after)
-                              (format " (fitness %.2f -> %.2f)" before after))
-                            ". Expected: " hypothesis)
-               existing (by-pattern conn pattern)
-               worked? (= :better verdict)]]
-     (if existing
-       ;; Here the outcome IS earned: the lever was pulled and measured.
-       ;; Content refresh through restate! so the FTS mirror follows the new
-       ;; wording (karamazov-blt.25).
-       (do (record-outcome! conn (:id existing) worked?)
-           (restate! conn (:id existing) content)
-           (db/with-writer
-             (db/execute! conn ["UPDATE knowledge SET run_id = ? WHERE id = ?"
-                                run-id (:id existing)]))
-           {:id (:id existing) :lever change :verdict verdict :repeat? true})
-       (let [id (remember! conn {:content content :kind "procedural" :run-id run-id
-                                 :pattern-key pattern :confidence 0.7})]
-         (record-outcome! conn id worked?)
-         {:id id :lever change :verdict verdict :repeat? false})))))
+  ;; reduce, not (vec (for …)): the body writes to the store, and a store
+  ;; call under the lazy seq's realization lock is a forbidden park when the
+  ;; connection is contended (ADR-001 rule 1). Same as distill-findings!.
+  (reduce
+   (fn [acc {:keys [name change hypothesis verdict before after]}]
+     (if-not (and change (not= :too-early verdict))
+       acc
+       (let [pattern (lever-key change)
+             content (str "[lever] " change " — " (clojure.core/name verdict)
+                          (when (and before after)
+                            (format " (fitness %.2f -> %.2f)" before after))
+                          ". Expected: " hypothesis)
+             existing (by-pattern conn pattern)
+             worked? (= :better verdict)]
+         (conj acc
+               (if existing
+                 ;; Here the outcome IS earned: the lever was pulled and measured.
+                 ;; Content refresh through restate! so the FTS mirror follows the new
+                 ;; wording (karamazov-blt.25).
+                 (do (record-outcome! conn (:id existing) worked?)
+                     (restate! conn (:id existing) content)
+                     (db/with-writer
+                       (db/execute! conn ["UPDATE knowledge SET run_id = ? WHERE id = ?"
+                                          run-id (:id existing)]))
+                     {:id (:id existing) :lever change :verdict verdict :repeat? true})
+                 (let [id (remember! conn {:content content :kind "procedural" :run-id run-id
+                                           :pattern-key pattern :confidence 0.7})]
+                   (record-outcome! conn id worked?)
+                   {:id id :lever change :verdict verdict :repeat? false}))))))
+   []
+   experiments))
 
 (defn curate!
   "Decay the salience of memories that have gone unused, and return how many

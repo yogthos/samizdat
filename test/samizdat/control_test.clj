@@ -787,3 +787,17 @@
   (is (not (roles/may-use? :implementor "intervene")))
   (is (roles/may-use? :supervisor "intervene")))
 
+
+(deftest start-loads-the-projects-cells-on-the-main-thread
+  ;; karamazov-iev2: a run's process starts on the request thread and resumes
+  ;; on a carrier, and on jolt the first compile of a namespace a cell
+  ;; requires, done from a load-string on that resumed fiber, came out
+  ;; analysed against the wrong namespace in two of four live runs. Loading
+  ;; the cells at boot means every namespace they need is already loaded
+  ;; before any run touches them — and a broken cell stops the boot instead
+  ;; of the first run.
+  (system/start! (fn [_] {:status 200 :headers {} :body "ok"})
+                 {:db {:path ":memory:"} :http {:port 0}})
+  (try
+    (is (seq (cells/loaded)) "the cell registry is populated before the first run")
+    (finally (system/stop!))))

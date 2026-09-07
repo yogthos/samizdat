@@ -549,3 +549,38 @@
         (is (every? #(seq (str (:subtask %))) results)))
       (is (every? #(= "done" (:status %)) results)
           "both parts landed, so the round did not read as nobody-shipped"))))
+
+(deftest the-critique-note-keeps-the-reason-it-bounced-the-round
+  ;; karamazov-3htz: the critique note said {:decision :deterministic} and not
+  ;; which deterministic check fired or what the judge found.
+  (with-redefs [judge/deterministic-block (constantly "the answer claims a test ran and none did")
+                llm/chat (roles {:review :pass})]
+    (let [conn (db/open! ":memory:")]
+      (run-feature conn {:config {:run {:loop "feature" :subtasks ["alpha"]
+                                        :max-revisions 9 :max-revisions-hard 1}}})
+      (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+            notes (journal/notes conn rid :critique)]
+        (is (seq notes))
+        (is (every? #(= "revise" (str (:decision %))) notes))
+        (is (str/includes? (str (:reason (first notes))) "claims a test ran")
+            "the deterministic reason is on the note")))))
+
+(deftest the-critique-judge-is-told-what-the-feature-asked-for
+  ;; Same defect as the board review's (run e1b765e7, karamazov-iev2): the
+  ;; critique passed the pre-requirement keys, so the judge's requirement
+  ;; section rendered empty and it inferred the ask from the answer alone.
+  (let [judged (atom [])
+        base (roles {:review :pass})]
+    (with-redefs [judge/deterministic-block (constantly nil)
+                  llm/chat (fn [a c messages & rest]
+                             (let [txt (str/join " " (map :content messages))]
+                               (if (str/includes? txt "## The answer it wants to ship")
+                                 (do (swap! judged conj txt)
+                                     {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                                 (apply base a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        (run-feature conn {:problem "Add a ghost replay to the game"
+                           :config {:run {:loop "feature" :subtasks ["alpha"]}}})
+        (is (seq @judged) "a judge was called")
+        (is (some #(str/includes? % "Add a ghost replay to the game") @judged)
+            "and one of them read the feature itself as the requirement")))))

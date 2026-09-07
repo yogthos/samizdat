@@ -110,6 +110,27 @@
                     [k {:from before :to after}]))))
         self-grading-keys))
 
+(defn provenance-problems
+  "Every `:provenance` in a gates config that is not a non-empty vector of
+  non-blank strings, as [name value] — nil when the config is clean.
+
+  `:provenance` names the bead, review finding, or run that justified an
+  entry or a steer (karamazov-h66o). The shape is checked HERE, for the
+  policy tool's save-time validation, and not in `load-config`: a loader
+  that refused the file would brick the next reload after a runtime edit
+  dropped the key, and the base-test ratchet is what keeps the shipped
+  defaults honest."
+  [config]
+  (let [bad? (fn [p] (not (and (vector? p) (seq p)
+                                (every? #(and (string? %) (not (str/blank? %))) p))))
+        entries (for [[k v] config
+                      :when (and (map? v) (contains? v :provenance) (bad? (:provenance v)))]
+                  [k (:provenance v)])
+        steers (for [g (:gates config)
+                     :when (and (map? g) (contains? g :provenance) (bad? (:provenance g)))]
+                 [(:gate g) (:provenance g)])]
+    (not-empty (vec (concat entries steers)))))
+
 (defn tool-vocab
   "The tool vocabulary `k` (:verification, :shipping, :file-write,
   :settle-called) from gates.edn. The vocabularies the gates read are

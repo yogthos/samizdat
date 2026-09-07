@@ -37,6 +37,7 @@
   a loan with a clock (the hard floor in the scheduler), not an exemption."
   (:require [clojure.string :as str]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.judge :as judge]
             [samizdat.agent.state :as state]
             [samizdat.llm.message :as message]
             [samizdat.llm.client :as llm]
@@ -188,22 +189,32 @@
   caller falls back to the scalar rule rather than inventing a vector. A
   usable score is journaled so retention decisions are auditable."
   [{:keys [llm-adapter llm-config conn run-id]} branch siblings turn]
-  (let [p (prompt/render "critic" {:summary (summary branch siblings)})
-        scores (try
-                 (parse-scores
-                  (:content (llm/chat llm-adapter llm-config
-                                      ;; BOTH halves of the critic's prompt come
-                                      ;; from resources. The system half was a
-                                      ;; str in this file, which made the
-                                      ;; critic the one seam where half the
-                                      ;; prompt was editable and half was not.
-                                      [{:role "system"
-                                        :content (prompt/prompt "critic-system")}
-                                       {:role "user" :content p}]
-                                      {:temperature 0.0})))
-                 (catch Throwable _ nil))]
+  (let [summary (summary branch siblings)
+        p (prompt/render "critic" {:summary summary})
+        reply (try
+                (:content (llm/chat llm-adapter llm-config
+                                    ;; BOTH halves of the critic's prompt come
+                                    ;; from resources. The system half was a
+                                    ;; str in this file, which made the
+                                    ;; critic the one seam where half the
+                                    ;; prompt was editable and half was not.
+                                    [{:role "system"
+                                      :content (prompt/prompt "critic-system")}
+                                     {:role "user" :content p}]
+                                    {:temperature 0.0}))
+                (catch Throwable _ nil))
+        scores (when reply (parse-scores reply))]
     (when scores
       (when (and conn run-id)
+        ;; The situation and the reasoning go in beside the scores
+        ;; (karamazov-3htz): the summary is rebuilt from live state on every
+        ;; call and the reply is parsed down to four lines, so without this
+        ;; nothing could later ask whether the critic was right. Bounded by
+        ;; gates.edn :verdict-record. The scores used to BE the data map;
+        ;; export reads both shapes.
         (journal/note! conn run-id :critic-score
-                       {:branch-id (:id branch) :turn turn :data scores}))
+                       {:branch-id (:id branch) :turn turn
+                        :data {:scores scores
+                               :summary (judge/for-the-record :situation-chars summary)
+                               :reply (judge/for-the-record :reply-chars reply)}}))
       {:scores scores :turn turn})))

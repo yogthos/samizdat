@@ -177,19 +177,27 @@
   branch per :critic-every window. A scoring that fails leaves the previous
   scores in place — stale information beats invented information."
   [ctx branches turn]
-  (mapv (fn [b]
-          (if (and (state/active? b)
-                   (or (nil? (get-in b [:critic :turn]))
-                       (>= (- turn (get-in b [:critic :turn]))
-                           (gates/threshold :critic-every))))
-            (let [siblings (filterv #(and (state/active? %)
-                                          (not= (:id %) (:id b)))
-                                    branches)]
-              (if-let [s (critic/score! ctx b siblings turn)]
-                (assoc b :critic s)
-                b))
-            b))
-        branches))
+  ;; reduce, not mapv: the critic call parks (a provider call), and in jolt
+  ;; `mapv` runs its function under a counted lock — measured 2026-09-07, see
+  ;; the base-test ratchet no-park-inside-a-lazy-body. A park there is
+  ;; "a fiber cannot leave the CPU while its carrier holds a counted lock",
+  ;; and it only shows on a fiber, which is exactly where the live driver
+  ;; runs and the tests did not.
+  (reduce (fn [acc b]
+            (conj acc
+                  (if (and (state/active? b)
+                           (or (nil? (get-in b [:critic :turn]))
+                               (>= (- turn (get-in b [:critic :turn]))
+                                   (gates/threshold :critic-every))))
+                    (let [siblings (filterv #(and (state/active? %)
+                                                  (not= (:id %) (:id b)))
+                                            branches)]
+                      (if-let [s (critic/score! ctx b siblings turn)]
+                        (assoc b :critic s)
+                        b))
+                    b)))
+          []
+          branches))
 
 (defn- child-ids
   "`n` unused child ids for `parent-id`, given the ids already `taken`.
@@ -597,43 +605,55 @@
                        (str "[harness] " (prompt/render "turn-deadline"
                                            {:seconds (quot (or deadline 0) 1000)})))
                       (update :timeouts (fnil inc 0))))
-        pending (mapv (fn [b]
-                        (let [prev (when cancelling (get @cancelling (:id b)))]
-                          (if (and prev (not (realized? prev)))
-                            [b ::still-cancelling]
-                            (do (when prev (swap! cancelling dissoc (:id b)))
-                                ;; Each turn is a task the beam holds the
-                                ;; canceller of. Started with a yield, so all
-                                ;; five start now rather than each after the
-                                ;; previous one's prefix.
-                                [b (cancel/start! (cancel/spawn #(advance-branch ctx b turn)))]))))
-                      branches)]
+        ;; Both passes are `reduce`, not `mapv`: starting a task parks the
+        ;; driver at the spawn handshake and awaiting one parks it on the
+        ;; signal, and in jolt `mapv` runs its function under a counted lock
+        ;; (measured 2026-09-07; ratchet no-park-inside-a-lazy-body). Under
+        ;; mapv the first live run on ebb died here, at the spawn, with
+        ;; "a fiber cannot leave the CPU while its carrier holds a counted
+        ;; lock" — and only live, because the tests drove advance-all from a
+        ;; plain thread, where a park is a block and nothing is asserted.
+        pending (reduce (fn [acc b]
+                          (let [prev (when cancelling (get @cancelling (:id b)))]
+                            (conj acc
+                                  (if (and prev (not (realized? prev)))
+                                    [b ::still-cancelling]
+                                    (do (when prev (swap! cancelling dissoc (:id b)))
+                                        ;; Each turn is a task the beam holds the
+                                        ;; canceller of. Started with a yield, so all
+                                        ;; five start now rather than each after the
+                                        ;; previous one's prefix.
+                                        [b (cancel/start! (cancel/spawn #(advance-branch ctx b turn)))])))))
+                        []
+                        branches)]
     (try
-      (mapv (fn [[b t]]
-              (if (= ::still-cancelling t)
-                (do (log/warn "branch" (:id b) "is still winding down a cancelled turn;"
-                              "skipping turn" turn "to keep its turns serial")
-                    (forfeit b))
-                ;; Parks on the turn's SIGNAL, never on the turn task itself:
-                ;; ebb's timeout would wait for the cancelled child, and the
-                ;; barrier must not stall on a read the cancel cannot reach.
-                (let [[tag r] (cancel/await-or-cancel t deadline)]
-                  (case tag
-                    :ok r
-                    :timeout
-                    (do (log/warn "branch" (:id b) "exceeded the turn deadline on turn" turn
-                                  "— cancelled")
-                        ;; Not a verification failure: the branch did not get an
-                        ;; answer to be wrong about. It loses the turn and is told
-                        ;; so; the cancelled turn is REMEMBERED until it terminates
-                        ;; so the next round does not run beside it.
-                        (when cancelling (swap! cancelling assoc (:id b) (:done t)))
-                        (forfeit b))
-                    :err
-                    (do (log/warn "branch" (:id b) "died on turn" turn ":" (ex-message r))
-                        (assoc b :status :abandoned
-                               :inactive-reason (str "branch error: " (ex-message r))))))))
-            pending)
+      (reduce (fn [acc [b t]]
+                (conj acc
+                      (if (= ::still-cancelling t)
+                        (do (log/warn "branch" (:id b) "is still winding down a cancelled turn;"
+                                      "skipping turn" turn "to keep its turns serial")
+                            (forfeit b))
+                        ;; Parks on the turn's SIGNAL, never on the turn task itself:
+                        ;; ebb's timeout would wait for the cancelled child, and the
+                        ;; barrier must not stall on a read the cancel cannot reach.
+                        (let [[tag r] (cancel/await-or-cancel t deadline)]
+                          (case tag
+                            :ok r
+                            :timeout
+                            (do (log/warn "branch" (:id b) "exceeded the turn deadline on turn" turn
+                                          "— cancelled")
+                                ;; Not a verification failure: the branch did not get an
+                                ;; answer to be wrong about. It loses the turn and is told
+                                ;; so; the cancelled turn is REMEMBERED until it terminates
+                                ;; so the next round does not run beside it.
+                                (when cancelling (swap! cancelling assoc (:id b) (:done t)))
+                                (forfeit b))
+                            :err
+                            (do (log/warn "branch" (:id b) "died on turn" turn ":" (ex-message r))
+                                (assoc b :status :abandoned
+                                       :inactive-reason (str "branch error: " (ex-message r)))))))))
+              []
+              pending)
       (catch Throwable e
         ;; The round itself was cancelled (an abort) with turns in flight:
         ;; every turn goes down with it before the signal travels on.

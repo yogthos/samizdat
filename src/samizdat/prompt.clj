@@ -123,6 +123,7 @@
    "roles/reviewer"
    "roles/supervisor"
    "run-health"
+   "run-start-timeout"
    "safe-state"
    "session-block"
    "shared-artifacts"
