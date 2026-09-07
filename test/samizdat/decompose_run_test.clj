@@ -58,7 +58,15 @@
           (is (contains? b "DT") "root direct attempt")
           (is (contains? b "DT_part_a"))
           (is (contains? b "DT_part_b"))
-          (is (contains? b "DT-a") "the assembly attempt"))))))
+          (is (contains? b "DT-a") "the assembly attempt")))
+      (testing "each unit's row records the attempt framing it opened on (v24)"
+        (let [suffix #(str (:prompt_suffix (db/fetch-one conn ["SELECT prompt_suffix FROM branches WHERE id = ?" %])))]
+          (is (str/includes? (suffix "DT-a") (workflow/prompt-text "assembly"))
+              "the assembly attempt opened on the assembly prompt")
+          (is (not (str/includes? (suffix "DT_part_a") (workflow/prompt-text "assembly")))
+              "a sub-unit did not")
+          (is (str/includes? (suffix "DT_part_a") (workflow/prompt-text "roles/implementor"))
+              "it opened as an implementor"))))))
 
 (defn- escalating-roles
   "Architect first calls the stuck unit 'one thing' (fresh-approach); the hinted

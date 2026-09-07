@@ -310,7 +310,9 @@
              ;; ONE branch for the run, carried by the stream. Opened once;
              ;; re-opening an existing id is a no-op that returns the row.
              bid "SUP"
-             _ (runs/open-branch! conn run-id {:branch-id bid :role :supervisor})
+             suffix (wf/prompt-text "roles/supervisor")
+             _ (runs/open-branch! conn run-id {:branch-id bid :role :supervisor
+                                               :prompt-suffix suffix})
              ;; The stream's memory arrives in DATA, not ctx: ctx is the
              ;; run-scoped resources every driver provides, and the carry is
              ;; this pass's value. Putting it in ctx would have meant claiming
@@ -318,8 +320,7 @@
              b (or (some-> (:oversight/carry data) resume-branch)
                    (assoc (state/new-branch
                            {:id bid :problem prob
-                            :messages (turn/initial-messages
-                                       prob (wf/prompt-text "roles/supervisor") :supervisor)})
+                            :messages (turn/initial-messages prob suffix :supervisor)})
                           :advisory? true :role :supervisor))
              out (myc/run-compiled (wf/compiled-manifest "supervisor")
                                    (wf/role-ctx ctx :supervisor)

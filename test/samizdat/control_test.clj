@@ -586,10 +586,16 @@
   ;; manifest's :prompt the run came back as a different kind of run — a
   ;; review that crashed resumed building features, under a graph still shaped
   ;; for reviewing.
+  ;;
+  ;; The suffix is on the row now (v24), so this is the FALLBACK: a branch
+  ;; opened before the column, whose row says nothing about what it opened on,
+  ;; is rebuilt on the manifest's :prompt as it always was.
   (with-db [c]
     (let [rid (runs/start-run! c {:problem "review src/example.clj"
                                   :max-turns 10 :beam-width 1})]
       (runs/open-branch! c rid {:branch-id "B1"})
+      (db/with-writer
+        (db/execute! c ["UPDATE branches SET prompt_suffix = NULL WHERE run_id = ?" rid]))
       (with-redefs [beam/run-rounds (fn [_ branches _] {:branches branches})]
         (let [b (first (:branches (resume/resume! {:conn c
                                                    :config {:run {:loop "review"}}
@@ -600,6 +606,33 @@
               "the resumed branch is framed by the manifest it is running")
           (is (str/includes? system "read_file")
               "appended to the base prompt, not replacing it"))))))
+
+(deftest a-resumed-branch-reopens-on-the-suffix-it-was-opened-on
+  ;; The row records the suffix the cell handed initial-messages (v24), and
+  ;; the rebuild replays it verbatim: a decompose unit keeps its attempt
+  ;; framing and a supervisor its role text, whatever the manifest's :prompt
+  ;; says. Before the column every branch came back on the manifest's prompt —
+  ;; a resumed unit lost its attempt framing, a resumed supervisor opened on
+  ;; the supervisor system prompt without the supervisor role text
+  ;; (karamazov-kgvg). A row that recorded NONE gets none, even under a
+  ;; manifest that has a :prompt.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "review src/example.clj"
+                                  :max-turns 10 :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "SUP" :role :supervisor
+                                :prompt-suffix "YOU WATCH THE RUN"})
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (with-redefs [beam/run-rounds (fn [_ branches _] {:branches branches})]
+        (let [bs (:branches (resume/resume! {:conn c :config {:run {:loop "review"}}
+                                             :llm-adapter :a :llm-config {} :run-id rid}))
+              system (fn [id] (->> bs (filter #(= id (:id %))) first :messages
+                                   (filter #(= "system" (:role %))) first :content))]
+          (is (str/includes? (system "SUP") "YOU WATCH THE RUN")
+              "the suffix it opened on")
+          (is (not (str/includes? (system "SUP") "CODE REVIEW"))
+              "and not the manifest's, which it never saw")
+          (is (not (str/includes? (system "B1") "CODE REVIEW"))
+              "a branch recorded as opening on no suffix gets none"))))))
 
 (deftest replay-applies-the-live-loops-call-discipline
   ;; karamazov-blt.22: replay pushed EVERY journalled row through add-turn +

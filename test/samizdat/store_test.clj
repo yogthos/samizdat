@@ -1075,6 +1075,23 @@
       (is (= "supervisor" (:role (runs/get-branch c rid "SUP")))
           "a rejoin keeps the row, role included"))))
 
+(deftest a-branch-row-carries-the-suffix-it-opened-on
+  ;; The suffix — the board's owner prompt, a decompose unit's attempt
+  ;; framing, the supervisor's role text — was built by the cell at open time
+  ;; and never written down, so every rebuild from the journal (resume,
+  ;; export) opened the branch on the workflow's :prompt instead
+  ;; (karamazov-kgvg). Now on the row, beside the problem and the role.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "SUP" :prompt-suffix "You watch the run."})
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (is (= "You watch the run." (:prompt_suffix (runs/get-branch c rid "SUP"))))
+      (is (= "" (:prompt_suffix (runs/get-branch c rid "B1")))
+          "opening on no suffix is RECORDED as none — NULL is a row older than the column")
+      (runs/open-branch! c rid {:branch-id "SUP" :prompt-suffix "something else"})
+      (is (= "You watch the run." (:prompt_suffix (runs/get-branch c rid "SUP")))
+          "a rejoin keeps the row, suffix included"))))
+
 (deftest timestamps-are-fixed-width-so-every-table-sorts-the-same-way
   ;; Instant.toString drops the fraction when it is zero: "…:40Z" beside
   ;; "…:40.123Z". 'Z' sorts after '.', so the whole-second stamp landed AFTER

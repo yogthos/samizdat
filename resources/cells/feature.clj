@@ -110,7 +110,11 @@
   its budget unable to conclude (karamazov-t86)."
   ([ctx compiled bid prob suffix] (run-role ctx compiled bid prob suffix nil))
   ([{:keys [conn run-id] :as ctx} compiled bid prob suffix role]
-  (runs/open-branch! conn run-id {:branch-id bid :role role})
+  ;; The row records what initial-messages is handed: the role's OWN problem
+  ;; (a reviewer's brief is not the run's problem, and the row never carried
+  ;; it), the role, and the role prompt (v24).
+  (runs/open-branch! conn run-id {:branch-id bid :problem prob :role role
+                                  :prompt-suffix suffix})
   (let [b (assoc (state/new-branch {:id bid :problem prob
                                     ;; ROLE-SCOPED: the tool catalogue this
                                     ;; role is shown is filtered to what it

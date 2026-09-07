@@ -90,6 +90,10 @@
                                    (= run-id (:run_id cur)))
       :else (recur (tasks/get-task conn (:parent_id cur)) (inc depth)))))
 
+;; Read by :board/next when it opens the owner's row, defined with the rest
+;; of the owner's framing below.
+(declare owner-prompt)
+
 (defn- release-stale-claims!
   "Release every claim on this run held by a branch that is no longer active.
   A claim is exclusive while its holder works; a holder that exhausted or
@@ -265,8 +269,12 @@
             ;; fresh contexts, and nothing downstream could tell them apart.
             bid (state/branch-id-for n round (:title t))
             prob (str (or (not-empty (str (:body t))) (:title t)))
+            ;; The row records what :board/work hands initial-messages —
+            ;; problem, role AND the owner prompt (v24) — so a rebuild opens
+            ;; the owner on the same messages.
             claimed (do (runs/open-branch! conn run-id {:branch-id bid :problem prob
-                                                        :role :implementor})
+                                                        :role :implementor
+                                                        :prompt-suffix (owner-prompt)})
                         (tasks/claim! conn (:id t) run-id bid))]
         (journal/note! conn run-id :board-task
                        {:branch-id bid :data {:task (:id t) :title (:title t)}})
@@ -364,10 +372,13 @@
                       " Address it:\n" findings))
           t (tasks/get-task conn task)
           ictx (wf/role-ctx ctx :implementor)
+          ;; One read, so the row and the message carry the same text.
+          suffix (owner-prompt)
           out (try
                 (when (pos? attempt)
                   (runs/open-branch! conn run-id {:branch-id bid :problem prob
-                                                  :role :implementor})
+                                                  :role :implementor
+                                                  :prompt-suffix suffix})
                   (tasks/claim! conn task run-id bid))
                 (let [b (-> (state/new-branch
                              {:id bid :problem prob
@@ -381,7 +392,7 @@
                               ;; feature.clj's advisory roles only, so the one
                               ;; role that writes code was the one role without
                               ;; a scoped world.
-                              :messages (turn/initial-messages prob (owner-prompt)
+                              :messages (turn/initial-messages prob suffix
                                                                :implementor)})
                             (assoc :task {:id task :title (:title t)}
                                    :role :implementor)

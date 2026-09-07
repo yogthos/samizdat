@@ -147,8 +147,11 @@
                  :repl-session (if parent
                                  (repl/fork-session (:repl-session parent))
                                  (repl/new-session)))]
+    ;; The suffix on the row is what seed-branch opened on — or, for an
+    ;; inheriting child, what its parent's system message already carries.
     (runs/open-branch! conn run-id {:branch-id id :parent-id parent-id
-                                    :created-at-turn turn})
+                                    :created-at-turn turn
+                                    :prompt-suffix (:prompt-suffix ctx)})
     (if thesis
       (do (runs/set-thesis! conn run-id id thesis)
           (-> b

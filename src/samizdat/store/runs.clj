@@ -252,9 +252,12 @@
   decompose unit's contract, a team worker's sub-task — and nil for a branch
   working the run-level problem. It is what a resume rebuilds the branch's
   opening messages from (karamazov-blt.23). `:role` is the role the branch
-  runs as, nil for the unscoped default — the other half of what a rebuild
-  needs to open the same messages (karamazov-5ge3)."
-  [conn run-id {:keys [branch-id parent-id created-at-turn problem role]}]
+  runs as, nil for the unscoped default (karamazov-5ge3). `:prompt-suffix` is
+  the text the cell appended to the role's system prompt — the same value it
+  hands `initial-messages` — and completes what a rebuild needs to open the
+  same messages. Recorded as \"\" when there is none, so the row says so:
+  NULL means the row predates the column (v24, karamazov-kgvg)."
+  [conn run-id {:keys [branch-id parent-id created-at-turn problem role prompt-suffix]}]
   ;; IDEMPOTENT, because a resumed run re-opens branch ids it already has.
   ;; Branch ids are round-scoped by construction (T0, T0v1, T0r1), so after a
   ;; crash and resume the board claims the same task to the same id and the
@@ -270,10 +273,10 @@
   ;; So a rejoin keeps the row and says so in the journal.
   (let [n (db/with-writer
             (db/execute! conn
-                         ["INSERT OR IGNORE INTO branches (id, run_id, parent_id, status, created_at_turn, problem, role)
-                           VALUES (?, ?, ?, 'active', ?, ?, ?)"
+                         ["INSERT OR IGNORE INTO branches (id, run_id, parent_id, status, created_at_turn, problem, role, prompt_suffix)
+                           VALUES (?, ?, ?, 'active', ?, ?, ?, ?)"
                           branch-id run-id parent-id (or created-at-turn 0) problem
-                          (some-> role name)]))]
+                          (some-> role name) (str prompt-suffix)]))]
     (journal/note! conn run-id (if (pos? n) :branch-opened :branch-rejoined)
                    {:branch-id branch-id :data {:parent parent-id}}))
   branch-id)

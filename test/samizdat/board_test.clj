@@ -76,7 +76,14 @@
         (is (= "done" (:status (tasks/get-task conn b))))
         (let [branches (map :branch_id (db/fetch conn ["SELECT DISTINCT branch_id FROM turns"]))]
           (is (= 2 (count (remove nil? branches)))
-              "two tasks, two owners — never two owners on one task"))))))
+              "two tasks, two owners — never two owners on one task"))
+        (let [rows (db/fetch conn ["SELECT prompt_suffix FROM branches
+                                    WHERE id IN (SELECT DISTINCT branch_id FROM turns)"])]
+          (is (= 2 (count rows)) "the two owners; the driver's own B1 took no turn")
+          (is (every? #(str/includes? (str (:prompt_suffix %))
+                                      (workflow/prompt-text "roles/implementor"))
+                      rows)
+              "each owner's row records the owner prompt it opened on (v24)"))))))
 
 (deftest a-task-with-open-children-is-not-workable-until-they-are-done
   ;; The owner of a composite task splits it; the parent is then a container,

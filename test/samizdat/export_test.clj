@@ -124,6 +124,28 @@
       (is (str/includes? (:content (second (:messages (by-branch "SUP")))) "watch the run")
           "and the branch's own problem"))))
 
+(deftest a-trajectory-opens-on-the-suffix-the-branch-saw
+  ;; The suffix a cell hands initial-messages — the owner prompt, a unit's
+  ;; attempt framing, the supervisor's role text — is on the row (v24), so
+  ;; the exported system message is the one the model opened on. Before the
+  ;; column every tape opened on the bare role prompt: a supervisor's without
+  ;; the supervisor role text (karamazov-kgvg).
+  (let [rid (runs/start-run! @conn {:problem "p" :provider "glm" :model "glm-5.3"})]
+    (runs/open-branch! @conn rid {:branch-id "SUP" :role :supervisor
+                                  :prompt-suffix "YOU WATCH THE RUN"})
+    (runs/open-branch! @conn rid {:branch-id "T0"})
+    (doseq [b ["SUP" "T0"]]
+      (turn! rid b 1 {:tool-name "done" :args {:answer "ok"}
+                      :assistant-text "```tool\n{\"name\":\"done\"}\n```" :result "Shipped."}))
+    (runs/finish-run! @conn rid :completed "ok")
+    (let [rows (export/trajectories @conn {:known-values #{} :branches :all
+                                           :require-verified? false})
+          system (fn [id] (->> rows (filter #(= id (:branch-id %))) first :messages first :content))]
+      (is (str/ends-with? (system "SUP") "YOU WATCH THE RUN")
+          "appended to the role's system prompt, as it was live")
+      (is (not (str/includes? (system "T0") "YOU WATCH THE RUN"))
+          "a branch that opened on none exports on none"))))
+
 (deftest an-empty-tool-result-is-still-a-turn-the-model-saw
   ;; Skipping empty results, the way resume does, left two assistant messages
   ;; back to back wherever a grep found nothing — 3 of 23 real trajectories.

@@ -38,7 +38,10 @@
   FIDELITY, stated rather than discovered. The system message is the CURRENT
   template, not the one the run saw — the journal keeps a digest of it, not
   the text — which is the prompt a trained model will meet at inference, so
-  for training it is the right one. The context block (shared tree,
+  for training it is the right one. The text the cell appended to it — an
+  owner prompt, a unit's attempt framing, the supervisor's role text — IS on
+  the row (v24) and is replayed verbatim; a branch older than that column
+  exports on the base prompt alone. The context block (shared tree,
   breadcrumbs) and compaction folds are not journalled and are not replayed:
   the tape is the verbatim one. Turns of a skipped category (mechanics — a
   no-call, a parse error) go out with the complaint they drew, since neither
@@ -117,12 +120,12 @@
          vec)))
 
 (defn conversation
-  "One branch's tape as role-tagged messages: the system prompt and the
-  problem, then for each turn the model's own text and the harness's answer,
-  with any steer a gate appended to that answer composed behind the same
-  `---` rule the loop uses. Turns of a skipped category are left out along
-  with the complaint they drew."
-  [{:keys [problem role turns firings skip-categories known-values]}]
+  "One branch's tape as role-tagged messages: the role's system prompt with
+  the suffix the branch opened on, the problem, then for each turn the
+  model's own text and the harness's answer, with any steer a gate appended
+  to that answer composed behind the same `---` rule the loop uses. Turns of
+  a skipped category are left out along with the complaint they drew."
+  [{:keys [problem prompt-suffix role turns firings skip-categories known-values]}]
   (let [skip (set (map name (or skip-categories [])))
         steers (reduce (fn [m f] (update m (:turn f) (fnil conj []) (str (:message f))))
                        {} firings)
@@ -138,7 +141,7 @@
                       (conj {:role "assistant" :content (scrub (:assistant_text t))})
                       (conj {:role "user" :content (scrub body)})))))
             (mapv #(update % :content scrub)
-                  (branch-loop/initial-messages problem nil role))
+                  (branch-loop/initial-messages problem prompt-suffix role))
             turns)))
 
 (defn trajectories
@@ -179,6 +182,9 @@
                                   {:problem (or (not-empty (str (get-in rows [branch-id :problem])))
                                                 (:problem run))
                                    :role (some-> (get-in rows [branch-id :role]) not-empty keyword)
+                                   ;; nil for a row older than v24: the base
+                                   ;; prompt alone, as before the column.
+                                   :prompt-suffix (get-in rows [branch-id :prompt_suffix])
                                    :turns (sort-by (juxt :turn :id) ts)
                                    :firings (filter #(= branch-id (:branch_id %)) firings)
                                    :skip-categories (:skip-categories p)

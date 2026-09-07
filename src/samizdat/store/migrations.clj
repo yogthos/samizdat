@@ -647,6 +647,25 @@
   ;; NULL is the unscoped default every branch before this column was.
   ["ALTER TABLE branches ADD COLUMN role TEXT"])
 
+(def ^:private v24
+  ;; WHAT A BRANCH OPENED ON (karamazov-kgvg).
+  ;;
+  ;; A branch's opening messages are initial-messages(problem, suffix, role).
+  ;; The problem went on the row in v18 and the role in v23; the SUFFIX — the
+  ;; board's owner prompt, a decompose unit's attempt framing, a team worker's
+  ;; role prompt, the supervisor's role text — was built by the cell at open
+  ;; time and never written down. Every rebuild from the journal opened the
+  ;; branch on the run manifest's :prompt instead: a resumed unit lost its
+  ;; attempt framing, an exported supervisor tape opened on the supervisor
+  ;; system prompt without the supervisor role text.
+  ;;
+  ;; open-branch! writes the suffix it is handed, and "" when handed none, so
+  ;; the row is authoritative: "" is a recorded none. NULL is a row older
+  ;; than this column, and only that falls back to the manifest's :prompt —
+  ;; which is what every rebuild used before, and what the beam's own
+  ;; branches did open on.
+  ["ALTER TABLE branches ADD COLUMN prompt_suffix TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23])
+  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24])

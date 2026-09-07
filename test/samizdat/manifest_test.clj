@@ -536,7 +536,10 @@
           (is (str/includes? system "CODE REVIEW")
               "the review manifest's :prompt is appended to the system prompt")
           (is (str/includes? system "read_file")
-              "and it is APPENDED — the base prompt with its tool surface is still there"))))))
+              "and it is APPENDED — the base prompt with its tool surface is still there"))
+        (is (str/includes? (str (:prompt_suffix (db/fetch-one conn ["SELECT prompt_suffix FROM branches WHERE id = 'B1'"])))
+                           "CODE REVIEW")
+            "and the row records it, so a rebuild opens on the same text (v24)")))))
 
 (deftest an-edited-manifest-governs-the-next-beam-run
   ;; karamazov-ioo.20's third acceptance criterion, which nothing held: "a
