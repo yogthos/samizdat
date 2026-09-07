@@ -75,6 +75,11 @@
             [samizdat.reflex-test]
             [samizdat.symbolic-test]
             [samizdat.symbolic.dispatch-test]
+            [samizdat.model.turn-journal-test]
+            [samizdat.model.ratelimit-teardown-test]
+            [samizdat.model.task-claim-test]
+            [samizdat.divergences-test]
+            [samizdat.cancel-test]
             [samizdat.tasks-test]
             [samizdat.kernel-write-test]
             [samizdat.knowledge-test]
@@ -224,6 +229,11 @@
     samizdat.reflex-test
     samizdat.symbolic-test
     samizdat.symbolic.dispatch-test
+    samizdat.model.turn-journal-test
+    samizdat.model.ratelimit-teardown-test
+    samizdat.model.task-claim-test
+    samizdat.divergences-test
+    samizdat.cancel-test
     samizdat.tasks-test
     samizdat.kernel-write-test
     samizdat.knowledge-test

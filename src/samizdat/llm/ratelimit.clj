@@ -19,9 +19,11 @@
 
   TWO RULES THAT MAKE IT SAFE:
 
-  - FAIL FAST, NEVER SLEEP HERE. The retry ladder above owns waiting, and it
-    checks the abort flag between attempts; sleeping down here would hold a
-    thread past an abort and race the run's teardown.
+  - FAIL FAST, NEVER SLEEP HERE. The retry ladder above owns waiting: its
+    backoff is a park that sees a cancel at once and it checks for one before
+    every attempt (samizdat.cancel, RFC-013), so an abort reaches a sleeping
+    ladder. A wait down here would be outside that discipline — a second
+    place that sleeps, with its own idea of when to stop. One ladder.
   - LATCH ONLY ON A DEFINITIVE SIGNAL. A bare 429 is not one — it may be a
     burst limit that clears in a second, and latching the host on it would
     stop every branch over one unlucky request. What counts is the provider

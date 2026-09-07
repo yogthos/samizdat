@@ -43,6 +43,7 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [jolt.http-client :as http]
+            [samizdat.cancel :as cancel]
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.message :as message]
@@ -356,6 +357,10 @@
                             (effective-read-timeout-ms config (:max-tokens request)))
          retries (or max-retries (:max-retries config) default-max-retries)]
      (loop [attempt 0, errors []]
+       ;; Before every attempt, not only between them: a cancel that landed
+       ;; while the previous attempt or its backoff ran ends the ladder here
+       ;; rather than being spent on one more request (RFC-013).
+       (cancel/check!)
        (let [result (try
                       (post-once adapter call-config request)
                       (catch Throwable e
@@ -415,7 +420,11 @@
              (session/observe! [:provider :retried])
              (log/warn (adapter/display-name adapter) "attempt" (inc attempt)
                        "failed, retrying in" wait "ms:" (:error result))
-             (Thread/sleep wait)
+             ;; A park, not a Thread/sleep: on a task it sees a cancel at
+             ;; once, which is what makes an abort reach a sleeping ladder
+             ;; (samizdat.model.ratelimit-teardown-test enumerates the race
+             ;; the old sleep allowed).
+             (cancel/sleep! wait)
              (recur (inc attempt) errors))))))))
 
 (defn- file-stem

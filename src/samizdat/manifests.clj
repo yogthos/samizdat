@@ -44,6 +44,7 @@
             [mycelium.core :as myc]
             [mycelium.schema :as schema]
             [mycelium.workflow :as wf]
+            [samizdat.cancel :as cancel]
             [samizdat.cells :as cells]
             [samizdat.lexicon :as lexicon]
             [samizdat.store.userspace :as us]
@@ -463,7 +464,15 @@
                    ;; (which every driver does) therefore picks up a policy edit
                    ;; on the next run, like every other gates.edn value.
                    (cond-> {:validate (validate-mode)
-                            :on-error on-error}
+                            :on-error on-error
+                            ;; RFC-013: every compiled manifest is cancellable.
+                            ;; The check runs before every step, outside every
+                            ;; catch, and a Cancelled raised inside a cell
+                            ;; passes through every catch on the path.
+                            ;; Mechanism only; whether a run is cancelled, and
+                            ;; when, is the beam's decision.
+                            :pre cancel/pre-check
+                            :rethrow? cancel/control-signal?}
                      (:on-trace opts) (assoc :on-trace (:on-trace opts))))]
      (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
        (log/warn "loop definition compiled with warnings:" (pr-str warnings)))

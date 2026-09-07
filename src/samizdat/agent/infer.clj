@@ -55,6 +55,7 @@
   cell's job, in resources, where the supervisor can rewrite it."
   (:require [clojure.tools.logging :as log]
             [samizdat.agent.gates :as gates]
+            [samizdat.cancel :as cancel]
             [samizdat.llm.client :as llm]
             [samizdat.llm.fence :as fence]
             [samizdat.llm.message :as message]
@@ -216,7 +217,11 @@
                   ;; mid-fence — see absorb (karamazov-0r8s).
                   (truncated-without-call? (:response r)
                                            (get (:response r) :prefilled prefill)))
-           (do (when (and journal? (:conn ctx) (:run-id ctx))
+           (do ;; A cancel that landed during the call is honoured before the
+               ;; note and the re-ask, not after: no journal write past a
+               ;; forfeit (RFC-013).
+               (cancel/check!)
+               (when (and journal? (:conn ctx) (:run-id ctx))
                  (journal/note! (:conn ctx) (:run-id ctx) :turn-retry
                                 {:branch-id id
                                  :data {:reason "truncated before any tool call"
