@@ -491,9 +491,11 @@
   ;; Load the cells before every compile. The cell registry is global mutable
   ;; state, and a non-empty registry is not proof the LOOP's cells are present
   ;; (a test or another workflow may have registered different ones) — so this
-  ;; always loads rather than guarding on emptiness. Idempotent, cheap, and it
-  ;; picks up any edited cell, which is the hot-reload the mutation protocol
-  ;; builds on.
+  ;; always asks rather than guarding on emptiness. The loader does the work
+  ;; only when a file or the registry changed since its last load, so this is
+  ;; free on the common path and still the hot-reload the mutation protocol
+  ;; builds on. Before that skip it re-evaluated twelve files every time,
+  ;; about a second, and that was most of the test suite (karamazov-3n4n).
    (cells/load-cells!)
    (compile-definition definition opts)))
 

@@ -71,6 +71,13 @@
   ;; "Could not locate … on the source roots". samizdat.cell-prelude exists to
   ;; pull those onto the compile graph; samizdat.agent.decompose had fallen
   ;; off it. Walk the requires rather than trusting the list stays current.
+  ;;
+  ;; Reachability is FROM THE BINARY'S ENTRY: `jolt build -m samizdat.core`
+  ;; embeds that namespace's require closure and nothing else, so that is what
+  ;; must already have loaded these. Without this require the test only
+  ;; passed after other namespaces in the suite had loaded the harness, and
+  ;; failed 23 times on its own.
+  (require 'samizdat.core)
   (let [required (->> cells/shipped-cells
                       (keep clojure.java.io/resource)
                       (mapcat #(re-seq #"\[(samizdat\.[a-z0-9.-]+)" (slurp %)))
@@ -131,6 +138,57 @@
     (cell-file! d :hot/x "(fn [_ data] (assoc data :v 2))")
     (cells/load-cells! [d])
     (is (= 2 (:v ((:handler (cell/get-cell :hot/x)) {} {}))))))
+
+;; --- an unchanged load does no work ------------------------------------------
+
+(defn- token-of
+  "The per-load token a generated cell closes over: a load-string makes a new
+  one, a skipped load keeps the old one — proof of a reload that no jolt
+  version can fake by handing back the same fn object."
+  [id]
+  (:token ((:handler (cell/get-cell id)) {} {})))
+
+(def ^:private tokened "(let [t (Object.)] (fn [_ data] (assoc data :token t)))")
+
+(deftest an-unchanged-source-set-is-not-reloaded
+  ;; compile-loop reloads the cells before EVERY compile, and a reload that
+  ;; re-evaluated twelve files when nothing had changed cost about a second —
+  ;; 168 times over in three test namespaces alone (karamazov-3n4n). The
+  ;; unchanged case must be free.
+  (let [d (str @tmp "/cells")]
+    (cell-file! d :same/a tokened)
+    (let [first-load (cells/load-cells! [d])
+          t1 (token-of :same/a)]
+      (is (= first-load (cells/load-cells! [d])) "the second load reports the same cells")
+      (is (identical? t1 (token-of :same/a)) "and did not re-evaluate the file")
+      (testing "an edit still reloads"
+        (cell-file! d :same/a "(let [t (Object.)] (fn [_ data] (assoc data :token t :v 2)))")
+        (cells/load-cells! [d])
+        (is (not (identical? t1 (token-of :same/a))))
+        (is (= 2 (:v ((:handler (cell/get-cell :same/a)) {} {}))))))))
+
+(deftest a-registry-touched-by-someone-else-is-reloaded
+  ;; The registry is global mutable state, and unchanged files are not proof
+  ;; the LOOP's cells are present: a test or another workflow may have
+  ;; registered its own under one of our ids, or removed one. Only a registry
+  ;; still holding exactly what the last load registered may be skipped.
+  (let [d (str @tmp "/cells")]
+    (cell-file! d :ours/a tokened)
+    (cell-file! d :ours/b tokened)
+    (cells/load-cells! [d])
+    (let [t1 (token-of :ours/a)]
+      (testing "an id re-registered by another party"
+        (cell/defcell :ours/a {:doc "an impostor" :pure true}
+          (fn [_ data] (assoc data :who :them)))
+        (is (= :them (:who ((:handler (cell/get-cell :ours/a)) {} {}))))
+        (cells/load-cells! [d])
+        (is (nil? (:who ((:handler (cell/get-cell :ours/a)) {} {}))) "ours is back")
+        (is (not (identical? t1 (token-of :ours/a))) "by a real reload"))
+      (testing "an id removed by another party"
+        (cell/remove-cell! :ours/b)
+        (is (nil? (cell/get-cell :ours/b)))
+        (cells/load-cells! [d])
+        (is (some? (cell/get-cell :ours/b)))))))
 
 ;; --- the shipped loop cells load from resources -----------------------------
 
