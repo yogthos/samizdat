@@ -421,8 +421,12 @@ recall({query}) or recall({id})
     Search what has been stored. Matches come back BEST FIRST, not newest
     first: the text picks the candidates, and their standing orders them —
     how important the kind is, whether they have been used lately, and
-    whether acting on them has worked. Each line shows that standing, so you
-    can judge a memory the way the ranking did. Recalling one reinforces it.
+    whether acting on them has worked. Each line shows that standing (sN.NN)
+    and where the memory ranked on the words alone (m1 = the closest match),
+    so you can judge a memory the way the ranking did — a high standing
+    beside a distant match was lifted by its record, not by fit, and is the
+    one to weigh against the task before acting on it. Recalling one
+    reinforces it.
     With an {id} instead, return that one memory's full content — this is
     how you expand a breadcrumb index entry.
 outcome({id, worked})

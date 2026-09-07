@@ -85,7 +85,7 @@
     (try
       ;; The unit's contract is the branch's OWN problem, durably — what a
       ;; resume rebuilds this branch's opening messages from (blt.23).
-      (runs/open-branch! conn run-id {:branch-id bid :problem prob})
+      (runs/open-branch! conn run-id {:branch-id bid :problem prob :role :implementor})
       (let [b (cond-> (assoc (state/new-branch
                               {:id bid :problem prob
                                ;; Scoped and enforced, as the board's owners are.

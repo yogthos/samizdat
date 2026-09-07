@@ -615,6 +615,38 @@
    "ALTER TABLE tasks ADD COLUMN stubs TEXT NOT NULL DEFAULT ''"
    "ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"])
 
+(def ^:private v22
+  ;; AGE IN RUNS (karamazov-h27r, measured in karamazov-4ay9).
+  ;;
+  ;; The salience model decayed a memory by the wall clock: unused for more
+  ;; than N days, lose a step. Measured across every campaign db, that window
+  ;; never fired — no row was older than it — while 1073 of 1117 rows in the
+  ;; ten-run db had sunk to within 0.2 of the floor anyway, because curate!
+  ;; read a never-set last_used_at as stale and took a step off every unread
+  ;; memory at the end of the run that wrote it. The most-corroborated
+  ;; findings in the store ranked below `pwd works`.
+  ;;
+  ;; A run is an opportunity for a memory to be needed; a day is not. A
+  ;; harness idle for a month should not forget, and one that ran ten times
+  ;; without needing a memory has evidence about it. `idle_runs` counts the
+  ;; run ends a memory existed through without being used — bumped by
+  ;; knowledge/age! at distil-session!, reset by touch! and corroborate! —
+  ;; and both the recent-use bonus and decay read it instead of the clock.
+  ;; Zero for every existing row: nothing has aged until a run ends.
+  ["ALTER TABLE knowledge ADD COLUMN idle_runs INTEGER NOT NULL DEFAULT 0"])
+
+(def ^:private v23
+  ;; WHICH ROLE A BRANCH RAN AS (karamazov-5ge3).
+  ;;
+  ;; A branch's role scopes its tool surface and picks its system prompt
+  ;; (roles.edn, loop/system-prompt-for), and it lived only on the in-memory
+  ;; branch map. Every rebuild from the journal — resume, and now the
+  ;; training-data export — rendered every branch as the unrestricted default:
+  ;; a resumed supervisor came back holding the implementor's catalogue, and
+  ;; an exported supervisor tape opened with "You are a Clojure developer".
+  ;; NULL is the unscoped default every branch before this column was.
+  ["ALTER TABLE branches ADD COLUMN role TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21])
+  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23])

@@ -141,14 +141,14 @@
   REBUILT here rather than replayed — the journal stores turns, not the
   prompt — so a resume that omitted it dropped the workflow's framing at the
   crash: a review run came back building features."
-  [problem prompt-suffix turns]
+  [problem prompt-suffix role turns]
   (reduce (fn [msgs t]
             (cond-> msgs
               (seq (:assistant_text t))
               (conj {:role "assistant" :content (:assistant_text t)})
               (seq (:result t))
               (conj {:role "user" :content (:result t)})))
-          (branch-loop/initial-messages problem prompt-suffix)
+          (branch-loop/initial-messages problem prompt-suffix role)
           turns))
 
 (defn- rebuild-branch
@@ -163,6 +163,10 @@
         ;; every branch on the run-level problem re-aimed every worker at the
         ;; top-level feature text (karamazov-blt.23).
         problem (or (not-empty (str (:problem branch-row))) (:problem run))
+        ;; The role it ran as, from the row (v23): it scopes the tool surface
+        ;; and picks the system prompt, and a rebuild that dropped it handed
+        ;; a resumed supervisor the implementor's catalogue.
+        role (some-> (:role branch-row) not-empty keyword)
         branch-turns (get turns branch-id [])
         ;; The phase is rebuilt from the banked sketch artifacts: a sketch on
         ;; record means the branch left explore, and its turn is the phase
@@ -178,8 +182,10 @@
                                     :created-at-turn (:created_at_turn branch-row)
                                     :messages (messages-from-turns problem
                                                                    prompt-suffix
+                                                                   role
                                                                    branch-turns)})
                  (assoc :status (keyword (:status branch-row))
+                        :role role
                         :inactive-reason (:inactive_reason branch-row)
                         :thesis (parse-json (:thesis branch-row))
                         :artifacts artifact-maps

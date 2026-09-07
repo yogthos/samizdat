@@ -30,6 +30,11 @@
   ([m this-run]
    (str (:id m) " [" (:kind m) "]"
         (when-let [s (:salience m)] (format " s%.2f" (double s)))
+        ;; Where the TEXT stage put it, when there was one. A high standing
+        ;; beside a distant match is a memory the record lifted, not the
+        ;; words — and that is the one to read with the most suspicion when
+        ;; it pulls toward something other than the task (karamazov-sb3j).
+        (when-let [r (:text-rank m)] (str " m" r))
         (let [w (or (:success_count m) 0) f (or (:failure_count m) 0)]
           (when (pos? (+ w f)) (str " " w "✓/" f "✗")))
         " " (:content m)

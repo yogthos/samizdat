@@ -87,6 +87,7 @@
             [samizdat.tasks-test]
             [samizdat.kernel-write-test]
             [samizdat.knowledge-test]
+            [samizdat.export-test]
             [samizdat.messages-test]
             [samizdat.prompt-test]
             [samizdat.workflow-test]
@@ -245,6 +246,7 @@
     samizdat.tasks-test
     samizdat.kernel-write-test
     samizdat.knowledge-test
+    samizdat.export-test
     samizdat.messages-test
     samizdat.prompt-test
     samizdat.workflow-test

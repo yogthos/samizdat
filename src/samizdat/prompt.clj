@@ -99,6 +99,7 @@
    "outside-role-surface"
    "intervene-tool"
    "oversight-pass"
+   "drift"
    "parked"
    "orienting"
    "parse-error-causes"

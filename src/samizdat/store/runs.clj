@@ -189,6 +189,19 @@
                   run-id])
     (db/change-count conn)))
 
+(defn nth-recent-start
+  "The started_at of the nth most recent run (1 = the latest), or nil when
+  fewer than n runs exist.
+
+  \"The last n runs\" as a bound for tables that carry a created_at and no
+  run id — userspace versions, knowledge rows. nil means everything: a store
+  younger than its window is read whole rather than cut at a run that does
+  not exist."
+  [conn n]
+  (:started_at (db/fetch-one conn ["SELECT started_at FROM runs
+                                     ORDER BY started_at DESC LIMIT 1 OFFSET ?"
+                                    (dec (long n))])))
+
 (defn get-run [conn run-id]
   (db/fetch-one conn ["SELECT * FROM runs WHERE id = ?" run-id]))
 
@@ -238,8 +251,10 @@
   "`:problem` is the branch's OWN problem when it differs from the run's — a
   decompose unit's contract, a team worker's sub-task — and nil for a branch
   working the run-level problem. It is what a resume rebuilds the branch's
-  opening messages from (karamazov-blt.23)."
-  [conn run-id {:keys [branch-id parent-id created-at-turn problem]}]
+  opening messages from (karamazov-blt.23). `:role` is the role the branch
+  runs as, nil for the unscoped default — the other half of what a rebuild
+  needs to open the same messages (karamazov-5ge3)."
+  [conn run-id {:keys [branch-id parent-id created-at-turn problem role]}]
   ;; IDEMPOTENT, because a resumed run re-opens branch ids it already has.
   ;; Branch ids are round-scoped by construction (T0, T0v1, T0r1), so after a
   ;; crash and resume the board claims the same task to the same id and the
@@ -255,9 +270,10 @@
   ;; So a rejoin keeps the row and says so in the journal.
   (let [n (db/with-writer
             (db/execute! conn
-                         ["INSERT OR IGNORE INTO branches (id, run_id, parent_id, status, created_at_turn, problem)
-                           VALUES (?, ?, ?, 'active', ?, ?)"
-                          branch-id run-id parent-id (or created-at-turn 0) problem]))]
+                         ["INSERT OR IGNORE INTO branches (id, run_id, parent_id, status, created_at_turn, problem, role)
+                           VALUES (?, ?, ?, 'active', ?, ?, ?)"
+                          branch-id run-id parent-id (or created-at-turn 0) problem
+                          (some-> role name)]))]
     (journal/note! conn run-id (if (pos? n) :branch-opened :branch-rejoined)
                    {:branch-id branch-id :data {:parent parent-id}}))
   branch-id)

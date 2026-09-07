@@ -1,0 +1,4 @@
+{% if no-db %}No run database in this context, so no edit history to read.{% else %}{% if surfaces %}## What has been tuned lately
+Per surface, over the last {{window}} runs: names edited, saves, reverts, and the standing those versions earned (runs that ended shipped or not while one was current). A surface reverted about as often as it is saved is oscillating — read the rationales before touching it again. When a threshold or a prompt would do, prefer it to a cell or a manifest: the smaller the surface, the cheaper being wrong.
+{% for d in surfaces %}- {{d.kind}}: {{d.names}} edited, {{d.saves}} saves, {{d.reverts}} reverts, standing {{d.shipped}} green / {{d.failed}} failed{% if d.churn %} — most edited: {% for n in d.churn %}{{n.name}} ({{n.saves}} saves, {{n.reverts}} reverts){% if not forloop.last %}, {% endif %}{% endfor %}{% endif %}
+{% endfor %}{% else %}Nothing in userspace has been edited in the last {{window}} runs.{% endif %}{% endif %}

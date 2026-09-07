@@ -236,4 +236,11 @@
    {:name samizdat.security.sandbox/seatbelt-profile
     :summary "The macOS profile the project image runs under, as text — read it when a refusal is surprising."}
    {:name samizdat.security.sandbox/bwrap-argv
-    :summary "The Linux confinement, as the bubblewrap argv the image runs under: filesystem read-only but the project, secrets hidden by mounts, no child processes (seccomp), network open."}]}]
+    :summary "The Linux confinement, as the bubblewrap argv the image runs under: filesystem read-only but the project, secrets hidden by mounts, no child processes (seccomp), network open."}]}
+
+ {:group "Runs as training data"
+  :entries
+  [{:name samizdat.export/trajectories
+    :summary "The runs worth imitating (gates.edn :export), each shipping branch as the role-tagged tape its model saw, secrets redacted."}
+   {:name samizdat.export/write-jsonl!
+    :summary "Write trajectories as JSONL, one conversation per line, for a fine-tuning pipeline."}]}]

@@ -110,7 +110,7 @@
   its budget unable to conclude (karamazov-t86)."
   ([ctx compiled bid prob suffix] (run-role ctx compiled bid prob suffix nil))
   ([{:keys [conn run-id] :as ctx} compiled bid prob suffix role]
-  (runs/open-branch! conn run-id {:branch-id bid})
+  (runs/open-branch! conn run-id {:branch-id bid :role role})
   (let [b (assoc (state/new-branch {:id bid :problem prob
                                     ;; ROLE-SCOPED: the tool catalogue this
                                     ;; role is shown is filtered to what it

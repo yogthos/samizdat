@@ -1234,14 +1234,20 @@
    :default-confidence 0.6
    :use-reinforcement 0.05
    :recent-use-bonus 0.15
-   :recent-use-window-days 14
+   :recent-use-window-runs 3
    :disuse-decay 0.05
    :decay-floor 0.1
    :salience-cap 0.95
    :effectiveness-weight 0.15
    :effectiveness-cap 0.3
+   :corroboration-weight 0.15
+   :corroboration-cap 0.3
    :confidence-weight 0.25
-   :recall-limit 8}
+   :recall-limit 8
+   :max-current-per-kind {:semantic 400 :procedural 300 :episodic 150
+                          :working 20 :note 100}
+   :graduation-min-runs 3
+   :graduation-limit 8}
   :kind :policy :capability-tunable? false
   :doc "HOW A MEMORY EARNS ITS PLACE. Adopted from dirge's salience model
         (src/extras/salience.rs), with one deliberate difference: there the
@@ -1251,9 +1257,12 @@
 
         Effective salience is
           salience
-          + recent-use-bonus   (used within recent-use-window-days)
+          + recent-use-bonus   (used within the last recent-use-window-runs)
           + effectiveness      (log-damped net of success over failure,
                                 weighted and capped)
+          + corroboration      (log-damped count of DISTINCT runs that
+                                re-observed the pattern, weighted and capped
+                                the same way; one sighting is zero)
           + confidence         ((confidence - default) * confidence-weight)
 
         :kind-salience is the base by KIND, and the ordering is the claim:
@@ -1280,7 +1289,83 @@
         memory needs to be used repeatedly to climb a tier, and needs to be
         ignored for a long time to fall one. A memory system that moved
         faster than the evidence would be a memory system that forgets what
-        it learned last week because this week is busy."}
+        it learned last week because this week is busy.
+
+        THE CLOCK IS RUNS, NOT DAYS (karamazov-h27r). A run is an opportunity
+        for a memory to be needed; a day is not. `idle_runs` counts the run
+        ends a memory existed through without being used, and it is what the
+        recent-use bonus and decay read. Decay begins only PAST the window:
+        with a window of 3 and a step of 0.05, a memory nobody needs falls
+        from a semantic 0.6 to the floor over thirteen runs, and a memory
+        written this run is not aged by it. The wall-clock window this
+        replaced never fired across a whole campaign, while a null
+        last_used_at was being read as stale and 96% of the store had sunk
+        to the floor by the tenth run (karamazov-4ay9).
+
+        Corroboration is the analogue of a slot's accumulated importance in
+        a bounded associative memory: the store already counted distinct-run
+        sightings and ranked by them nowhere, so a finding confirmed by
+        seven runs sat at the floor under a command that worked once.
+
+        :max-current-per-kind bounds the WORKING SET, per kind. Over the cap,
+        the lowest-standing unpinned rows of that kind are retired with the
+        reason `evicted` — readable by id and in their lineage, no longer
+        recalled. A kind not named here (identity, overview) is unbounded.
+        Sized from the measured campaign: the ten-run store held 705
+        semantic rows, most of them one `works here` fact per spelling of
+        the same command before those were normalised.
+
+        :graduation-min-runs is how many distinct runs an EPISODE must be
+        seen in before the supervisor is shown it as a candidate for a rule;
+        :graduation-limit caps the list. The store never promotes on its
+        own — distill! is right that turning an episode into a rule is a
+        judgement — it hands over the episodes that have earned the
+        question."}
+
+ :drift
+ {:value {:window-runs 10 :top-names 3}
+  :kind :policy :capability-tunable? false
+  :doc "HOW FAR BACK THE SUPERVISOR IS SHOWN WHAT HAS BEEN TUNED, and how many
+        names per surface.
+
+        The drift block (prompts/drift.md, from store.userspace/drift) is the
+        analogue of measuring per-layer parameter drift after an adaptation:
+        per surface — cell, manifest, prompt, policy — how many names were
+        edited, how many saves and reverts, and the standing those versions
+        earned. It is what lets a supervisor see that prompts are being
+        reverted as often as they are saved, or that every edit for ten runs
+        has gone to one cell, which no single name's history shows.
+
+        :window-runs is measured in RUNS, like the memory clock: the last N
+        runs' worth of versions, bounded by the Nth most recent run's start.
+        A store with fewer runs than the window is read whole. :top-names
+        caps the most-edited list per surface so the block stays a
+        paragraph."}
+
+ :export
+ {:value {:statuses ["completed"]
+          :require-verified? true
+          :branches :shipped
+          :skip-categories ["mechanics"]}
+  :kind :policy :capability-tunable? false
+  :doc "WHICH RUNS ARE WORTH IMITATING, when the journal is exported as
+        training data (samizdat.export, karamazov-5ge3).
+
+        The mechanism turns a run into the tape its model saw; this decides
+        which tapes go out. :statuses names the terminal states that
+        qualify — `completed` only, because an exhausted or aborted run is
+        what NOT to learn. :require-verified? demands a green ship
+        verification on the run: a completion the ship gate never checked
+        has no evidence it was right, and training on it teaches confident
+        claims. :branches is `shipped` (the branch whose verification was
+        green, or failing that the one that finished with a successful
+        done) or `all`. :skip-categories drops turns of those categories
+        together with the complaint they drew — mechanics is a no-call or a
+        parse error, and neither is behaviour to imitate.
+
+        The system message exported is the CURRENT template, not the run's
+        — the journal keeps a digest of it — which is the prompt a trained
+        model will meet at inference."}
 
  :prediction-grace-turns
  {:value 4

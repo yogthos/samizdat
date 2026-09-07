@@ -265,7 +265,8 @@
             ;; fresh contexts, and nothing downstream could tell them apart.
             bid (state/branch-id-for n round (:title t))
             prob (str (or (not-empty (str (:body t))) (:title t)))
-            claimed (do (runs/open-branch! conn run-id {:branch-id bid :problem prob})
+            claimed (do (runs/open-branch! conn run-id {:branch-id bid :problem prob
+                                                        :role :implementor})
                         (tasks/claim! conn (:id t) run-id bid))]
         (journal/note! conn run-id :board-task
                        {:branch-id bid :data {:task (:id t) :title (:title t)}})
@@ -365,7 +366,8 @@
           ictx (wf/role-ctx ctx :implementor)
           out (try
                 (when (pos? attempt)
-                  (runs/open-branch! conn run-id {:branch-id bid :problem prob})
+                  (runs/open-branch! conn run-id {:branch-id bid :problem prob
+                                                  :role :implementor})
                   (tasks/claim! conn task run-id bid))
                 (let [b (-> (state/new-branch
                              {:id bid :problem prob

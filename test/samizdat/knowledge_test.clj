@@ -397,3 +397,232 @@
       (let [out (:result (tools/run-tool {:branch {:id "W1"} :tool-name "recall" :conn conn
                                           :run-id "NEW-RUN" :args {:query "parser complete"}}))]
         (is (not (str/includes? out "recorded by an EARLIER run")))))))
+
+;; --- the text stage's opinion, kept on the line (karamazov-sb3j) -------------
+
+(deftest recall-carries-the-text-rank-through-the-salience-sort
+  ;; recall ranks in two stages: bm25 picks and orders the candidates, then
+  ;; effective salience re-sorts them. The second stage can lift a distant
+  ;; text match over a close one on its record, and the line the model read
+  ;; showed only the standing — so a memory pulled up by what it had done
+  ;; looked the same as one that fit the words. The text stage's rank rides
+  ;; on the row so the line can show both, and the model can discount a weak
+  ;; fit itself rather than the harness dropping it (karamazov-3bf: a ranking
+  ;; is not retuned on one run's evidence; a hidden ordering is not a ranking
+  ;; the model can judge).
+  (when (db/fts5-available? @conn)
+    (let [close (knowledge/remember! @conn {:content "the deploy script needs sudo"
+                                            :kind "procedural"})
+          far (knowledge/remember! @conn {:content "unrelated note about sudo policy and the deploy of other things"
+                                          :kind "procedural"})]
+      (dotimes [_ 3] (knowledge/record-outcome! @conn far true))
+      (let [rows (knowledge/recall @conn "deploy script")]
+        (is (= [far close] (mapv :id rows))
+            "the record outranks the fit, at equal kind")
+        (is (= [2 1] (mapv :text-rank rows))
+            "and the text rank still says which one matched the words")))))
+
+(deftest a-scan-has-no-text-rank-to-show
+  ;; The LIKE path has no ranking to report: every row matched the substring
+  ;; equally and newest-first is the only order it has. A rank there would be
+  ;; a number that means nothing, and no number beats a false one.
+  (knowledge/remember! @conn {:content "fred likes fish"})
+  (with-redefs [db/fts5-available? (fn [_] false)]
+    (let [rows (knowledge/recall @conn "fred")]
+      (is (seq rows))
+      (is (every? #(nil? (:text-rank %)) rows)))))
+
+(deftest the-recall-line-shows-the-match-rank
+  (when (db/fts5-available? @conn)
+    (knowledge/remember! @conn {:content "the deploy script needs sudo" :kind "procedural"})
+    (let [r (base/run-tool {:branch {:id "B1"} :conn @conn
+                            :tool-name "recall" :args {:query "deploy script"}})]
+      (is (str/includes? (:result r) " m1 ")
+          "m1 is the closest match to the words asked")))
+  (testing "a memory fetched by id had no query to be ranked against"
+    (let [id (knowledge/remember! @conn {:content "a solo fact"})
+          r (base/run-tool {:branch {:id "B1"} :conn @conn
+                            :tool-name "recall" :args {:id id}})]
+      (is (str/includes? (:result r) "a solo fact"))
+      (is (not (re-find #" m\d+ " (:result r)))))))
+
+;; --- age in runs, not days (karamazov-h27r) ---------------------------------
+
+(deftest a-memory-written-this-run-does-not-decay-when-the-run-ends
+  ;; Measured across the campaign dbs (karamazov-4ay9): every row was younger
+  ;; than the decay window, and 1073 of 1117 sat within 0.2 of the floor.
+  ;; curate! treated a null last_used_at as stale, so a memory lost 0.05 at
+  ;; the end of the very run that wrote it and at every run end after — the
+  ;; most-corroborated findings in the store ranked below `pwd works`. A
+  ;; memory has to have HAD a run to go unused in before it can be said to
+  ;; have gone unused.
+  (let [c @conn
+        r1 (runs/start-run! c {:problem "p"})
+        _ (Thread/sleep 5)
+        id (knowledge/remember! c {:content "a durable fact" :kind "semantic" :run-id r1})
+        s0 (:salience (knowledge/get-by-id c id))]
+    (knowledge/distil-session! c {:run-id r1})
+    (let [row (knowledge/get-by-id c id)]
+      (is (= 0 (:idle_runs row)) "the run that wrote it is not a run it went unused in")
+      (is (= s0 (:salience row))))))
+
+(deftest age-is-counted-in-runs-a-memory-could-have-been-used-in
+  ;; cellularflow ages a slot per forward pass — per opportunity to be read —
+  ;; not per second on the wall clock. A harness idle for a month should not
+  ;; forget what it learned; a harness that ran ten times without needing a
+  ;; memory has evidence about it.
+  (let [c @conn
+        r1 (runs/start-run! c {:problem "p"})
+        _ (Thread/sleep 5)
+        id (knowledge/remember! c {:content "a durable fact" :kind "semantic" :run-id r1})]
+    (knowledge/distil-session! c {:run-id r1})
+    (Thread/sleep 5)
+    (let [r2 (runs/start-run! c {:problem "p"})]
+      (knowledge/distil-session! c {:run-id r2})
+      (is (= 1 (:idle_runs (knowledge/get-by-id c id))) "one run went by without it"))
+    (Thread/sleep 5)
+    (let [r3 (runs/start-run! c {:problem "p"})]
+      (Thread/sleep 5)
+      (knowledge/recall c "durable fact")
+      (knowledge/distil-session! c {:run-id r3})
+      (is (= 0 (:idle_runs (knowledge/get-by-id c id))) "recalled during the run: not idle"))
+    (testing "a pinned memory does not age"
+      (let [pinned (knowledge/remember! c {:content "pinned" :kind "semantic" :pinned true})]
+        (Thread/sleep 5)
+        (let [r4 (runs/start-run! c {:problem "p"})]
+          (knowledge/distil-session! c {:run-id r4})
+          (is (= 0 (:idle_runs (knowledge/get-by-id c pinned))))
+          (is (= 1 (:idle_runs (knowledge/get-by-id c id)))))))))
+
+(deftest decay-starts-only-past-the-window-in-runs
+  (with-redefs [memory/policy (let [p (memory/policy)]
+                                (fn [] (assoc p :recent-use-window-runs 2 :disuse-decay 0.05)))]
+    (let [c @conn
+          r1 (runs/start-run! c {:problem "p"})
+          _ (Thread/sleep 5)
+          id (knowledge/remember! c {:content "a durable fact" :kind "semantic" :run-id r1})
+          s0 (:salience (knowledge/get-by-id c id))
+          run-end! (fn [] (Thread/sleep 5)
+                     (knowledge/distil-session! c {:run-id (runs/start-run! c {:problem "p"})}))]
+      (knowledge/distil-session! c {:run-id r1})
+      (run-end!) (run-end!)
+      (is (= s0 (:salience (knowledge/get-by-id c id)))
+          "two idle runs is inside the window: nothing has been shown yet")
+      (run-end!)
+      (is (< (Math/abs (- (- s0 0.05) (:salience (knowledge/get-by-id c id)))) 1e-9)
+          "the third is past it, and the memory begins to fall"))))
+
+(deftest the-recent-use-bonus-is-by-runs
+  ;; Pure: a row used minutes ago but idle for more runs than the window is
+  ;; not recently used, and a row used long ago by the clock but in the last
+  ;; run is.
+  (let [p (memory/policy)
+        base {:kind "semantic" :salience 0.6 :last_used_at "2020-01-01T00:00:00Z"}]
+    (is (> (memory/effective-salience (assoc base :idle_runs 0) p)
+           (memory/effective-salience (assoc base :idle_runs (inc (:recent-use-window-runs p))) p)))
+    (is (= (memory/effective-salience (assoc base :idle_runs 0) p)
+           (+ 0.6 (:recent-use-bonus p))))
+    (is (= (memory/effective-salience (dissoc base :last_used_at) p) 0.6)
+        "never used earns no bonus however fresh it is")))
+
+;; --- corroboration ranks (karamazov-h27r) ------------------------------------
+
+(deftest a-pattern-seen-in-more-runs-outranks-one-seen-once
+  ;; The store already counted distinct-run sightings and the count entered
+  ;; the ranking nowhere: a finding confirmed by seven runs sat at the floor
+  ;; under a command that worked once. cellularflow's importance is the
+  ;; accumulated attention a slot receives; ours is the accumulated
+  ;; independent sightings a pattern receives, damped and capped exactly like
+  ;; the outcome record so repetition cannot buy the top.
+  (let [c @conn
+        once (knowledge/remember! c {:content "widget pattern alpha" :kind "episodic" :run-id "r1"})
+        often (knowledge/remember! c {:content "widget pattern beta" :kind "episodic" :run-id "r1"})]
+    (doseq [r ["r2" "r3" "r4" "r5"]] (knowledge/corroborate! c often r))
+    (is (= [often once] (mapv :id (knowledge/recall c "widget pattern"))))))
+
+(deftest corroboration-is-log-damped-and-capped
+  (let [p (memory/policy)]
+    (is (zero? (memory/corroboration-bonus 1 p)) "one sighting is the baseline, not evidence")
+    (is (zero? (memory/corroboration-bonus nil p)))
+    (is (< 0 (memory/corroboration-bonus 2 p) (memory/corroboration-bonus 7 p)))
+    (is (> (- (memory/corroboration-bonus 2 p) (memory/corroboration-bonus 1 p))
+           (- (memory/corroboration-bonus 3 p) (memory/corroboration-bonus 2 p)))
+        "each further sighting buys less than the one before")
+    (is (= (:corroboration-cap p) (memory/corroboration-bonus 1000000 p)))))
+
+;; --- one command, one memory (karamazov-h27r) --------------------------------
+
+(deftest trivially-different-pipelines-of-one-command-are-one-memory
+  ;; harness.sqlite3 after ten runs: `jolt -M:test 2>&1 | tail -20`,
+  ;; `| tail -40`, `| tail -25`, `; echo EXIT=$?` were five semantic memories
+  ;; each saying the test command works — 47 rows keyed on that one command.
+  ;; The pipe tail and the exit echo are how the model READS the output, not
+  ;; part of what works here.
+  (let [c @conn
+        rid (runs/start-run! c {:problem "p"})]
+    (runs/open-branch! c rid {:branch-id "B1"})
+    (doseq [[t cmd] [[1 "jolt -M:test"]
+                     [2 "jolt -M:test 2>&1 | tail -20"]
+                     [3 "jolt -M:test 2>&1 | tail -40; echo EXIT=$?"]
+                     [4 "jolt -M:test | head -n 5"]
+                     [5 "jolt -M:test 2>&1 | tail -12; echo \"EXIT:$?\""]
+                     ;; NOT noise: a cd changes what the command means.
+                     [6 "cd sub && jolt -M:test"]]]
+      (journal/record-turn! c rid {:branch-id "B1" :turn t :tool-name "shell"
+                                   :args {:command cmd} :result "ok" :category "success"}))
+    (let [facts (knowledge/distil-project! c {:run-id rid})]
+      (is (= 2 (count facts)))
+      (is (= "In this project `jolt -M:test` works."
+             (:content (knowledge/by-pattern c "cmd-works:jolt -M:test"))))
+      (is (some? (knowledge/by-pattern c "cmd-works:cd sub && jolt -M:test"))))))
+
+;; --- a bounded working set (karamazov-h27r) ----------------------------------
+
+(deftest over-the-cap-the-lowest-standing-memories-are-retired-not-deleted
+  ;; cellularflow's episodic buffer has max_slots and evicts the least
+  ;; important slot; the store's working set is `current = 1`, and eviction
+  ;; is retire! — the row stays readable by id and in the lineage history
+  ;; with the reason, it just stops being recalled. Demotion, not deletion.
+  (with-redefs [memory/policy (let [p (memory/policy)]
+                                (fn [] (assoc p :max-current-per-kind {:semantic 3})))]
+    (let [c @conn
+          ids (mapv #(knowledge/remember! c {:content (str "fact number " %) :kind "semantic"})
+                    (range 5))
+          pinned (knowledge/remember! c {:content "pinned fact" :kind "semantic" :pinned true})
+          keep (first ids)]
+      (dotimes [_ 3] (knowledge/record-outcome! c keep true))
+      (let [evicted (knowledge/evict! c)]
+        (is (= 2 (count evicted)) "five unpinned over a cap of three")
+        (is (not (contains? (set evicted) keep)) "the one with a record stays")
+        (is (not (contains? (set evicted) pinned)) "pinned is never evicted and never counted")
+        (doseq [id evicted]
+          (let [row (knowledge/get-by-id c id)]
+            (is (some? row) "still readable by id")
+            (is (= 0 (:current row)))
+            (is (str/starts-with? (str (:retired_reason row)) "evicted"))))
+        (is (= 4 (knowledge/live-count c)) "three semantic plus the pinned one")
+        (is (empty? (knowledge/evict! c)) "idempotent at the cap")))))
+
+;; --- graduation candidates (karamazov-h27r) ----------------------------------
+
+(deftest patterns-confirmed-across-runs-are-surfaced-as-candidates-for-a-rule
+  ;; cellularflow consolidates its most-used episodic slots into permanent
+  ;; memory each epoch. distill! says promoting an episode to a rule is a
+  ;; judgement and the supervisor's, so the store does not promote — it hands
+  ;; the supervisor the episodes that have earned the question.
+  (let [c @conn
+        ep (knowledge/remember! c {:content "[tool-failing] done fails more often than it works"
+                                   :kind "episodic" :run-id "r1" :pattern-key "finding:tool-failing"})
+        once (knowledge/remember! c {:content "[x] seen once" :kind "episodic" :run-id "r1"})
+        rule (knowledge/remember! c {:content "a rule" :kind "procedural" :run-id "r1"})
+        refuted (knowledge/remember! c {:content "[y] seen and disproven" :kind "episodic" :run-id "r1"})]
+    (doseq [r ["r2" "r3"]]
+      (knowledge/corroborate! c ep r)
+      (knowledge/corroborate! c rule r)
+      (knowledge/corroborate! c refuted r))
+    (knowledge/record-outcome! c refuted false)
+    (is (= [ep] (mapv :id (knowledge/graduation-candidates c)))
+        "corroborated episodes with a record that is not against them: a rule
+         is already a rule, one sighting is an afternoon, and a refuted
+         episode is not a rule in waiting")
+    (is (= 3 (:corroborations (first (knowledge/graduation-candidates c)))))))

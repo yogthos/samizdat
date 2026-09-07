@@ -1491,6 +1491,27 @@
       (is (resume/resumable? c rid) "an exhausted process that never tore down may continue"))
     (is (not (resume/resumable? c "no-such-run")))))
 
+(deftest a-resumed-branch-is-rebuilt-as-the-role-it-ran-as
+  ;; The role scopes the tool surface and picks the system prompt, and it
+  ;; lived only on the in-memory branch: a resumed supervisor came back
+  ;; holding the implementor's catalogue and unrestricted. Now on the row
+  ;; (v23), and the rebuild reads it.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})
+          _ (runs/open-branch! c rid {:branch-id "SUP" :role :supervisor :problem "watch"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          run (runs/get-run c rid)
+          rebuild #(#'resume/rebuild-branch run (runs/get-branch c rid %) {} {} {}
+                                            10 (gates/storm-policy) nil)
+          sup (rebuild "SUP")
+          b1 (rebuild "B1")]
+      (is (= :supervisor (:role sup)))
+      (is (nil? (:role b1)) "the unscoped default, as before the column")
+      (is (not= (:content (first (:messages sup))) (:content (first (:messages b1))))
+          "the supervisor's system prompt, not the implementor's")
+      (is (clojure.string/includes? (:content (second (:messages sup))) "watch")
+          "over the branch's own problem"))))
+
 ;; --- forking twice must not collide -----------------------------------------
 
 (deftest child-ids-skip-suffixes-the-parent-already-used
