@@ -74,6 +74,30 @@
 
 (defn loaded [] @loaded-cells)
 
+;; What the last SUCCESSFUL load put in the registry, for the skip in
+;; load-cells!: the sources as [[id content] …] in load order, and the spec
+;; object each loaded cell id resolved to once every source was in.
+(defonce ^:private last-load (atom nil))
+
+(defn- unchanged-since-last-load?
+  "True when `sources` are the last successful load's sources — same ids, same
+  content, same order — AND the registry still resolves every cell that load
+  registered to the very spec object it registered.
+
+  The first half is the files. The second is the registry, which is global
+  mutable state: a test or another workflow may have registered its own cell
+  under one of our ids, or removed one, and unchanged files are no proof the
+  LOOP's cells are present. That was compile-loop's reason for loading before
+  every compile; it is kept here as the guard, so the load happens exactly
+  when it would change something. A defcell registers its spec through
+  `constantly`, so the object the registry answers with is the one we
+  recorded until somebody re-registers the id (karamazov-3n4n)."
+  [sources]
+  (when-let [{last-sources :sources specs :specs} @last-load]
+    (and (= last-sources (mapv (juxt :id :content) sources))
+         (let [live (:specs (cell/registry-snapshot))]
+           (every? (fn [[id spec]] (identical? spec (get live id))) specs)))))
+
 (defn loaded-file-content
   "The content of every cell file as it was at the last successful load — the
   last-good disk state, for the mutation protocol to restore on a rollback."
@@ -209,6 +233,8 @@
              (set (map #(last (str/split (str %) #"/")) files)))
             (for [p files] {:id p :content (slurp p) :file? true}))))
 
+(declare load-sources!)
+
 (defn load-cells!
   "Load the project's cells into the live image, registering them.
 
@@ -227,16 +253,29 @@
 
   Transactional either way: on any error the registry is restored to its prior
   state and the error rethrown, so a bad cell never half-loads. Returns the
-  loaded map {cell-id {:source name}}."
+  loaded map {cell-id {:source name}}.
+
+  Free when nothing changed: the same sources as the last successful load,
+  with the registry still holding what that load registered, return that
+  load's map without evaluating a file (unchanged-since-last-load?).
+  compile-loop calls this before every compile, and re-evaluating twelve
+  files cost about a second each time — most of the test suite's minutes."
   ([] (load-cells! nil))
   ([dirs]
-   (let [snapshot (cell/registry-snapshot)
-         ;; nil means "the project"; an explicit dir list means the legacy
-         ;; scan. Distinguishing on the ARGUMENT rather than on a flag keeps
-         ;; every existing caller and test meaning exactly what it meant.
-         sources (if (nil? dirs)
+   ;; nil means "the project"; an explicit dir list means the legacy scan.
+   ;; Distinguishing on the ARGUMENT rather than on a flag keeps every
+   ;; existing caller and test meaning exactly what it meant.
+   (let [sources (if (nil? dirs)
                    (project-sources default-dirs)
                    (dir-sources dirs))]
+     (if (unchanged-since-last-load? sources)
+       @loaded-cells
+       (load-sources! dirs sources)))))
+
+(defn- load-sources!
+  "The full load: every source evaluated in order, transactionally."
+  [dirs sources]
+   (let [snapshot (cell/registry-snapshot)]
      (try
        (let [loaded (reduce (fn [acc src]
                               (into acc (for [id (load-source! src)]
@@ -257,9 +296,13 @@
          (reset! loaded-content
                  (into {} (for [src sources :when (or (:file? src) (:store? src))]
                             [(:id src) (:content src)])))
+         (reset! last-load
+                 {:sources (mapv (juxt :id :content) sources)
+                  :specs (select-keys (:specs (cell/registry-snapshot))
+                                      (keys loaded))})
          loaded)
        (catch Throwable e
          (cell/registry-restore! snapshot)
          (throw (ex-info (str "cell load failed; registry rolled back: "
                               (ex-message e))
-                         {:dirs dirs} e)))))))
+                         {:dirs dirs} e))))))
