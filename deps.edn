@@ -73,9 +73,12 @@
         ;; Clojure, no deps of its own; requiring ebb.core costs ~60ms of
         ;; boot (measured 2026-09-06, warm cache). The checkout at
         ;; ~/src/jlt-commons/ebb is ours to change; pin a full sha here.
+        ;; v0.1.3 carries the fix for a cancelled ap spinning forever
+        ;; (ebb PR #7, found by the supervisor stream here).
         jlt-commons/ebb
         {:git/url "https://github.com/jlt-commons/ebb"
-         :git/sha "5410191141f9800a8db6f1535659813c6722ebea"}
+         :git/tag "v0.1.3"
+         :git/sha "5f6a4f3adcfcb8cace4cbb691c7be6cb0d15724b"}
 
         ;; clojure.tools.logging ported to jolt (stderr backend, :info+ default)
         org.clojure/tools.logging
@@ -112,10 +115,12 @@
 
  :aliases {:test {:extra-paths ["test" "gui"]
                   :main-opts ["-m" "samizdat.test-runner"]}
-           ;; command-line nREPL client, plus the test tree, so the live
-           ;; process can run the suite over nREPL without paying startup:
-           ;;   (require 'samizdat.test-runner :reload-all)
-           ;;   (samizdat.test-runner/run)
+           ;; The dev tree (the nREPL client, the ebb spike) plus the tests, so
+           ;; a live image can run the suite without paying startup — with
+           ;; :test too, for the gui path: `jolt -A:dev:test nrepl-server 7899`,
+           ;; then (require 'samizdat.test-runner) (samizdat.test-runner/run).
+           ;; Not :reload-all on the runner: that dies inside jolt.time
+           ;; (karamazov-cc3a). See AGENTS.md, "Live development over nREPL".
            :dev  {:extra-paths ["dev" "test"]}
 
            ;; The GUI is an optional component and a strict HTTP client of the

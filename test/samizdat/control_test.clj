@@ -674,19 +674,20 @@
   ;; journals under the branch's id and shares its eval session — while the
   ;; beam advanced the SAME branch again next round, interleaving two turns of
   ;; one branch and making the journal diverge from the live state. The
-  ;; dangling future is remembered now, and the branch forfeits until it
-  ;; completes.
+  ;; turn is CANCELLED at the deadline now (RFC-013) and tracked until it
+  ;; terminates; this stub cannot see the cancel (a plain sleep, like a
+  ;; blocking read), so the branch forfeits until it ends on its own.
   (let [calls (atom 0)]
     (with-redefs [beam/advance-branch (fn [_ b _]
                                         (if (= 1 (swap! calls inc))
                                           (do (Thread/sleep 400) (assoc b :slow true))
                                           (assoc b :fast true)))]
-      (let [in-flight (atom {})
-            ctx {:iterating-loop? true :turn-deadline-ms 50 :in-flight in-flight}
+      (let [cancelling (atom {})
+            ctx {:iterating-loop? true :turn-deadline-ms 50 :cancelling cancelling}
             b (state/new-branch {:id "B1" :problem "p"})
             [r1] (beam/advance-all ctx [b] 1)]
         (is (= 1 (:timeouts r1)) "the slow turn forfeits")
-        (is (contains? @in-flight "B1") "and its dangling future is remembered")
+        (is (contains? @cancelling "B1") "and the cancelled turn is tracked until it terminates")
         (let [[r2] (beam/advance-all ctx [b] 2)]
           (is (= 1 (:timeouts r2))
               "the next round forfeits again rather than running beside it")
@@ -694,7 +695,7 @@
         (Thread/sleep 500)
         (let [[r3] (beam/advance-all ctx [b] 3)]
           (is (true? (:fast r3)) "once the dangling turn completes, the branch advances")
-          (is (not (contains? @in-flight "B1")) "and the memory is released"))))))
+          (is (not (contains? @cancelling "B1")) "and the entry is released"))))))
 
 (deftest a-chat-completion-run-is-registered-and-abortable
   ;; blt.13: beam/run! was called with no :abort atom and no control/active

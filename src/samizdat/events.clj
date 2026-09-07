@@ -1,4 +1,4 @@
-;; samizdat - a claim-first verification harness
+;; samizdat - a self-hosting agentic harness
 ;; Copyright (C) 2026 Dmitri Sotnikov
 ;;
 ;; This program is free software: you can redistribute it and/or modify
@@ -19,41 +19,84 @@
 (ns samizdat.events
   "The live event bus.
 
-  Every journal append publishes here. The durable copy is the `events` table;
-  this exists so a client can watch a run without polling, and so nothing in
-  the loop has to know whether anyone is watching.
+  Every journal append publishes here, and so does every cell the implementer
+  completes (`tracer`). The durable copy is the `events` table; this exists so
+  a client can watch a run without polling, and so nothing in the loop has to
+  know whether anyone is watching.
 
-  A subscriber that stops reading must never stall the loop, so taps use a
-  sliding buffer: a slow watcher loses events rather than applying
-  backpressure. That is the right trade because the durable journal is the
-  source of truth and a client that fell behind re-reads it by cursor."
-  (:require [clojure.core.async :as async]))
+  Two contracts, held by construction rather than by a buffer size (RFC-013):
+
+  - A PUBLISHER NEVER PARKS. `publish!` appends to each subscriber's window
+    and returns; there is no channel to fill and no consumer to wait for.
+  - A SLOW WATCHER LOSES THE OLDEST. Each subscription is a sliding window of
+    `buffer-size` events, so a watcher that stops reading loses events rather
+    than applying backpressure. That is the right trade because the durable
+    journal is the source of truth and a client that fell behind re-reads it
+    by cursor. (ebb's `relieve` with a sliding semigroup says the same thing;
+    the window is that, spelled out, because a watcher also wants to drain it
+    on demand without a flow.)
+
+  A consumer that is a task reads the bus as a FLOW: `batches` hands over
+  everything that arrived in each poll interval, empty intervals included, so
+  a supervisor's reduce ticks on a quiet run too and is cancelled with the
+  run it watches."
+  (:require [ebb.core :as ebb]))
 
 (def buffer-size 256)
 
-(defonce ^:private hub
-  (let [ch (async/chan (async/sliding-buffer buffer-size))]
-    {:ch ch :mult (async/mult ch)}))
+(defonce ^:private subscribers (atom #{}))
+
+(defn- slide
+  "`buf` with `event` appended and the oldest dropped past `cap`. A fresh
+  vector when full rather than a subvec, whose base would keep every event
+  ever published."
+  [buf cap event]
+  (if (< (count buf) cap)
+    (conj buf event)
+    (conj (vec (rest buf)) event)))
 
 (defn publish!
   "Non-blocking. Returns immediately whether or not anyone is listening."
   [event]
-  (async/put! (:ch hub) event)
+  (doseq [sub @subscribers]
+    (swap! sub (fn [{:keys [buf cap] :as s}] (assoc s :buf (slide buf cap event)))))
   nil)
 
 (defn subscribe
-  "A channel receiving every event published from now on. Close it with
-  `unsubscribe!` when done, or it keeps consuming a tap slot."
+  "A subscription receiving every event published from now on: a sliding
+  window of the newest `n`. Close it with `unsubscribe!` when done, or it
+  keeps receiving."
   ([] (subscribe buffer-size))
   ([n]
-   (let [ch (async/chan (async/sliding-buffer n))]
-     (async/tap (:mult hub) ch)
-     ch)))
+   (let [sub (atom {:buf [] :cap n})]
+     (swap! subscribers conj sub)
+     sub)))
 
-(defn unsubscribe! [ch]
-  (async/untap (:mult hub) ch)
-  (async/close! ch)
+(defn unsubscribe! [sub]
+  (swap! subscribers disj sub)
   nil)
+
+(defn collect
+  "Drain whatever `sub` holds right now, without blocking: the events that
+  arrived since the last drain, oldest first."
+  [sub]
+  (loop []
+    (let [s @sub]
+      (if (compare-and-set! sub s (assoc s :buf []))
+        (:buf s)
+        (recur)))))
+
+(defn batches
+  "The subscription as a flow: one batch per `poll-ms` interval, each batch
+  everything that arrived since the last, an empty vector when nothing did.
+  With no subscription it still ticks, with nil, so a consumer that has no
+  bus (a driver without one, a test) keeps its clock. Consume it with
+  `ebb/reduce`; cancelling the reduce ends the flow at its next park."
+  [sub poll-ms]
+  (ebb/ap
+   (let [_ (ebb/?> (ebb/seed (repeat nil)))]
+     (ebb/? (ebb/sleep poll-ms))
+     (when sub (collect sub)))))
 
 (defn step
   "One mycelium trace entry as a STEP event: the implementer advancing through
@@ -97,12 +140,3 @@
                            @run-id* run-id*)
                          entry))
          (catch Throwable _ nil))))
-
-(defn collect
-  "Drain whatever is currently buffered on `ch`. For tests and for a polling
-  client that would rather not block."
-  [ch]
-  (loop [acc []]
-    (if-let [v (async/poll! ch)]
-      (recur (conj acc v))
-      acc)))

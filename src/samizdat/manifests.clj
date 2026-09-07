@@ -260,7 +260,7 @@
     :token-budget
     ;; What the beam driver adds
     :problem :beam? :beam-width :turn-workflow :iterating-loop? :git-baseline
-    :repl-session :live-branches :in-flight})
+    :repl-session :live-branches :cancelling})
 
 (defn cell-requires
   "The ctx keys `cell-id` declares it reads. `:requires` is mycelium's own

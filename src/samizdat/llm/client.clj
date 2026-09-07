@@ -42,6 +42,7 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [ebb.core :as ebb]
             [jolt.http-client :as http]
             [samizdat.cancel :as cancel]
             [samizdat.lexicon :as lexicon]
@@ -219,7 +220,14 @@
        :reason :rate-limit-latch
        :error (str (adapter/display-name adapter) " is rate-limited for another "
                    (long (Math/ceil (/ left 1000.0))) "s — not sent")}
-      (post-once* adapter config request url))))
+      ;; The blocking host call goes under via blk (RFC-013): the fiber is
+      ;; released for the read's duration, and a cancel that lands while it
+      ;; runs becomes Cancelled the moment it returns. The interrupt itself
+      ;; does not reach a :blocking recv (the spike), so the socket timeout
+      ;; remains the bound on this one wait.
+      (let [r (ebb/? (ebb/via ebb/blk (post-once* adapter config request url)))]
+        (cancel/after-blocking!)
+        r))))
 
 (defn- post-once* [adapter config request url]
   (let [;; Whether the prefill in the request was actually sent — the adapter

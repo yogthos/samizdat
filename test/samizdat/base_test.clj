@@ -880,6 +880,29 @@
              "realize the sequence eagerly (mapv, doseq, loop/recur, reduce):\n"
              (str/join "\n" (map #(str "  " (:file %) "  " (:form %)) found))))))
 
+(deftest the-image-runs-the-same-nrepl-as-the-harness
+  ;; RFC-013: the project image is started with jolt-lang/nrepl merged over
+  ;; the project's deps so it carries interruptible-eval. The sha lives in
+  ;; image.clj because a subprocess argv cannot read the harness's deps.edn;
+  ;; this keeps the two pins equal so an nrepl bump reaches the image.
+  (let [deps (read-string (slurp "deps.edn"))
+        pinned (get-in deps [:deps 'jolt-lang/nrepl :git/sha])
+        in-image (some-> (re-find #"(?s)\(def nrepl-sha.*?\"([0-9a-f]{40})\"" (slurp "src/samizdat/repl/image.clj"))
+                         second)]
+    (is (string? pinned) "deps.edn pins jolt-lang/nrepl by sha")
+    (is (= pinned in-image) "and image.clj starts the image with the same one")))
+
+(deftest no-raw-future-in-a-cell
+  ;; RFC-013: a future spawned in a cell escapes the run's cancellation tree.
+  ;; Fan out with ebb's join over cancel/spawn (cells/team.clj is the shape).
+  (let [found (for [file (cell-files)
+                    form (forms-of file)
+                    hit (collect #(and (seq? %) (= 'future (first %))) form)]
+                {:file file :form (pr-str (take 2 hit))})]
+    (is (empty? found)
+        (str "a raw future in a cell escapes cancellation; fan out with ebb's join:\n"
+             (str/join "\n" (map #(str "  " (:file %) "  " (:form %)) found))))))
+
 (deftest mycelium-and-maestro-import-nothing-from-ebb
   ;; RFC-013: mycelium is the machine, ebb is the scheduler. The three
   ;; compile-time opts (:on-trace, :pre, :rethrow?) are the whole seam, so the

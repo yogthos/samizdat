@@ -80,6 +80,9 @@
             [samizdat.model.task-claim-test]
             [samizdat.divergences-test]
             [samizdat.cancel-test]
+            [samizdat.beam-cancel-test]
+            [samizdat.eval-deadline-test]
+            [samizdat.events-flow-test]
             [samizdat.tasks-test]
             [samizdat.kernel-write-test]
             [samizdat.knowledge-test]
@@ -234,6 +237,9 @@
     samizdat.model.task-claim-test
     samizdat.divergences-test
     samizdat.cancel-test
+    samizdat.beam-cancel-test
+    samizdat.eval-deadline-test
+    samizdat.events-flow-test
     samizdat.tasks-test
     samizdat.kernel-write-test
     samizdat.knowledge-test

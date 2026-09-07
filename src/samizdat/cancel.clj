@@ -84,3 +84,53 @@
   [ms]
   (ebb/? (ebb/sleep (long ms)))
   nil)
+
+(defn spawn
+  "A task that runs (f) on its own fiber, cancellable at every check and
+  park inside it. Yields before running, so invoking the task hands back the
+  canceller at once: an sp runs its body on the caller until the body's first
+  park (measured: 300 ms of CPU before a park is a canceller 300 ms late), and
+  five branches started in a loop would each wait for the previous one's
+  prefix. Measured with the yield: canceller after 1 ms, body still run."
+  [f]
+  (ebb/sp (ebb/? (ebb/sleep 0)) (f)))
+
+(defn start!
+  "Invoke `task` with its own callbacks. Returns {:done :signal :cancel}:
+  `done` is a promise and `signal` a dataflow variable, both settled with
+  [:ok v] or [:err e] when the task terminates however it ends; `cancel`
+  asks it to stop at its next check. Two settlements because they answer two
+  questions: `realized?` on the promise says whether a cancelled task has
+  terminated yet (the beam's :cancelling registry), and parking on the
+  variable is how a fiber waits for it without blocking its carrier."
+  [task]
+  (let [done (promise)
+        signal (ebb/dfv)
+        settle (fn [r] (deliver done r) (signal r))
+        cancel (task (fn [v] (settle [:ok v]))
+                     (fn [e] (settle [:err e])))]
+    {:done done :signal signal :cancel cancel}))
+
+(defn await-or-cancel
+  "Park on a started task's signal for up to `ms` (nil: no bound). Returns
+  its [:ok v] or [:err e], or [:timeout] after asking it to stop — the task
+  is NOT waited for, because a runaway the cancel cannot reach (a blocking
+  read, a tight loop) must not hold the caller. That is RFC-013's detach:
+  ebb's own timeout waits for the cancelled child, and measured, a parent
+  parked that way sat out the whole socket timeout. A cancel of the CALLER's
+  own task while parked here cancels the started task too and rethrows."
+  [{:keys [signal cancel]} ms]
+  (let [r (try (ebb/? (if ms (ebb/timeout signal ms ::timeout) signal))
+               (catch Throwable e
+                 (when (control-signal? e) (cancel))
+                 (throw e)))]
+    (if (= ::timeout r)
+      (do (cancel) [:timeout])
+      r)))
+
+(defn with-deadline
+  "Run `task` and wait up to `ms` for it: [:ok v], [:err e], or [:timeout]
+  with the task cancelled and detached. The one deadline idiom for every wait
+  that used to be a future, a deref and a best-effort future-cancel."
+  [task ms]
+  (await-or-cancel (start! task) ms))
