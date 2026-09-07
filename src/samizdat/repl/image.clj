@@ -82,7 +82,7 @@
   (RFC-013). A bare `jolt nrepl-server` answers the interrupt op with
   unknown-op. base-test holds this equal to deps.edn's pin, so the two cannot
   drift."
-  "9cc45acc7a241ff9704e8f43e2c4fb90f7bd819c")
+  "6e8cfa214dbd43c9ed72358f3d1191bb29a695cd")
 
 (def nrepl-sdeps
   "The -Sdeps map the image is started with: the nrepl dependency and its
@@ -339,17 +339,23 @@
                                sid (assoc "session" sid)))
            (if-not timeout-ms
              (finish (collect t))
-             (let [started (cancel/start! (ebb/via ebb/blk (collect t)))
-                   [tag r] (cancel/await-or-cancel started timeout-ms)]
-               (case tag
-                 :ok (finish r)
-                 :err (throw r)
-                 :timeout
+             (let [{:keys [signal cancel] :as started} (cancel/start! (ebb/via ebb/blk (collect t)))
+                   ;; Stage one parks on the reader's signal WITHOUT cancelling
+                   ;; it at the deadline: the reader has to stay in recv to
+                   ;; collect the reply the interrupt below produces. (A cancel
+                   ;; of this fiber's own task still takes the reader down.)
+                   r1 (try (ebb/? (ebb/timeout signal timeout-ms ::timeout))
+                           (catch Throwable e
+                             (when (cancel/control-signal? e) (cancel))
+                             (throw e)))]
+               (if (not= ::timeout r1)
+                 (let [[tag r] r1] (if (= :ok tag) (finish r) (throw r)))
                  (do (interrupt! im sid)
-                     ;; await-or-cancel already cancelled the reader; the
-                     ;; recv itself cannot be interrupted (the spike), so it
-                     ;; is still parked and still delivers if the image
-                     ;; answers the interrupt. Give it the grace.
+                     ;; Stage two: the grace for the aborted eval's reply. Past
+                     ;; it the reader is cancelled — nrepl's recv is
+                     ;; interruptible from v0.1.2, so the thread comes back
+                     ;; within a slice — and the image is the caller's to
+                     ;; restart.
                      (let [[tag2 r2] (cancel/await-or-cancel started grace-ms)]
                        (if (= :ok tag2)
                          {:ok false :error-type "timeout" :timeout? true :interrupted? true

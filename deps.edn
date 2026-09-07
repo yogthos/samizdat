@@ -12,10 +12,14 @@
         ;; bounded through a non-blocking socket, which needs jolt 0.6.8's
         ;; :varargs FFI marker (fcntl is variadic, and on Apple arm64 a
         ;; fixed-arity binding silently corrupts the stack-passed argument).
+        ;; v0.0.8: reads are interruptible (poll in 250 ms slices, the
+        ;; interrupt flag checked between them), so a cancelled provider call
+        ;; returns within a slice rather than after the socket timeout
+        ;; (RFC-013, karamazov-3cll.10).
         jolt-lang/http-client
         {:git/url "https://github.com/jolt-lang/http-client"
-         :git/tag "v0.0.7"
-         :git/sha "a9c5d89054c9cdb84b7905e0dfd7cf9ca82793c6"}
+         :git/tag "v0.0.8"
+         :git/sha "ccce992d6e3d0035a5ffd1d4364cdb39df4af2f0"}
 
         ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
         jolt-lang/db
@@ -24,10 +28,15 @@
          :git/sha "d85f391ca521da389b935c38f3d78b30eaa23208"}
 
         ;; nREPL middleware (sessions, interruptible eval, completion, lookup) so
-        ;; an editor can drive the running harness. See core/start-nrepl!.
+        ;; an editor can drive the running harness. See core/start-nrepl!. The
+        ;; project image runs this same sha (repl/image.clj nrepl-sha, held
+        ;; equal by base-test). v0.1.2: the client transport's recv is
+        ;; interruptible, so a cancelled image eval frees its reader within a
+        ;; slice (RFC-013, karamazov-3cll.10).
         jolt-lang/nrepl
         {:git/url "https://github.com/jolt-lang/nrepl"
-         :git/sha "9cc45acc7a241ff9704e8f43e2c4fb90f7bd819c"}
+         :git/tag "v0.1.2"
+         :git/sha "6e8cfa214dbd43c9ed72358f3d1191bb29a695cd"}
 
         ;; OpenSSL/SecureRandom shims. http-client pulls this in too; jolt.deps
         ;; reconciles the duplicate libssl/libcrypto natives to a single load.
