@@ -37,7 +37,9 @@
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [ebb.core :as ebb]
             [jolt.process :as jp]
+            [samizdat.cancel :as cancel]
             [samizdat.engine.proc :as proc]
             [samizdat.security.secrets :as secrets])
   (:import [java.io BufferedInputStream OutputStream]))
@@ -133,20 +135,28 @@
 (defn- request!
   "Send a request and park on its id until the reader delivers the response
   (or the timeout / a server close intervenes). Returns the :result, throws
-  on an :error, a timeout, or the server closing."
+  on an :error, a timeout, or the server closing.
+
+  The wait is a park on the caller's fiber, not a blocking deref on its
+  carrier (RFC-013): the deref runs under `via blk` with the read timeout as
+  its deadline, so a cancelled turn gets its thread back at once — a promise
+  deref is interruptible — rather than when the timeout expires. The pending
+  entry is released on every exit, a cancel included."
   [client method params]
   (let [id (swap! (:next-id client) inc)
         p (promise)]
     (swap! (:pending client) assoc id p)
-    (send-frame! client {:jsonrpc "2.0" :id id :method method :params params})
-    (let [msg (deref p read-timeout-ms ::timeout)]
-      (swap! (:pending client) dissoc id)
-      (cond
-        (= ::timeout msg) (throw (ex-info (str "lsp: no response to " method) {:method method}))
-        (= ::closed msg) (throw (ex-info (str "lsp: server closed during " method) {:method method}))
-        :else (if-let [e (:error msg)]
-                (throw (ex-info (str "lsp error: " (:message e)) {:error e}))
-                (:result msg))))))
+    (try
+      (send-frame! client {:jsonrpc "2.0" :id id :method method :params params})
+      (let [[tag msg] (cancel/with-deadline (ebb/via ebb/blk (deref p)) read-timeout-ms)]
+        (cond
+          (= :timeout tag) (throw (ex-info (str "lsp: no response to " method) {:method method}))
+          (= :err tag) (throw msg)
+          (= ::closed msg) (throw (ex-info (str "lsp: server closed during " method) {:method method}))
+          :else (if-let [e (:error msg)]
+                  (throw (ex-info (str "lsp error: " (:message e)) {:error e}))
+                  (:result msg))))
+      (finally (swap! (:pending client) dissoc id)))))
 
 (defn- notify! [client method params]
   (send-frame! client {:jsonrpc "2.0" :method method :params params}))
