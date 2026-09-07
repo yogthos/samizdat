@@ -2098,6 +2098,26 @@
     (is (not (state/explore-cap-expired? (assoc b :phase :build) 10 12)))
     (is (= :build (:phase (state/enter-phase b 12))))))
 
+(deftest refusal-forms-load-the-namespaces-they-name
+  ;; A refusal form names its functions fully qualified — samizdat.agent.storm,
+  ;; samizdat.agent.gates, samizdat.agent.files — and phases.clj requires none
+  ;; of them, by design: it sits below gates in the require graph. The table is
+  ;; memoized on first use, so whoever compiled it first decided which of those
+  ;; namespaces were loaded, and a rule compiled early kept throwing "No such
+  ;; var: samizdat.agent.gates/storm-policy" after they were (seen from a run's
+  ;; eval image, which required phases before tools; karamazov-b76m's
+  ;; validation run). The compiler now loads what a form names.
+  (is (= '#{samizdat.agent.storm samizdat.agent.gates}
+         (phases/namespaces-named '(samizdat.agent.storm/repeat-blocked?
+                                    ctx (samizdat.agent.gates/storm-policy))))
+      "every namespace a form names, once")
+  (is (= #{} (phases/namespaces-named '(nil? (:task branch))))
+      "and nothing for a form that names none")
+  (doseq [rule (phases/refusals)
+          ns-sym (phases/namespaces-named (:when-form rule))]
+    (is (some? (find-ns ns-sym))
+        (str (:rule rule) " names " ns-sym ", which compiling the table must have loaded"))))
+
 (deftest phase-refusal-reads-the-phase-table
   ;; drg-4026 #34: phase-refusal consults the table's :withholds — the seam
   ;; the audit called inert. Still empty (the withheld proof tools left), and
