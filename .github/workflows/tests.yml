@@ -207,16 +207,32 @@ jobs:
         run: jolt smoke
 
   build:
-    name: standalone binary
+    # DIAGNOSTIC, BRANCH ONLY (karamazov-vhkj): the built binary dies at boot
+    # with nothing in boot.log. Three builds side by side — the release jolt,
+    # the same with its 0.8.x whole-program passes off, and the previous
+    # release — each run plain, with the heap ceiling off, with load tracing,
+    # under strace and under gdb. No `needs: fast` so they start at once; the
+    # suite already passed on this tree (run 34161233825).
+    name: standalone binary (${{ matrix.label }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: fast
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: jolt 0.8.5
+            jolt: "0.8.5"
+            build_env: ""
+          - label: jolt 0.8.5 no wp-infer no flat-split
+            jolt: "0.8.5"
+            build_env: "JOLT_NO_WP_INFER=1 JOLT_NO_FLAT_SPLIT=1"
+          - label: jolt 0.8.4
+            jolt: "0.8.4"
+            build_env: ""
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install jolt
-        # See the fast job for why: authenticated API fetch dodges the anonymous
-        # raw.githubusercontent 403 rate limit, with a raw fallback and retries.
+      - name: Install jolt ${{ matrix.jolt }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -239,8 +255,9 @@ jobs:
           test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "${{ matrix.jolt }}"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          "$HOME/.local/bin/jolt" --version
 
       - name: Cache jolt gitlibs
         uses: actions/cache@v4
@@ -248,33 +265,27 @@ jobs:
           path: ~/.jolt/gitlibs
           key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
 
-      # `jolt build` embeds only what it can reach statically, so this job
-      # guards against a dynamic require silently dropping a subtree from the
-      # image — which happened once and only surfaced at startup.
       - name: Build
-        run: jolt build -m samizdat.core -o samizdat
+        run: ${{ matrix.build_env }} jolt build -m samizdat.core -o samizdat
 
-      # Two assertions. That it starts and serves, and that its TLS still works:
-      # a built image used to resolve SSL_* to whatever the process linked rather
-      # than the OpenSSL under :jolt/native, which faulted instead of erroring.
-      # The boot-time provider warm-up drives a real handshake, and without a key
-      # it fails on auth AFTER the handshake — so the thing to assert is the
-      # absence of the fault, which needs no secret.
-      - name: Binary starts and serves
-        # boot.log is printed BEFORE the first assertion: the step runs under
-        # `bash -e`, so a failed health check ended it with the log unread and
-        # a bare "Aborted (core dumped)" as the only evidence. The wait also
-        # stops as soon as the process is gone rather than sleeping out the
-        # full minute on a binary that died at boot.
+      - name: Boot battery
         run: |
-          HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat >boot.log 2>&1 &
-          pid=$!
-          for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:3010/health >/dev/null && break
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 2
-          done
-          cat boot.log
-          curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
-          ! grep -q 'invalid memory reference' boot.log
-          grep -q 'nrepl  127.0.0.1' boot.log
+          sudo apt-get install -y -qq gdb strace >/dev/null 2>&1 || true
+          try() {
+            local name=$1 secs=$2; shift 2
+            echo; echo "=================== $name"
+            rm -f ci.sqlite3 .nrepl-port
+            timeout -k 10 -s INT "$secs" "$@" >"$name.log" 2>&1; rc=$?
+            echo "--- exit $rc; last 6000 bytes of $name.log:"
+            tail -c 6000 "$name.log"; echo
+          }
+          try plain      40 env HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
+          try heap-off   40 env JOLT_MAX_HEAP=off HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
+          try trace-load 60 env JOLT_TRACE_LOAD=1 HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
+          try strace     90 env HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 strace -f -o strace.txt ./samizdat
+          echo "=================== strace: last 120 lines"; tail -n 120 strace.txt || true
+          echo "=================== strace: signals and writes to fd 2"; grep -E 'SIG[A-Z]+|write\(2,' strace.txt | tail -n 40 || true
+          try gdb 90 gdb -batch -ex 'set env HARNESS_PORT 3010' -ex 'set env HARNESS_DB ci.sqlite3' \
+            -ex run -ex 'bt 40' -ex 'info threads' -ex 'thread apply all bt 15' ./samizdat
+          echo; echo "=================== verdict"
+          grep -q 'nrepl  127.0.0.1' plain.log && echo "plain boot: OK" || { echo "plain boot: FAILED"; exit 1; }
