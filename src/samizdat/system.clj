@@ -49,6 +49,7 @@
             [samizdat.lsp.client :as lsp-client]
             [samizdat.store.db :as db]
             [samizdat.store.runs :as runs]
+            [samizdat.cells :as cells]
             [samizdat.userspace :as userspace]))
 
 (defonce system (atom nil))
@@ -170,6 +171,20 @@
          _ (userspace/bind-model! {:provider (get-in cfg [:llm :provider])
                                    :model (or (get-in cfg [:llm :model-id])
                                               (get-in cfg [:llm :model]))})
+         ;; The project's cells, loaded HERE, on the main thread, once the
+         ;; project is bound. Every run reloads them (compile-loop), so this
+         ;; is not what makes them available; it is what makes every
+         ;; namespace a cell requires already loaded before a run's fiber
+         ;; touches them. A run's process starts on the request thread and
+         ;; resumes on a carrier, and on jolt a namespace compiled for the
+         ;; first time from a `load-string` on that resumed fiber came out
+         ;; analysed against the wrong current namespace in two of four live
+         ;; runs (reflect.clj's own private `clip` unresolved from
+         ;; cells.loop; karamazov-iev2). Loading at boot also fails fast: a
+         ;; cell that cannot load stops the harness starting, not the first
+         ;; run two minutes into its selection call.
+         _ (log/info "loaded" (count (cells/load-cells!)) "cell(s) for"
+                     (get-in cfg [:run :root]))
          ;; The repair ladder is a COMPOSITION, so the workflow layer owns it:
          ;; the `repair` manifest wires the fence's rung fns as cells, and
          ;; this install is how the fence — which sits below the workflow

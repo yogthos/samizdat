@@ -41,12 +41,15 @@
             [samizdat.agent.tools.base :as base]
             [samizdat.cells :as cells]
             [samizdat.config :as config]
+            [samizdat.lexicon :as lexicon]
             [samizdat.repl.route :as route]
             [samizdat.security.sandbox :as sandbox]
             [samizdat.manual :as manual]
             [samizdat.prompt :as prompt]
             [samizdat.manifests :as manifests]
-            [samizdat.store.journal :as journal]))
+            [samizdat.store.journal :as journal]
+            [samizdat.store.runs :as runs]
+            [samizdat.store.userspace :as store-us]))
 
 (defn active-manifest
   "The manifest that is ACTUALLY driving this run, as {:name :version
@@ -174,7 +177,20 @@
                      (map #(select-keys % [:turn :tool_name :category :parse_error])
                           (journal/turns conn run-id))
                      max-turns)
-                    "(no run database in this context — wiring only)")))))
+                    "(no run database in this context — wiring only)")
+                  ;; What the tuning has been touching. The self-healing rule:
+                  ;; everything the supervisor might act on is enumerable at
+                  ;; runtime with a description, and the edit history is a
+                  ;; thing it acts on (karamazov-00qw).
+                  "\n\n=== USERSPACE DRIFT ===\n\n"
+                  (if conn
+                    (let [{:keys [window-runs top-names]} (lexicon/policy :drift)]
+                      (prompt/render "drift"
+                                     {:window window-runs
+                                      :surfaces (store-us/drift
+                                                 conn {:since (runs/nth-recent-start conn window-runs)
+                                                       :top-names top-names})}))
+                    (prompt/render "drift" {:no-db true}))))))
 
 (defmethod base/run-tool "manual" [{:keys [branch] :as ctx}]
   ;; The harness's own command surface, for a branch developing at the REPL

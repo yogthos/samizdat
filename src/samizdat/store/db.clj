@@ -119,10 +119,26 @@
   [conn]
   (with-conn (:id (jdbc/fetch-one conn "select last_insert_rowid() as id"))))
 
+(defn iso-millis
+  "`s`, an ISO-8601 instant, with exactly three fraction digits.
+
+  Instant.toString drops the fraction when it is zero, so one stamp in a
+  thousand read `…:40Z` beside `…:40.123Z` — and since 'Z' sorts after '.',
+  the whole-second stamp landed AFTER every fractional stamp in its own
+  second. The columns are TEXT and every ORDER BY on them is a string
+  compare, so `now`'s promise needs a fixed width. Micros are truncated, not
+  rounded: a stamp must never sort after one taken later."
+  [s]
+  (let [s (str s)]
+    (if-let [[_ base frac] (re-find #"^(.*?)(?:\.(\d+))?Z$" s)]
+      (str base "." (subs (str (or frac "") "000") 0 3) "Z")
+      s)))
+
 (defn now
-  "An ISO-8601 timestamp. One function so every table sorts the same way."
+  "An ISO-8601 timestamp at millisecond width. One function so every table
+  sorts the same way — see `iso-millis` for the width."
   []
-  (str (java.time.Instant/now)))
+  (iso-millis (java.time.Instant/now)))
 
 (defn close [conn]
   ;; jdbc.core's connection is a map carrying a :close thunk, not an object.

@@ -16,6 +16,7 @@
             [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.store.runs :as runs]
+            [samizdat.store.userspace :as store-us]
             [samizdat.userspace :as userspace]
             [samizdat.workflow :as wf]
             [mycelium.core :as myc]))
@@ -289,11 +290,29 @@
                                  {:digest dig
                                   :since (not-empty (str live))
                                   :learned (seq (knowledge/standing conn))
+                                  ;; Episodes seen in enough distinct runs
+                                  ;; to ask whether they are rules. The
+                                  ;; store surfaces; the supervisor judges
+                                  ;; (karamazov-h27r).
+                                  :candidates (seq (knowledge/graduation-candidates conn))
+                                  ;; Which surfaces the tuning keeps
+                                  ;; touching, and which edits keep being
+                                  ;; undone — nil when nothing moved, so
+                                  ;; the block takes no room (karamazov-00qw).
+                                  :drift (let [{:keys [window-runs top-names]} (gates/threshold :drift)
+                                               surfaces (store-us/drift
+                                                         conn {:since (runs/nth-recent-start conn window-runs)
+                                                               :top-names top-names})]
+                                           (when (seq surfaces)
+                                             (prompt/render "drift" {:window window-runs
+                                                                     :surfaces surfaces})))
                                   :catalog (safely :catalog #(wf/render-catalog conn) "")})
              ;; ONE branch for the run, carried by the stream. Opened once;
              ;; re-opening an existing id is a no-op that returns the row.
              bid "SUP"
-             _ (runs/open-branch! conn run-id {:branch-id bid})
+             suffix (wf/prompt-text "roles/supervisor")
+             _ (runs/open-branch! conn run-id {:branch-id bid :role :supervisor
+                                               :prompt-suffix suffix})
              ;; The stream's memory arrives in DATA, not ctx: ctx is the
              ;; run-scoped resources every driver provides, and the carry is
              ;; this pass's value. Putting it in ctx would have meant claiming
@@ -301,8 +320,7 @@
              b (or (some-> (:oversight/carry data) resume-branch)
                    (assoc (state/new-branch
                            {:id bid :problem prob
-                            :messages (turn/initial-messages
-                                       prob (wf/prompt-text "roles/supervisor") :supervisor)})
+                            :messages (turn/initial-messages prob suffix :supervisor)})
                           :advisory? true :role :supervisor))
              out (myc/run-compiled (wf/compiled-manifest "supervisor")
                                    (wf/role-ctx ctx :supervisor)

@@ -39,7 +39,8 @@
   judge is told to say has to touch both."
   (:require [clojure.string :as str]
             [samizdat.agent.gates :as gates]
-            [samizdat.prompt :as prompt]))
+            [samizdat.prompt :as prompt]
+            [samizdat.util :as util]))
 
 ;; The judge's preamble is read from resources/prompts/judge.md on each use
 ;; rather than snapshotted into a def at namespace load. The docstring called
@@ -89,6 +90,20 @@
   [reply]
   (some-> (re-find (re-pattern (:findings-regex (rules))) (str reply))
           second str/trim not-empty))
+
+(defn for-the-record
+  "`s` clipped to the gates.edn `:verdict-record` budget `field`
+  (:situation-chars for what a judge was shown, :reply-chars for what it
+  said), keeping head and tail — a critic's SCORE lines are at the end. nil
+  stays nil.
+
+  Every judgement the harness journals passes through here (karamazov-3htz):
+  the verdict alone says nothing about whether the judge was right, so the
+  situation and the reasoning go in beside it, bounded so a rambling judge
+  cannot grow the events table without limit."
+  [field s]
+  (when (some? s)
+    (util/truncate-middle (str s) (get (gates/threshold :verdict-record) field))))
 
 (defn- one-line [s n]
   (let [flat (-> (str s) (str/replace #"\s+" " ") str/trim)]

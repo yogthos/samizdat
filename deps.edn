@@ -181,4 +181,6 @@
           ;; {:rc 14}) — provenance A-3. `;` not `&&` so a hardened
           ;; environment where 1024 exceeds the hard limit still runs.
           test  "(ulimit -n 1024 2>/dev/null; jolt -M:test)"
-         gui   "jolt -M:gui"}}
+         gui   "jolt -M:gui"
+         export {:doc "runs that shipped and verified, as JSONL trajectories — or with --verdicts, every judgement labelled by its outcome: jolt export <db> [out.jsonl] [--verdicts]"
+                 :main-opts ["-m" "samizdat.export"]}}}

@@ -110,7 +110,11 @@
   its budget unable to conclude (karamazov-t86)."
   ([ctx compiled bid prob suffix] (run-role ctx compiled bid prob suffix nil))
   ([{:keys [conn run-id] :as ctx} compiled bid prob suffix role]
-  (runs/open-branch! conn run-id {:branch-id bid})
+  ;; The row records what initial-messages is handed: the role's OWN problem
+  ;; (a reviewer's brief is not the run's problem, and the row never carried
+  ;; it), the role, and the role prompt (v24).
+  (runs/open-branch! conn run-id {:branch-id bid :problem prob :role role
+                                  :prompt-suffix suffix})
   (let [b (assoc (state/new-branch {:id bid :problem prob
                                     ;; ROLE-SCOPED: the tool catalogue this
                                     ;; role is shown is filtered to what it
@@ -303,13 +307,19 @@
               det (or (when (hollow? ctx)
                         "no files were changed — the implementors called done but the working tree is unchanged, so nothing was actually built")
                       (judge/deterministic-block answer rows (tools/tool-names)))
-              decision
+              ;; {:decision :verdict :findings}: the judge's verdict and its
+              ;; findings come out beside the decision so the note can carry
+              ;; them (karamazov-3htz).
+              judged
               (if det
-                :revise
+                {:decision :revise}
                 (let [diff (gitdiff/diff root git-baseline)
                       evidence (judge/evidence rows)
-                      prompt (judge/critic-prompt {:rules (turn/system-prompt)
-                                                   :transcript (str answer)
+                      ;; THE REQUIREMENT is the feature the run was asked
+                      ;; for. This passed the pre-requirement keys (:rules,
+                      ;; the answer as :transcript), so the judge's
+                      ;; requirement section rendered empty (karamazov-iev2).
+                      prompt (judge/critic-prompt {:requirement (:problem branch)
                                                    :evidence evidence
                                                    :diff diff
                                                    :answer answer})
@@ -318,9 +328,15 @@
                                  (catch Throwable _ nil))
                       verdict (if reply (judge/parse-verdict reply) :complete)
                       blocking (when reply (judge/blocking-findings reply))]
-                  (if (and (= :complete verdict) (not blocking)) :ship :revise)))]
+                  {:decision (if (and (= :complete verdict) (not blocking)) :ship :revise)
+                   :verdict verdict
+                   :findings (judge/for-the-record :reply-chars (judge/findings reply))}))
+              decision (:decision judged)]
           (journal/note! conn run-id :critique
-                         {:data {:decision decision :deterministic (boolean det)}})
+                         {:data {:decision decision :deterministic (boolean det)
+                                 :reason (judge/for-the-record :reply-chars det)
+                                 :verdict (:verdict judged)
+                                 :findings (:findings judged)}})
           (assoc data :critic/decision decision :critique/findings (or det ""))))
       ;; fail-open: a broken critic ships rather than wedging the loop
       (fn [d] (assoc d :critic/decision :ship :critique/findings "")))))

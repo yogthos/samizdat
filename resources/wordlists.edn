@@ -237,6 +237,21 @@
  ;; being recorded and nothing fails.
  "(?i)needs approval|not on the allow list"
 
+ ;; --- what is presentation in a shell command (karamazov-h27r) -------------
+ ;; distil-project! keys a `works here` fact on the command string, and after
+ ;; ten runs the store held 47 memories saying the test command works, one
+ ;; per `| tail -N` the model happened to read it through. Regex PATTERN
+ ;; STRINGS, each matching a TRAILING piece that changes how the model reads a
+ ;; command's output and nothing about what runs; applied to a fixed point, so
+ ;; `2>&1 | tail -40; echo EXIT=$?` falls away layer by layer. Only trailing
+ ;; forms belong here — a leading `cd dir &&` changes what the command means
+ ;; and stays. Successes only: a REFUSED command keeps its exact text, because
+ ;; the pipe may be the very thing the policy refused.
+ :command-noise
+ ["\\s*2>&1\\s*$"
+  "\\s*\\|\\s*(?:tail|head)(?:\\s+-n)?\\s+-?\\d+\\s*$"
+  "\\s*;\\s*echo\\s+[\"']?EXIT[=:]\\s*\\$\\?[\"']?\\s*$"]
+
  ;; --- the completeness rung (karamazov-g86, dirge completeness_gate.rs) ----
  ;; A `done` whose answer says, in the model's own first-person voice, that
  ;; work remains — the most ordinary way for an autonomous run to end badly,

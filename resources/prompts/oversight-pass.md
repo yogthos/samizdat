@@ -43,7 +43,17 @@ one turn; a fix to a prompt or a threshold helps every run after this one.
 {% if learned %}
 ## What this project has learned
 {% for m in learned %}- {{m.id}} [{{m.kind}}] {{m.content}}
-{% endfor %}{% endif %}{% if catalog %}
+{% endfor %}{% endif %}{% if candidates %}
+## Patterns this project keeps seeing
+Each of these is an episode confirmed by the number of distinct runs shown. An
+episode that recurs run after run is describing a standing property of the
+loop, not a bad afternoon. If you agree, `remember` it as a rule — kind
+`procedural`, with a `cause` naming the episode's id — so later runs read it
+as one; if it is noise, `retire` it with the reason. Left alone it stays an
+episode and ranks as one.
+{% for m in candidates %}- {{m.id}} seen in {{m.corroborations}} runs: {{m.content}}
+{% endfor %}{% endif %}{% if drift %}
+{{drift}}{% endif %}{% if catalog %}
 ## Workflows available
 {{catalog}}
 {% endif %}

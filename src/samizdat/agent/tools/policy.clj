@@ -72,7 +72,15 @@
                     ;; Compiling the steer table evaluates every gate's :when
                     ;; form — the real validation, not just the EDN parse.
                     (gates/gates)
-                    (gates/describe))
+                    (gates/describe)
+                    ;; A :provenance that is not a list of identifiers is
+                    ;; refused here, at save time, never by the loader
+                    ;; (karamazov-h66o).
+                    (when-let [bad (gates/provenance-problems (gates/config))]
+                      (throw (ex-info (str ":provenance must be a non-empty vector of "
+                                           "identifiers: "
+                                           (str/join ", " (map (comp name first) bad)))
+                                      {:provenance bad}))))
     "phases"    (do (phases/reload!)
                     (phases/table)
                     (phases/transitions))

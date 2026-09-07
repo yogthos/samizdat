@@ -85,12 +85,15 @@
     (try
       ;; The unit's contract is the branch's OWN problem, durably — what a
       ;; resume rebuilds this branch's opening messages from (blt.23).
-      (runs/open-branch! conn run-id {:branch-id bid :problem prob})
-      (let [b (cond-> (assoc (state/new-branch
+      (let [suffix (attempt-suffix node)
+            ;; The row records the suffix beside the problem (v24), so a
+            ;; resume or an export opens the unit on its own attempt framing.
+            _ (runs/open-branch! conn run-id {:branch-id bid :problem prob :role :implementor
+                                              :prompt-suffix suffix})
+            b (cond-> (assoc (state/new-branch
                               {:id bid :problem prob
                                ;; Scoped and enforced, as the board's owners are.
-                               :messages (turn/initial-messages prob (attempt-suffix node)
-                                                                :implementor)})
+                               :messages (turn/initial-messages prob suffix :implementor)})
                              :role :implementor)
                 ;; Opens HOLDING its piece, so the contract and the tests it
                 ;; must satisfy are pinned in its context rather than restated

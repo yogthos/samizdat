@@ -449,9 +449,19 @@ they hold for `src/` and for cells alike:
   lock, and a fiber cannot leave the CPU while its carrier holds one, so a
   `?`, `sleep`, `via blk`, `join` or `timeout` inside a `map`, `for`,
   `filter`, `keep`, `mapcat`, `lazy-seq`, `iterate` or `repeatedly` body is a
-  hang, not an error. Loops that park are `loop/recur`, `mapv`, `doseq`,
-  `reduce`, `run!`. *Enforced by* the base-test ratchet
-  `no-park-inside-a-lazy-body` over `src/` and `resources/cells`.
+  hang, not an error — and so is one inside `mapv` or `filterv`, because jolt
+  defines `mapv` as `(vec (apply map f colls))`, so the function runs during
+  lazy realization with the lock held (measured 2026-09-07 with
+  `jolt-locks-held`; karamazov-p3jo). The first live run on ebb died exactly
+  there, at the spawn handshake inside `advance-all`'s `mapv`, while the suite
+  stayed green because every test drove it from a plain thread, where a park
+  is a block and nothing asserts. Loops that park are `loop/recur`, `doseq`,
+  `reduce`, `run!`, and `into` with a transducer. *Enforced by* the base-test
+  ratchet `no-park-inside-a-lazy-body` over `src/` and `resources/cells`,
+  which treats `mapv`/`filterv` as lazy and knows samizdat's own parking
+  helpers (`cancel/start!`, `cancel/await-or-cancel`, `cancel/with-deadline`,
+  `llm/chat`, `critic/score!`). Tests of code that parks must run it on a
+  fiber (`(ebb/? (ebb/sp …))`), as `beam_cancel_test` now does.
 - **A continuation is bound to (thread, fiber), not fiber alone.** A timer
   thread can resume a main-thread continuation undetected. Never move a task's
   continuation across OS threads by hand; ebb's executors do it. *Unenforced*:
@@ -544,7 +554,10 @@ day `src/` first requires it.
 - The lazy-seq audit (ADR-001 rule 5) found no park inside a lazy body on the
   turn path: maestro's loop is `loop/recur`, cells are called directly, the
   team fan-out uses `mapv`, and mycelium's lazy forms are compile-time. Child
-  3cll.7's ratchet is the durable check.
+  3cll.7's ratchet is the durable check. That audit was wrong about `mapv`:
+  in jolt it is lazy underneath (see the rules below, karamazov-p3jo), and the
+  beam's `advance-all` and `ensure-scored` parked inside one. Both are
+  `reduce` now.
 
 ## What this RFC does not cover
 
