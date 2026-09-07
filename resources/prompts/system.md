@@ -105,7 +105,10 @@ give_up({reason})
 ```
 plan({files, tests?, goal?})
     Say which files you are about to create or edit, which tests you will
-    write, and why — one line. REQUIRED before eval: the REPL stays closed
+    write, and why — one line. Every entry in files and tests is a bare
+    relative path such as test/flight/ghost_test.clj, nothing else: a path
+    with a description after it is refused, because a declared file is what
+    you are held to and a sentence can never be written. REQUIRED before eval: the REPL stays closed
     until you have named a file. Naming one is a hypothesis about where the
     problem is, and you may call plan again the moment you learn it is
     somewhere else. You cannot finish with a declared file unwritten, so the
