@@ -73,8 +73,14 @@
   (fn [{:keys [conn run-id root git-baseline llm-adapter llm-config]}
        {:keys [branch turn] :as data}]
     (let [attempts (or (:critic/attempts data) 0)
+          ;; The branch and turn ride the row's own columns as well as the
+          ;; data, like every other per-branch note; and the verdict carries
+          ;; WHY — the deterministic reason or the judge's findings — so the
+          ;; journal can later be read as a corpus of judgements against what
+          ;; happened next (karamazov-3htz).
           note! (fn [m] (journal/note! conn run-id :critic
-                                       {:data (merge {:branch-id (:id branch)
+                                       {:branch-id (:id branch) :turn turn
+                                        :data (merge {:branch-id (:id branch)
                                                       :turn turn
                                                       :attempt (inc attempts)} m)}))]
       (if (>= attempts max-critic-attempts)
@@ -84,7 +90,8 @@
                                               (tools/tool-names))]
           (if det
             ;; A cheap, specific gate fired — block without paying for the judge.
-            (do (note! {:verdict :deterministic :blocked true})
+            (do (note! {:verdict :deterministic :blocked true
+                        :reason (judge/for-the-record :reply-chars det)})
                 (revise data branch (str "[critic] " det) (inc attempts)))
             (let [evidence (judge/evidence rows)
                   diff (gitdiff/diff root git-baseline)
@@ -105,7 +112,9 @@
                   verdict (if reply (judge/parse-verdict reply) :complete)
                   ;; A COMPLETE verdict still blocks on a critical/high finding.
                   blocking (when reply (judge/blocking-findings reply))]
-              (note! {:verdict verdict :blocked (boolean blocking)})
+              (note! {:verdict verdict
+                      :blocked (or (not= :complete verdict) (boolean blocking))
+                      :findings (judge/for-the-record :reply-chars (judge/findings reply))})
               (if (and (= :complete verdict) (not blocking))
                 (ship data)
                 (revise data branch

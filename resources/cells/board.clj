@@ -90,6 +90,10 @@
                                    (= run-id (:run_id cur)))
       :else (recur (tasks/get-task conn (:parent_id cur)) (inc depth)))))
 
+;; Read by :board/next when it opens the owner's row, defined with the rest
+;; of the owner's framing below.
+(declare owner-prompt)
+
 (defn- release-stale-claims!
   "Release every claim on this run held by a branch that is no longer active.
   A claim is exclusive while its holder works; a holder that exhausted or
@@ -265,7 +269,12 @@
             ;; fresh contexts, and nothing downstream could tell them apart.
             bid (state/branch-id-for n round (:title t))
             prob (str (or (not-empty (str (:body t))) (:title t)))
-            claimed (do (runs/open-branch! conn run-id {:branch-id bid :problem prob})
+            ;; The row records what :board/work hands initial-messages —
+            ;; problem, role AND the owner prompt (v24) — so a rebuild opens
+            ;; the owner on the same messages.
+            claimed (do (runs/open-branch! conn run-id {:branch-id bid :problem prob
+                                                        :role :implementor
+                                                        :prompt-suffix (owner-prompt)})
                         (tasks/claim! conn (:id t) run-id bid))]
         (journal/note! conn run-id :board-task
                        {:branch-id bid :data {:task (:id t) :title (:title t)}})
@@ -363,9 +372,13 @@
                       " Address it:\n" findings))
           t (tasks/get-task conn task)
           ictx (wf/role-ctx ctx :implementor)
+          ;; One read, so the row and the message carry the same text.
+          suffix (owner-prompt)
           out (try
                 (when (pos? attempt)
-                  (runs/open-branch! conn run-id {:branch-id bid :problem prob})
+                  (runs/open-branch! conn run-id {:branch-id bid :problem prob
+                                                  :role :implementor
+                                                  :prompt-suffix suffix})
                   (tasks/claim! conn task run-id bid))
                 (let [b (-> (state/new-branch
                              {:id bid :problem prob
@@ -379,7 +392,7 @@
                               ;; feature.clj's advisory roles only, so the one
                               ;; role that writes code was the one role without
                               ;; a scoped world.
-                              :messages (turn/initial-messages prob (owner-prompt)
+                              :messages (turn/initial-messages prob suffix
                                                                :implementor)})
                             (assoc :task {:id task :title (:title t)}
                                    :role :implementor)
@@ -475,12 +488,21 @@
           det (when landed?
                 (try (judge/deterministic-block answer rows (tools/tool-names))
                      (catch Throwable _ nil)))
+          ;; WHAT THE TASK ASKED FOR, in the judge's own requirement slot.
+          ;; This call still passed the pre-requirement keys (:rules and
+          ;; the answer as :transcript), so the template's requirement
+          ;; section rendered EMPTY and the judge read the answer twice —
+          ;; and said so, in its first live finding on the ghost-replay run
+          ;; ("The requirement section is empty in the prompt", run
+          ;; e1b765e7, karamazov-iev2). The owner's problem is the task's
+          ;; body or title, the same text :board/claim hands the owner.
+          requirement (let [t (tasks/get-task conn task)]
+                        (str (or (not-empty (str (:body t))) (:title t))))
           reply (when (and landed? (not det))
                   (try (:content (llm/chat llm-adapter llm-config
                                            [{:role "user"
                                              :content (judge/critic-prompt
-                                                       {:rules (turn/system-prompt)
-                                                        :transcript answer
+                                                       {:requirement requirement
                                                         :evidence (judge/evidence rows)
                                                         :diff diff
                                                         :answer answer})}]))
@@ -505,7 +527,10 @@
                          :else :revise)]
       (journal/note! conn run-id :board-review
                      {:data {:task task :attempt attempts :verdict verdict
-                             :decision decision :landed (boolean landed?)}})
+                             :decision decision :landed (boolean landed?)
+                             ;; WHY, beside the verdict (karamazov-3htz).
+                             :reason (judge/for-the-record :reply-chars det)
+                             :findings (judge/for-the-record :reply-chars (judge/findings reply))}})
       (when pass? (tasks/close! conn task))
       (when (= :give-up decision)
         ;; back to the board, unattributed, so the next round or a human sees

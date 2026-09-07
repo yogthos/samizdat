@@ -1491,6 +1491,27 @@
       (is (resume/resumable? c rid) "an exhausted process that never tore down may continue"))
     (is (not (resume/resumable? c "no-such-run")))))
 
+(deftest a-resumed-branch-is-rebuilt-as-the-role-it-ran-as
+  ;; The role scopes the tool surface and picks the system prompt, and it
+  ;; lived only on the in-memory branch: a resumed supervisor came back
+  ;; holding the implementor's catalogue and unrestricted. Now on the row
+  ;; (v23), and the rebuild reads it.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})
+          _ (runs/open-branch! c rid {:branch-id "SUP" :role :supervisor :problem "watch"})
+          _ (runs/open-branch! c rid {:branch-id "B1"})
+          run (runs/get-run c rid)
+          rebuild #(#'resume/rebuild-branch run (runs/get-branch c rid %) {} {} {}
+                                            10 (gates/storm-policy) nil)
+          sup (rebuild "SUP")
+          b1 (rebuild "B1")]
+      (is (= :supervisor (:role sup)))
+      (is (nil? (:role b1)) "the unscoped default, as before the column")
+      (is (not= (:content (first (:messages sup))) (:content (first (:messages b1))))
+          "the supervisor's system prompt, not the implementor's")
+      (is (clojure.string/includes? (:content (second (:messages sup))) "watch")
+          "over the branch's own problem"))))
+
 ;; --- forking twice must not collide -----------------------------------------
 
 (deftest child-ids-skip-suffixes-the-parent-already-used
@@ -2448,3 +2469,44 @@
             (is (= 0 closed))
             (is (= [open] (:open-predictions branch))))))
       (finally (db/close c)))))
+
+(deftest a-critic-score-keeps-the-situation-it-judged-and-the-reply
+  ;; karamazov-3htz: a score alone is a verdict with no record of what it was
+  ;; a verdict ON. The summary is rebuilt from live state on every call and
+  ;; the reply is parsed down to four SCORE lines, so unless both are journaled
+  ;; beside the scores nothing can later ask whether the critic was right.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p" :provider "t" :model "m"})
+        b (branch-with :thesis {:goal "g" :technique "t" :subClaims []})]
+    (try
+      (with-redefs [llm/chat (fn [& _]
+                               {:content (str "Looks steady.\nSCORE progress: 4\nSCORE momentum: 3\n"
+                                              "SCORE distinctness: 5\nSCORE viability: 4")})]
+        (is (= {:progress 4 :momentum 3 :distinctness 5 :viability 4}
+               (:scores (critic/score! {:conn conn :run-id rid} b [] 7)))
+            "the caller still gets the vector it always got"))
+      (let [[note] (journal/notes conn rid :critic-score)]
+        (is (= {:progress 4 :momentum 3 :distinctness 5 :viability 4} (:scores note)))
+        (is (str/includes? (str (:summary note)) "BRANCH")
+            "the deterministic summary the critic read")
+        (is (str/includes? (str (:reply note)) "Looks steady")
+            "and what it said back, deliberation included"))
+      (finally (db/close conn)))))
+
+(deftest a-critic-score-clips-the-record-to-its-budget
+  ;; gates.edn :verdict-record bounds what the journal keeps of a judgement's
+  ;; input and reply — a critic that rambles must not grow the events table
+  ;; without bound, and the cap is policy, not a literal here.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p" :provider "t" :model "m"})
+        b (branch-with :thesis {:goal "g" :technique "t" :subClaims []})
+        long-reply (str (apply str (repeat 20000 "x")) "\nSCORE progress: 4\nSCORE momentum: 3\n"
+                        "SCORE distinctness: 5\nSCORE viability: 4")]
+    (try
+      (with-redefs [llm/chat (fn [& _] {:content long-reply})]
+        (critic/score! {:conn conn :run-id rid} b [] 7))
+      (let [[note] (journal/notes conn rid :critic-score)
+            cap (:reply-chars (gates/threshold :verdict-record))]
+        (is (pos? cap))
+        (is (<= (count (str (:reply note))) (+ cap 4)) "clipped to the budget, plus a marker"))
+      (finally (db/close conn)))))

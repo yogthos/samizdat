@@ -166,6 +166,7 @@
                          ["UPDATE knowledge
                              SET use_count = use_count + 1,
                                  last_used_at = ?,
+                                 idle_runs = 0,
                                  salience = MIN(?, salience + ?)
                            WHERE id = ?"
                           now (:salience-cap p) (:use-reinforcement p) id]))))
@@ -215,19 +216,31 @@
          ;; and then re-sorting those by standing would only re-order whatever
          ;; the text search happened to like.
          n (* 3 (long limit))
-         candidates
-         (or (when (and (seq q) (db/fts5-available? conn))
-               (try
-                 (seq (db/fetch conn
-                                ["SELECT k.* FROM knowledge_fts fts
-                                  JOIN knowledge k ON k.rowid = fts.rowid
-                                  WHERE knowledge_fts MATCH ? AND k.current = 1
-                                  ORDER BY bm25(knowledge_fts) LIMIT ?"
-                                 q n]))
-                 (catch Throwable e
-                   (log/warn "knowledge/recall fell back to LIKE:" (ex-message e))
-                   nil)))
-             (recall-like conn query n))
+         by-text
+         (when (and (seq q) (db/fts5-available? conn))
+           (try
+             (seq (db/fetch conn
+                            ["SELECT k.* FROM knowledge_fts fts
+                              JOIN knowledge k ON k.rowid = fts.rowid
+                              WHERE knowledge_fts MATCH ? AND k.current = 1
+                              ORDER BY bm25(knowledge_fts) LIMIT ?"
+                             q n]))
+             (catch Throwable e
+               (log/warn "knowledge/recall fell back to LIKE:" (ex-message e))
+               nil)))
+         ;; THE TEXT STAGE'S OPINION, KEPT. The salience sort below can lift
+         ;; a distant match over a close one on its record, which is the
+         ;; point of having two stages — but the line the model reads showed
+         ;; only the standing, so a memory pulled up by what it had done
+         ;; looked the same as one that fit the words. `:text-rank` is the
+         ;; position bm25 gave the row (1 = closest), and it rides through
+         ;; the re-sort so the line can show both numbers and the model can
+         ;; discount a weak fit itself. Only the FTS path has one: a LIKE
+         ;; scan matched every row equally and a rank there would be a
+         ;; number that means nothing (karamazov-sb3j).
+         candidates (if by-text
+                      (map-indexed (fn [i r] (assoc r :text-rank (inc i))) by-text)
+                      (recall-like conn query n))
          ranked (take limit (memory/rank candidates))]
      (touch! conn (map :id ranked))
      (vec ranked))))
@@ -247,14 +260,18 @@
   DISTINCT runs only. A second sighting inside the same run confirms nothing —
   it is the same evidence counted twice — and without that guard a long run
   would corroborate its own findings by repetition, which is precisely the
-  overfitting the count exists to prevent."
+  overfitting the count exists to prevent.
+
+  A re-observation also resets the run clock: a pattern this run saw again is
+  not a pattern this run had no use for, and it should not age as one."
   [conn id run-id]
   (let [row (get-by-id conn id)]
     (if (and run-id (not= run-id (:last_run_id row)))
       (do (db/with-writer
             (db/execute! conn
                          ["UPDATE knowledge
-                             SET corroborations = corroborations + 1, last_run_id = ?
+                             SET corroborations = corroborations + 1, last_run_id = ?,
+                                 idle_runs = 0
                            WHERE id = ?"
                           run-id id]))
           (inc (or (:corroborations row) 1)))
@@ -340,12 +357,13 @@
            (db/execute! conn
                         ["UPDATE knowledge
                             SET corroborations = ?, use_count = ?, last_used_at = ?,
-                                success_count = ?, failure_count = ?, last_run_id = ?
+                                success_count = ?, failure_count = ?, last_run_id = ?,
+                                idle_runs = ?
                           WHERE id = ?"
                          (or (:corroborations row) 1) (or (:use_count row) 0)
                          (:last_used_at row)
                          (or (:success_count row) 0) (or (:failure_count row) 0)
-                         (:last_run_id row) new-id])
+                         (:last_run_id row) (or (:idle_runs row) 0) new-id])
            (db/execute! conn
                         ["UPDATE knowledge SET current = 0, retired_at = ?, retired_reason = ?
                            WHERE id = ?"
@@ -456,13 +474,20 @@
   Successes are distilled too. A store that only remembers what went wrong
   teaches the next session that everything is broken."
   [conn findings {:keys [run-id]}]
-  (vec
-   (for [{:keys [kind severity detail evidence]} findings
-         :let [content (str "[" (name kind) "] " detail " " (pr-str evidence))
-               ;; Identity is the finding's KIND, in a column. The evidence
-               ;; differs every run and the pattern is what recurs.
-               pattern (str "finding:" (name kind))
-               existing (by-pattern conn pattern)]]
+  ;; reduce, not (vec (for …)) and not mapv: the body writes to the store,
+  ;; and a store call waits on the connection lock when another fiber holds
+  ;; it — a park, which is forbidden while a counted lock is held (ADR-001
+  ;; rule 1). Both `for` and jolt's `mapv` run the body under one (measured
+  ;; 2026-09-07; ratchet no-park-inside-a-lazy-body); the live symptom is
+  ;; "a fiber cannot leave the CPU while its carrier holds a counted lock".
+  (reduce
+   (fn [acc {:keys [kind severity detail evidence]}]
+    (let [content (str "[" (name kind) "] " detail " " (pr-str evidence))
+          ;; Identity is the finding's KIND, in a column. The evidence
+          ;; differs every run and the pattern is what recurs.
+          pattern (str "finding:" (name kind))
+          existing (by-pattern conn pattern)]
+     (conj acc
      (if existing
        ;; A recurring finding is a RE-OBSERVATION, and corroborate! is its
        ;; record. It is NOT an outcome: `record-outcome! (= :good severity)`
@@ -496,6 +521,8 @@
                              ;; and left to earn the rest.
                              :confidence 0.7})
         :kind kind :repeat? false :corroborations 1}))))
+   []
+   findings))
 
 (defn distill-verdicts!
   "Write what each experiment concluded into long-term memory, and return what
@@ -521,30 +548,37 @@
   concluded nothing, and recording it would teach the next session that the
   lever was tested when it was not."
   [conn experiments {:keys [run-id]}]
-  (vec
-   (for [{:keys [name change hypothesis verdict before after]} experiments
-         :when (and change (not= :too-early verdict))
-         :let [pattern (lever-key change)
-               content (str "[lever] " change " — " (clojure.core/name verdict)
-                            (when (and before after)
-                              (format " (fitness %.2f -> %.2f)" before after))
-                            ". Expected: " hypothesis)
-               existing (by-pattern conn pattern)
-               worked? (= :better verdict)]]
-     (if existing
-       ;; Here the outcome IS earned: the lever was pulled and measured.
-       ;; Content refresh through restate! so the FTS mirror follows the new
-       ;; wording (karamazov-blt.25).
-       (do (record-outcome! conn (:id existing) worked?)
-           (restate! conn (:id existing) content)
-           (db/with-writer
-             (db/execute! conn ["UPDATE knowledge SET run_id = ? WHERE id = ?"
-                                run-id (:id existing)]))
-           {:id (:id existing) :lever change :verdict verdict :repeat? true})
-       (let [id (remember! conn {:content content :kind "procedural" :run-id run-id
-                                 :pattern-key pattern :confidence 0.7})]
-         (record-outcome! conn id worked?)
-         {:id id :lever change :verdict verdict :repeat? false})))))
+  ;; reduce, not (vec (for …)): the body writes to the store, and a store
+  ;; call under the lazy seq's realization lock is a forbidden park when the
+  ;; connection is contended (ADR-001 rule 1). Same as distill-findings!.
+  (reduce
+   (fn [acc {:keys [name change hypothesis verdict before after]}]
+     (if-not (and change (not= :too-early verdict))
+       acc
+       (let [pattern (lever-key change)
+             content (str "[lever] " change " — " (clojure.core/name verdict)
+                          (when (and before after)
+                            (format " (fitness %.2f -> %.2f)" before after))
+                          ". Expected: " hypothesis)
+             existing (by-pattern conn pattern)
+             worked? (= :better verdict)]
+         (conj acc
+               (if existing
+                 ;; Here the outcome IS earned: the lever was pulled and measured.
+                 ;; Content refresh through restate! so the FTS mirror follows the new
+                 ;; wording (karamazov-blt.25).
+                 (do (record-outcome! conn (:id existing) worked?)
+                     (restate! conn (:id existing) content)
+                     (db/with-writer
+                       (db/execute! conn ["UPDATE knowledge SET run_id = ? WHERE id = ?"
+                                          run-id (:id existing)]))
+                     {:id (:id existing) :lever change :verdict verdict :repeat? true})
+                 (let [id (remember! conn {:content content :kind "procedural" :run-id run-id
+                                           :pattern-key pattern :confidence 0.7})]
+                   (record-outcome! conn id worked?)
+                   {:id id :lever change :verdict verdict :repeat? false}))))))
+   []
+   experiments))
 
 (defn curate!
   "Decay the salience of memories that have gone unused, and return how many
@@ -562,23 +596,102 @@
   allowed to reach zero: a memory that decayed to nothing would be
   indistinguishable from one that was never important, and `this WAS worth
   writing down and has not been needed since` is a different fact worth
-  keeping."
+  keeping.
+
+  THE WINDOW IS IN RUNS, read from `idle_runs`, which `age!` advances. The
+  wall-clock cutoff this replaced read a never-set last_used_at as stale, so
+  a memory lost a step at the end of the run that wrote it and at every run
+  end after: measured across the campaign dbs, 1073 of 1117 rows sat within
+  0.2 of the floor while none was older than the window (karamazov-4ay9)."
   [conn]
   (let [p (memory/policy)
-        cutoff (str (.minusSeconds (java.time.Instant/now)
-                                   (* 86400 (long (:recent-use-window-days p)))))
         stale (db/fetch conn
                         ["SELECT id, salience FROM knowledge
                            WHERE current = 1
                              AND pinned = 0
-                             AND (last_used_at IS NULL OR last_used_at < ?)
+                             AND idle_runs > ?
                              AND salience > ?"
-                         cutoff (:decay-floor p)])]
+                         (long (:recent-use-window-runs p)) (:decay-floor p)])]
     (db/with-writer
       (doseq [{:keys [id salience]} stale]
         (db/execute! conn ["UPDATE knowledge SET salience = ? WHERE id = ?"
                            (memory/decayed salience p) id])))
     (count stale)))
+
+(defn age!
+  "Count one more run in which every memory that could have been used was
+  not, and return how many were aged.
+
+  THE CLOCK THE STORE AGES BY, ticked once per run end. A run is an
+  opportunity for a memory to be needed; a day is not — a harness idle for a
+  month should not forget, and one that ran ten times without needing a
+  memory has evidence about it. A row is aged when it existed before this
+  run started and nothing used it since the run started; a row written or
+  restated during the run has not had this run to go unused in, which is the
+  from-birth decay karamazov-4ay9 measured. Pinned rows are outside the
+  model. A run the store cannot find ages nothing."
+  [conn run-id]
+  (if-let [started (:started_at (db/fetch-one conn ["SELECT started_at FROM runs WHERE id = ?"
+                                                    run-id]))]
+    (db/with-writer
+      (db/execute! conn
+                   ["UPDATE knowledge SET idle_runs = idle_runs + 1
+                      WHERE current = 1 AND pinned = 0
+                        AND created_at < ?
+                        AND (last_used_at IS NULL OR last_used_at < ?)"
+                    started started]))
+    0))
+
+(defn evict!
+  "Retire the lowest-standing memories of any kind that has more current rows
+  than its cap, and return the ids retired.
+
+  THE BOUND ON THE WORKING SET. A bounded associative memory evicts its least
+  important slot when full; the store's working set is `current = 1`, and
+  eviction is `retire!` with the reason — the row stays readable by id and in
+  its lineage's history, and stops being recalled. Demotion, not deletion,
+  which is what karamazov-1sy asked for. `:max-current-per-kind` in gates.edn
+  :memory names the kinds that are bounded; a kind not named (identity,
+  overview) is not. Pinned rows are neither counted nor evicted. Lowest
+  standing is `memory/rank`'s last, so a row with a record or a recent use
+  outlives one with neither."
+  [conn]
+  (let [caps (:max-current-per-kind (memory/policy))]
+    (reduce
+     (fn [gone [kind cap]]
+       (let [rows (db/fetch conn ["SELECT * FROM knowledge
+                                    WHERE current = 1 AND pinned = 0 AND kind = ?"
+                                  (name kind)])
+             over (- (count rows) (long cap))]
+         (if (pos? over)
+           (let [reason (str "evicted: " (name kind) " over its cap of " cap)]
+             (into gone
+                   (keep #(retire! conn (:id %) {:reason reason}))
+                   (take-last over (memory/rank rows))))
+           gone)))
+     []
+     caps)))
+
+(defn graduation-candidates
+  "Episodes that have earned the question of becoming a rule: current
+  episodic memories seen in at least `:graduation-min-runs` distinct runs
+  whose record is not against them, most corroborated first.
+
+  A bounded associative memory consolidates its most-used slots into
+  permanent storage each epoch. distill! is right that promoting an episode
+  to a rule is a judgement and the supervisor's, so the store does not
+  promote; it surfaces. Measured before this existed: the finding confirmed
+  by seven runs sat at the floor, and the supervisor's block — top by
+  standing — never showed it (karamazov-4ay9)."
+  [conn]
+  (let [p (memory/policy)]
+    (vec (db/fetch conn ["SELECT * FROM knowledge
+                            WHERE current = 1 AND kind = 'episodic'
+                              AND corroborations >= ?
+                              AND success_count >= failure_count
+                            ORDER BY corroborations DESC, created_at DESC
+                            LIMIT ?"
+                         (long (:graduation-min-runs p)) (long (:graduation-limit p))]))))
 
 (defn- fact
   "One derived project memory, rendered from its template in gates.edn
@@ -588,6 +701,21 @@
   [k cmd]
   (-> (get (lexicon/policy :project-facts) k)
       (str/replace "{{cmd}}" (str cmd))))
+
+(defn normalise-command
+  "A shell command with its presentation stripped: the trailing `2>&1`, the
+  `| tail -N` or `| head -N` the model reads output through, the `; echo
+  EXIT=$?` it asks the status with. What remains is what RAN, which is the
+  fact worth one memory rather than one per spelling — the ten-run store held
+  47 rows keyed on the test command (karamazov-4ay9). Patterns are
+  wordlists.edn :command-noise, applied to a fixed point so the layers fall
+  away in any order. Only the tail is touched: a leading `cd dir &&` changes
+  what the command means and stays."
+  [cmd]
+  (let [pats (mapv re-pattern (lexicon/wordlist :command-noise))]
+    (loop [c (str/trim (str cmd))]
+      (let [c' (str/trim (reduce #(str/replace %1 %2 "") c pats))]
+        (if (= c' c) c (recur c'))))))
 
 (defn distil-project!
   "Write what this run DISCOVERED ABOUT THE PROJECT into long-term memory.
@@ -609,8 +737,13 @@
 
   `semantic`, because these are durable facts about the project rather than
   episodes of a run: the test command does not stop being the test command
-  because this run ended. Pattern-keyed on the command, so a fact is written
-  once and corroborated across runs rather than duplicated."
+  because this run ended. Pattern-keyed on the command — the command as it
+  RAN, with the pipe tail and exit echo the model reads through stripped by
+  `normalise-command` — so a fact is written once and corroborated across
+  runs rather than duplicated per spelling. A REFUSED command keeps its
+  exact text: the pipe may be the very thing the policy refused, and
+  recording `find .` as refused when `find . | head` was would be a false
+  fact."
   [conn {:keys [run-id]}]
   (let [rows (db/fetch conn
                        ["SELECT tool_name, args, result, category FROM turns
@@ -624,7 +757,8 @@
                            (when-let [cmd (command-of r)]
                              (cond
                                (= "success" (:category r))
-                               {:key (str "cmd-works:" cmd) :content (fact :cmd-works cmd)}
+                               (let [cmd (or (not-empty (normalise-command cmd)) cmd)]
+                                 {:key (str "cmd-works:" cmd) :content (fact :cmd-works cmd)})
 
                                (re-find (re-pattern (lexicon/wordlist :shell-refusal))
                                         (str (:result r)))
@@ -707,7 +841,13 @@
   Best effort in both halves: a failure to remember must never turn a finished
   run into a failed one."
   [conn {:keys [run-id findings experiments]}]
-  (let [written (when (seq findings) (distill! conn findings {:run-id run-id}))
+  (let [;; THE CLOCK TICKS FIRST. Everything distilled below either writes a
+        ;; new row (which has not had this run to go unused in) or
+        ;; corroborates an existing one (which resets its clock), so ageing
+        ;; before them is what makes a re-observed pattern come out at zero
+        ;; and an untouched one at plus one, whichever order the writes land.
+        aged (try (age! conn run-id) (catch Throwable _ 0))
+        written (when (seq findings) (distill! conn findings {:run-id run-id}))
         verdicts (when (seq experiments)
                    (distill-verdicts! conn experiments {:run-id run-id}))
         ;; And what the run learned about the PROJECT, which is the half that
@@ -717,9 +857,12 @@
                      (catch Throwable _ nil))
         ;; And curation, so the store does not become a ranking in which
         ;; everything has risen.
-        decayed (try (curate! conn) (catch Throwable _ 0))]
+        decayed (try (curate! conn) (catch Throwable _ 0))
+        ;; And the bound on the working set, after decay has had its say
+        ;; about who is lowest.
+        evicted (try (evict! conn) (catch Throwable _ []))]
     {:findings (vec written) :verdicts (vec verdicts) :project (vec project)
-     :decayed decayed}))
+     :aged aged :decayed decayed :evicted (vec evicted)}))
 
 (defn standing
   "The memories with the highest standing, whatever they are about — what this

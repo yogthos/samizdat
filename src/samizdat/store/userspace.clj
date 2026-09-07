@@ -215,6 +215,49 @@
                                            WHERE v.kind = userspace.kind
                                              AND v.name = userspace.name)")])))
 
+(defn drift
+  "How much each userspace surface has moved: per kind, the names edited, the
+  saves, the reverts among them, the standing those versions earned, and the
+  most-edited names — most-moved kind first.
+
+  THE ANALOGUE OF MEASURING PER-LAYER DRIFT AFTER AN ADAPTATION, for a layer
+  that adapts by editing itself. A run that fine-tunes a model measures which
+  weights moved; a supervisor that tunes a harness has had no way to see
+  which surface it and its predecessors keep touching, or which edits keep
+  being undone — the oscillation karamazov-c58 recorded showed up only as two
+  rows in one name's history. Project-authored rows only: factory copies are
+  the baseline, not a tuning. A revert is a save whose rationale `revert!`
+  wrote, so it is counted as both.
+
+  `since` bounds it to versions created at or after a timestamp (the caller
+  turns \"the last n runs\" into one with `runs/nth-recent-start`); nil is
+  everything. `top-names` caps the churn list per kind (karamazov-00qw)."
+  [conn {:keys [since top-names]}]
+  (let [rows (db/fetch conn ["SELECT kind, name, rationale, success_count, failure_count
+                              FROM userspace
+                              WHERE source = 'project' AND (? IS NULL OR created_at >= ?)
+                              ORDER BY kind, name, version"
+                             since since])
+        revert? #(str/starts-with? (str (:rationale %)) "revert to v")
+        sum-of (fn [k rs] (reduce + 0 (map #(or (get % k) 0) rs)))]
+    (->> (group-by :kind rows)
+         (mapv (fn [[kind rs]]
+                 (let [churn (->> (group-by :name rs)
+                                  (mapv (fn [[nm vs]]
+                                          {:name nm :saves (count vs)
+                                           :reverts (count (filter revert? vs))}))
+                                  (sort-by (juxt (comp - :reverts) (comp - :saves) :name))
+                                  vec)]
+                   {:kind kind
+                    :names (count churn)
+                    :saves (count rs)
+                    :reverts (count (filter revert? rs))
+                    :shipped (sum-of :success_count rs)
+                    :failed (sum-of :failure_count rs)
+                    :churn (if top-names (vec (take top-names churn)) churn)})))
+         (sort-by (juxt (comp - :saves) :kind))
+         vec)))
+
 (defn names
   "Every name at `kind`, with its latest version and how many versions it
   has — the catalogue a tool lists."

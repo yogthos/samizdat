@@ -831,3 +831,31 @@
         (is (re-find #"\[from the shipped template\]"
                      (:result (run {:action "show" :name "problem"})))))
       (finally (rm-rf (java.io.File. root))))))
+
+;; --- drift: how much each surface has moved (karamazov-00qw) -----------------
+
+(deftest drift-counts-saves-reverts-and-standing-per-surface
+  ;; The analogue of measuring per-layer parameter drift after an adaptation,
+  ;; for the layer that adapts by editing itself: which surface is churning,
+  ;; which edits keep getting reverted, and what standing the versions earned.
+  ;; Factory copies are the baseline, not a tuning, and do not count.
+  (store/seed! *conn* :prompt "system" "the template")
+  (store/save! *conn* :prompt "system" "v2" "project" "tightened the split rule")
+  (store/save! *conn* :prompt "system" "v3" "project" "and again")
+  (store/revert! *conn* :prompt "system" 2 "v3 made the model hedge")
+  (store/save! *conn* :cell "loop" "c2" "project" "a cell edit")
+  (store/record-run-outcome! *conn* true)
+  (let [d (store/drift *conn* {})
+        by-kind (into {} (map (juxt :kind identity)) d)]
+    (is (= #{"prompt" "cell"} (set (keys by-kind))) "seeded rows are not drift")
+    (is (= {:names 1 :saves 3 :reverts 1 :shipped 1 :failed 0}
+           (select-keys (by-kind "prompt") [:names :saves :reverts :shipped :failed]))
+        "three project versions of one name, one of them a revert; the
+         current one has survived a green run")
+    (is (= [{:name "system" :saves 3 :reverts 1}] (:churn (by-kind "prompt"))))
+    (is (= "prompt" (:kind (first d))) "the surface that moved most comes first"))
+  (testing "the window bounds it, and top-names bounds the churn list"
+    (is (empty? (store/drift *conn* {:since "9999-01-01T00:00:00.000Z"})))
+    (store/save! *conn* :cell "beam" "b2" "project" "another cell")
+    (is (= 1 (count (:churn (first (filter #(= "cell" (:kind %))
+                                           (store/drift *conn* {:top-names 1})))))))))

@@ -1060,3 +1060,63 @@
         (is (contains? kinds "branch-opened"))
         (is (contains? kinds "branch-rejoined")
             "the record distinguishes a first open from a resume's rejoin")))))
+
+(deftest a-branch-row-carries-the-role-it-ran-as
+  ;; The role scoped the tool surface and picked the system prompt, and it
+  ;; lived only on the in-memory branch — so every rebuild from the journal
+  ;; (resume, export) opened the branch as the unscoped default.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "SUP" :role :supervisor})
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (is (= "supervisor" (:role (runs/get-branch c rid "SUP"))))
+      (is (nil? (:role (runs/get-branch c rid "B1"))) "nil is the unscoped default")
+      (runs/open-branch! c rid {:branch-id "SUP" :role :implementor})
+      (is (= "supervisor" (:role (runs/get-branch c rid "SUP")))
+          "a rejoin keeps the row, role included"))))
+
+(deftest a-branch-row-carries-the-suffix-it-opened-on
+  ;; The suffix — the board's owner prompt, a decompose unit's attempt
+  ;; framing, the supervisor's role text — was built by the cell at open time
+  ;; and never written down, so every rebuild from the journal (resume,
+  ;; export) opened the branch on the workflow's :prompt instead
+  ;; (karamazov-kgvg). Now on the row, beside the problem and the role.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "SUP" :prompt-suffix "You watch the run."})
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (is (= "You watch the run." (:prompt_suffix (runs/get-branch c rid "SUP"))))
+      (is (= "" (:prompt_suffix (runs/get-branch c rid "B1")))
+          "opening on no suffix is RECORDED as none — NULL is a row older than the column")
+      (runs/open-branch! c rid {:branch-id "SUP" :prompt-suffix "something else"})
+      (is (= "You watch the run." (:prompt_suffix (runs/get-branch c rid "SUP")))
+          "a rejoin keeps the row, suffix included"))))
+
+(deftest timestamps-are-fixed-width-so-every-table-sorts-the-same-way
+  ;; Instant.toString drops the fraction when it is zero: "…:40Z" beside
+  ;; "…:40.123Z". 'Z' sorts after '.', so the whole-second stamp landed AFTER
+  ;; every fractional stamp in its own second, and `now`'s promise — one
+  ;; function so every table sorts the same way — held 999 times in 1000.
+  (is (= "2023-11-14T22:13:20.000Z" (db/iso-millis "2023-11-14T22:13:20Z")))
+  (is (= "2023-11-14T22:13:20.500Z" (db/iso-millis "2023-11-14T22:13:20.5Z")))
+  (is (= "2023-11-14T22:13:20.123Z" (db/iso-millis "2023-11-14T22:13:20.123456Z"))
+      "truncated, not rounded: a stamp must never sort after one taken later")
+  (is (neg? (compare (db/iso-millis "2023-11-14T22:13:20Z")
+                     (db/iso-millis "2023-11-14T22:13:20.123Z"))))
+  (is (re-matches #"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z" (db/now))))
+
+(deftest the-nth-most-recent-run-start-bounds-a-window-in-runs
+  ;; "The last N runs" as a timestamp bound, for tables that carry a
+  ;; created_at and no run id. nil when fewer than N runs exist: a store
+  ;; younger than its window is read whole.
+  (with-db [c]
+    (is (nil? (runs/nth-recent-start c 1)) "no runs: no bound")
+    (let [r1 (runs/start-run! c {:problem "a"})
+          _ (Thread/sleep 5)
+          r2 (runs/start-run! c {:problem "b"})
+          _ (Thread/sleep 5)
+          r3 (runs/start-run! c {:problem "c"})]
+      (is (= (:started_at (runs/get-run c r3)) (runs/nth-recent-start c 1)))
+      (is (= (:started_at (runs/get-run c r2)) (runs/nth-recent-start c 2)))
+      (is (= (:started_at (runs/get-run c r1)) (runs/nth-recent-start c 3)))
+      (is (nil? (runs/nth-recent-start c 4))))))

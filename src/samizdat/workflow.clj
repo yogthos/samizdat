@@ -361,7 +361,8 @@
              ;; development against the live image.
              :repl-session (repl/new-session)
              :max-turns max-turns}]
-    (runs/open-branch! conn run-id {:branch-id "B1"})
+    (runs/open-branch! conn run-id {:branch-id "B1"
+                                    :prompt-suffix (workflow-prompt definition)})
     ;; The window findings are evaluated over.
     (session/mark-run! run-id)
     ;; The single-branch driver drains the same interventions queue the beam

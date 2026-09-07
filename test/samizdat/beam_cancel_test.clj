@@ -9,6 +9,7 @@
   (:require [clojure.test :refer [deftest testing is]]
             [ebb.core :as ebb]
             [samizdat.agent.beam :as beam]
+            [samizdat.agent.critic :as critic]
             [samizdat.agent.state :as state]
             [samizdat.api.control :as api-control]
             [samizdat.cancel :as cancel]
@@ -125,3 +126,35 @@
             (Thread/sleep 50)
             (is (not (contains? @api-control/active rid)) "deregistered when it ended"))))
       (finally (db/close c)))))
+
+;; --- the driver runs on a fiber, and so must these tests -------------------
+;;
+;; Every test above drives advance-all from the test thread, where a park is
+;; a plain block and jolt asserts nothing. The live driver is an sp process
+;; on a fiber, and there a park under a counted lock throws "a fiber cannot
+;; leave the CPU while its carrier holds a counted lock". jolt's `mapv` is
+;; (vec (map …)), so a park inside its function IS under one — which is how
+;; the first live run on ebb died at the spawn handshake in advance-all
+;; (2026-09-07, karamazov-p3jo) while the whole suite stayed green. Measured
+;; in isolation: (ebb/sp (mapv #(ebb/? (ebb/sleep 10)) xs)) throws that
+;; error, (ebb/sp (reduce …)) does not. Driven this way against the old
+;; advance-all, the first of these did not fail but HUNG the calling thread
+;; (fifteen minutes at 0% CPU), so a hang here is the bug, not a slow test.
+
+(deftest advancing-a-branch-whose-turn-parks-works-on-a-fiber
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (with-redefs [beam/advance-branch (fn [_ b _]
+                                        (ebb/? (ebb/sleep 20))
+                                        (assoc b :advanced true))]
+      (let [[r] (ebb/? (ebb/sp (beam/advance-all (ctx 2000) [b] 1)))]
+        (is (true? (:advanced r)) "the turn ran and its result came back")
+        (is (nil? (:timeouts r)))))))
+
+(deftest scoring-a-branch-whose-critic-parks-works-on-a-fiber
+  (let [b (state/new-branch {:id "B1" :problem "p"})]
+    (with-redefs [critic/score! (fn [_ _ _ turn]
+                                  (ebb/? (ebb/sleep 20))
+                                  {:scores {:progress 3 :momentum 3 :distinctness 3 :viability 3}
+                                   :turn turn})]
+      (let [[r] (ebb/? (ebb/sp (beam/ensure-scored {} [b] 1)))]
+        (is (= 3 (get-in r [:critic :scores :progress])))))))

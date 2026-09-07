@@ -34,9 +34,13 @@
   - failures are re-read fresh by the loop from the shared log, as always.
   - message history from the turns table: assistant_text is what the model
     said, result is what the harness answered, over the system prompt and the
-    run's recorded problem (loop/initial-messages). Steer messages that fired
-    pre-crash are not in the journal, so they are not replayed; that is good
-    enough for the model to continue and is the accepted fidelity gap.
+    branch's recorded problem (loop/initial-messages). Steer messages that
+    fired pre-crash are not in the journal, so they are not replayed; that is
+    good enough for the model to continue and is the accepted fidelity gap.
+  - the role and the prompt suffix the branch opened on (branches row, v23
+    and v24), so the system message is the role's prompt plus the text the
+    cell appended. A row older than v24 takes the run manifest's :prompt,
+    which is what every rebuild used before the column.
 
   REPLAYS CONSERVATIVELY, recomputed so no guard re-fires on its own past:
   - consecutive-failures, turns-since-progress, any-progress? from the turns
@@ -137,18 +141,20 @@
   "The message history a continuing model needs: what it said, and what the
   harness answered, over the system prompt and the problem.
 
-  `prompt-suffix` is the run manifest's own `:prompt`. The system message is
-  REBUILT here rather than replayed — the journal stores turns, not the
-  prompt — so a resume that omitted it dropped the workflow's framing at the
-  crash: a review run came back building features."
-  [problem prompt-suffix turns]
+  `prompt-suffix` is what the branch opened on: the row's recorded suffix, or
+  the run manifest's own `:prompt` for a row older than the column. The
+  system message is REBUILT here rather than replayed — the journal stores
+  turns and the suffix, not the rendered prompt — so a resume that omitted
+  the suffix dropped the workflow's framing at the crash: a review run came
+  back building features."
+  [problem prompt-suffix role turns]
   (reduce (fn [msgs t]
             (cond-> msgs
               (seq (:assistant_text t))
               (conj {:role "assistant" :content (:assistant_text t)})
               (seq (:result t))
               (conj {:role "user" :content (:result t)})))
-          (branch-loop/initial-messages problem prompt-suffix)
+          (branch-loop/initial-messages problem prompt-suffix role)
           turns))
 
 (defn- rebuild-branch
@@ -163,6 +169,17 @@
         ;; every branch on the run-level problem re-aimed every worker at the
         ;; top-level feature text (karamazov-blt.23).
         problem (or (not-empty (str (:problem branch-row))) (:problem run))
+        ;; The role it ran as, from the row (v23): it scopes the tool surface
+        ;; and picks the system prompt, and a rebuild that dropped it handed
+        ;; a resumed supervisor the implementor's catalogue.
+        role (some-> (:role branch-row) not-empty keyword)
+        ;; The suffix it opened on, from the row (v24): what the cell handed
+        ;; initial-messages — an owner prompt, a unit's attempt framing, the
+        ;; supervisor's role text. "" is a recorded none. Only a row older
+        ;; than the column (NULL) falls back to the manifest's :prompt, which
+        ;; is what every rebuild used before and what the beam's own branches
+        ;; opened on (karamazov-kgvg).
+        suffix (if-some [s (:prompt_suffix branch-row)] s prompt-suffix)
         branch-turns (get turns branch-id [])
         ;; The phase is rebuilt from the banked sketch artifacts: a sketch on
         ;; record means the branch left explore, and its turn is the phase
@@ -177,9 +194,11 @@
                                     :problem problem
                                     :created-at-turn (:created_at_turn branch-row)
                                     :messages (messages-from-turns problem
-                                                                   prompt-suffix
+                                                                   suffix
+                                                                   role
                                                                    branch-turns)})
                  (assoc :status (keyword (:status branch-row))
+                        :role role
                         :inactive-reason (:inactive_reason branch-row)
                         :thesis (parse-json (:thesis branch-row))
                         :artifacts artifact-maps

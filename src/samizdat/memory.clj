@@ -90,29 +90,51 @@
       (:confidence-weight p))))
 
 (defn- recently-used?
-  [{:keys [last_used_at]} p now]
-  (boolean
-   (when last_used_at
-     (>= (compare (str last_used_at)
-                  (str (.minusSeconds ^java.time.Instant now
-                                      (* 86400 (long (:recent-use-window-days p))))))
-         0))))
+  "Used, and within the window — a window counted in RUNS, not days.
+
+  A run is an opportunity for a memory to be needed; a day is not. The
+  wall-clock window this replaced never fired across a whole campaign (every
+  row was younger than it) while the store had sunk to the floor by another
+  path (karamazov-4ay9). `idle_runs` is bumped at each run end the memory
+  was not used in and reset when it is; a memory never used has no recency
+  to speak of, whatever its count says."
+  [{:keys [last_used_at idle_runs]} p]
+  (boolean (and last_used_at
+                (<= (long (or idle_runs 0))
+                    (long (:recent-use-window-runs p))))))
+
+(defn corroboration-bonus
+  "The bounded contribution of having been seen again by other runs.
+
+  A bounded associative memory ranks a slot by the attention it accumulates;
+  here a pattern accumulates the DISTINCT runs that re-observed it, which the
+  store already counted and ranked by nowhere — so a finding confirmed by
+  seven runs sat at the floor under a command that worked once
+  (karamazov-4ay9). Same shape as `effectiveness`: zero for the first
+  sighting, which is an observation and not a pattern; log-damped so the
+  second buys the most and repetition cannot buy the top; capped the same."
+  ([corroborations] (corroboration-bonus corroborations (policy)))
+  ([corroborations p]
+   (let [n (max 1 (long (or corroborations 1)))]
+     (min (* (Math/log10 (double n)) (:corroboration-weight p))
+          (:corroboration-cap p)))))
 
 (defn effective-salience
   "What a memory is worth right now: its stored importance, plus what its use
   and its record say about it.
 
-    salience + recent-use bonus + effectiveness + confidence
+    salience + recent-use bonus + effectiveness + corroboration + confidence
 
   This is a RANKING number, not a stored one. `salience` moves slowly, by
-  reinforcement and decay; the other three terms are read off the row every
-  time, so a memory's standing reflects what has happened to it without
-  anything having to rewrite it."
-  ([row] (effective-salience row (policy) (java.time.Instant/now)))
-  ([row p now]
+  reinforcement and decay; the other terms are read off the row every time,
+  so a memory's standing reflects what has happened to it without anything
+  having to rewrite it."
+  ([row] (effective-salience row (policy)))
+  ([row p]
    (+ (double (or (:salience row) (base-salience (:kind row) p)))
-      (if (recently-used? row p now) (:recent-use-bonus p) 0.0)
+      (if (recently-used? row p) (:recent-use-bonus p) 0.0)
       (effectiveness (:success_count row) (:failure_count row) p)
+      (corroboration-bonus (:corroborations row) p)
       (confidence-bonus (:confidence row) p))))
 
 (defn reinforced
@@ -144,8 +166,8 @@
   delivered oldest-first while its docstring promised recency —
   karamazov-blt.38): a two-term bm25 winner lost its place to a one-term
   match that happened to be newer."
-  ([rows] (rank rows (policy) (java.time.Instant/now)))
-  ([rows p now]
+  ([rows] (rank rows (policy)))
+  ([rows p]
    (->> rows
-        (sort-by #(- (effective-salience % p now)))
+        (sort-by #(- (effective-salience % p)))
         vec)))

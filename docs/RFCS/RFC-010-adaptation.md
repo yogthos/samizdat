@@ -72,10 +72,21 @@ Long-term memory ranks by **effective salience**:
 
 ```
 salience  (by kind, reinforced by use, decayed by disuse)
-+ recent-use bonus
++ recent-use bonus  (used within the last N RUNS — the clock is runs, not days)
 + effectiveness   (log-damped, signed, capped — did acting on it work?)
++ corroboration   (log-damped, capped — how many distinct runs re-observed it?)
 + confidence      (centred, weighted low — is it likely TRUE?)
 ```
+
+The clock the store ages by is runs, not days: a run is an opportunity for a
+memory to be needed, a day is not. `idle_runs` counts the run ends a memory
+existed through without being used or re-observed; `age!` advances it once
+per run end, and decay begins only past the window. The working set
+(`current = 1`) is bounded per kind: over the cap, the lowest-standing rows
+are retired with the reason `evicted`, still readable by id and in their
+lineage — demotion, never deletion. Episodes seen in enough distinct runs are
+surfaced to the supervisor as candidates for a rule; the store never promotes
+one itself.
 
 Salience and confidence are separate axes on purpose: a fact can be important
 but contested, or trivial but certain, and collapsing them loses the
@@ -155,7 +166,8 @@ All pure; every constant is `gates.edn :memory`.
 ### `samizdat.store.knowledge` — long-term memory
 
 `remember!` `recall` `standing` `touch!` `record-outcome!` `corroborate!`
-`corroborated?` `by-pattern` `distill!` `distill-verdicts!` `forget!`.
+`corroborated?` `by-pattern` `distill!` `distill-verdicts!` `forget!`
+`age!` `curate!` `evict!` `graduation-candidates`.
 
 ## Protocol
 
@@ -171,12 +183,17 @@ watcher thread (every :poll-ms)
             └─ drained at the next turn boundary, like a human's
 
 supervisor role (between rounds, in workflows that wire it)
-  └─ reads: session/render, knowledge/standing, experiment verdicts
+  └─ reads: session/render, knowledge/standing and graduation-candidates,
+            userspace drift (store.userspace/drift), experiment verdicts
   └─ acts:  experiment! → edit userspace → verdict → revert or keep
 
-run end (beam/run-rounds finally)
+run end (both drivers, knowledge/distil-session!)
+  ├─ knowledge/age!              one more run every untouched memory went unused in
   ├─ knowledge/distill!          findings  → episodic memory, corroborated
-  └─ knowledge/distill-verdicts! verdicts  → procedural memory, outcome recorded
+  ├─ knowledge/distill-verdicts! verdicts  → procedural memory, outcome recorded
+  ├─ knowledge/distil-project!   shell facts → semantic memory, one per command as it RAN
+  ├─ knowledge/curate!           decay past the window, in runs
+  └─ knowledge/evict!            retire the lowest-standing rows over a kind's cap
 ```
 
 ## Invariants
@@ -191,6 +208,9 @@ run end (beam/run-rounds finally)
 | A pattern is corroborated only by DISTINCT runs. | `last_run_id` guard in `corroborate!`; `knowledge-test`. |
 | A finding becomes one memory, however often it recurs. | `pattern_key` column; `knowledge-test/one-lever-worded-two-ways-is-one-record`. |
 | Recall reinforces; being shown by default does not. | `recall` calls `touch!`, `standing` does not; `knowledge-test`. |
+| A memory is not aged by the run that wrote it. | `age!` ages only rows created before the run started; `knowledge-test/a-memory-written-this-run-does-not-decay-when-the-run-ends`. |
+| Eviction retires; it never deletes. | `evict!` goes through `retire!`; `knowledge-test/over-the-cap-the-lowest-standing-memories-are-retired-not-deleted`. |
+| The store surfaces graduation candidates; it never promotes one. | `graduation-candidates` is a read; `oversight-pass.md` hands the decision to the supervisor. |
 | An unfinished experiment teaches nothing. | `distill-verdicts!` skips `:too-early`; `session-test`. |
 | Fitness is `nil`, never `0.0`, with no turns. | `fitness-of`'s `(when (pos? turns) …)`; `session-test`. |
 
