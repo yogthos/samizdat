@@ -47,6 +47,7 @@
             [samizdat.config :as config]
             [samizdat.hashline :as hashline]
             [samizdat.llm.client :as llm]
+            [samizdat.llm.message :as message]
             [samizdat.llm.registry :as registry]
             [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]))
@@ -120,7 +121,21 @@
                           {:role "user" :content (str question "\n\n" text)}]]
             (try
               (let [reply (llm/chat adapter config messages)
-                    answer (str/trim (str (:content reply)))]
+                    ;; The client folds a reasoning model's thinking into
+                    ;; :content as a <think> block for the loop's fence parser
+                    ;; to strip; a digest is prose for the branch, so it is
+                    ;; stripped here. The first real digest of the validation
+                    ;; run came back as 1,790 tokens of reasoning around eight
+                    ;; bullets. And a reader that ignores its budget does not
+                    ;; get to fill the branch's context anyway: twice the
+                    ;; budget is the ceiling, named when it clips.
+                    answer (message/strip-think-blocks (str (:content reply)))
+                    ceiling (* 2 (:budget-chars policy))
+                    answer (if (> (count answer) ceiling)
+                             (str (subs answer 0 ceiling) "\n"
+                                  (msg {:clipped-answer (- (count answer) ceiling)
+                                        :ceiling ceiling}))
+                             answer)]
                 (when (and conn run-id)
                   (journal/note! conn run-id :digest
                                  {:branch-id (:id branch)

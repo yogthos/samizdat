@@ -158,6 +158,23 @@
       (is (= 10 (get-in n [:usage :prompt_tokens])))
       (is (pos? (:chars-in n)) "and how much the branch did not have to read"))))
 
+(deftest the-readers-thinking-is-not-the-answer
+  ;; The client merges a reasoning model's thinking into :content as a
+  ;; <think> block for the loop's fence parser to strip. The validation run's
+  ;; first real digest (deepseek-v4-flash) came back as 1,790 tokens of
+  ;; reasoning wrapped around eight bullets — prose, and far over budget, the
+  ;; exact payload the routing exists to keep out of the branch.
+  (file! "src/a.clj" ["(ns a)" "(def x 1)"])
+  (let [budget (:budget-chars (gates/digest-policy))]
+    (testing "a think block is dropped"
+      (with-redefs [llm/chat (capturing-chat (atom []) "<think>let me look\nat x</think>\n- x: 1")]
+        (is (= "- x: 1" (:result (tools-base/run-tool (ctx :args {:paths ["src/a.clj"] :question "x?"})))))))
+    (testing "an answer far over budget is clipped, and says so"
+      (with-redefs [llm/chat (capturing-chat (atom []) (str/join "\n" (repeat (* 3 budget) "- a")))]
+        (let [r (:result (tools-base/run-tool (ctx :args {:paths ["src/a.clj"] :question "x?"})))]
+          (is (<= (count r) (+ (* 2 budget) 200)) "twice the budget is the ceiling")
+          (is (str/includes? r "clipped") "and the clip is named"))))))
+
 ;; --- the refusal ---------------------------------------------------------------
 
 (deftest an-untargeted-read-of-a-large-file-is-refused-toward-the-digest
