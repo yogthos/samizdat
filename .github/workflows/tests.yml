@@ -270,22 +270,42 @@ jobs:
 
       - name: Boot battery
         run: |
-          sudo apt-get install -y -qq gdb strace >/dev/null 2>&1 || true
+          set +e
+          sudo apt-get install -y -qq gdb strace >/dev/null 2>&1
+          free -m
+          # Run in the background and sample RSS every 2 s: a runaway
+          # allocation shows as a climb, a hang as a flat line. Stop on the
+          # nREPL banner (boot succeeded), on death, or at the deadline; then
+          # INT, then KILL, and always clear the port for the next run.
           try() {
             local name=$1 secs=$2; shift 2
             echo; echo "=================== $name"
             rm -f ci.sqlite3 .nrepl-port
-            timeout -k 10 -s INT "$secs" "$@" >"$name.log" 2>&1; rc=$?
-            echo "--- exit $rc; last 6000 bytes of $name.log:"
-            tail -c 6000 "$name.log"; echo
+            "$@" >"$name.log" 2>&1 &
+            local pid=$! t=0 rss
+            while [ "$t" -lt "$secs" ]; do
+              kill -0 "$pid" 2>/dev/null || { echo "died at t=${t}s"; break; }
+              rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
+              echo "t=${t}s rss=$(( ${rss:-0} / 1024 ))MB"
+              grep -q 'nrepl  127.0.0.1' "$name.log" 2>/dev/null && { echo "booted at t=${t}s"; break; }
+              sleep 2; t=$((t+2))
+            done
+            if kill -0 "$pid" 2>/dev/null; then kill -INT "$pid"; sleep 6; kill -KILL "$pid" 2>/dev/null; fi
+            wait "$pid"; echo "--- exit $?; last 4000 bytes of $name.log:"
+            tail -c 4000 "$name.log"; echo
+            pkill -9 -x samizdat 2>/dev/null; sleep 1
           }
           try plain      40 env HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
           try heap-off   40 env JOLT_MAX_HEAP=off HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
-          try trace-load 60 env JOLT_TRACE_LOAD=1 HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
-          try strace     90 env HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 strace -f -o strace.txt ./samizdat
-          echo "=================== strace: last 120 lines"; tail -n 120 strace.txt || true
-          echo "=================== strace: signals and writes to fd 2"; grep -E 'SIG[A-Z]+|write\(2,' strace.txt | tail -n 40 || true
-          try gdb 90 gdb -batch -ex 'set env HARNESS_PORT 3010' -ex 'set env HARNESS_DB ci.sqlite3' \
+          try trace-load 40 env JOLT_TRACE_LOAD=1 HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
+          # gdb: SIGINT to a batch gdb stops the inferior wherever it is and
+          # runs the remaining -ex commands, so a hang gets a backtrace too.
+          try gdb 30 gdb -batch -ex 'set env HARNESS_PORT 3010' -ex 'set env HARNESS_DB ci.sqlite3' \
             -ex run -ex 'bt 40' -ex 'info threads' -ex 'thread apply all bt 15' ./samizdat
+          try strace 30 strace -f -o strace.txt env HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
+          echo "=================== strace: syscall histogram"; awk -F'(' '{print $1}' strace.txt | awk '{print $NF}' | sort | uniq -c | sort -rn | head -n 15
+          echo "=================== strace: mmap/brk growth and signals"; grep -E 'mmap|brk|SIG[A-Z]+|killed by|write\(2,' strace.txt | tail -n 40
+          echo "=================== strace: last 40 lines"; tail -n 40 strace.txt
+          echo "=================== dmesg (oom)"; sudo dmesg 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -n 20
           echo; echo "=================== verdict"
           grep -q 'nrepl  127.0.0.1' plain.log && echo "plain boot: OK" || { echo "plain boot: FAILED"; exit 1; }
