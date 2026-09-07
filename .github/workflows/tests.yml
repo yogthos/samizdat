@@ -7,6 +7,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One jolt for every job, pinned. The installer takes the latest release when
+# given nothing, and that is how a release broke CI with no change here:
+# jolt 0.8.5 (2026-09-07) builds a binary of this project that aborts inside
+# Chez's boot-image load — Sbuild_heap → fasl_entry → S_error3 → abort —
+# before a line of the harness runs, while 0.8.4 builds one that boots
+# (karamazov-vhkj, runs 34163508432 and 34164001637). The canary job at the
+# bottom builds on the latest release and says when this can move.
+env:
+  JOLT_VERSION: "0.8.4"
+
 # Cancel in-progress runs on the same ref when a new commit lands.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,7 +26,11 @@ jobs:
   fast:
     name: test suite
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite has taken 16 to 19.6 minutes on every run since 2026-09-02,
+    # and the ebb-adoption push (34077739800) was killed AT 20 by this limit
+    # with nothing wrong in the tests. A timeout is for a hang, so it sits
+    # well clear of the honest duration.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +69,7 @@ jobs:
           # installer starts with a shebang. Guard against running a stray page.
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -115,7 +129,7 @@ jobs:
           # installer starts with a shebang. Guard against running a stray page.
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -126,6 +140,20 @@ jobs:
 
       - name: Fetch dependencies
         run: jolt -P
+
+      - name: Install the GUI's native toolkit
+        # cold-load runs under -A:test:gui (dev/cold-load.sh says why), and
+        # jolt loads every :jolt/native that ANY dep on the classpath declares
+        # before a single namespace is required. glimmer-gtk declares GTK4 and
+        # GLib, glimmer-gl declares OpenGL; without them on the host every one
+        # of the 26 namespaces died in load-natives! before it could prove
+        # anything about the shim — including the 24 that never touch the GUI.
+        # dlopen needs no display, and glimmer-gtk.core only registers its
+        # backend at load, so a headless runner can load the gui namespaces
+        # too.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-4-1 libgl1
 
       - name: Cold load
         # Every namespace that touches a shimmed library, loaded in its OWN
@@ -170,7 +198,7 @@ jobs:
           test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -221,7 +249,7 @@ jobs:
           test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -243,13 +271,83 @@ jobs:
       # it fails on auth AFTER the handshake — so the thing to assert is the
       # absence of the fault, which needs no secret.
       - name: Binary starts and serves
+        # boot.log is printed BEFORE the first assertion: the step runs under
+        # `bash -e`, so a failed health check ended it with the log unread and
+        # a bare "Aborted (core dumped)" as the only evidence. The wait also
+        # stops as soon as the process is gone rather than sleeping out the
+        # full minute on a binary that died at boot.
         run: |
           HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat >boot.log 2>&1 &
+          pid=$!
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:3010/health >/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
             sleep 2
           done
+          head -c 20000 boot.log; echo
           curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
-          cat boot.log
           ! grep -q 'invalid memory reference' boot.log
           grep -q 'nrepl  127.0.0.1' boot.log
+
+  canary:
+    # The JOLT_VERSION pin's exit. The same build and boot on the LATEST jolt
+    # release, allowed to fail: red means the pin still stands and the head of
+    # this boot log is the upstream report; green means the pin can move. Never
+    # a required check.
+    name: standalone binary on latest jolt (canary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: fast
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the latest jolt
+        # See the fast job for why: authenticated API fetch dodges the anonymous
+        # raw.githubusercontent 403 rate limit, with a raw fallback and retries.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fetch() {
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw+json" \
+              https://api.github.com/repos/jolt-lang/jolt/contents/install?ref=main \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            return 1
+          }
+          for i in 1 2 3 4 5; do
+            fetch && break
+            echo "installer fetch attempt $i failed; retrying in $((i * 8))s" >&2
+            sleep $((i * 8))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          head -1 /tmp/jolt-install | grep -q '^#!' \
+            || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
+
+      - name: Build
+        run: jolt build -m samizdat.core -o samizdat
+
+      - name: Binary starts and serves
+        run: |
+          HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat >boot.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 30); do
+            grep -q 'nrepl  127.0.0.1' boot.log 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 2
+          done
+          echo "--- boot.log, first 3000 bytes"; head -c 3000 boot.log; echo
+          echo "--- boot.log, last 1500 bytes"; tail -c 1500 boot.log; echo
+          curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
