@@ -878,29 +878,33 @@
 (defn- wrap-handler-with-error-catch
   "Wraps a cell handler with try/catch. On error, returns data with
    :mycelium/error {:cell cell-name, :message msg}.
-   Handles both sync (2-arity) and async (4-arity) handlers."
-  [handler cell-name async?]
+   Handles both sync (2-arity) and async (4-arity) handlers.
+   A throwable `rethrow?` accepts (a control signal, see pre-compile's
+   :rethrow? opt) is rethrown rather than recorded."
+  [handler cell-name async? rethrow?]
   (let [make-error (fn [data e]
                      (assoc data :mycelium/error
                             {:cell    cell-name
-                             :message (or (ex-message e) (.toString e))}))]
+                             :message (or (ex-message e) (.toString e))}))
+        rethrow? (or rethrow? (constantly false))]
     (if async?
       (fn [resources data callback error-callback]
         (try
           (handler resources data
                    callback
-                   (fn [e] (callback (make-error data e))))
+                   (fn [e] (if (rethrow? e) (error-callback e) (callback (make-error data e)))))
           (catch Throwable e
-            (callback (make-error data e)))))
+            (if (rethrow? e) (throw e) (callback (make-error data e))))))
       (fn [resources data]
         (try
           (handler resources data)
           (catch Throwable e
-            (make-error data e)))))))
+            (if (rethrow? e) (throw e) (make-error data e))))))))
 
 (defn- apply-error-group-wrapping
-  "Wraps handlers of cells in error groups with try/catch error catching."
-  [state->cell error-groups]
+  "Wraps handlers of cells in error groups with try/catch error catching.
+   `rethrow?` (pre-compile :rethrow?) names the throwables that pass through."
+  [state->cell error-groups rethrow?]
   (if (empty? error-groups)
     state->cell
     (let [grouped-cells (set (mapcat :cells (vals error-groups)))]
@@ -908,7 +912,7 @@
                 (let [state-id (resolve-state-id cell-name)]
                   (if-let [cell (get acc state-id)]
                     (assoc acc state-id
-                           (update cell :handler wrap-handler-with-error-catch cell-name (:async? cell)))
+                           (update cell :handler wrap-handler-with-error-catch cell-name (:async? cell) rethrow?))
                     acc)))
               state->cell
               grouped-cells))))
@@ -1305,7 +1309,10 @@
    Returns the compiled (ready-to-run) FSM."
   ([workflow] (compile-workflow workflow {}))
   ([raw-workflow opts]
-   (let [{:keys [cells edges dispatches joins] :as workflow}
+   (let [;; The control-signal predicate every catch on the path consults
+         ;; before treating a throwable as a cell error (pre-compile :rethrow?).
+         rethrow? (or (:rethrow? opts) (constantly false))
+         {:keys [cells edges dispatches joins] :as workflow}
          (expand-pipeline raw-workflow)
          resolved (validate-workflow workflow opts)
          ;; Expand error groups before other processing.
@@ -1371,7 +1378,8 @@
                                      (assoc acc state-id
                                             (update cell :handler
                                                     resilience/wrap-handler cell-name policies
-                                                    {:async? (:async? cell)}))
+                                                    {:async? (:async? cell)
+                                                     :rethrow? (:rethrow? opts)}))
                                      acc)))
                                state->cell
                                resilience-map)
@@ -1379,7 +1387,7 @@
          ;; Apply graph-level timeouts (wraps handlers with timeout logic)
          state->cell (apply-graph-timeouts state->cell timeouts-map)
          ;; Apply error group wrapping (try/catch → :mycelium/error)
-         state->cell (apply-error-group-wrapping state->cell error-groups)
+         state->cell (apply-error-group-wrapping state->cell error-groups rethrow?)
          ;; Apply workflow-level interceptors (wraps cell handlers)
          wf-interceptors (:interceptors workflow)
          state->cell (apply-workflow-interceptors state->cell cell-ids wf-interceptors)
@@ -1458,7 +1466,8 @@
                             (when-let [on-end (:on-end opts)]
                               {::fsm/end {:handler on-end}}))
                :opts {:pre  pre
-                      :post post}}
+                      :post post
+                      :rethrow? rethrow?}}
          ;; Static analysis: catch structural issues Maestro can detect
          analysis (fsm/analyze spec)]
      (when (seq (:no-path-to-end analysis))

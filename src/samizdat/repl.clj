@@ -32,7 +32,9 @@
   arbitrary code execution in the harness process, by design: it is the
   mechanism the mutation protocol (karamazov-ioo.11) will build its
   checkpoint/soak/rollback safety around."
-  (:require [clojure.edn :as edn]
+  (:require [samizdat.cancel :as cancel]
+            [ebb.core :as ebb]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
@@ -230,7 +232,7 @@
          ;; the agent's features stays loaded after they are put back; what
          ;; does not survive is the ability to break every later read.
          features (__reader-features)
-         fut (future
+         body (fn []
                (try
                  (let [value (binding [*ns* ns* *out* out]
                                (let [forms (read-string (str "[" code "\n]"))]
@@ -295,16 +297,20 @@
                  (finally
                    (try (__reader-features-set! features)
                         (catch Throwable _ nil)))))
-         result (deref fut timeout ::timeout)]
-     (if (= result ::timeout)
-       (do (future-cancel fut)
-           {:ok false
-            :error (str "eval timed out after " timeout "ms — the code ran too long "
-                        "(an infinite loop or a heavy computation?). If it genuinely "
-                        "needs more time, pass a larger :timeout-ms.")
-            :error-type "timeout"
-            :out (str out)})
-       result))))
+         ;; One deadline idiom (RFC-013): the eval runs on a thread the
+         ;; caller parks on; at the budget it is cancelled — the interrupt
+         ;; reaches a sleep or a wait, not a tight loop — and detached, so
+         ;; control returns to the harness regardless.
+         [tag result] (cancel/with-deadline (ebb/via ebb/blk (body)) timeout)]
+     (case tag
+       :timeout {:ok false
+                 :error (str "eval timed out after " timeout "ms — the code ran too long "
+                             "(an infinite loop or a heavy computation?). If it genuinely "
+                             "needs more time, pass a larger :timeout-ms.")
+                 :error-type "timeout"
+                 :out (str out)}
+       :ok result
+       :err (throw result)))))
 
 (defn- resolve-sym
   "Resolve a fully-qualified or core symbol string to its var, or nil."

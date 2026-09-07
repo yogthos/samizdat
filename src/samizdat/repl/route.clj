@@ -133,6 +133,12 @@
     (image/stop! im))
   nil)
 
+(defn image-port
+  "The port of the live image for `ctx`'s root, or nil when none is up. For a
+  caller that wants to know whether an image survived something."
+  [{:keys [root]}]
+  (some-> (get @images root) :port))
+
 (defn release-all!
   "Stop every image. For shutdown, and for tests that must not leak a process."
   []
@@ -220,18 +226,26 @@
                                            (System/getProperty "os.name")
                                            (some? (fs/which "bwrap")))]
           (if-let [im (image-for! root backend)]
-          ;; The transport is an FFI socket with no read timeout, so the bound
-          ;; is a deadline on a future. On expiry the IMAGE goes: a runaway
-          ;; form keeps burning a core until the process holding it dies, and
-          ;; leaving it running would hand the next eval a busy image.
-          (let [f (future (image/eval-in im code session))
-                r (deref f timeout ::timeout)]
-            (if (= ::timeout r)
-              (do (release! root)
-                  (log/warn "project image eval timed out after" timeout "ms — image restarted")
+          ;; Bounded by the image itself (RFC-013): at the deadline the image
+          ;; is asked to interrupt the eval, which stops even a tight loop at
+          ;; the next engine tick, and the image survives with its defs. Only
+          ;; an eval that does not answer the interrupt — blocked in a
+          ;; foreign call the interrupt cannot reach — costs the image, since
+          ;; leaving it would hand the next eval a busy image.
+          (let [r (image/eval-in im code session {:timeout-ms timeout})]
+            (cond
+              (and (:timeout? r) (:interrupted? r))
+              (do (log/warn "project image eval timed out after" timeout
+                            "ms — interrupted, image kept")
                   {:ok false :error-type "timeout" :timeout? true
                    :error (prompt/render "image-timeout" {:ms timeout})})
-              (legible r root (not= :none backend))))
+              (:timeout? r)
+              (do (release! root)
+                  (log/warn "project image eval timed out after" timeout
+                            "ms and did not answer the interrupt — image restarted")
+                  {:ok false :error-type "timeout" :timeout? true
+                   :error (prompt/render "image-timeout" {:ms timeout})})
+              :else (legible r root (not= :none backend))))
             {:ok false :error-type "image-down"
              :error (prompt/render "image-down" {})}))))))
 

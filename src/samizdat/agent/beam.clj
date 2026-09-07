@@ -68,6 +68,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.select :as select]
+            [samizdat.cancel :as cancel]
             [samizdat.events :as events]
             [samizdat.agent.state :as state]
             [samizdat.prompt :as prompt]
@@ -333,6 +334,7 @@
   (if-not (and conn run-id)
     0
     (loop [waited 0]
+      (cancel/check!)
       (if (and abort @abort)
         waited
         (do
@@ -340,7 +342,7 @@
                   :when (#{"pause" "resume"} (:kind d))]
             (interventions/resolve! conn run-id (:id d) :applied nil nil))
           (if (interventions/paused? conn run-id)
-            (do (Thread/sleep (gates/threshold :pause-poll-ms))
+            (do (cancel/sleep! (gates/threshold :pause-poll-ms))
                 (recur (inc waited)))
             waited))))))
 
@@ -574,16 +576,17 @@
   [ctx branches turn]
   (let [deadline (when (get ctx :iterating-loop? true)
                    (or (:turn-deadline-ms ctx) (turn-deadline-ms)))
-        ;; {branch-id future} of turns that blew their deadline and are STILL
-        ;; executing. A forfeited turn's thread cannot be interrupted (and
-        ;; killing it mid-journal-write would be worse), but it shares the
-        ;; branch's eval session and journals under its id — so advancing the
-        ;; same branch again while it runs interleaved two turns of one branch
-        ;; and made the journal diverge from the live state
+        ;; {branch-id promise} of turns cancelled at their deadline and not yet
+        ;; terminated. A cancel is observed at the turn's next check
+        ;; (RFC-013); until then it is still a running turn that shares the
+        ;; branch's eval session and journals under its id, so advancing the
+        ;; same branch beside it would interleave two turns of one branch
         ;; (karamazov-blt.18). The branch forfeits again instead, until the
-        ;; dangling call completes; the wait is bounded by the provider socket
-        ;; timeout and the tool timeouts inside the turn.
-        in-flight (:in-flight ctx)
+        ;; promise settles. The bound is the innermost blocking wait, and
+        ;; samizdat.model.turn-journal-test proves the guard over every
+        ;; schedule — including that a cancel WITHOUT this registry is not
+        ;; enough.
+        cancelling (:cancelling ctx)
         forfeit (fn [b]
                   (-> b
                       (state/add-message
@@ -592,39 +595,48 @@
                                            {:seconds (quot (or deadline 0) 1000)})))
                       (update :timeouts (fnil inc 0))))
         pending (mapv (fn [b]
-                        (let [dangling (when in-flight (get @in-flight (:id b)))]
-                          (cond
-                            (and dangling (not (realized? dangling)))
-                            [b ::still-dangling]
-
-                            :else
-                            (do (when dangling (swap! in-flight dissoc (:id b)))
-                                [b (future
-                                     (try
-                                       (advance-branch ctx b turn)
-                                       (catch Throwable e
-                                         (log/warn "branch" (:id b) "died on turn" turn
-                                                   ":" (ex-message e))
-                                         (assoc b :status :abandoned
-                                                :inactive-reason
-                                                (str "branch error: " (ex-message e))))))]))))
+                        (let [prev (when cancelling (get @cancelling (:id b)))]
+                          (if (and prev (not (realized? prev)))
+                            [b ::still-cancelling]
+                            (do (when prev (swap! cancelling dissoc (:id b)))
+                                ;; Each turn is a task the beam holds the
+                                ;; canceller of. Started with a yield, so all
+                                ;; five start now rather than each after the
+                                ;; previous one's prefix.
+                                [b (cancel/start! (cancel/spawn #(advance-branch ctx b turn)))]))))
                       branches)]
-    (mapv (fn [[b fut]]
-            (if (= ::still-dangling fut)
-              (do (log/warn "branch" (:id b) "still executing a forfeited turn;"
-                            "skipping turn" turn "to keep its turns serial")
-                  (forfeit b))
-              (let [r (if deadline (deref fut deadline ::timeout) @fut)]
-                (if (= ::timeout r)
-                  (do (log/warn "branch" (:id b) "exceeded the turn deadline on turn" turn)
-                      ;; Not a verification failure: the branch did not get an
-                      ;; answer to be wrong about. It loses the turn and is told
-                      ;; so; the dangling call is REMEMBERED so the next round
-                      ;; does not run beside it.
-                      (when in-flight (swap! in-flight assoc (:id b) fut))
-                      (forfeit b))
-                  r))))
-          pending)))
+    (try
+      (mapv (fn [[b t]]
+              (if (= ::still-cancelling t)
+                (do (log/warn "branch" (:id b) "is still winding down a cancelled turn;"
+                              "skipping turn" turn "to keep its turns serial")
+                    (forfeit b))
+                ;; Parks on the turn's SIGNAL, never on the turn task itself:
+                ;; ebb's timeout would wait for the cancelled child, and the
+                ;; barrier must not stall on a read the cancel cannot reach.
+                (let [[tag r] (cancel/await-or-cancel t deadline)]
+                  (case tag
+                    :ok r
+                    :timeout
+                    (do (log/warn "branch" (:id b) "exceeded the turn deadline on turn" turn
+                                  "— cancelled")
+                        ;; Not a verification failure: the branch did not get an
+                        ;; answer to be wrong about. It loses the turn and is told
+                        ;; so; the cancelled turn is REMEMBERED until it terminates
+                        ;; so the next round does not run beside it.
+                        (when cancelling (swap! cancelling assoc (:id b) (:done t)))
+                        (forfeit b))
+                    :err
+                    (do (log/warn "branch" (:id b) "died on turn" turn ":" (ex-message r))
+                        (assoc b :status :abandoned
+                               :inactive-reason (str "branch error: " (ex-message r))))))))
+            pending)
+      (catch Throwable e
+        ;; The round itself was cancelled (an abort) with turns in flight:
+        ;; every turn goes down with it before the signal travels on.
+        (when (cancel/control-signal? e)
+          (doseq [[_ t] pending :when (map? t)] ((:cancel t))))
+        (throw e)))))
 
 (defn dispose-branch-engines!
   "Release one branch's external sessions.
@@ -850,6 +862,9 @@
             (throw (ex-info "the beam scheduler ended without a result"
                             {:run-id run-id :status (:status data)}))))
       (catch Throwable e
+        ;; A cancellation is the run being told to stop, not a crash: no
+        ;; crash record, and the abort endpoint already closed the row.
+        (when (cancel/control-signal? e) (throw e))
         (let [{:keys [throwable node]} (unwrap-round-error e)]
           (try
             (journal/note! conn run-id :run-error
@@ -1059,10 +1074,10 @@
              ;; persist across its turns and die with the run. run-rounds
              ;; closes it in the same finally that disposes the sessions.
              :repl-session (repl/new-session)
-             ;; {branch-id future} of forfeited turns still executing, so
-             ;; advance-all never runs a branch beside its own dangling turn
-             ;; (karamazov-blt.18).
-             :in-flight (atom {})
+             ;; {branch-id promise} of turns cancelled at their deadline and
+             ;; not yet terminated, so advance-all never runs a branch beside
+             ;; its own turn (karamazov-blt.18, RFC-013).
+             :cancelling (atom {})
              :abort abort}]
     ;; Before the branches, not after. api.control/start-run! blocks until this
     ;; fires, so this line is how long POST /v1/runs takes — and open-branch!

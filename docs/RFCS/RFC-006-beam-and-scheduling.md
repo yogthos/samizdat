@@ -189,7 +189,10 @@ is permissiveness, which is why every reprieve is a loan with a clock.
   branch (`:extended-turns`), persists to the runs row, and reaches the turn
   slice's cap (blt.12).
 
-Two invariants the audit added to the table's spirit: a forfeited turn's
-still-running thread is never run beside (`advance-all`'s `:in-flight`
-quarantine, blt.18), and the cull cell counts only ACTIVE branches as
-survivors and never re-judges an inactive one (blt.17).
+Two invariants the audit added to the table's spirit: a branch is never
+advanced beside its own turn — a turn past the deadline is cancelled and the
+branch forfeits until that turn has terminated (`advance-all`'s `:cancelling`
+registry of termination promises; RFC-013 restates blt.18 this way and
+`samizdat.model.turn-journal-test` proves it over every schedule) — and the
+cull cell counts only ACTIVE branches as survivors and never re-judges an
+inactive one (blt.17).

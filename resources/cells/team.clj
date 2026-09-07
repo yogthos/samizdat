@@ -25,12 +25,14 @@
 ;;                  worker last read it, the result says who and when
 ;; The last two are ground truth and cost no turn to produce.
 ;;
-;; This is the dataflow fan-out shape (futures + deref, workers run to
+;; This is the dataflow fan-out shape (a join of worker tasks, workers run to
 ;; completion): coordination is between-turn, not a live actor. The
 ;; escapement-style parked-conversation actor (per-turn peer steering) is
 ;; karamazov-oy1, a later, larger step.
 (ns cells.team
-  (:require [clojure.string :as str]
+  (:require [samizdat.cancel :as cancel]
+            [ebb.core :as ebb]
+            [clojure.string :as str]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
             [samizdat.agent.loop :as turn]
@@ -244,12 +246,16 @@
                                                     :run-id run-id
                                                     :contract (str s)}))
                              tasks))
+          ;; A JOIN of worker tasks, not a row of futures (RFC-013): a
+          ;; cancelled feature run takes its workers down with it. run-worker
+          ;; returns rather than throws, so the join never fails early.
           results (->> (map-indexed vector tasks)
                        (mapv (fn [[i s]]
-                               (future (run-worker ictx worker (bid-of i) i s
-                                                   (prob-of s) (worker-prompt i tasks)
-                                                   (nth task-ids i nil)))))
-                       (mapv deref))]
+                               (cancel/spawn #(run-worker ictx worker (bid-of i) i s
+                                                          (prob-of s) (worker-prompt i tasks)
+                                                          (nth task-ids i nil)))))
+                       (apply ebb/join vector)
+                       (ebb/?))]
       (journal/note! conn run-id :team
                      {:data {:workers (count results) :revision rev
                              :epic parent

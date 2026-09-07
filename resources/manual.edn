@@ -204,6 +204,25 @@
    {:name samizdat.events/subscribe
     :summary "A channel of every event published from now on, for watching a run without polling."}]}
 
+ {:group "Cancellation and parking (RFC-013)"
+  ;; Every compiled manifest is cancellable: the check runs before each cell,
+  ;; and a Cancelled raised inside a cell passes through every catch. What a
+  ;; cell author has to know is small, and it is these five plus two rules:
+  ;; never park inside a lazy body (map/for/lazy-seq — a hang, not an error;
+  ;; use mapv, doseq, loop/recur), and never spawn a raw `future` in a cell
+  ;; (it escapes the run's cancellation tree; fan out with ebb's join).
+  :entries
+  [{:name samizdat.cancel/check!
+    :summary "Throw Cancelled if the running turn has been cancelled; a no-op off a task. Call it in any loop a cell writes that can run long."}
+   {:name samizdat.cancel/sleep!
+    :summary "Park for N ms instead of Thread/sleep: on a task the wait sees a cancel at once."}
+   {:name samizdat.cancel/after-blocking!
+    :summary "Call right after a blocking host call returns (a subprocess, a socket read): a cancel that landed while it ran becomes Cancelled here, not a value you act on."}
+   {:name samizdat.cancel/control-signal?
+    :summary "Whether a throwable is a cancellation (Cancelled or InterruptedException) rather than a failure — rethrow these from any catch a cell writes."}
+   {:name samizdat.cancel/pre-check
+    :summary "The :pre interceptor every manifest compiles with; a cell never calls it, but this is where a cancel between cells lands."}]}
+
  {:group "Which image your eval lands in"
   :entries
   [{:name samizdat.repl.route/image-of

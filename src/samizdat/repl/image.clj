@@ -46,10 +46,12 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [ebb.core :as ebb]
             [jolt.fs :as fs]
             [jolt.process :as process]
             [nrepl.transport :as transport]
             [samizdat.agent.gates :as gates]
+            [samizdat.cancel :as cancel]
             [samizdat.prompt :as prompt]
             [samizdat.security.sandbox :as sandbox]
             [samizdat.security.secrets :as secrets]))
@@ -73,11 +75,27 @@
   (with-open [s (java.net.ServerSocket. 0)]
     (.getLocalPort s)))
 
+(def nrepl-sha
+  "The jolt-lang/nrepl the image runs: the SAME one deps.edn pins for the
+  harness's own nREPL, so the image carries nrepl.middleware.interruptible-eval
+  and a runaway eval can be interrupted rather than the image killed
+  (RFC-013). A bare `jolt nrepl-server` answers the interrupt op with
+  unknown-op. base-test holds this equal to deps.edn's pin, so the two cannot
+  drift."
+  "6e8cfa214dbd43c9ed72358f3d1191bb29a695cd")
+
+(def nrepl-sdeps
+  "The -Sdeps map the image is started with: the nrepl dependency and its
+  default middleware stack, merged over the project's own deps.edn."
+  (pr-str {:deps {'jolt-lang/nrepl {:git/url "https://github.com/jolt-lang/nrepl"
+                                    :git/sha nrepl-sha}}
+           :nrepl/middleware ['nrepl.middleware/default-middleware]}))
+
 (defn spawn-argv
-  "The argv that starts the image: `jolt nrepl-server <port>`, wrapped for the
-  backend given `{:profile path :spec spec}`. Pure."
+  "The argv that starts the image: `jolt -Sdeps <nrepl-sdeps> nrepl-server
+  <port>`, wrapped for the backend given `{:profile path :spec spec}`. Pure."
   [backend confinement port]
-  (sandbox/wrap backend confinement ["jolt" "nrepl-server" (str port)]))
+  (sandbox/wrap backend confinement ["jolt" "-Sdeps" nrepl-sdeps "nrepl-server" (str port)]))
 
 (defn- await-port!
   "Block until `port` accepts a connection, or `deadline-ms` passes. True when
@@ -224,6 +242,53 @@
     (loop [] (when-not (some #{"done"} (get (transport/recv transport) "status")) (recur)))
     (swap! sessions conj ns-sym)))
 
+(defn- clone!
+  "A session of our own in the image, so a runaway eval can be interrupted by
+  id from another connection. nil if the image does not answer within a few
+  seconds, in which case the eval runs without one and a timeout falls back
+  to the restart. On its OWN connection with a short receive timeout: the
+  eval connection's timeout is the whole eval budget, and a server that never
+  answers `clone` would otherwise spend the budget here and look like a
+  stuck eval. Sessions are server-global, so an id cloned here is valid on
+  the eval connection."
+  [{:keys [port]}]
+  (let [t (try (transport/connect "127.0.0.1" port {:recv-timeout-secs 3})
+               (catch Exception _ nil))]
+    (when t
+      (try
+        (transport/send t {"op" "clone"})
+        (loop []
+          (let [m (transport/recv t)]
+            (cond (nil? m) nil
+                  (get m "new-session") (get m "new-session")
+                  (some #{"done"} (get m "status")) nil
+                  :else (recur))))
+        (catch Exception _ nil)
+        (finally (try (transport/close t) (catch Exception _ nil)))))))
+
+(defn- interrupt!
+  "Ask the image to abort the eval running in session `sid`. jolt's nREPL
+  aborts even a tight loop at its next engine tick; an eval blocked in a
+  foreign call aborts when that call returns. Best effort, on its own
+  connection, because the eval's connection is parked in recv."
+  [{:keys [port]} sid]
+  (when sid
+    (let [t (try (transport/connect "127.0.0.1" port {:recv-timeout-secs 5})
+                 (catch Exception _ nil))]
+      (when t
+        (try
+          (transport/send t {"op" "interrupt" "session" sid})
+          (loop []
+            (let [m (transport/recv t)]
+              (when (and m (not (some #{"done"} (get m "status")))) (recur))))
+          (catch Exception _ nil)
+          (finally (try (transport/close t) (catch Exception _ nil))))))))
+
+(defn- finish [{:keys [value out err]}]
+  (if (str/blank? err)
+    {:ok true :value value :out out}
+    {:ok false :error err :out out}))
+
 (defn eval-in
   "Evaluate `code` in the image, in `session`'s namespace when one is given.
   Same result shape as `samizdat.repl/eval-code` so the caller cannot tell
@@ -244,21 +309,58 @@
 
   Namespace state lives in the IMAGE, not the connection — isolation is the
   `ns` key, not an nREPL session — so a fresh socket per call costs a loopback
-  connect and no semantics."
+  connect and no semantics.
+
+  WITH `:timeout-ms` (RFC-013) the eval is bounded in two stages. At the
+  budget the image is asked to INTERRUPT the eval — its nREPL aborts even a
+  tight loop at the next engine tick — and the aborted eval's reply is waited
+  for up to `:grace-ms` (gates.edn :image-interrupt-grace-ms): `{:timeout? true :interrupted? true}`,
+  image alive, defs intact. Only an eval that does not answer the interrupt
+  (blocked in a foreign call) comes back `{:timeout? true :stuck? true}`, and
+  that is the one case the caller restarts the image for. The eval connection
+  carries a receive timeout so an abandoned reader dies on its own."
   ([im code] (eval-in im code nil))
-  ([{:keys [port] :as im} code session]
-   (let [t (try (transport/connect "127.0.0.1" port) (catch Exception _ nil))]
+  ([im code session] (eval-in im code session nil))
+  ([{:keys [port] :as im} code session {:keys [timeout-ms grace-ms]}]
+   (let [grace-ms (or grace-ms (gates/threshold :image-interrupt-grace-ms))
+         t (try (transport/connect "127.0.0.1" port
+                                   (when timeout-ms
+                                     {:recv-timeout-secs
+                                      (int (Math/ceil (/ (+ timeout-ms grace-ms 1000) 1000.0)))}))
+                (catch Exception _ nil))]
      (if-not t
        {:ok false :error-type "image-down"
         :error (prompt/render "image-down" {:detail "the connection was refused"})}
        (try
          (ensure-session! (assoc im :transport t) session)
-         (transport/send t (cond-> {"op" "eval" "code" (str code)}
-                             session (assoc "ns" (str session))))
-         (let [{:keys [value out err]} (collect t)]
-           (if (str/blank? err)
-             {:ok true :value value :out out}
-             {:ok false :error err :out out}))
+         (let [sid (when timeout-ms (clone! im))]
+           (transport/send t (cond-> {"op" "eval" "code" (str code)}
+                               session (assoc "ns" (str session))
+                               sid (assoc "session" sid)))
+           (if-not timeout-ms
+             (finish (collect t))
+             (let [{:keys [signal cancel] :as started} (cancel/start! (ebb/via ebb/blk (collect t)))
+                   ;; Stage one parks on the reader's signal WITHOUT cancelling
+                   ;; it at the deadline: the reader has to stay in recv to
+                   ;; collect the reply the interrupt below produces. (A cancel
+                   ;; of this fiber's own task still takes the reader down.)
+                   r1 (try (ebb/? (ebb/timeout signal timeout-ms ::timeout))
+                           (catch Throwable e
+                             (when (cancel/control-signal? e) (cancel))
+                             (throw e)))]
+               (if (not= ::timeout r1)
+                 (let [[tag r] r1] (if (= :ok tag) (finish r) (throw r)))
+                 (do (interrupt! im sid)
+                     ;; Stage two: the grace for the aborted eval's reply. Past
+                     ;; it the reader is cancelled — nrepl's recv is
+                     ;; interruptible from v0.1.2, so the thread comes back
+                     ;; within a slice — and the image is the caller's to
+                     ;; restart.
+                     (let [[tag2 r2] (cancel/await-or-cancel started grace-ms)]
+                       (if (= :ok tag2)
+                         {:ok false :error-type "timeout" :timeout? true :interrupted? true
+                          :error (:err r2) :out (:out r2)}
+                         {:ok false :error-type "timeout" :timeout? true :stuck? true})))))))
          (catch Exception e
            {:ok false
             :error (prompt/render "image-down" {:detail (ex-message e)})

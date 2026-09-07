@@ -81,6 +81,29 @@ A new test namespace must be added to `test/samizdat/test_runner.clj` in BOTH
 places — the `:require` list and the `namespaces` vector — or it silently never
 runs.
 
+## Live development over nREPL
+
+Develop against a running image, not by paying startup per command. Start a
+dev image once and evaluate into it; reload a namespace after editing it and
+run its tests in place.
+
+```bash
+jolt -A:dev:test nrepl-server 7899                 # once; dev, test and gui paths
+NREPL_PORT=7899 CODE='(+ 1 2)' jolt -A:dev -m samizdat.dev.nrepl-eval
+echo "(require 'samizdat.foo-test :reload) (clojure.test/run-tests 'samizdat.foo-test)" \
+  | NREPL_PORT=7899 jolt -A:dev -m samizdat.dev.nrepl-eval
+echo "(require 'samizdat.test-runner) (samizdat.test-runner/run)" \
+  | NREPL_PORT=7899 jolt -A:dev -m samizdat.dev.nrepl-eval   # the whole suite, in place
+```
+
+Start your OWN server. `jolt serve` writes the harness's nREPL port to
+`.nrepl-port` (and so does any `nrepl-server` started from this directory —
+put it back if you clobber it); reloading edited namespaces into a harness
+that is mid-run changes the run under it. The runner needs the `gui` path
+the `:test` alias adds, hence `-A:dev:test`. Reload edited namespaces one at
+a time with `:reload`; `:reload-all` on the runner currently dies inside
+`jolt.time` (karamazov-cc3a).
+
 ## Git
 
 - Commit only when asked. Never push without being asked.

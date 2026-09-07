@@ -8,6 +8,8 @@
 ;;     synchronous callbacks and correct for callbacks fired from other
 ;;     threads. `run` on an async FSM returns that future; deref rethrows.
 ;;   - .cljc reader conditionals dropped; jolt shims System/nanoTime.
+;; The registry of these is docs/divergences.md (+ docs/divergences.edn),
+;; checked by samizdat.divergences-test; a new divergence is recorded there.
 (ns maestro.core
   (:refer-clojure :exclude [compile])
   (:require
@@ -31,17 +33,25 @@
   (/ (double (- (System/nanoTime) start)) 1000000.0))
 
 (defn normalize-handler
-  [current-state-id handler async?]
-  (if async?
-    handler
-    (fn [resources data callback error-handler]
-      (try
-        (callback (handler resources data))
-        (catch Throwable ex
-          (error-handler
-           (ex-info "execution error" {:current-state-id current-state-id
-                                       :data             data
-                                       :error            ex})))))))
+  "Wrap a sync 2-arity handler as the 4-arity callback form. A throw becomes
+  an execution error — unless `rethrow?` says it is a control signal (a
+  cancellation), in which case it passes through untouched: the machine was
+  told to stop, not that a cell failed. `rethrow?` is the :rethrow? compile
+  opt, default never."
+  ([current-state-id handler async?]
+   (normalize-handler current-state-id handler async? nil))
+  ([current-state-id handler async? rethrow?]
+   (if async?
+     handler
+     (fn [resources data callback error-handler]
+       (try
+         (callback (handler resources data))
+         (catch Throwable ex
+           (when (and rethrow? (rethrow? ex)) (throw ex))
+           (error-handler
+            (ex-info "execution error" {:current-state-id current-state-id
+                                        :data             data
+                                        :error            ex}))))))))
 
 (defn- validate-dispatch-targets [state-id dispatches valid-dispatch-targets]
   (doseq [[target _] dispatches]
@@ -58,9 +68,9 @@
   (if (ifn? pred) pred (eval pred)))
 
 (defn- compile-state-handler
-  [state-id {:keys [handler dispatches async?]} valid-dispatch-targets]
+  [state-id {:keys [handler dispatches async?]} valid-dispatch-targets rethrow?]
   (validate-dispatch-targets state-id dispatches valid-dispatch-targets)
-  {:handler    (normalize-handler state-id handler async?)
+  {:handler    (normalize-handler state-id handler async? rethrow?)
    :dispatches (mapv (fn [[target pred]]
                        [target (compile-dispatch-pred pred)])
                      dispatches)})
@@ -72,13 +82,14 @@
     (throw (ex-info (str "missing dispatches for spec " id) {:id id :spec spec}))))
 
 (defn- compile-dispatches [spec]
-  (let [valid-dispatch-targets (-> spec :fsm keys set (conj ::end ::halt ::error))]
+  (let [valid-dispatch-targets (-> spec :fsm keys set (conj ::end ::halt ::error))
+        rethrow? (get-in spec [:opts :rethrow?])]
     (update spec :fsm
             (fn [fsm]
               (reduce
                (fn [fsm [id state-spec]]
                  (validate-state-spec id state-spec)
-                 (assoc fsm id (compile-state-handler id state-spec valid-dispatch-targets)))
+                 (assoc fsm id (compile-state-handler id state-spec valid-dispatch-targets rethrow?)))
                {}
                fsm)))))
 
@@ -215,7 +226,7 @@
    per-step promise until the handler invokes its callback, so handlers may
    complete synchronously or from another thread — stack-safe either way.
    Returns a deref-able future; an error raised by the FSM rethrows on deref."
-  [fsm-map max-trace subscriptions pre post resources current-state-id trace data]
+  [fsm-map max-trace subscriptions pre post resources current-state-id trace data rethrow?]
   (future
     (let [initial (make-initial-fsm fsm-map max-trace subscriptions post resources
                                     current-state-id trace data)]
@@ -249,6 +260,7 @@
               (try
                 (handler resources data callback error-callback)
                 (catch Throwable e
+                  (when (and rethrow? (rethrow? e)) (throw e))
                   (deliver step (error-fsm fsm max-trace current-state-id start-time e))))
               (recur (pre @step resources)))))))))
 
@@ -262,7 +274,7 @@
    (run fsm resources {}))
   ([{fsm-map :fsm
      has-async? :has-async?
-     {:keys [max-trace subscriptions pre post]
+     {:keys [max-trace subscriptions pre post rethrow?]
       :or {max-trace 1000
            pre (fn [fsm _resources] fsm)
            post (fn [fsm _resources] fsm)}} :opts}
@@ -279,7 +291,7 @@
                   has-async?)]
      (if async?
        (execute-async fsm-map max-trace subscriptions pre post resources
-                      current-state-id trace data)
+                      current-state-id trace data rethrow?)
        (run-sync fsm-map max-trace subscriptions pre post resources
                  current-state-id trace data)))))
 

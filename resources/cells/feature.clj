@@ -27,6 +27,7 @@
             [samizdat.agent.loop :as turn]
             [samizdat.agent.state :as state]
             [samizdat.agent.tools :as tools]
+            [samizdat.cancel :as cancel]
             [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm]
             [samizdat.prompt :as prompt]
@@ -88,6 +89,9 @@
   [conn run-id stage data body fallback]
   (try (body)
        (catch Throwable e
+         ;; A cancellation is not a stage failure to record and fall through
+         ;; from: the run was told to stop (RFC-013).
+         (when (cancel/control-signal? e) (throw e))
          (let [{:keys [message node]} (root-error e)
                msg (str (name stage) (when node (str "/" node)) ": " message)]
            (journal/note! conn run-id :stage-error

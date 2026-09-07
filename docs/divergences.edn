@@ -1,0 +1,81 @@
+;; The divergence registry: the machine-readable half of docs/divergences.md.
+;;
+;; samizdat carries four libraries in-tree, ported to jolt or vendored, and
+;; each differs from its upstream in ways that used to live only in file
+;; headers and in memory. test/samizdat/divergences_test.clj checks this file
+;; against the prose on every run, following ebb's doc/divergences.edn and
+;; jolt's known-divergences.edn:
+;;
+;;   * every :id appears in docs/divergences.md as <!-- divergence: id -->,
+;;     so deleting or rewording the prose past an entry fails
+;;   * every id marked in the prose appears here, so the prose cannot describe
+;;     something the registry has never heard of
+;;   * every :pinned-by names a test var that still exists and is a test
+;;   * an entry with no test says why in :unpinned
+;;
+;; What it cannot do is spot a divergence nobody wrote down; that needs the
+;; upstream as an oracle, and none of them run under jolt.
+;;
+;; :lib  is :mycelium, :maestro, :parinferish or :ring-chez.
+;; :kind is :port (the runtime differs), :harness (samizdat asked for it), or
+;;       :behaviour (observable difference not forced by either).
+
+[{:id       :ring-chez-connection-off-the-accept-loop
+  :lib      :ring-chez
+  :kind     :behaviour
+  :summary  "Upstream serves one connection at a time on the accept thread, so a long request held /health and everything else. The vendored copy hands each accepted connection off the loop."
+  :unpinned "The smoke task (samizdat.smoke) probes /health during a /slow request; no unit test isolates the accept loop."}
+
+ {:id       :maestro-dispatch-predicates-compile-with-host-eval
+  :lib      :maestro
+  :kind     :harness
+  :summary  "Upstream evaluates EDN dispatch predicates under sci. Here they compile with the host eval; safety against a bad agent-authored predicate comes from the mutation protocol's validate, soak and rollback, not from interpreter sandboxing."
+  :pinned-by maestro.core-test/compile-eagerly-validates-dispatches}
+
+ {:id       :maestro-async-executor-on-a-jolt-future
+  :lib      :maestro
+  :kind     :port
+  :summary  "Upstream drives an async FSM with promesa. Here the async executor loops on a jolt future and parks on a per-step promise; run on an async FSM returns that future and deref rethrows. To be replaced by an ebb task under karamazov-3cll.8."
+  :pinned-by maestro.core-test/async-cross-thread}
+
+ {:id       :maestro-cljc-flattened
+  :lib      :maestro
+  :kind     :port
+  :summary  "Reader conditionals dropped from the .cljc source; jolt shims System/nanoTime."
+  :unpinned "A property of the file, not a behaviour a test can observe."}
+
+ {:id       :parinferish-last-index-of-takes-a-string
+  :lib      :parinferish
+  :kind     :port
+  :summary  "count-last-line passes \"\\n\" rather than \\newline to clojure.string/last-index-of: jolt's takes a string needle where the JVM's also accepts a char. Reached by any multi-line string token; unported it threw out of parse on exactly the truncated input the repair rung exists for."
+  :unpinned "Exercised through samizdat.lisp/balance's parinfer rung on multi-line input; no test isolates the needle."}
+
+ {:id       :mycelium-resilience-is-native
+  :lib      :mycelium
+  :kind     :port
+  :summary  "Upstream backs resilience policies with resilience4j. Here each policy is an atom-based state machine with the same public API, config keys and :mycelium/resilience-error contract; failure types travel as ::type in ex-data rather than as Java exception classes."
+  :pinned-by mycelium.resilience-test/composed-timeout-and-retry-test}
+
+ {:id       :mycelium-queue-is-an-atom
+  :lib      :mycelium
+  :kind     :port
+  :summary  "Upstream guards a PriorityBlockingQueue with a ReentrantLock. Here all queue state is one atom of pure data mutated through compare-and-set, so every operation is atomic without host locks."
+  :pinned-by mycelium.queue-test/memory-queue-claim-test}
+
+ {:id       :mycelium-dispatches-are-patterns
+  :lib      :mycelium
+  :kind     :harness
+  :summary  "A dispatch entry may be a PATTERN over the data map rather than a predicate fn, resolved through samizdat.symbolic.dispatch, so routing stays readable data in the manifest and can be checked for unreachable branches. mycelium.workflow, manifest, validation and dev require the symbolic layer for it."
+  :pinned-by samizdat.symbolic.dispatch-test/the-pattern-form-agrees-with-the-fn-form-it-replaced}
+
+ {:id       :mycelium-registry-snapshot-for-rollback
+  :lib      :mycelium
+  :kind     :harness
+  :summary  "The cell registry can be snapshotted and restored to exactly that state, which the mutation protocol's rollback needs and upstream has no reason to offer."
+  :pinned-by samizdat.mutation-test/a-rollback-records-what-was-actually-tried}
+
+ {:id       :mycelium-time-shim-before-malli
+  :lib      :mycelium
+  :kind     :port
+  :summary  "mycelium.schema requires jolt.time before malli.transform, whose date formatter needs the java.time shim at namespace load; the same fix as selmer in samizdat.prompt."
+  :unpinned "Load order: the namespace does not load without it, which every run checks."}]
