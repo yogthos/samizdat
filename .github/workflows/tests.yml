@@ -16,7 +16,11 @@ jobs:
   fast:
     name: test suite
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite has taken 16 to 19.6 minutes on every run since 2026-09-02,
+    # and the ebb-adoption push (34077739800) was killed AT 20 by this limit
+    # with nothing wrong in the tests. A timeout is for a hang, so it sits
+    # well clear of the honest duration.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -126,6 +130,20 @@ jobs:
 
       - name: Fetch dependencies
         run: jolt -P
+
+      - name: Install the GUI's native toolkit
+        # cold-load runs under -A:test:gui (dev/cold-load.sh says why), and
+        # jolt loads every :jolt/native that ANY dep on the classpath declares
+        # before a single namespace is required. glimmer-gtk declares GTK4 and
+        # GLib, glimmer-gl declares OpenGL; without them on the host every one
+        # of the 26 namespaces died in load-natives! before it could prove
+        # anything about the shim — including the 24 that never touch the GUI.
+        # dlopen needs no display, and glimmer-gtk.core only registers its
+        # backend at load, so a headless runner can load the gui namespaces
+        # too.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-4-1 libgl1
 
       - name: Cold load
         # Every namespace that touches a shimmed library, loaded in its OWN
@@ -243,13 +261,20 @@ jobs:
       # it fails on auth AFTER the handshake — so the thing to assert is the
       # absence of the fault, which needs no secret.
       - name: Binary starts and serves
+        # boot.log is printed BEFORE the first assertion: the step runs under
+        # `bash -e`, so a failed health check ended it with the log unread and
+        # a bare "Aborted (core dumped)" as the only evidence. The wait also
+        # stops as soon as the process is gone rather than sleeping out the
+        # full minute on a binary that died at boot.
         run: |
           HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat >boot.log 2>&1 &
+          pid=$!
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:3010/health >/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
             sleep 2
           done
-          curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
           cat boot.log
+          curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
           ! grep -q 'invalid memory reference' boot.log
           grep -q 'nrepl  127.0.0.1' boot.log
