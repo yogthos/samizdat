@@ -7,6 +7,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One jolt for every job, pinned. The installer takes the latest release when
+# given nothing, and that is how a release broke CI with no change here:
+# jolt 0.8.5 (2026-09-07) builds a binary of this project that aborts inside
+# Chez's boot-image load — Sbuild_heap → fasl_entry → S_error3 → abort —
+# before a line of the harness runs, while 0.8.4 builds one that boots
+# (karamazov-vhkj, runs 34163508432 and 34164001637). The canary job at the
+# bottom builds on the latest release and says when this can move.
+env:
+  JOLT_VERSION: "0.8.4"
+
 # Cancel in-progress runs on the same ref when a new commit lands.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,7 +69,7 @@ jobs:
           # installer starts with a shebang. Guard against running a stray page.
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -119,7 +129,7 @@ jobs:
           # installer starts with a shebang. Guard against running a stray page.
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -188,7 +198,7 @@ jobs:
           test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
@@ -207,32 +217,16 @@ jobs:
         run: jolt smoke
 
   build:
-    # DIAGNOSTIC, BRANCH ONLY (karamazov-vhkj): the built binary dies at boot
-    # with nothing in boot.log. Three builds side by side — the release jolt,
-    # the same with its 0.8.x whole-program passes off, and the previous
-    # release — each run plain, with the heap ceiling off, with load tracing,
-    # under strace and under gdb. No `needs: fast` so they start at once; the
-    # suite already passed on this tree (run 34161233825).
-    name: standalone binary (${{ matrix.label }})
+    name: standalone binary
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: jolt 0.8.5
-            jolt: "0.8.5"
-            build_env: ""
-          - label: jolt 0.8.5 no wp-infer no flat-split
-            jolt: "0.8.5"
-            build_env: "JOLT_NO_WP_INFER=1 JOLT_NO_FLAT_SPLIT=1"
-          - label: jolt 0.8.4
-            jolt: "0.8.4"
-            build_env: ""
+    timeout-minutes: 20
+    needs: fast
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install jolt ${{ matrix.jolt }}
+      - name: Install jolt
+        # See the fast job for why: authenticated API fetch dodges the anonymous
+        # raw.githubusercontent 403 rate limit, with a raw fallback and retries.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -255,9 +249,86 @@ jobs:
           test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "${{ matrix.jolt }}"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          "$HOME/.local/bin/jolt" --version
+
+      - name: Cache jolt gitlibs
+        uses: actions/cache@v4
+        with:
+          path: ~/.jolt/gitlibs
+          key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
+
+      # `jolt build` embeds only what it can reach statically, so this job
+      # guards against a dynamic require silently dropping a subtree from the
+      # image — which happened once and only surfaced at startup.
+      - name: Build
+        run: jolt build -m samizdat.core -o samizdat
+
+      # Two assertions. That it starts and serves, and that its TLS still works:
+      # a built image used to resolve SSL_* to whatever the process linked rather
+      # than the OpenSSL under :jolt/native, which faulted instead of erroring.
+      # The boot-time provider warm-up drives a real handshake, and without a key
+      # it fails on auth AFTER the handshake — so the thing to assert is the
+      # absence of the fault, which needs no secret.
+      - name: Binary starts and serves
+        # boot.log is printed BEFORE the first assertion: the step runs under
+        # `bash -e`, so a failed health check ended it with the log unread and
+        # a bare "Aborted (core dumped)" as the only evidence. The wait also
+        # stops as soon as the process is gone rather than sleeping out the
+        # full minute on a binary that died at boot.
+        run: |
+          HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat >boot.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:3010/health >/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 2
+          done
+          head -c 20000 boot.log; echo
+          curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
+          ! grep -q 'invalid memory reference' boot.log
+          grep -q 'nrepl  127.0.0.1' boot.log
+
+  canary:
+    # The JOLT_VERSION pin's exit. The same build and boot on the LATEST jolt
+    # release, allowed to fail: red means the pin still stands and the head of
+    # this boot log is the upstream report; green means the pin can move. Never
+    # a required check.
+    name: standalone binary on latest jolt (canary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: fast
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the latest jolt
+        # See the fast job for why: authenticated API fetch dodges the anonymous
+        # raw.githubusercontent 403 rate limit, with a raw fallback and retries.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fetch() {
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw+json" \
+              https://api.github.com/repos/jolt-lang/jolt/contents/install?ref=main \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            curl -fsSL --retry 5 --retry-delay 4 --retry-all-errors \
+              https://raw.githubusercontent.com/jolt-lang/jolt/main/install \
+              -o /tmp/jolt-install && test -s /tmp/jolt-install && return 0
+            return 1
+          }
+          for i in 1 2 3 4 5; do
+            fetch && break
+            echo "installer fetch attempt $i failed; retrying in $((i * 8))s" >&2
+            sleep $((i * 8))
+          done
+          test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
+          head -1 /tmp/jolt-install | grep -q '^#!' \
+            || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
+          bash /tmp/jolt-install --dir "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
         uses: actions/cache@v4
@@ -266,46 +337,17 @@ jobs:
           key: jolt-gitlibs-${{ hashFiles('deps.edn') }}
 
       - name: Build
-        run: ${{ matrix.build_env }} jolt build -m samizdat.core -o samizdat
+        run: jolt build -m samizdat.core -o samizdat
 
-      - name: Boot battery
+      - name: Binary starts and serves
         run: |
-          set +e
-          sudo apt-get install -y -qq gdb strace >/dev/null 2>&1
-          free -m
-          # Run in the background and sample RSS every 2 s: a runaway
-          # allocation shows as a climb, a hang as a flat line. Stop on the
-          # nREPL banner (boot succeeded), on death, or at the deadline; then
-          # INT, then KILL, and always clear the port for the next run.
-          try() {
-            local name=$1 secs=$2; shift 2
-            echo; echo "=================== $name"
-            rm -f ci.sqlite3 .nrepl-port
-            "$@" >"$name.log" 2>&1 &
-            local pid=$! t=0 rss
-            while [ "$t" -lt "$secs" ]; do
-              kill -0 "$pid" 2>/dev/null || { echo "died at t=${t}s"; break; }
-              rss=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')
-              echo "t=${t}s rss=$(( ${rss:-0} / 1024 ))MB"
-              grep -q 'nrepl  127.0.0.1' "$name.log" 2>/dev/null && { echo "booted at t=${t}s"; break; }
-              sleep 2; t=$((t+2))
-            done
-            if kill -0 "$pid" 2>/dev/null; then kill -INT "$pid"; sleep 6; kill -KILL "$pid" 2>/dev/null; fi
-            wait "$pid"; echo "--- exit $?; last 4000 bytes of $name.log:"
-            tail -c 4000 "$name.log"; echo
-            pkill -9 -x samizdat 2>/dev/null; sleep 1
-          }
-          try plain      40 env HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
-          try heap-off   40 env JOLT_MAX_HEAP=off HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
-          try trace-load 40 env JOLT_TRACE_LOAD=1 HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
-          # gdb: SIGINT to a batch gdb stops the inferior wherever it is and
-          # runs the remaining -ex commands, so a hang gets a backtrace too.
-          try gdb 30 gdb -batch -ex 'set env HARNESS_PORT 3010' -ex 'set env HARNESS_DB ci.sqlite3' \
-            -ex run -ex 'bt 40' -ex 'info threads' -ex 'thread apply all bt 15' ./samizdat
-          try strace 30 strace -f -o strace.txt env HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat
-          echo "=================== strace: syscall histogram"; awk -F'(' '{print $1}' strace.txt | awk '{print $NF}' | sort | uniq -c | sort -rn | head -n 15
-          echo "=================== strace: mmap/brk growth and signals"; grep -E 'mmap|brk|SIG[A-Z]+|killed by|write\(2,' strace.txt | tail -n 40
-          echo "=================== strace: last 40 lines"; tail -n 40 strace.txt
-          echo "=================== dmesg (oom)"; sudo dmesg 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -n 20
-          echo; echo "=================== verdict"
-          grep -q 'nrepl  127.0.0.1' plain.log && echo "plain boot: OK" || { echo "plain boot: FAILED"; exit 1; }
+          HARNESS_PORT=3010 HARNESS_DB=ci.sqlite3 ./samizdat >boot.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 30); do
+            grep -q 'nrepl  127.0.0.1' boot.log 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 2
+          done
+          echo "--- boot.log, first 3000 bytes"; head -c 3000 boot.log; echo
+          echo "--- boot.log, last 1500 bytes"; tail -c 1500 boot.log; echo
+          curl -sf http://127.0.0.1:3010/health | tee /dev/stderr | grep -q '"status":"ok"'
