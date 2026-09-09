@@ -238,6 +238,22 @@
         Two minutes covers a slow selection call under load without letting a
         client hang forever on a provider that never answers."}
 
+ :git-snapshot-ttl-ms
+ {:value 3000 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-uk77" "dirge-vuzz"]
+  :doc "How long GET /v1/harness/project may serve a cached git snapshot.
+
+        The endpoint shells out to git three times — symbolic-ref, log -1,
+        status --porcelain — and the TUI's poller asks every 1.5 s per
+        connected front end. The tree does not change that fast, and dirge
+        learned the same thing the harder way: it read .git/HEAD once per
+        PAINTED FRAME and froze its UI on large repos until it cached the
+        lookup (dirge-vuzz). Three seconds keeps the branch fresh enough to
+        notice a checkout while taking git off the poll path.
+
+        Raise it on a slow filesystem or a very large repo; 0 disables the
+        cache and reads on every request."}
+
  :image-connect-ms
  {:value 20000 :kind :threshold :capability-tunable? true
   :provenance ["karamazov-zrq"]

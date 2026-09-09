@@ -244,10 +244,28 @@
   ;; rejects would otherwise surface as a black screen on first run.
   (let [layout (requiring-resolve 'samizdat.tui.layout/current)
         expand (requiring-resolve 'samizdat.tui.layout/expand)
-        frame (ui/render-text (expand (:layout (layout)) (st/initial "http://x")) 120 30)]
+        ;; A project folded in, because the GIT box's content is what the
+        ;; squeeze assertion below is about and an empty state draws its
+        ;; empty note instead. Everything else is still the first frame.
+        state (assoc (st/initial "http://x")
+                     :project {:project "samizdat" :branch "trunk"
+                               :staged 1 :unstaged 2 :untracked 0
+                               :last_commit "a commit"
+                               :model "glm-5.3" :context_window 128000})
+        frame (ui/render-text (expand (:layout (layout)) state) 120 30)]
     (is (str/includes? frame "ACTIVITY LOG"))
     (is (str/includes? frame "TASKS"))
     (is (str/includes? frame "offline") "the status line drew too")
     (is (not (str/includes? frame "STEER"))
         "and the compose box is the box, with no row spent captioning it")
-    (is (str/includes? frame "start") "with a way to start the first run")))
+    (is (str/includes? frame "start") "with a way to start the first run")
+    ;; The TITLE is not the assertion. A box whose content got squeezed to
+    ;; zero rows still prints its title, which is exactly how the first
+    ;; placement of this panel passed a weaker version of this test while
+    ;; drawing an empty box on a real terminal.
+    (is (str/includes? frame "GIT") "the GIT box is placed")
+    (is (str/includes? frame "trunk")
+        "and its CONTENT drew — a titled box with no rows in it is the squeeze
+         this layout's own warning is about")
+    (is (re-find #"\+1 ~2" frame) "including the dirty counts")
+    (is (str/includes? frame "samizdat:trunk") "and the footer's project label")))

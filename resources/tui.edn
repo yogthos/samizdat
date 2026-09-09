@@ -63,7 +63,10 @@
  ;;                         with one it is a directive for that run, with none
  ;;                         the words are the problem statement for a new run.
  ;;                         Bare by default; {:title "STEER"} draws a caption.
- ;;   :widget/status        the status line.
+ ;;   :widget/git           the working tree: branch, +staged ~unstaged
+ ;;                         ?untracked, and the last commit's subject.
+ ;;   :widget/status        the footer: project:branch, model, context fill,
+ ;;                         turns, run status, run id.
 
  ;; THREE PANELS TO A COLUMN, not five. A bare :height is an EQUALITY
  ;; constraint in ftxui, so a stack of pinned boxes cannot shrink to fit and
@@ -102,9 +105,17 @@
   ;; The run's own account of itself: what it has established, and what it
   ;; was advised and has not answered. Wide and short — both are short lists
   ;; of long lines, which is the opposite of what a gutter is for.
+  ;; GIT rides in this row rather than in a gutter, and the reason is the
+  ;; warning at the top of this file. A fourth box in the right column put
+  ;; BEAM 6 + TASKS 8 + GIT 6 = 20 pinned rows against a :grow MODIFIED that
+  ;; may not be squeezed, so on a 28-row terminal GIT drew as a titled box
+  ;; with no content in it — the same squeeze, one panel further along. Here
+  ;; the row is pinned at 7, GIT needs 3 content rows inside its chrome, and
+  ;; it fits at any height the rest of the layout does.
   [:hbox {:height 7}
    [:widget/artifacts {:title "CLAIMS" :flex true}]
-   [:widget/gates {:title "GATES" :flex true}]]
+   [:widget/gates {:title "GATES" :flex true}]
+   [:widget/git {:title "GIT" :width 34}]]
 
   ;; Above the compose box, because the branch is parked on it and it is the
   ;; only thing on screen that is waiting on you. Invisible when idle.

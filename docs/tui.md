@@ -94,8 +94,9 @@ right gutter, a wide short row, and the bottom strip.
 | `:widget/gates` | gates that fired, and predictions still unsettled |
 | `:widget/artifacts` | claims made, and how each was judged |
 | `:widget/approvals` | the one question a person is being asked, if any. Draws nothing when there is none |
+| `:widget/git` | the working tree: branch, `+staged ~unstaged ?untracked`, and the last commit's subject |
 | `:widget/input` | the compose box, plus start, abort and resume. Bare by default — pass `{:title "STEER"}` for a caption |
-| `:widget/status` | connected or offline, which run, its status, the last error |
+| `:widget/status` | the footer — see below |
 
 Two details worth knowing because they look like bugs otherwise:
 
@@ -106,6 +107,56 @@ Two details worth knowing because they look like bugs otherwise:
 - **The conversation is bounded** — the newest `:turns` of them, 60 by
   default. Every entry is rebuilt on every frame, so this is a frame-rate
   number as much as a history one.
+
+### The footer
+
+Ported from dirge's status line, which reads
+`project:branch | model | used/ctx (pct%) | Nmsgs | state`:
+
+```
+ ● connected  samizdat:tui-start-a-run │ glm-5.3 │ 9k / 128k (7%) │ 1 / 1 turns │ aborted │ 61aba012   127.0.0.1:3986
+```
+
+Left to right: the connection, the project and its git branch, the model
+actually answering, tokens against the model's context window, turns against
+the run's ceiling, what the run is doing, the run id, and which harness this
+is pointed at. Every segment is optional — the first frame has none of them.
+
+The connection dot is samizdat's own addition rather than dirge's. dirge's UI
+*is* the process doing the work; this one is a client that can be pointed
+anywhere, so it has to be able to say it has lost the thing it is watching.
+
+Two details carried over deliberately:
+
+- **The denominator is the window, not the fold-trigger budget.** So the
+  percentage reads 0–100 instead of running past 100 once a fold became due,
+  and an imminent fold is flagged with a `fold` / `fold!` marker at 75% and
+  90% instead.
+- **`project:branch` collapses to just the project** on a detached HEAD or
+  outside a git tree — never a dangling separator.
+
+### Where the project data comes from
+
+`GET /v1/harness/project`, which the poller folds in beside the layout. The
+footer and the GIT panel both read it:
+
+```json
+{"project": "samizdat", "root": "/Users/yogthos/src/samizdat",
+ "branch": "tui-start-a-run", "staged": 0, "unstaged": 16, "untracked": 0,
+ "last_commit": "Let the TUI start a run, and drop the caption over its input",
+ "provider": "glm", "model": "glm-5.3", "context_window": 128000}
+```
+
+Served rather than read locally for the same reason the layout is: only the
+harness process is bound to the project. A TUI that shelled out to git itself
+would caption whichever directory it happened to be started from — silently,
+and wrongly, whenever it is pointed at a harness on another machine.
+
+The server caches the git side for `:git-snapshot-ttl-ms` (gates.edn, 3s by
+default), because the snapshot is three `git` calls and the poller asks every
+1.5s per connected front end. dirge learned the same thing the harder way: it
+read `.git/HEAD` once per painted frame and froze its UI on large repos until
+it cached the lookup.
 
 ## Rearranging it, while it runs
 

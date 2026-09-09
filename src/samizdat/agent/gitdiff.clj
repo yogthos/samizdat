@@ -38,6 +38,47 @@
     (or (some-> (git root "stash" "create") str/trim not-empty)
         "HEAD")))
 
+(defn- porcelain-counts
+  "Split `git status --porcelain` into git's own three kinds.
+
+  Two status columns per line, X and Y: X is the index against HEAD, Y the
+  working tree against the index, and `??` is a path git has never seen. A
+  path can count on BOTH sides — staged once and edited again since — so
+  these are three counts and not a partition, which is also why one \"dirty\"
+  number would be the wrong thing to show."
+  [out]
+  (let [lines (remove str/blank? (str/split-lines (str out)))]
+    (reduce (fn [acc line]
+              (let [x (get line 0) y (get line 1)]
+                (if (and (= \? x) (= \? y))
+                  (update acc :untracked inc)
+                  (cond-> acc
+                    (not (contains? #{\space \?} x)) (update :staged inc)
+                    (not (contains? #{\space \?} y)) (update :unstaged inc)))))
+            {:staged 0 :unstaged 0 :untracked 0}
+            lines)))
+
+(defn snapshot
+  "The working tree at a glance: `{:branch :staged :unstaged :untracked
+  :last-commit}`. nil when `root` is not a git working tree.
+
+  For a front end to show, not for the model — the TUI holds no filesystem
+  knowledge of the project it is watching, so the server reads this and
+  serves it. Ported from dirge, whose status line carries `project:branch`
+  and whose left panel carries the counts.
+
+  `:branch` is nil on a DETACHED HEAD (rebase, bisect, a CI checkout), where
+  there is no branch to name and the counts still matter; `:last-commit` is
+  nil in a repo with no commits yet. Fails soft like everything else here."
+  [root]
+  (when (and root (proc/available? "git")
+             (git root "rev-parse" "--is-inside-work-tree"))
+    (merge {:branch (some-> (git root "symbolic-ref" "--quiet" "--short" "HEAD")
+                            str/trim not-empty)
+            :last-commit (some-> (git root "log" "-1" "--format=%s")
+                                 str/trim not-empty)}
+           (porcelain-counts (git root "status" "--porcelain")))))
+
 (defn changed-files
   "The paths the run changed since `baseline`: tracked edits (git diff
   --name-only) UNION new files (git ls-files --others). The union matters —

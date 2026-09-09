@@ -357,6 +357,83 @@
                                     :detail {:run {:status "running"}}}
                                    {}))))))
 
+(def ^:private proj
+  {:project "samizdat" :branch "tui-start-a-run"
+   :staged 1 :unstaged 2 :untracked 3
+   :last_commit "Let the TUI start a run"
+   :provider "glm" :model "glm-5.3" :context_window 128000})
+
+(deftest the-footer-says-which-project-branch-and-model
+  ;; Ported from dirge's status line, which reads
+  ;; `project:branch | model | used/ctx (pct%) | Nmsgs | state`. Samizdat's
+  ;; had the run id and the base URL and nothing about WHAT was being worked
+  ;; on or by which model — the two things a person glancing at a long run
+  ;; actually wants, and the two that say whether the harness is pointed where
+  ;; they think it is.
+  (let [said (texts (render :widget/status
+                            {:connected? true :run-id "61aba012-b68a-4adc"
+                             :project proj
+                             :detail {:run {:status "running" :model "glm-5.3"
+                                            :max_turns 40
+                                            :usage {:total-tokens 9475 :turns 3}}}}
+                            {}))]
+    (is (str/includes? said "samizdat:tui-start-a-run")
+        "project and branch, the way dirge writes it")
+    (is (str/includes? said "glm-5.3") "the model actually answering")
+    (is (re-find #"9\.?5?k */ *128k" said) "tokens against the window, abbreviated")
+    (is (str/includes? said "7%") "and as a percentage of it")
+    (is (re-find #"3 */ *40" said) "turns against the ceiling")
+    (is (str/includes? said "running") "and what the run is doing")
+    (is (str/includes? said "61aba012") "the run, short")))
+
+(deftest the-footer-draws-before-anything-has-answered
+  ;; The first frame: no project, no run, offline. Every segment is optional
+  ;; and the strip still has to be a strip.
+  (let [said (texts (render :widget/status {:connected? false} {}))]
+    (is (re-find #"(?i)offline" said))
+    (is (re-find #"(?i)no run" said)))
+  (testing "and a harness outside a git tree has a project but no branch"
+    (let [said (texts (render :widget/status
+                              {:connected? true
+                               :project {:project "plain" :model "m"}}
+                              {}))]
+      (is (str/includes? said "plain"))
+      (is (not (str/includes? said "plain:")) "no dangling separator"))))
+
+(deftest the-footer-warns-before-a-fold-not-after
+  ;; dirge's own refinement: the denominator is the window, so the gauge reads
+  ;; 0-100 and a fold is flagged by a marker instead of the percentage running
+  ;; past 100 (dirge-l4rp, dirge-cx7t).
+  (let [at (fn [used] (texts (render :widget/status
+                                     {:connected? true :project proj
+                                      :detail {:run {:usage {:total-tokens used}}}}
+                                     {})))]
+    (is (not (re-find #"fold" (at 10000))) "quiet well below the window")
+    (is (re-find #"fold" (at 100000)) "flagged approaching it")
+    (is (re-find #"fold!" (at 120000)) "and urgently at the top")))
+
+(deftest the-git-panel-shows-the-branch-and-what-is-dirty
+  ;; dirge's left-panel GIT box: branch, the three counts git itself
+  ;; distinguishes, and the last commit's subject.
+  (let [said (texts (render :widget/git {:project proj} {}))]
+    (is (str/includes? said "tui-start-a-run"))
+    (is (re-find #"\+1" said) "staged")
+    (is (re-find #"~2" said) "unstaged")
+    (is (re-find #"\?3" said) "untracked")
+    (is (str/includes? said "Let the TUI start a run") "and the last commit"))
+  (testing "a clean tree says so rather than showing three zeroes"
+    (let [said (texts (render :widget/git
+                              {:project {:project "p" :branch "main" :staged 0
+                                         :unstaged 0 :untracked 0
+                                         :last_commit "x"}}
+                              {}))]
+      (is (re-find #"(?i)clean" said))))
+  (testing "outside a repo it says that, and does not invent a branch"
+    (let [said (texts (render :widget/git {:project {:project "p"}} {}))]
+      (is (re-find #"(?i)not a git|no repo|no branch" said))))
+  (testing "and it draws before the first poll answers"
+    (is (vector? (render :widget/git {} {})))))
+
 (deftest the-input-box-is-an-editor-bound-to-the-handlers
   ;; :run-id is what makes Enter mean :submit — with none selected there is
   ;; nothing to steer and it means :start instead, which is what

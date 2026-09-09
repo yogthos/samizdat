@@ -178,6 +178,11 @@
     ;; arrangement that is already drawn.
     (let [r (client/layout base)]
       (when (:ok r) (layout/serve! (get-in r [:body :layout]))))
+    ;; Beside the layout because it is the same KIND of thing — what the
+    ;; harness is, rather than what a run is doing — and because both survive
+    ;; a run being deselected. Cheap: the server caches the git side (gates.edn
+    ;; :git-snapshot-ttl-ms), so this is not three shell-outs per poll.
+    (swap! state st/apply-project (client/project base))
     (swap! state st/apply-runs (client/list-runs base))
     (when-let [rid (:run-id @state)]
       ;; The cursor is read here, after apply-runs may have selected a run —

@@ -54,6 +54,10 @@
    ;; red, and "starting…" is not a failure.
    :notice nil
    :layout-error nil
+   ;; What the harness says it is working on: project, branch, dirty counts,
+   ;; model. Nil until the first poll answers, so the footer and the GIT panel
+   ;; both have to draw without it.
+   :project nil
    :runs []
    :run-id nil
    :detail nil
@@ -186,6 +190,16 @@
          (take-last n)
          (remove held)
          vec)))
+
+(defn apply-project
+  "Fold GET /v1/harness/project.
+
+  A failure leaves what is already held alone, like the turn text: the branch
+  and the project name do not change because one poll missed, and blanking
+  the footer on a dropped connection would take away the caption while
+  leaving the panels it labels."
+  [s {:keys [ok body]}]
+  (if ok (assoc s :project body) s))
 
 (defn apply-runs
   [s {:keys [ok body] :as r}]
