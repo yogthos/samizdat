@@ -379,6 +379,18 @@
              ;; quiet one, and on run e1b765e7 that hid a stream dead on
              ;; read timeouts for two hours (karamazov-cz90).
              bid (some-> (:oversight/branch data) :id)
+             ;; WHY THE LOOP ENDED IT, in the loop's own words. `failure`
+             ;; below reads the last TURN, which answers a different question
+             ;; and is silent whenever that turn looked fine — run b8ae2b1f
+             ;; recorded two passes as abandoned with notes AND failure null
+             ;; because the branch's last turn was a neutral `recall`, which
+             ;; is the indistinguishable-from-quiet record cz90 was meant to
+             ;; make impossible (karamazov-n6ql). loop.clj sets
+             ;; :inactive-reason on the branch it ends; carrying it here costs
+             ;; nothing and is the only field populated on that path.
+             ended (some-> (:oversight/branch data) :inactive-reason
+                           str not-empty
+                           (clip (gates/threshold :oversight-note-chars)))
              failure (when bid
                        (let [t (last (journal/branch-turns conn run-id bid))]
                          (when (and t (or (str/starts-with? (str (:tool_name t)) "__")
@@ -397,6 +409,7 @@
                                 :verdict (some-> (:oversight/verdict data) name)
                                 :notes (some-> (:oversight/answer data)
                                                (clip (gates/threshold :oversight-note-chars)))
+                                :ended ended
                                 :failure failure}}))
        data)
      data)))

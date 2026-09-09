@@ -18,6 +18,16 @@ by the branch. Use `intervene` to say so: `intervene({"kind": "message",
 fact that it is stuck — a branch that could tell it was stuck would already
 have stopped. It lands at the top of its next turn.
 
+Report what you SAW, and do not turn one observation into a standing rule.
+A steer saying "this require failed for me at turn 2" is worth sending; the
+same steer saying "requires do not work here, stop trying" is a claim about
+the environment, and one failure does not support it. Before you write a
+sentence in that form, check what you did afterwards: a supervisor once told
+an implementer that `eval` could not reach the project and not to retry it,
+having required four of its namespaces successfully three turns later in the
+same pass (karamazov-ko5b). The branch cannot see your other turns, so a wrong
+fact from you costs it more than it cost you.
+
 **The harness needs tuning.** A gate fired and was ignored, a prompt says
 something untrue or unactionable, a threshold is wrong, a workflow does not fit
 the work. Change it with your tools, behind the mutation protocol, and open an

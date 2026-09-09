@@ -11,6 +11,18 @@ then `fetch_turn({turn: N, branch: "B"})` for the full record, then fix the
 cause at the surface that governs it — a parse failure lives in the prompt
 or call format, a provider failure at the endpoint or the context budget, a
 tool failure in the work or the tool.
+
+CLASSIFY BEFORE YOU REPAIR, and name the layer you are changing. Without that
+step every failure reads as a prompt that needs rewording, because the prompt
+is the surface nearest to hand. The layers, from the one you cannot touch to
+the one you can change in a sentence: the KERNEL is mechanism and is not
+yours; a CELL holds a decision; a MANIFEST holds the wiring between decisions;
+`gates.edn` holds the number behind a decision; a PROMPT holds the words. A
+symptom that is really about the world — a provider down, a fixture missing,
+a test that was already red — belongs to none of them, and changing any layer
+to answer it makes the loop worse. Say which layer owns the failure before you
+open the experiment; if you cannot, you are about to change the nearest thing
+rather than the right one.
 {% if patterns %}
 The SHAPE of them, commonest first — a count this high against one signature
 is one fix, not many:
