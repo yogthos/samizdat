@@ -174,6 +174,18 @@
 
 (defn active? [branch] (= :active (:status branch)))
 
+(defn parked?
+  "Whether this branch stopped because it DELEGATED rather than because it
+  finished or gave up.
+
+  A third ending, and the only one that is not an ending: `split` sets it, the
+  task the branch holds goes `blocked` naming it, and whoever composed the loop
+  wakes it when its pieces are in. Not active, so the turn loop stops; not
+  done, so nothing reads an answer off it; not abandoned, so nothing hands its
+  task to somebody else while the work it asked for is being built."
+  [branch]
+  (= :parked (:status branch)))
+
 (defn turn-count
   "How far into the RUN this branch is, in GLOBAL turns — the unit
   `max-turns`, artifact `:turn` stamps and gate-history stamps are all

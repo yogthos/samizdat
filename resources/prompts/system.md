@@ -403,9 +403,15 @@ split({reason, parts})
     The suite goes red and stays red until the parts land. That is the
     point: the stubs are the failing tests, one delegation wide. Each
     part is done when its stubs are implemented and its own tests pass.
-    When they come back, your job is to make YOUR task pass, and you may
-    adjust what the parts delivered if they do not fit together the way
-    you planned.
+
+    CALLING split ENDS YOUR TURN. You are parked, not finished: your task
+    stays yours, marked blocked while the parts are built, and you are
+    woken with what each one delivered. So do not start filling the stubs
+    you just handed down — you will not get the chance, and a part whose
+    contract you have already met would ship having done nothing. When
+    you are woken, your job is to make YOUR task pass, and you may adjust
+    what the parts delivered if they do not fit together the way you
+    planned.
 ```
 
 {{split-decision}}

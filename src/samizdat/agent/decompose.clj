@@ -125,14 +125,38 @@
   compose is the first time anyone can tell whether the boundary was right, so
   assembly is where the design gets checked rather than only where the glue
   goes (prompts/assembly.md). What it must not do is discard a piece that met
-  its contract."
-  [node depth {:keys [attempt fan] :as ops} children]
+  its contract.
+
+  THIS IS THE WAIT, and `resume` is what makes it a wait rather than a
+  replacement. A parent that delegated is parked, not finished; passing its
+  parked branch back means the agent that designed the boundary is the agent
+  that composes it, on the tape where it drew the boundary. Nil on the
+  architect path — a unit split from outside was stuck when it stopped, and
+  resuming it would resume the confusion; that one starts fresh."
+  [node depth {:keys [attempt fan] :as ops} children resume]
   (let [results (fan (mapv (fn [c] #(solve c (inc depth) ops)) children))]
     (if-not (every? #(= :landed (:status %)) results)
       {:status :failed :reason "a sub-unit did not land" :node node :children results}
-      (let [asm (attempt (assoc node :assembly true :child-answers (mapv :answer results)))]
-        (if (:passed? asm)
+      ;; `:assembled` names the rows the pieces are on, so the assembly
+      ;; attempt composes them instead of rediscovering them as a delegation
+      ;; it has just made. Empty on the architect path, whose children are
+      ;; described rather than stubbed and are filtered out anyway.
+      (let [asm (attempt (cond-> (assoc node :assembly true
+                                        :child-answers (mapv :answer results)
+                                        :assembled (into #{} (keep :task-id children)))
+                           resume (assoc :resume resume)))]
+        (cond
+          (:passed? asm)
           {:status :landed :answer (:answer asm) :node node :children results}
+
+          ;; A second-generation split. `solve` has no path to honour one — the
+          ;; pieces are already built and this node is the composition — so say
+          ;; that rather than reporting it as an ordinary miss.
+          (seq (:split asm))
+          {:status :failed :reason "assembly split again"
+           :node node :children results}
+
+          :else
           {:status :failed :reason "assembly did not land" :node node :children results})))))
 
 (defn- decompose-node
@@ -145,7 +169,7 @@
   That is a weaker contract, and it is why this is the fallback and the agent's
   own `split` is the ordinary path."
   [node depth ops decision]
-  (assemble node depth ops (mapv #(child-node node %) (:subtasks decision))))
+  (assemble node depth ops (mapv #(child-node node %) (:subtasks decision)) nil))
 
 (defn solve
   "Recursive decompose-on-stuck for one node. Pure control flow over injected
@@ -182,7 +206,13 @@
       ;; them against the tree, and the child tasks exist — so there is nothing
       ;; to diagnose and no architect to ask. This is the recursion's ordinary
       ;; path, not its recovery path: a unit that split was never stuck.
-      (seq (:split r)) (assemble node depth ops (:split r))
+      ;; The parked branch travels with the split, so the assembly wakes this
+      ;; agent rather than opening a new one under its name. `attempt` reports
+      ;; no branch when the split was recovered from the board after a crash,
+      ;; and the assembly then opens fresh.
+      (seq (:split r))
+      (assemble node depth ops (:split r)
+                (when (:branch r) {:branch (:branch r) :turn (:turn r)}))
 
       (:passed? r) {:status :landed :answer (:answer r) :node node}
 

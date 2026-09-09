@@ -2596,7 +2596,11 @@
          and cannot mutate the branch, so that effect lives in the loop
          beside the turn-budget bookkeeping."
    :when (>= (:consecutive-failures branch) (threshold :stuck-threshold))
-   :message-form (str (prompt "stuck")
+   ;; Rendered rather than read raw: the prose names `split` only where the
+   ;; branch may call it, which is a {% if %} over message-context's
+   ;; :can-split (karamazov-ioo.15.2).
+   :message-form (str (sp/render-str (prompt "stuck")
+                                     (message-context branch max-turns))
                       (when-let [g (state/stated-goal branch)]
                         (str "\n\nYou are working on: " g))
                       (when-let [c (:last-failed-claim branch)]
@@ -2652,7 +2656,8 @@
    ;; RE-ANCHORED. A steer that says "nothing has advanced" without saying at
    ;; WHAT asks the model to compare an outcome against an intention it has to
    ;; remember. Naming the goal it stated is what makes the nudge answerable.
-   :message-form (str (prompt "progress-stalled")
+   :message-form (str (sp/render-str (prompt "progress-stalled")
+                                     (message-context branch max-turns))
                       "\n\nNothing has advanced in " (:turns-since-progress branch)
                       " turns."
                       (when-let [g (state/stated-goal branch)]

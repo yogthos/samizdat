@@ -170,3 +170,45 @@
         (let [kids (tasks/children-of conn held)]
           (is (= 2 (count kids)) "the pieces are children of the held task")
           (is (= #{"parse-line" "render-report"} (set (map :title kids)))))))))
+
+(deftest a-split-parks-the-branch-and-blocks-the-row-it-was-working
+  ;; karamazov-ioo.15.4. The split IS the branch's last act. It had nothing
+  ;; left to do until its pieces came back, and the worst thing it could do
+  ;; with the turns it kept was implement the very stubs it had handed down —
+  ;; after which each child's ship gate found its contract already met and
+  ;; shipped having done nothing. `verify` refuses a part whose stub is
+  ;; already filled for that reason; the same state was one turn away and
+  ;; unchecked.
+  (with-project
+    (fn [{:keys [conn run-id root]}]
+      (let [held (tasks/create! conn {:title "build the report" :run-id run-id})
+            _ (tasks/claim! conn held run-id "B1")
+            r (base/run-tool {:branch {:id "B1" :status :active}
+                              :conn conn :run-id run-id :root root
+                              :tool-name "split"
+                              :args {:reason "two things" :parts good-parts}})
+            row (tasks/get-task conn held)]
+        (is (= :neutral (:category r)) (str "accepted: " (:result r)))
+        (testing "the branch parks"
+          (is (= :parked (get-in r [:branch :status])))
+          (is (= 2 (count (get-in r [:branch :delegated])))
+              "carrying the ids it is waiting on"))
+        (testing "and the row it holds is blocked rather than released"
+          (is (= "blocked" (:status row)))
+          (is (= "B1" (:branch_id row))
+              "still named, so nothing hands the task to somebody else while
+               the work it asked for is being built"))))))
+
+(deftest a-refused-split-parks-nothing
+  (with-project
+    (fn [{:keys [conn run-id root]}]
+      (let [held (tasks/create! conn {:title "build the report" :run-id run-id})
+            _ (tasks/claim! conn held run-id "B1")
+            r (base/run-tool {:branch {:id "B1" :status :active}
+                              :conn conn :run-id run-id :root root
+                              :tool-name "split"
+                              :args {:reason "one thing"
+                                     :parts [(first good-parts)]}})]
+        (is (= :active (get-in r [:branch :status]))
+            "a branch whose split was declined is still working")
+        (is (= "in_progress" (:status (tasks/get-task conn held))))))))

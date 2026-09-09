@@ -37,6 +37,7 @@
             [samizdat.workflow :as wf]
             [samizdat.agent.phases :as phases]
             [samizdat.agent.resume :as resume]
+            [samizdat.agent.roles :as roles]
             [samizdat.agent.state :as state]
             [samizdat.agent.tools :as tools]
             [samizdat.agent.tools.base :as tools-base]
@@ -1904,6 +1905,36 @@
       (is (str/includes? msg "y"))
       (is (str/includes? msg "z") "the withheld claim is still shown too"))))
 
+
+(deftest the-stall-gates-name-split-exactly-where-the-branch-may-call-it
+  ;; karamazov-ioo.15.2. Live run 3b3ce405 never called the split tool, and
+  ;; reachability was not why — it is on the implementor surface and documented
+  ;; in system.md. Nothing ASKED for it. Worse, the two stall gates named the
+  ;; BYPASS: `task({title, ...})` makes a child with no verified stubs behind
+  ;; it, which cells/decompose deliberately does not count as a delegation, so
+  ;; the steer pointed at a row nobody works.
+  ;;
+  ;; Read off roles.edn through the same predicate the loop refuses tool calls
+  ;; with, rather than restated here: a gate must not advertise a tool the
+  ;; branch would be refused for using, in either direction.
+  (let [msg (fn [gate role]
+              ((:message (gates/by-name gate))
+               {:branch (assoc (branch-with :consecutive-failures 9
+                                            :any-progress? true
+                                            :turns-since-progress 9)
+                               :role role)
+                :max-turns 50}))]
+    (doseq [gate [:stuck :progress-stalled]]
+      (doseq [role [:implementor :reviewer]]
+        (is (= (roles/may-use? role "split")
+               (str/includes? (msg gate role) "`split`"))
+            (str gate " names split for " role
+                 " iff that role may call it"))))
+    (testing "the two roles really do differ, or the check above is vacuous"
+      (is (roles/may-use? :implementor "split"))
+      (is (not (roles/may-use? :reviewer "split"))))
+    (testing "a role that cannot split is still told how to hand work down"
+      (is (str/includes? (msg :stuck :reviewer) "task(")))))
 
 (deftest pilot-gates-are-config-data
   ;; Tier 3a: gates moved from closures in gates.clj to :gates entries in
