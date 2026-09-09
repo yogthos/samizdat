@@ -154,6 +154,14 @@
                  ;; is off and every run is chosen for.
                  (>= (count (str/trim (str problem)))
                      (or (:min-problem-chars p) 0)))
+        ;; THE ONE PROVIDER CALL THIS HARNESS CANNOT BILL (karamazov-2rqb.1).
+        ;; Every other side model records a side_calls row so the run's token
+        ;; budget can see it; this one runs from beam/run! BEFORE
+        ;; runs/start-run!, because the choice it makes decides which manifest
+        ;; is compiled and the run row records the width that compile decides.
+        ;; There is no run_id to attribute it to yet. It is one small call per
+        ;; run start, and inventing a nullable-run_id row nothing sums would
+        ;; buy a schema wart rather than a number.
         (let [reply (:content (llm/chat llm-adapter llm-config
                                         [{:role "system" :content (prompt/prompt "workflow-select-system")}
                                          {:role "user"

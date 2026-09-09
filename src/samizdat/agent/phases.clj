@@ -78,18 +78,41 @@
 ;; Same compilation discipline as gates.edn's `:when` forms, and for the same
 ;; reason: the STRUCTURE compiles once so a broken form fails at load rather
 ;; than mid-run, while everything the form reads is read at fire time so the
-;; policy stays runtime-editable. The form sees `branch` and `tool-name` as
-;; plain locals and nothing else — a form reaching for anything more fails to
-;; compile, which is the fail-fast.
+;; policy stays runtime-editable. The form sees `branch`, `tool-name` and the
+;; whole `ctx` as plain locals and nothing else; what it calls it names fully
+;; qualified.
+;;
+;; AND IT LOADS WHAT IT NAMES. This namespace requires none of the namespaces
+;; the shipped rules call — storm, gates, files — because it sits below gates
+;; in the require graph, and until now it relied on tools/base having loaded
+;; them before anyone compiled the table. The table is memoized on first use,
+;; so the first caller decided: a run's eval image that required phases before
+;; tools compiled rules that threw "No such var: samizdat.agent.gates/
+;; storm-policy" on every call, after the namespaces had loaded too. Requiring
+;; the namespaces a form names, at compile time, makes the table correct
+;; whoever compiles it first (karamazov-b76m's validation run found it).
+
+(defn namespaces-named
+  "The namespaces a form calls, as symbols: every qualified symbol in it,
+  by its namespace part, once. Pure; a keyword's namespace is not a
+  namespace and is not counted."
+  [form]
+  (into #{}
+        (comp (filter symbol?) (keep namespace) (map symbol))
+        (tree-seq coll? seq form)))
 
 (defn- compile-refusal
   [entry]
-  (assoc entry
-         :when (binding [*ns* (the-ns 'samizdat.agent.phases)]
-                 (eval `(fn [~'ctx]
-                          (let [~'branch    (get ~'ctx :branch)
-                                ~'tool-name (get ~'ctx :tool-name)]
-                            ~(:when entry)))))))
+  (let [form (:when entry)]
+    (doseq [ns-sym (namespaces-named form)]
+      (require ns-sym))
+    (assoc entry
+           :when-form form
+           :when (binding [*ns* (the-ns 'samizdat.agent.phases)]
+                   (eval `(fn [~'ctx]
+                            (let [~'branch    (get ~'ctx :branch)
+                                  ~'tool-name (get ~'ctx :tool-name)]
+                              ~form)))))))
 
 (def refusals
   "The compiled conditional withholds, in table order — first match wins.

@@ -324,7 +324,7 @@
  ;; are reads: a timed-out shell may have run to completion, and nothing in the
  ;; result can say which. That is the whole reason the gate is on the TOOL and
  ;; not on the error.
- #{"read_file" "grep" "lsp" "doc" "complete" "manual" "recall"
+ #{"read_file" "read_digest" "grep" "lsp" "doc" "complete" "manual" "recall"
    "fetch_turn" "fetch_artifact" "cells" "introspect"}
 
  :skill-roots

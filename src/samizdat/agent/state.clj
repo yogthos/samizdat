@@ -36,6 +36,20 @@
             [samizdat.tape :as tape]
             [samizdat.util :as util]))
 
+(def context-part-names
+  "Every part the per-turn context block can carry, in the order a branch reads
+  them (samizdat.agent.loop/context-block builds exactly these). A branch
+  carries what each part COST on its last turn as :context-sizes, and
+  `introspect` reads both to say which renderer is spending the turn and which
+  said nothing (karamazov-2rqb.3) — an empty ledger and a ledger eating the
+  turn are different problems and used to look identical from outside.
+
+  HERE RATHER THAN IN THE LOOP because the loop requires the tool registry and
+  the registry requires introspect: a name introspect could reach in
+  samizdat.agent.loop would close that ring. This namespace already owns what
+  a branch map holds, which is where this belongs anyway."
+  [:task :ledger :memories :inbox :shared-tree :failures :artifacts])
+
 (defn new-branch
   [{:keys [id parent-id problem prolog messages created-at-turn]}]
   {:id id

@@ -2098,6 +2098,26 @@
     (is (not (state/explore-cap-expired? (assoc b :phase :build) 10 12)))
     (is (= :build (:phase (state/enter-phase b 12))))))
 
+(deftest refusal-forms-load-the-namespaces-they-name
+  ;; A refusal form names its functions fully qualified — samizdat.agent.storm,
+  ;; samizdat.agent.gates, samizdat.agent.files — and phases.clj requires none
+  ;; of them, by design: it sits below gates in the require graph. The table is
+  ;; memoized on first use, so whoever compiled it first decided which of those
+  ;; namespaces were loaded, and a rule compiled early kept throwing "No such
+  ;; var: samizdat.agent.gates/storm-policy" after they were (seen from a run's
+  ;; eval image, which required phases before tools; karamazov-b76m's
+  ;; validation run). The compiler now loads what a form names.
+  (is (= '#{samizdat.agent.storm samizdat.agent.gates}
+         (phases/namespaces-named '(samizdat.agent.storm/repeat-blocked?
+                                    ctx (samizdat.agent.gates/storm-policy))))
+      "every namespace a form names, once")
+  (is (= #{} (phases/namespaces-named '(nil? (:task branch))))
+      "and nothing for a form that names none")
+  (doseq [rule (phases/refusals)
+          ns-sym (phases/namespaces-named (:when-form rule))]
+    (is (some? (find-ns ns-sym))
+        (str (:rule rule) " names " ns-sym ", which compiling the table must have loaded"))))
+
 (deftest phase-refusal-reads-the-phase-table
   ;; drg-4026 #34: phase-refusal consults the table's :withholds — the seam
   ;; the audit called inert. Still empty (the withheld proof tools left), and
@@ -2491,6 +2511,29 @@
             "the deterministic summary the critic read")
         (is (str/includes? (str (:reply note)) "Looks steady")
             "and what it said back, deliberation included"))
+      (finally (db/close conn)))))
+
+(deftest a-critic-bills-the-run-even-when-its-answer-was-unusable
+  ;; karamazov-2rqb.1. The critic's note is written only when the reply parsed
+  ;; into four scores, and the usage used to be dropped entirely — so a critic
+  ;; that answered prose every round spent the run's tokens and left no trace
+  ;; anywhere the budget could reach. The bill is owed for the call, not for
+  ;; the answer.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p" :provider "t" :model "m"})
+        b (branch-with :thesis {:goal "g" :technique "t" :subClaims []})]
+    (try
+      (with-redefs [llm/chat (fn [& _]
+                               {:content "the branch seems fine to me"
+                                :usage {:prompt-tokens 900 :completion-tokens 40
+                                        :total-tokens 940}})]
+        (is (nil? (critic/score! {:conn conn :run-id rid} b [] 7))
+            "still no information, as before"))
+      (is (empty? (journal/notes conn rid :critic-score))
+          "and still no score note, because there was no score")
+      (let [u (journal/run-usage conn rid)]
+        (is (= 1 (:side-calls u)))
+        (is (= 940 (:total-tokens u)) "but the run paid for it"))
       (finally (db/close conn)))))
 
 (deftest a-critic-score-clips-the-record-to-its-budget

@@ -1765,6 +1765,7 @@
    :prune-lines {"shell"      "[shell] ran `{{first-line}}` → {{lines}} lines, {{chars}} chars"
                  "eval"       "[eval] {{lines}} lines, {{chars}} chars — {{preview}}"
                  "read_file"  "[read_file] {{chars}} chars, {{lines}} lines"
+                 "read_digest" "[read_digest] {{lines}} lines of digest, {{chars}} chars"
                  "grep"       "[grep] {{lines}} lines of matches, {{chars}} chars"
                  "lsp"        "[lsp] {{lines}} lines"
                  "write_file" "[write_file] wrote {{chars}} chars"
@@ -1794,6 +1795,33 @@
         The old single :compaction-chars threshold is still read by the
         in-place digest path; this governs the LADDER, which decides whether
         that path runs at all and whether a fold is needed on top of it."}
+
+ :digest
+ {:value {:min-lines 350 :budget-chars 2000 :input-chars 120000}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-b76m"]
+  :doc "THE READ THAT RETURNS AN ANSWER INSTEAD OF A PAGE (karamazov-b76m,
+        after Spotify's shunt). Most of what a branch does with a large file
+        is moving its text through the model, not reasoning about it, and
+        every page it reads is resent on every later turn.
+
+        :min-lines    an untargeted read_file — no offset, no limit — of a
+                      file at least this long is refused toward read_digest
+                      by the phases.edn rule :large-read-needs-a-digest.
+                      350 is Spotify's measured crossover: below it the
+                      reader's round trip costs more than the tokens it
+                      saves. A targeted read always passes; that is the
+                      branch fetching the section it means to edit.
+        :budget-chars how long a digest may be. Bullets, not prose.
+        :input-chars  how much file the reader is sent in one call; past it
+                      the material is clipped with a note saying so. Sized
+                      for a local reader with a 32k window at ~4 chars a
+                      token, with room for the answer.
+
+        The reader is config :run :role-models :reader, a cheap model; with
+        no assignment the branch's own model reads, which still keeps the
+        file out of the branch's context. :summarizer, likewise, is the
+        role the compaction fold's summary call runs on."}
 
  :context-budget
  {:value {:tool-result-chars   4000
@@ -2116,7 +2144,7 @@
   ;; :storm-mutating tools clear the window's non-mutating entries when they
   ;; fire, and still count amongst themselves. Everything in neither set is
   ;; counted normally.
-  :storm-exempt #{"read_file" "grep" "doc" "manual" "introspect" "cells"
+  :storm-exempt #{"read_file" "read_digest" "grep" "doc" "manual" "introspect" "cells"
                   "recall" "fetch_artifact" "fetch_turn" "branch_theses"
                   "lsp" "skill" "policy" "complete" "done" "give_up"}
   :storm-mutating #{"write_file" "edit_file" "shell" "eval" "reload_cells"

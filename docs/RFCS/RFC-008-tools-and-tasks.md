@@ -156,6 +156,23 @@ a word at the start of a documentation line — a tool the model is not told abo
 is unreachable, and `str/includes?` matching once counted `cell` as documented
 because the prompt contains `cells`.
 
+### Reads that return an answer
+
+`read_digest({paths, question, anchors?})` sends the files to a reader and
+returns only its bullets. The reader is the `:reader` role's model when
+`:run :role-models` assigns one and the branch's own otherwise; either way the
+files never enter the branch's context. With `anchors: true` every line the
+reader sees carries its `line:hash`, so a bullet that cites one is a `patch`
+address — the digest can hand back edit coordinates, which a plain summary
+cannot. Usage lands on the journal as a `:digest` note.
+
+The steering is a `phases.edn` refusal, not advice: an untargeted `read_file`
+(no offset, no limit) of a file over `gates.edn :digest :min-lines` is refused
+with a message naming the digest and the paged read. A read that names a
+section always passes. The compaction fold's summary call runs on the
+`:summarizer` role the same way. Pattern and numbers after Spotify's shunt;
+karamazov-b76m.
+
 ## Protocol
 
 ```

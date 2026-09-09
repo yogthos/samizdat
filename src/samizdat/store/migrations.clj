@@ -666,6 +666,43 @@
   ;; branches did open on.
   ["ALTER TABLE branches ADD COLUMN prompt_suffix TEXT"])
 
+(def ^:private v25
+  ;; WHAT THE SIDE MODELS SPENT (karamazov-2rqb.1).
+  ;;
+  ;; run-usage summed the turns table, and the turns table holds only the
+  ;; committed turn. Everything else the harness asks a model — the reader
+  ;; behind read_digest, the critic scoring a beam, the end-of-task reflection,
+  ;; the trajectory scorer — spent provider tokens no query could reach, so
+  ;; HARNESS_TOKEN_BUDGET bounded one call per turn and nothing else. The
+  ;; digest shunt makes it worse the more it works: its whole purpose is to
+  ;; move reading onto a second model, and every read it moves left the bill.
+  ;;
+  ;; A SEPARATE TABLE, not a kind column on turns. `turns` is what resume
+  ;; replays a crashed run from and what every progress guard counts over;
+  ;; a row in it that is not a turn would have to be filtered out of each of
+  ;; those, and the one that got missed would be the bug.
+  ;;
+  ;; Nullable branch_id and turn: a side call made between turns, or on behalf
+  ;; of the run rather than a branch, is still the run's money.
+  ["CREATE TABLE IF NOT EXISTS side_calls (
+      id                INTEGER PRIMARY KEY,
+      run_id            TEXT NOT NULL REFERENCES runs(id),
+      branch_id         TEXT,
+      turn              INTEGER,
+      kind              TEXT NOT NULL,
+      role              TEXT,
+      model             TEXT,
+      prompt_tokens     INTEGER,
+      completion_tokens INTEGER,
+      total_tokens      INTEGER,
+      cache_hit_tokens  INTEGER,
+      cache_miss_tokens INTEGER,
+      created_at        TEXT NOT NULL
+    )"
+
+   "CREATE INDEX IF NOT EXISTS side_calls_run ON side_calls(run_id)"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
-  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24])
+  [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
+   v25])

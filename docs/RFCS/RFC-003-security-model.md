@@ -117,6 +117,13 @@ flowchart LR
     reads --> readroots
     readroots --> redact
 
+    digest[read_digest: the files, whole, to the reader model]
+    reader[outbound HTTP to the :reader role's provider, else the branch's]
+    toolcall --> digest
+    digest --> readroots
+    digest --> reader
+    reader --> redact
+
     split[split: verifies a delegation against the tree]
     toolcall --> split
     split --> root

@@ -94,7 +94,7 @@
     (is (every? (set (db/table-names c))
                 ["runs" "branches" "turns" "artifacts" "failures"
                  "gate_firings" "interventions" "events"
-                 "shared_artifacts"]))))
+                 "shared_artifacts" "side_calls"]))))
 
 (deftest migrations-are-idempotent
   (with-db [c]
@@ -1120,3 +1120,154 @@
       (is (= (:started_at (runs/get-run c r2)) (runs/nth-recent-start c 2)))
       (is (= (:started_at (runs/get-run c r1)) (runs/nth-recent-start c 3)))
       (is (nil? (runs/nth-recent-start c 4))))))
+
+;; --- side calls ---------------------------------------------------------------
+
+(deftest run-usage-counts-what-the-side-models-spent
+  ;; karamazov-2rqb.1. `run-usage` summed the turns table alone, and the turns
+  ;; table holds only the COMMITTED turn — so the reader behind read_digest,
+  ;; the critic, the reflection pass and the trajectory scorer all spent
+  ;; provider tokens the run's budget could not see. The more the digest shunt
+  ;; is used, which is the whole point of it, the more of the bill is invisible
+  ;; to the thing that is supposed to end the run at :exhausted.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "shell"
+                                   :result "ok" :category "success"
+                                   :usage {:prompt-tokens 100 :completion-tokens 20
+                                           :total-tokens 120}})
+      (is (= 120 (:total-tokens (journal/run-usage c rid)))
+          "the committed turn, as before")
+      (journal/record-side-call! c rid {:branch-id "B1" :turn 1 :kind :digest
+                                        :role :reader :model "cheap"
+                                        :usage {:prompt-tokens 8000 :completion-tokens 200
+                                                :total-tokens 8200}})
+      (journal/record-side-call! c rid {:branch-id "B1" :turn 1 :kind :critic
+                                        :usage {:prompt-tokens 500 :completion-tokens 50
+                                                :total-tokens 550}})
+      (let [u (journal/run-usage c rid)]
+        (is (= 8870 (:total-tokens u))
+            "the turn plus both side calls — one bill, one number")
+        (is (= 1 (:turns u))
+            "a side call is not a turn: the turn count still counts turns")
+        (is (= 2 (:side-calls u)))))))
+
+(deftest a-side-call-with-no-total-still-counts-its-parts
+  ;; An OpenAI-compatible server that reports prompt and completion but no
+  ;; total_tokens would otherwise contribute a row summing to nothing —
+  ;; the same invisible-spend bug one level down.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-side-call! c rid {:kind :digest
+                                        :usage {:prompt-tokens 300 :completion-tokens 40}})
+      (is (= 340 (:total-tokens (journal/run-usage c rid)))))))
+
+(deftest a-side-call-that-reported-no-usage-costs-nothing-and-still-records
+  ;; A provider error has no usage by construction. The row is the evidence
+  ;; that the call happened; it must not poison the sum with zeros that read
+  ;; as measurements.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-side-call! c rid {:kind :critic :usage nil})
+      (let [u (journal/run-usage c rid)]
+        (is (= 1 (:side-calls u)))
+        (is (= 0 (:total-tokens u)))))))
+
+;; --- cache lanes --------------------------------------------------------------
+
+(deftest run-usage-reports-the-cache-hit-rate
+  ;; karamazov-2rqb.2. The lanes were parsed by the adapter and written to
+  ;; every turn row, and nothing read them back: 8jz's own 92-99% measurements
+  ;; had to be taken from a wire log because the harness had no way to answer
+  ;; the question about itself. A cache regression — a forced tool_choice, a
+  ;; compaction fold, a reordered context block — should surface as a cliff in
+  ;; this number rather than on an invoice.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "shell"
+                                   :result "ok" :category "success"
+                                   :usage {:prompt-tokens 1000 :completion-tokens 10
+                                           :total-tokens 1010
+                                           :cache-hit-tokens 900
+                                           :cache-miss-tokens 100}})
+      (journal/record-side-call! c rid {:kind :digest
+                                        :usage {:prompt-tokens 1000 :completion-tokens 10
+                                                :total-tokens 1010
+                                                :cache-hit-tokens 500}})
+      (let [u (journal/run-usage c rid)]
+        (is (= 1400 (:cache-hit-tokens u)) "turns and side calls alike")
+        (is (= 100 (:cache-miss-tokens u)))
+        (is (= 0.7 (:cache-hit-rate u))
+            "hit over the prompt tokens of the calls that reported a lane")))))
+
+(deftest a-provider-that-reports-no-cache-lanes-has-no-rate
+  ;; llama.cpp and ollama report no split at all (llm/adapter/ollama.clj). A
+  ;; 0% there would assert every token missed the cache, which is a different
+  ;; and false claim — the same rule the adapter follows when it declines to
+  ;; write a zero.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "shell"
+                                   :result "ok" :category "success"
+                                   :usage {:prompt-tokens 1000 :completion-tokens 10
+                                           :total-tokens 1010}})
+      (let [u (journal/run-usage c rid)]
+        (is (nil? (:cache-hit-rate u)) "unknown, not zero")
+        (is (= 0 (:cache-hit-tokens u)))))))
+
+(deftest the-hit-rate-ignores-calls-that-reported-no-lane
+  ;; A run whose branch talks to a caching provider and whose reader talks to a
+  ;; local llama.cpp would otherwise read as half as well-cached as it is: the
+  ;; reader's prompt tokens would land in the denominator with no hit lane to
+  ;; match them.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "shell"
+                                   :result "ok" :category "success"
+                                   :usage {:prompt-tokens 1000 :completion-tokens 10
+                                           :total-tokens 1010
+                                           :cache-hit-tokens 800}})
+      (journal/record-side-call! c rid {:kind :digest
+                                        :usage {:prompt-tokens 9000 :completion-tokens 10
+                                                :total-tokens 9010}})
+      (is (= 0.8 (:cache-hit-rate (journal/run-usage c rid)))))))
+
+;; --- what the turn's context block costs --------------------------------------
+
+(deftest the-context-block-reports-what-each-of-its-parts-cost
+  ;; karamazov-2rqb.3. The block a branch is shown before every turn is seven
+  ;; renderers stacked — the task line, the settled-state ledger, the memory
+  ;; breadcrumbs, the inbox, the shared tree, the failure hits, the shared
+  ;; artifacts — each with its own cap in gates.edn, and nothing could say what
+  ;; any of them actually cost on a live turn. Autolith measures its
+  ;; contributions the same way and found a 12,000-token contribution that way.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          b (state/new-branch {:id "B1" :problem "p"})]
+      (journal/record-artifact! c rid {:branch-id "B1" :turn 1 :kind :lean
+                                       :tier :slow :claim-status :confirmed
+                                       :claim "a thing that is settled"
+                                       :code "theorem t : True := trivial"})
+      (let [{:keys [block branch]} (#'branch-loop/context-block c rid b nil false)
+            sizes (:context-sizes branch)]
+        (is (seq sizes) "the block says what it is made of")
+        (is (every? (fn [[_ n]] (and (integer? n) (pos? n))) sizes)
+            "each part with its own character count")
+        (is (contains? (set (map first sizes)) :ledger)
+            "the settled-state ledger rendered, so it is named")
+        (is (not (contains? (set (map first sizes)) :inbox))
+            "an empty inbox rendered nothing and is not listed as costing zero")
+        (is (<= (reduce + (map second sizes)) (count block))
+            "the parts cannot cost more than the block they compose")
+        ;; PINNED AGAINST THE DECLARED LIST, or introspect names the wrong
+        ;; parts as silent. A rename or a reorder here is the realistic drift:
+        ;; the names live in state (introspect cannot require the loop without
+        ;; closing a ring through the tool registry), so nothing else holds
+        ;; the two in step.
+        (let [declared state/context-part-names
+              produced (map first sizes)]
+          (is (every? (set declared) produced)
+              "every part the block builds is a part introspect knows about")
+          (is (= produced (filter (set produced) declared))
+              "and in the order the branch reads them in"))))))

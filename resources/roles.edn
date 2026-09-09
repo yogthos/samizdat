@@ -55,7 +55,7 @@
   ;; excludes by absence, which is what made the sentinel need one.
   :tools #{"thesis" "branch_theses" "done" "give_up"
            "plan" "eval" "doc" "complete" "manual"
-           "read_file" "grep" "lsp" "write_file" "edit_file" "patch"
+           "read_file" "read_digest" "grep" "lsp" "write_file" "edit_file" "patch"
            "shell" "websearch" "skill"
            "task" "split"
            "remember" "recall" "outcome" "forget" "retire" "message"
@@ -76,7 +76,7 @@
         patch."
   ;; `websearch` is investigation: a supervisor diagnosing an endpoint or a
   ;; library's behaviour has the same need an implementor does.
-  :tools #{"intervene" "read_file" "grep" "lsp" "skill" "doc" "complete" "manual"
+  :tools #{"intervene" "read_file" "read_digest" "grep" "lsp" "skill" "doc" "complete" "manual"
            "introspect" "cells" "cell" "manifest" "prompt" "policy"
            "fetch_turn" "fetch_artifact" "recall" "remember" "forget" "retire" "outcome"
            "experiment" "message" "eval" "shell" "websearch" "done" "give_up"}
@@ -90,7 +90,7 @@
   ;; Deliberately NO websearch. A reviewer judges the work against what was
   ;; asked, and going off to read the internet is how a review becomes a
   ;; second opinion about the domain instead of a check on the diff.
-  :tools #{"read_file" "grep" "lsp" "doc" "complete" "fetch_artifact"
+  :tools #{"read_file" "read_digest" "grep" "lsp" "doc" "complete" "fetch_artifact"
            "fetch_turn" "recall" "done" "give_up"}
   :prompt "roles/reviewer"
   :sees #{:requirement :diff :answer}}

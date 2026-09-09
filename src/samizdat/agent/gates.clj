@@ -160,6 +160,15 @@
    :exempt-tools (or (tool-vocab :storm-exempt) #{})
    :mutating-tools (or (tool-vocab :storm-mutating) #{})})
 
+(defn digest-policy
+  "The read digest's policy (karamazov-b76m), gates.edn :digest as one map:
+  :min-lines, the length past which an untargeted read_file is refused
+  toward read_digest (the phases.edn rule); :budget-chars, how long a digest
+  may be; :input-chars, how much file the reader is sent in one call. One
+  map so the rule, the tool and the reader's prompt read the same numbers."
+  []
+  (threshold :digest))
+
 (defn trajectory-policy
   "The trajectory-scoring policy (gates.edn :trajectory-score): repeats,
   stride, criteria, and the not-yet-consulted :abandon-below threshold.

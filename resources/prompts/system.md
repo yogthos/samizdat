@@ -170,6 +170,17 @@ grep({pattern, paths?, offset?})
     most of the hits are noise.{% if reference-paths %} An ABSOLUTE prefix naming a reference
     path searches that tree instead — one call to sweep the examples, and the
     hits come back as absolute paths read_file takes directly.{% endif %}
+read_digest({paths, question, anchors?})
+    Ask a question about one or more files and get bullets back, instead of
+    paging the files through your context. A reader — a cheaper model, when
+    one is assigned — reads them whole and answers only what you asked; the
+    files never enter your context, so asking again costs you nothing. Use
+    it for a large file you need to understand rather than edit: what a
+    namespace does, which functions touch the database, where a value is
+    computed. Pass anchors: true when you mean to patch what it finds: every
+    line the reader sees carries its `<line>:<hash>`, and a bullet that
+    cites one is an address patch takes. A whole-file read_file of a long
+    file is refused toward this tool; a read with offset or limit is not.
 lsp({op, file, line, col})
     Code navigation over the project via clojure-lsp (read-only). Ops:
     definition|references|hover need file (project-relative), line, col;

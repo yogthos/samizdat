@@ -5,6 +5,7 @@
   "The run-health digest the supervisor introspects on — pure over journal rows."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
+            [samizdat.agent.tools.introspect :as introspect]
             [samizdat.agent.telemetry :as telemetry]))
 
 (defn- row [branch turn tool cat]
@@ -260,3 +261,53 @@
              [])]
     (is (str/includes? (str out) "already tuned itself"))
     (is (str/includes? (str out) "200% the size"))))
+
+;; --- what the run cost, in the health block -----------------------------------
+
+(deftest run-health-shows-the-whole-bill-and-the-cache-rate
+  ;; karamazov-2rqb.1 and .2. The supervisor's own view of the run showed turn
+  ;; counts and nothing about money: not what the side models spent, and not
+  ;; whether the prefix was caching — the two numbers that decide whether a
+  ;; loop is affordable. Both are now summed for it (journal/run-usage), so
+  ;; this only has to render them.
+  (let [rows [(row "W0" 1 "read_file" "neutral")]
+        out (introspect/render-health rows 10
+                                      {:turns 1 :side-calls 3
+                                       :total-tokens 91234
+                                       :cache-hit-rate 0.87})]
+    (is (str/includes? out "turns: 1 of 10"))
+    (is (str/includes? out "91234") "the whole bill, turns and side calls alike")
+    (is (str/includes? out "side calls: 3"))
+    (is (str/includes? out "87%") "rounded — a hit rate is read, not computed with")))
+
+(deftest run-health-says-unknown-when-the-provider-reports-no-cache-lane
+  ;; A 0% would assert every token missed the cache. llama.cpp and ollama
+  ;; report no lane at all, and the honest answer there is that we do not know.
+  (let [out (introspect/render-health [(row "W0" 1 "read_file" "neutral")] nil
+                                      {:turns 1 :side-calls 0
+                                       :total-tokens 500
+                                       :cache-hit-rate nil})]
+    (is (not (str/includes? out "0%")))
+    (is (str/includes? out "cache hit: n/a"))))
+
+(deftest run-health-without-usage-is-what-it-always-was
+  ;; The two-arity call still works: a context with no run database renders
+  ;; the tallies alone rather than a row of zeroes that look measured.
+  (let [out (introspect/render-health [(row "W0" 1 "read_file" "neutral")] 10)]
+    (is (str/includes? out "turns: 1 of 10"))
+    (is (not (str/includes? out "cache hit")))))
+
+(deftest the-context-block-rendering-names-cost-and-silence
+  ;; karamazov-2rqb.3. Two questions, and only the first is about size: which
+  ;; part is spending the turn, and which parts had nothing to say. A part that
+  ;; rendered nothing is named as silent rather than shown as 0, because a 0
+  ;; reads as a measurement of a part that is present and empty.
+  (let [out (introspect/render-context [[:task 40] [:ledger 1200] [:failures 300]])]
+    (is (str/includes? out "total: 1540 chars"))
+    (is (str/includes? out "ledger: 1200"))
+    (is (str/includes? out "rendered nothing: memories, inbox, shared-tree, artifacts")
+        "in reading order, and only the ones that were absent"))
+  (is (str/includes? (str/lower-case (introspect/render-context nil))
+                     "no context block")
+      "a branch that has not taken a turn yet says so, in words a project can
+       reword — prompts/context-empty.md, not a literal in src"))

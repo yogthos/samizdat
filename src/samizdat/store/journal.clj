@@ -88,6 +88,20 @@
 
 ;; --- turns ------------------------------------------------------------------
 
+(defn- total-of
+  "The `usage` map's total, derived from its parts when the provider reported
+  none. `nil` when there was no usage at all — a provider error costs nothing,
+  and a zero there would read as a measurement rather than as an absence.
+
+  Some OpenAI-compatible servers omit `total_tokens` while reporting the two
+  halves. Storing the 0 the adapter defaults to would make the row sum to
+  nothing, which is the same invisible-spend bug one level down."
+  [{:keys [prompt-tokens completion-tokens total-tokens] :as usage}]
+  (when usage
+    (if (and total-tokens (pos? total-tokens))
+      total-tokens
+      (+ (or prompt-tokens 0) (or completion-tokens 0)))))
+
 (defn record-turn!
   "One model turn: what it called, with what, and what came back.
 
@@ -117,27 +131,90 @@
                     ;; see migration v4. `usage` is absent on the
                     ;; provider-error path by construction.
                     (:prompt-tokens usage) (:completion-tokens usage)
-                    (:total-tokens usage)
+                    ;; Derived when the provider reported no total: the
+                    ;; adapter defaults that field to 0, and a 0 here is a row
+                    ;; the budget cannot see. See `total-of`.
+                    (total-of usage)
                     (:cache-hit-tokens usage) (:cache-miss-tokens usage)
                     (if policy-refusal? 1 0)]))
   (emit! conn run-id :turn {:branch-id branch-id :turn turn
                             :data {:tool tool-name :category category}}))
 
+(defn record-side-call!
+  "A provider call the run paid for that is not a turn: the reader behind
+  read_digest, the critic, the end-of-task reflection, the trajectory scorer.
+
+  THE POINT IS THE SUM (karamazov-2rqb.1). These calls used to discard their
+  usage at the call site, so a run's budget bounded the committed turn and
+  nothing else — and the harder the digest shunt worked, the more of the bill
+  it moved out of view. `kind` says which caller; `role` and `model` say what
+  it ran on, which is how a cheap-role assignment can be shown to have paid
+  for itself.
+
+  `branch-id` and `turn` are optional: a call made on behalf of the run rather
+  than a branch is still the run's money."
+  [conn run-id {:keys [branch-id turn kind role model usage]}]
+  (db/with-writer
+    (db/execute! conn
+                 ["INSERT INTO side_calls (run_id, branch_id, turn, kind, role, model,
+                                           prompt_tokens, completion_tokens, total_tokens,
+                                           cache_hit_tokens, cache_miss_tokens, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                  run-id branch-id turn (some-> kind name) (some-> role name)
+                  (some-> model str)
+                  ;; nil, not 0, when there was no response to cost — the same
+                  ;; rule record-turn! follows.
+                  (:prompt-tokens usage) (:completion-tokens usage)
+                  (total-of usage)
+                  (:cache-hit-tokens usage) (:cache-miss-tokens usage)
+                  (db/now)])))
+
 (defn run-usage
-  "What a run has spent so far, summed over its turn rows: {:turns
-  :prompt-tokens :completion-tokens :total-tokens}. A row with no usage — a
-  provider error — counts as a turn and costs nothing. This is what the beam
-  holds a run's token budget against (karamazov-aqsr.3)."
+  "What a run has spent so far: {:turns :side-calls :prompt-tokens
+  :completion-tokens :total-tokens :cache-hit-tokens :cache-miss-tokens
+  :cache-hit-rate}. A row with no usage — a provider error — counts as a call
+  and costs nothing. This is what the beam holds a run's token budget against
+  (karamazov-aqsr.3).
+
+  BOTH TABLES, because both are the run's money (karamazov-2rqb.1). `:turns`
+  still counts turns and nothing else — the progress guards read that number
+  — while the token columns are the whole bill, turns and side calls
+  together.
+
+  THE HIT RATE IS OVER THE CALLS THAT REPORTED ONE (karamazov-2rqb.2). The
+  denominator is the prompt tokens of rows carrying a cache lane, not of every
+  row: a run whose branch talks to a caching provider and whose reader talks to
+  a local llama.cpp would otherwise read as half as well-cached as it is, since
+  the reader's prompt tokens have no hit lane to match them. nil when nothing
+  reported a lane — unknown, not zero, the same rule the adapter follows when
+  it declines to write a 0 it did not measure."
   [conn run-id]
-  (let [r (first (db/fetch conn ["SELECT count(*) AS turns,
-                                         coalesce(sum(prompt_tokens), 0) AS prompt_tokens,
-                                         coalesce(sum(completion_tokens), 0) AS completion_tokens,
-                                         coalesce(sum(total_tokens), 0) AS total_tokens
-                                    FROM turns WHERE run_id = ?" run-id]))]
-    {:turns (:turns r)
-     :prompt-tokens (:prompt_tokens r)
-     :completion-tokens (:completion_tokens r)
-     :total-tokens (:total_tokens r)}))
+  (let [q (fn [table]
+            (first (db/fetch conn [(str "SELECT count(*) AS calls,
+                                                coalesce(sum(prompt_tokens), 0) AS prompt_tokens,
+                                                coalesce(sum(completion_tokens), 0) AS completion_tokens,
+                                                coalesce(sum(total_tokens), 0) AS total_tokens,
+                                                coalesce(sum(cache_hit_tokens), 0) AS cache_hit_tokens,
+                                                coalesce(sum(cache_miss_tokens), 0) AS cache_miss_tokens,
+                                                coalesce(sum(CASE WHEN cache_hit_tokens IS NOT NULL
+                                                                    OR cache_miss_tokens IS NOT NULL
+                                                                  THEN prompt_tokens END), 0)
+                                                  AS cached_prompt_tokens
+                                           FROM " table " WHERE run_id = ?")
+                                   run-id])))
+        t (q "turns")
+        s (q "side_calls")
+        both (fn [k] (+ (get t k) (get s k)))
+        reported (both :cached_prompt_tokens)]
+    {:turns (:calls t)
+     :side-calls (:calls s)
+     :prompt-tokens (both :prompt_tokens)
+     :completion-tokens (both :completion_tokens)
+     :total-tokens (both :total_tokens)
+     :cache-hit-tokens (both :cache_hit_tokens)
+     :cache-miss-tokens (both :cache_miss_tokens)
+     :cache-hit-rate (when (pos? reported)
+                       (double (/ (both :cache_hit_tokens) reported)))}))
 
 (defn turns
   "Every turn of a run, whole rows. `assistant_text` comes back with them, so

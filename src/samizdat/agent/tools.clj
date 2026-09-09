@@ -51,6 +51,7 @@
             [samizdat.agent.tools.intervene]
             [samizdat.agent.tools.plan]
             [samizdat.agent.tools.websearch]
+            [samizdat.agent.tools.digest]
             [samizdat.agent.tools.shell]
             [samizdat.agent.tools.ship :as ship]
             [samizdat.agent.tools.split]
