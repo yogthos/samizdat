@@ -380,3 +380,24 @@
       (is (nil? (:branch_id (tasks/get-task conn split-parent)))
           "unclaimed, so the board can hand it to an owner")
       (is (contains? (set (map :id (workable conn rid))) split-parent)))))
+
+;; --- the durable attempt count is the board's too ---------------------------
+;; karamazov-yjbp. Two counters are called `attempts`: the round's
+;; :board/attempts, seeded to 0 at every claim, and tasks.attempts, the column
+;; added in v21 so that "how many times has this been tried" survives the
+;; round and the process. tasks/attempted! had one caller in the tree, in
+;; decompose, so on a board run — the default — the column stayed 0 forever
+;; and a released task came back indistinguishable from a fresh one.
+
+(deftest claiming-a-task-records-the-attempt-on-the-task-itself
+  (with-redefs [llm/chat ships-its-task]
+    (let [conn (db/open! ":memory:")
+          id (tasks/create! conn {:title "wire the thing"})]
+      (is (= 0 (:attempts (tasks/get-task conn id))) "nothing has tried it yet")
+      (run-board conn {})
+      (is (= 1 (:attempts (tasks/get-task conn id)))
+          "one claim, one attempt on the record")
+      (testing "and the count accumulates, which the round's own counter cannot"
+        ;; :board/attempts is seeded to 0 at every claim and dies with the
+        ;; round; this one is the task's and survives both.
+        (is (= 2 (tasks/attempted! conn id)))))))

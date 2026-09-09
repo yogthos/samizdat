@@ -315,7 +315,17 @@
             claimed (do (runs/open-branch! conn run-id {:branch-id bid :problem prob
                                                         :role :implementor
                                                         :prompt-suffix (owner-prompt)})
-                        (tasks/claim! conn (:id t) run-id bid))]
+                        (tasks/claim! conn (:id t) run-id bid))
+            ;; ON THE TASK, not only in this round's data map. `:board/attempts`
+            ;; below is seeded to 0 at every claim and dies with the round, so
+            ;; a task given up and re-claimed next round came back looking
+            ;; untried — which is the in-memory counting tasks.attempts was
+            ;; added in v21 to end, reproduced on the default strategy because
+            ;; `attempted!` had one caller and it was decompose (karamazov-yjbp).
+            ;; Recorded only: nothing reads it yet, and whether the review's
+            ;; `spent?` should count claims rather than revisions is a policy
+            ;; question with an owner's name on it.
+            _ (tasks/attempted! conn (:id t))]
         (journal/note! conn run-id :board-task
                        {:branch-id bid :data {:task (:id t) :title (:title t)}})
         (assoc data
