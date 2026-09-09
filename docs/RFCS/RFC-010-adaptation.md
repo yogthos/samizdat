@@ -144,7 +144,7 @@ before the change — is not a rule the harness's own observer gets to skip.
 | `(snapshot)` | The tally. Marks and experiments excluded — they hold tallies of their own. |
 | `(fitness-of tally)` / `(fitness)` | One scalar per turn. `nil` for an empty tally: no turns is the ABSENCE of a measurement, and `0.0` would read as neutral. |
 | `(experiment! name {:change :hypothesis})` | Bind a change to what it is expected to do. Throws `:samizdat.session/too-many-open` past the cap. |
-| `(verdict name)` | `:better` `:worse` `:unchanged` `:too-early`, with per-turn fitness before and after. |
+| `(verdict name)` / `(verdict name p)` | `:better` `:worse` `:unchanged` `:too-early` `:confounded`, with per-turn fitness before and after. Both sides are scored under ONE policy — the before-fitness stamped at `experiment!` is recomputed, not carried — and the verdict also carries `:health-blind` (the same two tallies with the provider's terms zeroed), `:regraded` (the stamped number differed, so the run moved its own scale), and `:branches` (how many measured branches went backwards). |
 | `(reverted! name kept?)` | Settle a verdict once acted on. |
 | `(unsettled-losses)` | Measured-and-found-wanting changes nobody has acted on. |
 | `(findings)` | Patterns crossing `gates.edn :session-findings`. Reports successes too. |
@@ -212,6 +212,10 @@ run end (both drivers, knowledge/distil-session!)
 | Eviction retires; it never deletes. | `evict!` goes through `retire!`; `knowledge-test/over-the-cap-the-lowest-standing-memories-are-retired-not-deleted`. |
 | The store surfaces graduation candidates; it never promotes one. | `graduation-candidates` is a read; `oversight-pass.md` hands the decision to the supervisor. |
 | An unfinished experiment teaches nothing. | `distill-verdicts!` skips `:too-early`; `session-test`. |
+| Nor does one the world ruined. | `distill-verdicts!` skips `:confounded`; `session-test/a-confounded-experiment-teaches-nothing-and-is-not-written`. |
+| A verdict the provider decided says so instead of picking a direction. | The health-blind reading is scored beside the full one and disagreement is `:confounded`; `session-test/a-window-the-provider-ruined-is-confounded-not-worse` and its mirror. |
+| Both halves of a verdict are on one scale. | `verdict` recomputes the before side under the policy in force now, and reports `:regraded` when that differs from the stamped one; `session-test/both-halves-of-a-verdict-are-scored-on-one-scale`. |
+| An aggregate never hides a branch the change broke. | `:branches` counts the measured branches that regressed; `session-test/a-verdict-counts-the-branches-that-went-backwards`. |
 | Fitness is `nil`, never `0.0`, with no turns. | `fitness-of`'s `(when (pos? turns) …)`; `session-test`. |
 
 ## What this does not do
@@ -222,6 +226,14 @@ Two limits worth stating rather than discovering.
 overhead. A change that games it while making the work worse is a bad change
 however the score moves, and the supervisor prompt says so. The ship gate and
 the tests are what measure correctness.
+
+**Nothing here is held out.** Fitness is still computed over the same turns the
+change was made on, so the comparison is between two stretches of different
+work rather than between two configurations on the same work. `:confounded`
+and `:regraded` name two ways that comparison can be something other than a
+measurement; they do not make it a controlled one. The frozen battery replayed
+against old and new userspace is karamazov-7mo.4, and until it exists a verdict
+is evidence rather than a result.
 
 **There is no human gate.** backpass, which shares this design's framing, never
 writes without accept/reject. samizdat's substitute is the mutation protocol —

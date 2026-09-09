@@ -66,6 +66,7 @@
    "eval-image"
    "eval-terminates-process"
    "eval-syntax"
+   "experiment-line"
    "experiment-tool"
    "explore-cap"
    "failure-log"
