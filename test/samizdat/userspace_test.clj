@@ -565,6 +565,31 @@
               "unedited tables list too — the whole surface is discoverable")))
       (finally (us/unbind!) (gates/reload-config!) (db/close c)))))
 
+(deftest the-agent-can-save-its-own-tui-layout
+  ;; resources/tui.edn says it "seeds version 1 of the tui policy table",
+  ;; samizdat.tui.layout names the stored row as how the AGENT rearranges its
+  ;; own UI, and the server serves it from GET /v1/harness/layout — but the
+  ;; policy tool's shipped-policies list left "tui" out, so `policy save` was
+  ;; refused for the one name none of that documentation had another route
+  ;; for (karamazov-ym03). The same half-wired shape the TUI's own handler-keys test exists to
+  ;; catch: each end correct on its own.
+  (let [c (db/open! ":memory:")]
+    (try
+      (us/bind! c)
+      (let [lst (tools/run-tool {:tool-name "policy" :branch {:id "B1"}
+                                 :args {:action "list"}})]
+        (is (str/includes? (str (:result lst)) "tui")
+            "the layout is a policy table like any other, so it lists"))
+      (let [body (pr-str {:prose-turns 4
+                          :layout [:vbox [:widget/status {}]]})
+            r (tools/run-tool {:tool-name "policy" :branch {:id "B1"}
+                               :args {:action "save" :name "tui" :edn body
+                                      :rationale "one panel is enough for this run"}})]
+        (is (= :neutral (:category r)) (str (:result r)))
+        (is (= 4 (:prose-turns (us/edn-body :policy "tui")))
+            "and what the server hands the TUI is the saved row"))
+      (finally (us/unbind!) (db/close c)))))
+
 (deftest seeding-the-same-entry-from-parallel-branches-writes-one-version
   ;; karamazov-cuv. save! takes the writer lock for its insert, but the
   ;; load-latest that decides whether to seed at all sat outside it — so two
