@@ -785,6 +785,33 @@
         it has produced 40 owned, reviewed changes and should be looked at, not
         quietly continued. Raise it for a genuinely large migration."}
 
+ :board-attempts-scope
+ {:value :claim
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-yjbp"]
+  :doc "WHAT :board-review-attempts COUNTS.
+
+        `:claim` — revisions within one claim. The round's own counter, seeded
+        to 0 every time a task is claimed. An owner gets N revisions; a task
+        given up and re-claimed next round starts over, so the number of
+        CLAIMS is unbounded and only the run's turn budget stops it.
+
+        `:task` — attempts on the task itself, the durable tasks.attempts
+        column. N attempts total across every claim, every round and every
+        resume; past that the task is left open and the loop stops paying for
+        it.
+
+        The two differ only when a task is given up and comes back, which is
+        exactly the case that matters and exactly the one a single round never
+        exercises. Run b8ae2b1f: task sz-218ca4 spent 113 turns, was given up
+        one test error from green, was released, and was re-claimed with the
+        counter back at zero.
+
+        `:claim` is the behaviour that shipped, so it is the default until
+        something measures the other one. Neither is obviously right — more
+        claims means more chances for work that is nearly done, and fewer
+        means the loop stops paying for a task nobody can land."}
+
  :board-review-attempts
  {:value 2 :kind :threshold :capability-tunable? false
   :doc "How many times a critic may send one task back to its owner before the

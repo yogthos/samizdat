@@ -389,6 +389,26 @@
 ;; decompose, so on a board run — the default — the column stayed 0 forever
 ;; and a released task came back indistinguishable from a fresh one.
 
+(deftest what-board-review-attempts-counts-is-policy
+  ;; karamazov-yjbp. The two scopes differ only for a task that was given up
+  ;; and came back, which is why a single round never showed the difference.
+  (with-redefs [llm/chat ships-its-task]
+    (let [conn (db/open! ":memory:")
+          id (tasks/create! conn {:title "hard one"})]
+      (run-board conn {})
+      ;; two prior claims on the record, one revision inside this claim
+      (tasks/attempted! conn id)
+      (is (= 2 (:attempts (tasks/get-task conn id))))
+      (testing ":claim counts revisions inside this claim and ignores history"
+        (is (= :claim (gates/threshold :board-attempts-scope))
+            "the shipped default, until something measures the other"))
+      (testing ":task counts what the task has cost across every claim"
+        ;; the review reads the column under :task scope, so a task already at
+        ;; the cap is spent the moment it is looked at again
+        (is (>= (:attempts (tasks/get-task conn id))
+                (gates/threshold :board-review-attempts))
+            "which is what makes the bound span rounds instead of resetting")))))
+
 (deftest claiming-a-task-records-the-attempt-on-the-task-itself
   (with-redefs [llm/chat ships-its-task]
     (let [conn (db/open! ":memory:")

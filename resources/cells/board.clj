@@ -583,7 +583,15 @@
           ;; Out of attempts: stop paying for the same task. It stays OPEN —
           ;; a task the board still shows is a truer record than one closed
           ;; because the loop got tired of it.
-          spent? (>= attempts (max-review-attempts))
+          ;;
+          ;; WHICH attempts is gates.edn :board-attempts-scope. `:claim` is
+          ;; the per-claim counter above, seeded to 0 at every claim, so a
+          ;; task given up and re-claimed starts over; `:task` is the durable
+          ;; column, so the bound spans rounds and resumes (karamazov-yjbp).
+          counted (if (= :task (gates/threshold :board-attempts-scope))
+                    (or (:attempts (tasks/get-task conn task)) attempts)
+                    attempts)
+          spent? (>= counted (max-review-attempts))
           ;; A PARKED OWNER IS NOT AN UNFINISHED ONE. It called `split`, which
           ;; blocked this row and left it waiting on the pieces now on the
           ;; board. Reviewing it would judge a composition nothing has built
