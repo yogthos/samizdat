@@ -295,17 +295,21 @@
                p))
       :local))
 
+(defn- named-provider
+  "The provider a config layer NAMES, as a keyword, or nil when it names none.
+
+  Accepts a string as well as a keyword: `:provider \"glm\"` is what somebody
+  writes after reading /health, where it has been through JSON, and refusing
+  a legible file on that is a crash rather than a correction."
+  [m]
+  (some-> (get-in m [:llm :provider]) name str/lower-case not-empty keyword))
+
 (defn load-config
   "Build the config map. `overrides` is merged last so tests and REPL sessions
   can point at a fake provider or an in-memory database without touching env."
   ([] (load-config nil))
   ([overrides]
-   (let [provider (detect-provider)
-         defaults (or (providers provider)
-                      (throw (ex-info (str "Unknown HARNESS_PROVIDER: " provider)
-                                      {:provider provider
-                                       :known (keys providers)})))
-         ;; The project layer layers between defaults and overrides. Root: the
+   (let [;; The project layer layers between defaults and overrides. Root: the
          ;; caller's :run :root if given, then HARNESS_ROOT, else the process
          ;; working dir. The env rung exists because a SERVED harness has no
          ;; other way to name the project it works on: every other run knob has
@@ -320,8 +324,24 @@
          ;; moving env above the files would silently change every checkout
          ;; that pins a value in .samizdat/config.edn.
          files (file-config root)
+         ;; READ BEFORE THE PRESET IS EXPANDED, and that ordering is the whole
+         ;; point: a layer that names a provider picks that provider's
+         ;; base-url, key-env, model, context window and temperature. It used
+         ;; to name only the :provider KEY — the preset had already been
+         ;; expanded from whatever `detect-provider` found — so a file saying
+         ;; `{:llm {:provider :glm}}` ran against DeepSeek's endpoint with
+         ;; DeepSeek's key and deepseek-v4-flash while dispatching the GLM
+         ;; adapter, and said nothing. Overrides outrank files here for the
+         ;; same reason they do everywhere else.
+         provider (or (named-provider overrides)
+                      (named-provider files)
+                      (detect-provider))
+         defaults (or (providers provider)
+                      (throw (ex-info (str "Unknown provider: " provider)
+                                      {:provider provider
+                                       :known (keys providers)})))
          db (db-location root (env "HARNESS_DB"))]
-     (deep-merge
+     (-> (deep-merge
       ;; 3985 rather than a common port: 3000 is the busiest address on a
       ;; developer machine, and a harness that silently fails to bind (or
       ;; binds where something else already lives) is worse than one on an
@@ -429,7 +449,13 @@
                   :stop-on-first-done? (not= "0" (or (env "HARNESS_STOP_ON_FIRST_DONE")
                                                      "1"))}}
       files
-      overrides))))
+      overrides)
+      ;; The RESOLVED provider, not whatever spelling a layer used. `provider`
+      ;; already normalised a string to its keyword to pick the preset, and
+      ;; every consumer downstream — registry/adapter-for above all — expects
+      ;; a keyword; leaving the file's `"glm"` to win the merge would dispatch
+      ;; on a string and find no adapter.
+      (assoc-in [:llm :provider] provider)))))
 
 (defn provider-llm
   "The :llm config for a SPECIFIC provider — its base URL, model, temperature,
