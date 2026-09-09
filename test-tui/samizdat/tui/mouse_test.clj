@@ -131,6 +131,112 @@
         (is (= ["q9" 0 ["mycelium"]] @answered)
             "what was typed reached the handler that unparks the branch")))))
 
+(defn- at-of
+  "The 0-based [row col] `needle` starts at in a rendered frame, or nil. The
+  buttons sit at the right end of a flexed row, so a click needs the column
+  as well as the line."
+  [text needle]
+  (first (keep-indexed (fn [i line]
+                         (when-let [c (str/index-of line needle)] [i c]))
+                       (str/split-lines text))))
+
+(defn- button-at
+  "Where to click a button labelled `label`, found on the row the buttons
+  share.
+
+  Anchored on \"abort\" rather than searching the frame for the label: the
+  compose box's own placeholder reads \"…Enter starts a run\", so a plain
+  search for \"start\" lands in the text field and focuses it instead —
+  which looks exactly like a dead button. No placeholder says \"abort\"."
+  [text label]
+  (let [lines (str/split-lines text)]
+    (first (keep-indexed (fn [i line]
+                           (when (str/includes? line "abort")
+                             (when-let [c (str/index-of line label)] [i c])))
+                         lines))))
+
+(defn- click!
+  [s [y x]]
+  (ui/send-mouse! s {:button :left :motion :pressed :x x :y y})
+  (ui/send-mouse! s {:button :left :motion :released :x x :y y}))
+
+(deftest the-compose-box-buttons-answer-a-click
+  ;; The data half checks that each button carries the right :on-click. What
+  ;; it cannot say is that a click REACHES one — three components share a row
+  ;; with a flexed input, and FTXUI routes a press by hit-testing the
+  ;; container it built. So every button on the strip is pressed for real.
+  (doseq [label ["start" "abort" "resume"]]
+    (testing label
+      (let [hit (atom [])
+            app (fn [] (w/input {:on {:start  (fn [& _] (swap! hit conj :start))
+                                      :abort  #(swap! hit conj :abort)
+                                      :resume #(swap! hit conj :resume)
+                                      :input  (fn [_])
+                                      :submit (fn [_])}}
+                                {}))]
+        (ui/with-screen [s app]
+          (let [frame (ui/render-text s 80 8)
+                at (button-at frame label)]
+            (is (some? at) (str label " is on screen: " (pr-str frame)))
+            (click! s at)
+            (is (= [(keyword label)] @hit)
+                (str "clicking " label " reached the handler"))))))))
+
+(deftest typing-a-problem-and-pressing-enter-starts-a-run
+  ;; End to end through the toolkit for the thing the TUI could not do: no
+  ;; run selected, type a statement, press Enter, and the loop is asked to
+  ;; start a run with exactly those words.
+  (let [started (atom nil)
+        text (atom "")
+        app (fn [] (w/input {:input @text
+                             :on {:input  #(reset! text %)
+                                  :submit (fn [_] (reset! started :STEERED))
+                                  :start  #(reset! started %)
+                                  :abort  (fn [])
+                                  :resume (fn [])}}
+                            {}))]
+    (ui/with-screen [s app]
+      (let [frame (ui/render-text s 80 8)]
+        ;; Focus the box by clicking its placeholder, then type.
+        (is (some? (at-of frame "problem")) (str "the box says what it takes: " frame))
+        (click! s (at-of frame "problem")))
+      (ui/send-char! s "build a parser")
+      (ui/send-key! s :return)
+      (is (= "build a parser" @started)
+          "Enter started a run on what was typed, rather than steering nothing"))))
+
+(deftest the-buttons-still-answer-a-click-inside-the-whole-layout
+  ;; The widget alone is not the configuration anybody runs. In the shipped
+  ;; layout the strip sits under a flexed row, two panel columns and a
+  ;; scrolling :frame, and FTXUI routes a press by hit-testing the containers
+  ;; it built out of all of that — so the claim "abort and resume respond to
+  ;; the mouse" is only worth making about the real tree.
+  (let [hit (atom [])
+        handlers {:start  (fn [& _] (swap! hit conj :start))
+                  :abort  #(swap! hit conj :abort)
+                  :resume #(swap! hit conj :resume)
+                  :input  (fn [_])
+                  :submit (fn [_])
+                  :toggle (fn [_])
+                  :decide (fn [& _])
+                  :answer (fn [& _])
+                  :select-run (fn [_])
+                  :select-branch (fn [_])}
+        current (requiring-resolve 'samizdat.tui.layout/current)
+        expand (requiring-resolve 'samizdat.tui.layout/expand)
+        app (fn [] (expand (:layout (current))
+                           (assoc (st/initial "http://x") :on handlers)))]
+    (ui/with-screen [s app]
+      (let [frame (ui/render-text s 110 30)]
+        (doseq [label ["abort" "resume" "start"]]
+          (testing label
+            (reset! hit [])
+            (let [at (button-at frame label)]
+              (is (some? at) (str label " is on the strip"))
+              (click! s at)
+              (is (= [(keyword label)] @hit)
+                  (str "a click at " (pr-str at) " reached " label)))))))))
+
 (deftest the-whole-shipped-layout-renders-through-the-real-toolkit
   ;; The layout is userspace hiccup expanded against the registry, and every
   ;; widget is only ever checked as data. This is the one test that says the
@@ -141,4 +247,7 @@
         frame (ui/render-text (expand (:layout (layout)) (st/initial "http://x")) 120 30)]
     (is (str/includes? frame "ACTIVITY LOG"))
     (is (str/includes? frame "TASKS"))
-    (is (str/includes? frame "offline") "the status line drew too")))
+    (is (str/includes? frame "offline") "the status line drew too")
+    (is (not (str/includes? frame "STEER"))
+        "and the compose box is the box, with no row spent captioning it")
+    (is (str/includes? frame "start") "with a way to start the first run")))

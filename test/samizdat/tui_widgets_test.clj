@@ -301,6 +301,53 @@
     ((get by-label "resume"))
     (is (= [:abort :resume] @hit))))
 
+(deftest the-compose-box-can-start-a-run
+  ;; The gap this whole change is about: with no run selected the box's Enter
+  ;; went to :submit, which has nothing to steer, so a fresh harness could not
+  ;; be given its first problem from the UI at all. Enter now means :start
+  ;; while nothing is selected, and the button means it either way.
+  (let [hit (atom [])
+        state {:input "build a parser"
+               :on {:start #(swap! hit conj [:start %])
+                    :submit #(swap! hit conj [:submit %])}}
+        out (render :widget/input state {})
+        inp (first (nodes-of :input out))
+        by-label (into {} (map (juxt #(:label (props-of %)) #(:on-click (props-of %))))
+                       (nodes-of :button out))]
+    (is (contains? by-label "start") "and it is on screen, not only on a key")
+    ((get by-label "start"))
+    (is (= [[:start "build a parser"]] @hit)
+        "the button starts on what is in the box, not on an empty string")
+    (reset! hit [])
+    ((:on-enter (props-of inp)) "build a parser")
+    (is (= [[:start "build a parser"]] @hit)
+        "Enter with no run selected starts one")
+    (is (re-find #"(?i)problem|start" (str (:placeholder (props-of inp))))
+        "and the box says so rather than offering to steer nothing"))
+  (testing "with a run selected Enter steers it instead"
+    (let [hit (atom [])
+          state {:run-id "r1"
+                 :on {:start #(swap! hit conj [:start %])
+                      :submit #(swap! hit conj [:submit %])}}
+          out (render :widget/input state {})
+          inp (first (nodes-of :input out))]
+      ((:on-enter (props-of inp)) "try the other parser")
+      (is (= [[:submit "try the other parser"]] @hit))
+      (is (re-find #"(?i)directive|steer" (str (:placeholder (props-of inp))))))))
+
+(deftest the-compose-box-is-just-the-box-unless-a-layout-asks-for-a-title
+  ;; A titled, bordered panel around one input line spent two rows saying
+  ;; "STEER" above a box whose own placeholder already says what it is. The
+  ;; header is userspace like every other piece of the arrangement: absent by
+  ;; default, drawn when a layout names it.
+  (let [bare (render :widget/input {} {})]
+    (is (not (re-find #"(?i)steer" (texts bare)))
+        "no title, and nothing claiming one")
+    (is (nil? (:border (props-of bare))) "and no box of its own"))
+  (let [titled (render :widget/input {} {:title "STEER"})]
+    (is (str/includes? (texts titled) "STEER"))
+    (is (some? (:border (props-of titled))))))
+
 (deftest the-status-line-says-whether-there-is-a-server
   (is (re-find #"(?i)offline|disconnect|no server"
                (texts (render :widget/status {:connected? false} {}))))
@@ -311,9 +358,12 @@
                                    {}))))))
 
 (deftest the-input-box-is-an-editor-bound-to-the-handlers
+  ;; :run-id is what makes Enter mean :submit — with none selected there is
+  ;; nothing to steer and it means :start instead, which is what
+  ;; `the-compose-box-can-start-a-run` covers.
   (let [sent (atom nil)
         out (render :widget/input
-                    {:input "do the thing" :on {:submit #(reset! sent %)}}
+                    {:run-id "r1" :input "do the thing" :on {:submit #(reset! sent %)}}
                     {})
         input (first (nodes-of :input out))]
     (is (= "do the thing" (:value (props-of input))))

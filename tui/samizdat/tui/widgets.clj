@@ -36,7 +36,8 @@
 
   Toolkit-free: hiccup is data. `ftxui` appears nowhere in this file."
   (:require [clojure.string :as str]
-            [samizdat.tui.layout :as layout]))
+            [samizdat.tui.layout :as layout]
+            [samizdat.tui.state :as st]))
 
 ;; --- shared shapes -----------------------------------------------------------
 
@@ -448,29 +449,53 @@
 ;; --- the bottom strip --------------------------------------------------------
 
 (defn input
-  "The compose box, and the two things done to a run rather than said to it.
+  "The compose box, and the three things done to a run rather than said to it.
 
-  What the box sends is an INTERVENTION, not a chat message — samizdat runs
-  are autonomous and a person steers them at a turn boundary, so this is the
-  same seam the supervisor uses. Abort and resume sit beside it because they
-  are the other two, and because they were documented here long before
-  anything on screen called them."
+  ONE BOX, TWO MEANINGS, and `state/enter-action` decides which. With a run
+  selected what it sends is an INTERVENTION, not a chat message — samizdat
+  runs are autonomous and a person steers them at a turn boundary, so that is
+  the same seam the supervisor uses. With no run selected there is nothing to
+  steer, so the words are the problem statement for a new run: the TUI could
+  reach every run the server already had and could not make one, which made
+  the first thing anybody typed into a fresh harness an error message.
+
+  `start` is a button as well as a key, because with a run already selected
+  Enter belongs to steering and starting another needs somewhere to click.
+  Abort and resume sit beside it because they are the rest of what is done
+  to a run rather than said to it.
+
+  NO TITLE unless a layout asks for one. A bordered panel spent two rows
+  captioning a single input line whose own placeholder already says what it
+  takes; the caption is userspace like the rest of the arrangement, so
+  `{:title \"STEER\"}` brings it back."
   [state props]
-  (panel (assoc props :title (or (:title props) "STEER"))
-         [:hbox
-          [:input {:flex true
-                   :value (or (:input state) "")
-                   :placeholder "a directive for the run — Enter sends"
-                   :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
-                   :on-enter (fn [s] (when-let [f (get-in state [:on :submit])] (f s)))}]
-          ;; Spelled out rather than built by a helper taking the key as an
-          ;; argument: `every-handler-the-loop-offers-has-a-caller` reads
-          ;; these literally, and a key assembled at runtime is a key that
-          ;; ratchet cannot see.
-          [:button {:label "abort"
-                    :on-click (fn [] (when-let [f (get-in state [:on :abort])] (f)))}]
-          [:button {:label "resume"
-                    :on-click (fn [] (when-let [f (get-in state [:on :resume])] (f)))}]]))
+  (let [starting? (= :start (st/enter-action state))
+        ;; Spelled out rather than built by a helper taking the key as an
+        ;; argument: `every-handler-the-loop-offers-has-a-caller` reads these
+        ;; literally, and a key assembled at runtime is a key that ratchet
+        ;; cannot see. That is also why the branch is over two whole handlers
+        ;; rather than over one name.
+        on-enter (if starting?
+                   (fn [s] (when-let [f (get-in state [:on :start])] (f s)))
+                   (fn [s] (when-let [f (get-in state [:on :submit])] (f s))))
+        ;; The layout's own sizing still applies to the bare row — it is the
+        ;; element that stands where the panel used to.
+        row [:hbox (select-keys props [:flex :width :height])
+             [:input {:flex true
+                      :value (or (:input state) "")
+                      :placeholder (if starting?
+                                     "the problem to work on — Enter starts a run"
+                                     "a directive for the run — Enter sends")
+                      :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
+                      :on-enter on-enter}]
+             [:button {:label "start"
+                       :on-click (fn [] (when-let [f (get-in state [:on :start])]
+                                          (f (or (:input state) ""))))}]
+             [:button {:label "abort"
+                       :on-click (fn [] (when-let [f (get-in state [:on :abort])] (f)))}]
+             [:button {:label "resume"
+                       :on-click (fn [] (when-let [f (get-in state [:on :resume])] (f)))}]]]
+    (if (:title props) (panel props row) row)))
 
 (defn status
   "The status line: whether there is a server, which run, and what it is
@@ -484,6 +509,11 @@
      [:text {:dim true} (str " " (or (:run-id state) "no run") " ")]
      (when run [:text (str " " (:status run) " ")])
      (when-let [e (:error state)] [:text {:color :red} (str " " (clip e 40) " ")])
+     ;; Cyan, not red, and only when there is no error to report instead: a
+     ;; notice says what is happening ("starting…"), and a strip carrying both
+     ;; at once does not tell the reader which of them is the news.
+     (when-let [n (and (not (:error state)) (:notice state))]
+       [:text {:color :cyan} (str " " (clip n 40) " ")])
      (when-let [e (:layout-error state)] [:text {:color :yellow} (str " " (clip e 60) " ")])
      [:filler]
      [:text {:dim true} (str (or (:base state) "") " ")]]))

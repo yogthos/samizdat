@@ -237,3 +237,55 @@
                 (assoc :run-id "r1")
                 (st/apply-runs {:ok true :body {:runs [{:id "r2"} {:id "r1"}]}}))]
       (is (= "r1" (:run-id s))))))
+
+;; --- starting a run from the compose box ------------------------------------
+
+(deftest enter-starts-a-run-when-there-is-none-and-steers-when-there-is
+  ;; The TUI could reach every run the server already had and could not make
+  ;; one. Typing into the compose box with nothing selected reported "no run
+  ;; selected" and dropped the text — so a freshly started harness with an
+  ;; empty database had no path to its first run at all.
+  (is (= :start (st/enter-action (st/initial "b")))
+      "nothing to steer, so the words are a problem statement")
+  (is (= :submit (st/enter-action (assoc (st/initial "b") :run-id "r1")))
+      "with a run on screen the words are a directive for it"))
+
+(deftest a-started-run-is-selected-and-the-box-is-emptied
+  (let [s (-> (st/initial "b")
+              (st/set-input "build a parser")
+              (st/apply-start {:ok true :body {:run_id "r7"}}))]
+    (is (= "r7" (:run-id s)) "the new run is what the panels now show")
+    (is (= "" (:input s)) "and the statement is not left to be sent twice")
+    (is (re-find #"r7" (str (:notice s))) "with the id said back")
+    (is (nil? (:error s)))))
+
+(deftest a-refused-start-keeps-the-statement
+  ;; The server refuses with 503 when the beam does not come up. Clearing the
+  ;; box would make the user retype several paragraphs to try again.
+  (let [s (-> (st/initial "b")
+              (st/set-input "build a parser")
+              (st/apply-start {:ok false :error "HTTP 503"}))]
+    (is (nil? (:run-id s)))
+    (is (= "build a parser" (:input s)))
+    (is (re-find #"503" (str (:error s)))))
+  (testing "and so does a 2xx that carried no id"
+    (let [s (st/apply-start (st/set-input (st/initial "b") "x")
+                            {:ok true :body {}})]
+      (is (nil? (:run-id s)))
+      (is (= "x" (:input s)))
+      (is (not-empty (str (:error s)))))))
+
+(deftest a-notice-is-not-an-error
+  ;; The status line paints :error red. "starting…" is not a failure and must
+  ;; not read as one, so it travels in its own field.
+  (let [s (st/note-notice (st/initial "b") "starting…")]
+    (is (= "starting…" (:notice s)))
+    (is (nil? (:error s))))
+  (testing "and an error clears a stale notice"
+    (let [s (-> (st/initial "b") (st/note-notice "starting…") (st/note-error "boom"))]
+      (is (= "boom" (:error s)))
+      (is (nil? (:notice s)) "or the strip would claim both at once"))))
+
+(deftest starting-is-refused-before-it-is-sent-when-there-is-nothing-to-start
+  (is (nil? (st/steer-payload "   ")))
+  (is (= "go" (st/steer-payload "  go  "))))

@@ -37,7 +37,7 @@
   — were offered and documented for a whole release with nothing on screen
   that called them, which no test could see because each half was correct on
   its own."
-  #{:decide :answer :toggle :select-run :select-branch :input :submit
+  #{:decide :answer :toggle :select-run :select-branch :input :submit :start
     :abort :resume})
 
 (def max-trace
@@ -50,6 +50,9 @@
   {:base base
    :connected? false
    :error nil
+   ;; Beside :error rather than sharing it: the status line paints an error
+   ;; red, and "starting…" is not a failure.
+   :notice nil
    :layout-error nil
    :runs []
    :run-id nil
@@ -245,11 +248,61 @@
 (defn clear-input [s]
   (assoc s :input ""))
 
-(defn note-error [s msg]
-  (assoc s :error (when (not-empty (str msg)) (str msg))))
+(defn note-error
+  "Say what went wrong, and drop any notice it supersedes — a strip claiming
+  \"starting…\" beside \"HTTP 503\" tells the reader nothing about which
+  happened."
+  [s msg]
+  (cond-> (assoc s :error (when (not-empty (str msg)) (str msg)))
+    (not-empty (str msg)) (assoc :notice nil)))
+
+(defn note-notice
+  "Say what is happening. Not an error, and not a place for one."
+  [s msg]
+  (assoc s :notice (when (not-empty (str msg)) (str msg))))
 
 (defn steer-payload
   "What the compose box sends. Blank is not a directive."
   [text]
   (let [t (str/trim (str text))]
     (when (seq t) t)))
+
+(defn enter-action
+  "Which handler Enter in the compose box means right now.
+
+  One box, two meanings, decided by whether there is a run to talk to. With
+  a run selected the words are a directive for it. With none they are a
+  PROBLEM STATEMENT, because a harness whose database is empty has nothing
+  to steer and the statement is the only thing it can be given — the TUI
+  could reach every run the server already had and could not make one, so
+  the first thing a new user typed was answered with \"no run selected\" and
+  dropped.
+
+  A pure function rather than a branch inside the widget so the rule is
+  testable, and named as a KEY so the widget still spells both handlers out
+  literally — `every-handler-the-loop-offers-has-a-caller` reads those off
+  the source."
+  [s]
+  (if (:run-id s) :submit :start))
+
+(defn apply-start
+  "Fold the answer to POST /v1/runs.
+
+  A started run becomes the selected one, so the panels attach to what was
+  just asked for rather than leaving the user to find it in the picker. A
+  REFUSAL keeps the statement in the box: the server answers 503 when the
+  beam does not come up inside its window, and clearing the box would make a
+  retry mean retyping the paragraphs that were refused."
+  [s {:keys [ok body error]}]
+  (let [id (:run_id body)]
+    (if (and ok (not-empty (str id)))
+      (-> s
+          (select-run (str id))
+          clear-input
+          ;; The error too: a start that worked supersedes whatever the last
+          ;; attempt complained about, and leaving it up reads as this run
+          ;; having failed.
+          (assoc :error nil)
+          (note-notice (str "started " (str id))))
+      (note-error s (or (not-empty (str error))
+                        "the server accepted the request and returned no run id")))))

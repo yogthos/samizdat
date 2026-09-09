@@ -58,7 +58,11 @@
  ;;   :widget/approvals     the question a person is being asked, if any: the
  ;;                         permission dialog, or ask_human's questionnaire.
  ;;                         Draws nothing when there is nothing pending.
- ;;   :widget/input         the compose box: interventions, abort, resume.
+ ;;   :widget/input         the compose box, and start / abort / resume. What
+ ;;                         Enter means depends on whether a run is selected:
+ ;;                         with one it is a directive for that run, with none
+ ;;                         the words are the problem statement for a new run.
+ ;;                         Bare by default; {:title "STEER"} draws a caption.
  ;;   :widget/status        the status line.
 
  ;; THREE PANELS TO A COLUMN, not five. A bare :height is an EQUALITY
