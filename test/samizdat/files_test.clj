@@ -444,3 +444,72 @@
         (let [r (files/write-file (ctx root "write_file" {:path "b.clj" :content ""}))]
           (is (= :success (:category r)) (:result r))))
       (finally (fs/delete-tree root)))))
+
+;; --- the exam ratchet (karamazov-fgsb) --------------------------------------
+;;
+;; The threshold and the mode are not guesses: 22 run databases, 190 writes to
+;; test files, 6 flagged, 3 real. Both false alarms were drops of exactly one
+;; and both severe cases were drops of two or more, which is where :min-drop
+;; comes from. See gates.edn :exam-ratchet.
+
+(defn- with-tree* [f]
+  (let [root (str "/tmp/samizdat-exam-" (random-uuid))]
+    (fs/create-dirs root)
+    (fs/create-dirs (str root "/test"))
+    (try (f root) (finally (fs/delete-tree root)))))
+
+(deftest a-write-that-guts-a-test-file-says-so
+  (with-tree*
+    (fn [root]
+      (spit (str root "/test/a_test.clj")
+            "(deftest t (is (= 1 1)) (is (= 2 2)) (is (= 3 3)) (is (= 4 4)))")
+      (let [r (files/write-file (ctx root "write_file"
+                                     {:path "test/a_test.clj"
+                                      :content "(deftest t (do-something))"}))]
+        (is (= :success (:category r)) "it still lands — this is detection")
+        (is (str/includes? (:result r) "took assertions out of the exam"))
+        (is (str/includes? (:result r) "4 assertion(s) before, 0 after"))
+        (is (= "(deftest t (do-something))" (slurp (str root "/test/a_test.clj")))
+            "and the file is what the model asked for")))))
+
+(deftest replacing-two-assertions-with-one-better-one-is-not-flagged
+  ;; Both false positives in the corpus were exactly this shape: a drop of one,
+  ;; from an edit that made the remaining assertion correct.
+  (with-tree*
+    (fn [root]
+      (spit (str root "/test/a_test.clj") "(deftest t (is (= 1 1)) (is (= 2 2)))")
+      (let [r (files/write-file (ctx root "write_file"
+                                     {:path "test/a_test.clj"
+                                      :content "(deftest t (is (= [1 2] [1 2])) )"}))]
+        (is (not (str/includes? (:result r) "exam")))))))
+
+(deftest a-new-test-file-is-not-a-weakening
+  (with-tree*
+    (fn [root]
+      (let [r (files/write-file (ctx root "write_file"
+                                     {:path "test/new_test.clj"
+                                      :content "(deftest t (is (= 1 1)))"}))]
+        (is (not (str/includes? (:result r) "exam")))))))
+
+(deftest source-files-are-not-the-exam
+  (with-tree*
+    (fn [root]
+      (spit (str root "/keep.clj") "(is 1)(is 2)(is 3)(is 4)")
+      (let [r (files/write-file (ctx root "write_file"
+                                     {:path "keep.clj" :content "()"}))]
+        (is (not (str/includes? (:result r) "exam")))))))
+
+(deftest an-edit-is-checked-against-the-file-not-its-own-arguments
+  ;; A patch names anchors rather than the text it replaces, so an
+  ;; argument-level check is blind to it — 22 spans in the corpus were.
+  (with-tree*
+    (fn [root]
+      (spit (str root "/test/a_test.clj")
+            "(deftest t\n  (is (= 1 1))\n  (is (= 2 2))\n  (is (= 3 3)))\n")
+      (let [r (files/edit-file (ctx root "edit_file"
+                                    {:path "test/a_test.clj"
+                                     :old_text "  (is (= 2 2))\n  (is (= 3 3)))"
+                                     :new_text "  )"}))]
+        (is (= :success (:category r)) (:result r))
+        (is (str/includes? (:result r) "took assertions out of the exam"))
+        (is (str/includes? (:result r) "3 assertion(s) before, 1 after"))))))
