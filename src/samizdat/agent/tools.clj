@@ -46,6 +46,7 @@
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
             [samizdat.agent.tools.base :as base]
+            [samizdat.agent.tools.ask]
             [samizdat.agent.tools.repl]
             [samizdat.agent.tools.files]
             [samizdat.agent.tools.intervene]

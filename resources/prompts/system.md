@@ -213,6 +213,14 @@ websearch({query, num_results?})
     symbol or error string rather than a sentence. Search the WEB; for
     anything in this repo or its reference paths, read it directly — a search
     will not find it and will cost you a turn.
+ask_human({questions})
+    Put a question to the person watching this run and wait for their
+    answer. `questions` is a list of {question, options?}. Most runs have
+    nobody attached and you will be told so immediately — that is the normal
+    answer, not a failure. Use it only where the choice is genuinely not
+    yours to make (which of two products to build, whether to touch
+    something outside the project); decide anything else yourself and say
+    which way you went. Asking costs a turn and establishes nothing.
 shell({command})
     Run a shell command. Read-only inspection (ls, cat, grep, find, git
     status/diff/log) and project tools (jolt test, jolt -e, cargo, pytest,

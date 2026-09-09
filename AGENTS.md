@@ -81,6 +81,41 @@ A new test namespace must be added to `test/samizdat/test_runner.clj` in BOTH
 places — the `:require` list and the `namespaces` vector — or it silently never
 runs.
 
+### The two front ends
+
+`gui/` (GTK) and `tui/` (terminal) are optional components and strict HTTP
+clients of the server. Their toolkits live only under `:gui` / `:tui`, so
+`jolt serve` and `jolt test` never load one. Their SOURCE paths are on the
+test path, which is why everything in them except the toolkit's own run loop
+is written toolkit-free — the TUI's widgets return hiccup, and hiccup is
+data, so the suite covers them with no terminal and no cmake.
+
+```bash
+jolt tui           # the terminal UI; SAMIZDAT_URL / HARNESS_PORT point it at a server
+jolt tui-test      # the TUI's toolkit-bound tests: real FTXUI widgets, headless
+```
+
+The TUI's own arrangement is EDN, and it comes from three places, most local
+first: `$SAMIZDAT_TUI_LAYOUT` or `.samizdat/tui.edn` (a person's, re-read
+whenever it changes, so an edit lands on the next frame); `GET
+/v1/harness/layout` (the project's stored `tui` policy — how the AGENT
+rearranges its own UI, served because a front end holds no database handle);
+then `resources/tui.edn` off the classpath. Adding a widget means registering
+a `:widget/*` tag in `tui/samizdat/tui/widgets.clj` and naming it in a layout
+— the core owns what a widget IS, the layout owns where it goes.
+
+`jolt tui-test` is separate from `jolt test` because it loads ftxui. It covers
+the one claim the data tests cannot make — that a CLICK reaches the fold, which
+is not the same claim as the widget returning a `:collapsible` with the right
+`:on-change`. Anything about the TUI that can be checked as data belongs in the
+main suite instead.
+
+The TUI has one prerequisite the rest of the repo does not: ftxui-jolt binds
+a C++ shim that has to be COMPILED. `jolt native` in its checkout builds it
+(cmake 3.14+ and a C++17 compiler); it is a `:local/root` dep until it tags a
+release. If `native/build` carries a `CMakeCache.txt` from a different path,
+`rm -rf native/build` first.
+
 ## Live development over nREPL
 
 Develop against a running image, not by paying startup per command. Start a

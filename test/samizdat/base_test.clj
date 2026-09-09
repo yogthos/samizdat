@@ -207,6 +207,27 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/api/client.clj"
+   {:threshold {200 "The success range of a status code. Protocol, as in
+                     server.clj."
+                299 "The other end of that range."
+                40000 "How long the client waits for POST /v1/runs. Bounded by
+                       the SERVER's own 30s start budget rather than by
+                       anything a project chooses — a client bound tighter than
+                       the endpoint it calls reports a failure for a run that
+                       started normally, which is the bug this number exists to
+                       fix. It has to move with api.control's deref, not with a
+                       policy table.
+
+                       And it could not read one anyway: this is a client of a
+                       server that may be on another machine, so the gates.edn
+                       it can reach is not the gates.edn the run obeys. Numbers
+                       a front end's user should tune live in that front end's
+                       own userspace — resources/tui.edn for the TUI."
+                1500 "The poll interval. See 40000 on why a client's numbers
+                      are not the server's userspace."
+                30000 "The poll backoff ceiling, same reasoning."}}
+
    "src/samizdat/symbolic.clj"
    {:threshold {100 "The rewrite step bound: a runaway backstop, not a tunable.
                      A ruleset that terminates converges in a handful of steps,

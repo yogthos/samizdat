@@ -128,7 +128,23 @@ flowchart LR
     toolcall --> split
     split --> root
     root --> redact
+
+    ask[ask_human: parks on an operator's answer]
+    operator[a person at a front end]
+    toolcall --> ask
+    ask --> operator
+    operator --> redact
 ```
+
+`ask_human` is the one node whose input never came off the machine: it puts a
+question on an in-memory queue and waits, and what comes back is what a person
+typed. It still passes through `redact`, for the same reason every other node
+does — the boundary is about what reaches the model, not about whether the
+source is trusted, and an operator can paste a secret into an answer as easily
+as a file can contain one. Its reach is bounded by a deadline in gates.edn
+(`:approval`), so it is a node that always terminates: an unattended run
+resolves to the stated default rather than parking forever. Blocking is off
+unless a project turns it on.
 
 The `eval` node and its three edges were absent from this graph until this RFC
 was written, which is how the property they violated stayed believed for four

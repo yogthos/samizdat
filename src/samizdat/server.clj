@@ -35,10 +35,12 @@
             [samizdat.api.control :as control]
             [samizdat.api.openai :as openai]
             [samizdat.api.runs :as api-runs]
+            [samizdat.approval :as approval]
             [samizdat.config :as config]
             [samizdat.llm.client :as llm-client]
             [samizdat.store.db :as db]
-            [samizdat.system :as system]))
+            [samizdat.system :as system]
+            [samizdat.userspace :as userspace]))
 
 (defn json-response
   ([body] (json-response 200 body))
@@ -143,6 +145,25 @@
 (defn- gate-table [_req]
   (json-response {:gates (gates/describe) :thresholds (gates/config)}))
 
+(defn layout-body
+  "The project's terminal-UI layout, as the EDN text of its `tui` policy.
+
+  Served rather than read by the front end because only this process is
+  BOUND to the project: `userspace/body` reads the stored row here and falls
+  back to the shipped template, where the same call in the TUI's process —
+  which holds no database handle by design — can only ever see the template.
+  Without this the agent could save a new version of its own UI and nothing
+  would ever draw it.
+
+  Text, not parsed: the server has no business understanding a layout, and a
+  client that is going to `edn/read-string` it anyway gains nothing from a
+  round trip through JSON."
+  []
+  {:layout (userspace/body :policy "tui")})
+
+(defn- layout-table [_req]
+  (json-response (layout-body)))
+
 ;; --- routing ----------------------------------------------------------------
 ;;
 ;; A route is [method pattern handler]. A pattern segment starting with ':'
@@ -172,6 +193,9 @@
    [:get "/v1/models" #'models]
    [:post "/v1/chat/completions" #'chat-completions]
    [:get "/v1/harness/gates" #'gate-table]
+   ;; The terminal UI's own arrangement, so a front end that holds no
+   ;; database handle can still see the version the agent saved.
+   [:get "/v1/harness/layout" #'layout-table]
    [:get "/v1/harness/models" #'harness-models]
    [:get "/v1/runs" (fn [req] (json-response (api-runs/list-runs (system/conn)
                                                                  (long-param req "limit"))))]
@@ -190,6 +214,20 @@
                                                     (get-in req [:path-params :id])
                                                     (long-param req "since")
                                                     (long-param req "limit"))))]
+   ;; The live manifest-state trace. No conn: steps are held in memory, not
+   ;; journalled — see samizdat.steps.
+   [:get "/v1/runs/:id/steps"
+    (fn [req] (json-response (api-runs/steps-tail (get-in req [:path-params :id])
+                                                  (long-param req "since")
+                                                  (long-param req "limit"))))]
+   ;; One turn, whole. The branch listing drops the model's prose because it
+   ;; is the bulk; this is how a reader gets it back, a turn at a time.
+   [:get "/v1/runs/:id/branches/:branch/turns/:turn"
+    (fn [req] (let [{:keys [id branch turn]} (:path-params req)]
+                (if-let [t (api-runs/turn-detail (system/conn) id branch
+                                                 (parse-long (str turn)))]
+                  (json-response t)
+                  (json-response 404 {:error {:message "no such turn"}}))))]
    [:get "/v1/runs/:id/branches/:branch"
     (fn [req] (let [{:keys [id branch]} (:path-params req)]
                 (if-let [b (api-runs/branch-detail (system/conn) id branch)]
@@ -210,6 +248,27 @@
                                        (get-in req [:path-params :id])
                                        (body-json req))]
                 (json-response (or (:status r) 200) (:body r))))]
+   ;; Questions waiting on a person: the permission gate and ask_human, which
+   ;; share one queue because they differ only in what they carry.
+   [:get "/v1/runs/:id/approvals"
+    (fn [req] (json-response {:approvals (approval/pending
+                                          (get-in req [:path-params :id]))}))]
+   [:get "/v1/approvals"
+    (fn [_] (json-response {:approvals (approval/pending nil)}))]
+   [:post "/v1/approvals/:aid"
+    (fn [req]
+      (let [{:keys [decision note answers]} (body-json req)
+            d (keyword (or decision "deny"))]
+        (if (approval/decide! (get-in req [:path-params :aid])
+                              (cond-> {:decision d}
+                                note (assoc :note note)
+                                answers (assoc :answers answers)))
+          (json-response {:status "decided" :decision (name d)})
+          ;; Gone rather than never-existed: the ordinary cause is a second
+          ;; operator answering a question the first already settled, or a
+          ;; wait that expired. 409 says which, in the house style the other
+          ;; handlers use — a short noun phrase, not a sentence.
+          (json-response 409 {:error {:message "approval not open"}}))))]
    [:get "/v1/interventions/kinds" (fn [_] (json-response (control/kinds)))]])
 
 (defn- match-path [pattern uri]

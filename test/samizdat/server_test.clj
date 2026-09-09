@@ -19,12 +19,15 @@
 (ns samizdat.server-test
   "The vendored ring adapter's request reader, and the listen socket's
   close-on-exec."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [jolt.process :as p]
             [ring-chez.adapter :as adapter]
             [samizdat.api.control :as control]
-            [samizdat.server :as server]))
+            [samizdat.server :as server]
+            [samizdat.store.db :as db]
+            [samizdat.userspace :as userspace]))
 
 (defn- request [body]
   (str "POST /v1/runs HTTP/1.1\r\n"
@@ -46,6 +49,33 @@
         (is (= 250 (@clamp 250)) "an in-range value passes through")
         (is (= 10000 (@clamp 999999999)) "the ceiling holds")
         (is (= 0 (@clamp -5)) "a negative asks to sleep nothing")))))
+
+(deftest the-harness-serves-the-layout-the-agent-saved
+  ;; The seam that makes "the agent can rearrange its own UI" true. Only the
+  ;; server is BOUND to the project, so only the server can read the stored
+  ;; `tui` policy; the TUI holds no database handle by design and asks. Before
+  ;; this endpoint existed, a saved version was written and nothing ever drew
+  ;; it — the front end's own userspace read could only reach the shipped
+  ;; template, and then cached that for the life of the process.
+  (let [tmp (str (java.io.File/createTempFile "layout" ".sqlite3"))
+        conn (db/open! tmp)
+        prev (userspace/bind! conn)]
+    (try
+      (testing "with nothing saved it is the shipped template, seeded"
+        (let [body (:layout (server/layout-body))]
+          (is (string? body))
+          (is (= (:layout (edn/read-string body))
+                 (:layout (edn/read-string (userspace/template :policy "tui"))))
+              "which is what a fresh project draws")))
+      (testing "and after the agent saves one, it is the agent's"
+        (userspace/save! :policy "tui"
+                         (pr-str {:prose-turns 3 :layout [:vbox [:widget/status {}]]}))
+        (let [spec (edn/read-string (:layout (server/layout-body)))]
+          (is (= [:vbox [:widget/status {}]] (:layout spec)))
+          (is (= 3 (:prose-turns spec)))))
+      (finally
+        (userspace/bind! prev)
+        (db/close conn)))))
 
 (deftest content-length-is-octets-not-characters
   ;; A 3-byte em-dash decodes to one char. Judging completeness by char count

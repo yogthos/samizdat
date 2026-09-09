@@ -1515,6 +1515,67 @@
         spinning. The abort flag is read on the same pass, so a paused run
         stays stoppable."}
 
+ :approval
+ {:value {:mode :refuse :wait-ms 300000 :on-timeout :deny}
+  :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-whbw.3"]
+  :doc "Whether a command the policy wants to ASK about waits for a person.
+
+        `:refuse` is the default and is what this harness has always done:
+        the call is refused, the refusal teaches the retry, and a human adds
+        a grant afterwards without the run ever stopping. Runs are
+        unattended by design and a feature landing must not change that —
+        an upgrade that silently started blocking would hang every campaign.
+
+        `:mode :block` parks the branch on the question instead, for when
+        somebody is watching. What makes that safe is the other two keys.
+        `wait-ms` bounds every wait — five minutes, long enough for someone
+        to come back to the terminal, short enough that a run left alone
+        loses one command rather than the night. `on-timeout` says what an
+        unanswered question resolves to: `:deny` keeps the refusal (and the
+        model is told nobody was there, so it reads as an absence rather
+        than a rule), `:allow` lets an unattended run proceed for a project
+        that would rather have that.
+
+        A run that ends releases its waiters regardless — see
+        samizdat.approval/abandon!."}
+
+ :modified-files-shown
+ {:value 60
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-whbw.8"]
+  :doc "How many changed paths the run detail reports.
+
+        A cap on a response, not a judgement about the work: a long run
+        touches hundreds of files and a front end draws a panel's worth.
+        Newest first, so what the cap drops is the oldest change — the one
+        least likely to be what someone is looking at."}
+
+ :step-ring
+ {:value {:capacity 512 :max-runs 16 :pump-ms 250}
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-whbw.2"]
+  :doc "The live manifest-state trace a front end draws: how many steps are
+        kept per run, and how many runs' rings the process holds at once.
+
+        Memory, not truth. The durable record of what a turn did is the turns
+        table; a step is the implementer moving between cells and is worth a
+        frame of a UI and nothing after that. So this bounds an in-memory ring
+        and the loss is a UI that says it fell behind, never a run that
+        forgets what it did.
+
+        `capacity` at 512 is roughly forty turns of the factory loop, which
+        walks about fourteen cells a turn — enough that a client attaching to
+        a run in progress sees real history rather than the current cell.
+
+        `max-runs` exists because forget! is called when a run ends and a
+        server that is never told must still not grow. The oldest ring goes.
+
+        `pump-ms` is how often the bus is drained into the rings. Well under
+        any client's poll interval, so the wait a person sees is their own
+        poll and not this; short enough that the bus's own sliding window
+        cannot overflow between drains on a wide beam."}
+
  :run-health
  {:value
   {:thrash-min-turns 4

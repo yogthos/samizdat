@@ -31,5 +31,12 @@ the same job without the shell: `read_file` and `grep` to look around, `eval`
 to run Clojure, including this project's own tests once you have required the
 namespace.
 {% endif %}{% endif %}{% endif %}{% endif %}{% endif %}{% endif %}
-
+{% if note %}
+A person looked at this and said: {{note}}
+{% endif %}{% if unanswered %}
+This run asked a human and nobody answered inside the window, so the refusal
+is an ABSENCE rather than a rule — the command was not judged and refused, it
+was simply never seen. Do not read it as a policy about `{{head}}`. Carry on
+another way, or ask again later if the work genuinely needs it.
+{% endif %}
 Rule: `{{rule}}`

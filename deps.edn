@@ -122,7 +122,12 @@
 
  :nrepl/middleware [nrepl.middleware/default-middleware]
 
- :aliases {:test {:extra-paths ["test" "gui"]
+ ;; "gui" and "tui" are SOURCE paths here, not their toolkits: neither
+ ;; alias's deps ride along. That is the discipline both front ends keep —
+ ;; everything except the toolkit's own run loop is written toolkit-free
+ ;; (the TUI's widgets return hiccup, which is data), so the suite covers
+ ;; them without cmake, GTK, or a terminal.
+ :aliases {:test {:extra-paths ["test" "gui" "tui"]
                   :main-opts ["-m" "samizdat.test-runner"]}
            ;; The dev tree (the nREPL client, the ebb spike) plus the tests, so
            ;; a live image can run the suite without paying startup — with
@@ -166,7 +171,36 @@
                    {:git/url "https://github.com/jolt-lang/glimmer-gl.git"
                     :git/tag "v0.1.0"
                     :git/sha "ae9a53291c553e89dde79a90389224f46e5e7fa8"}}
-                  :main-opts ["-m" "samizdat.gui.core"]}}
+                  :main-opts ["-m" "samizdat.gui.core"]}
+
+           ;; The TUI, on the same terms as the GUI: its own source root, its
+           ;; own toolkit dep, and a strict HTTP client of the server. `jolt
+           ;; serve` and `jolt -M:test` never load it.
+           ;;
+           ;; :local/root while ftxui-jolt is unreleased. It carries a C++
+           ;; shim that has to be COMPILED (`jolt native` in its checkout,
+           ;; needing cmake and a C++17 compiler) — a git dep would resolve
+           ;; the sources into ~/.jolt/gitlibs with no build step and fail at
+           ;; the first FFI call. Pin a :git/sha here once it tags a release
+           ;; that ships the shared object.
+           :tui  {:extra-paths ["tui"]
+                  :extra-deps
+                  {jlt-commons/ftxui-jolt
+                   {:local/root "/Users/yogthos/src/jlt-commons/ftxui-jolt"}}
+                  :main-opts ["-m" "samizdat.tui.core"]}
+
+           ;; The half of the TUI the main suite cannot cover: what the
+           ;; TOOLKIT does with the hiccup — that a click on a fold's header
+           ;; actually opens it. It drives real FTXUI widgets headlessly, so
+           ;; it needs no terminal, but it does need the compiled shim, which
+           ;; is why it is its own alias rather than part of `jolt test`.
+           ;;
+           ;;     jolt tui-test
+           :tui-test {:extra-paths ["tui" "test-tui"]
+                      :extra-deps
+                      {jlt-commons/ftxui-jolt
+                       {:local/root "/Users/yogthos/src/jlt-commons/ftxui-jolt"}}
+                      :main-opts ["-m" "samizdat.tui.test-runner"]}}
 
  :tasks {serve {:doc "start the harness (HTTP + nREPL) and park"
                 :main-opts ["-m" "samizdat.core"]}
@@ -182,5 +216,9 @@
           ;; environment where 1024 exceeds the hard limit still runs.
           test  "(ulimit -n 1024 2>/dev/null; jolt -M:test)"
          gui   "jolt -M:gui"
+         tui   "jolt -M:tui"
+         ;; A shell string, not :main-opts: a task's main-opts cannot carry an
+         ;; -M alias, and this one needs the ftxui dep.
+         tui-test "jolt -M:tui-test"
          export {:doc "runs that shipped and verified, as JSONL trajectories — or with --verdicts, every judgement labelled by its outcome: jolt export <db> [out.jsonl] [--verdicts]"
                  :main-opts ["-m" "samizdat.export"]}}}
