@@ -153,9 +153,28 @@
     (is (= [18 19 20] (st/prose-wanted s 3)))
     (testing "and text already held is not re-fetched"
       (let [s (assoc-in s [:turn-text 20] {:assistant_text "have it"})]
-        (is (= [17 18 19] (st/prose-wanted s 3))))))
+        ;; 18 and 19 — the rest of the WINDOW, not the next three turns
+        ;; down. The window is chosen first and the held ones are dropped
+        ;; out of it; picking the newest n that are missing instead walked
+        ;; the whole branch n turns at a time.
+        (is (= [18 19] (st/prose-wanted s 3))))))
   (testing "a branch with no turns wants nothing"
     (is (= [] (st/prose-wanted (st/initial "b") 3)))))
+
+(deftest the-prose-window-does-not-walk-backwards-through-the-branch
+  ;; The bug this pins: `remove held` before `take-last n` made every poll
+  ;; ask for n turns FURTHER BACK, so a 400-turn branch fetched all 400
+  ;; bodies over 33 polls and held the whole 5.5MB the per-turn endpoint
+  ;; exists to avoid. Once the window is full it must ask for nothing.
+  (let [turns (mapv (fn [n] {:turn n}) (range 1 401))
+        s (assoc (st/initial "b") :branch {:turns turns})
+        want (st/prose-wanted s 12)
+        held (reduce (fn [acc n] (assoc-in acc [:turn-text n] {:assistant_text "x"}))
+                     s want)]
+    (is (= 12 (count want)))
+    (is (= [389 400] [(first want) (last want)]) "the newest twelve")
+    (is (= [] (st/prose-wanted held 12))
+        "and with those held it wants nothing more — not the twelve below them")))
 
 (deftest a-half-answered-questionnaire-survives-the-poll-that-lands-mid-answer
   ;; Polls arrive every second or so and a person takes longer than that to
@@ -185,6 +204,23 @@
     (is (= 1 (:question-cursor s1)))
     (let [[_ done2] (st/answer-question s1 ["yes" "no"])]
       (is (true? done2)))))
+
+(deftest y-and-n-answer-the-permission-dialog-that-is-on-screen
+  ;; The buttons are labelled "allow (y)" and "deny (n)", which was a promise
+  ;; the key handler did not keep. Pure, so the key policy is covered here
+  ;; rather than in the toolkit-bound suite.
+  (let [s (assoc (st/initial "b") :approvals [{:id "a1" :kind "shell"}])]
+    (is (= ["a1" :allow] (st/pending-decision s "y")))
+    (is (= ["a1" :deny] (st/pending-decision s "n")))
+    (is (nil? (st/pending-decision s "q")) "anything else belongs to whoever has focus"))
+  (testing "and they do nothing when no dialog is up"
+    (is (nil? (st/pending-decision (st/initial "b") "y"))))
+  (testing "nor over a questionnaire, where a letter is something being typed"
+    ;; The free-text box takes characters; y must reach it, not decide a
+    ;; question it was never offered as an answer to.
+    (let [s (assoc (st/initial "b")
+                   :approvals [{:id "q1" :questions [{:question "name?"}]}])]
+      (is (nil? (st/pending-decision s "y"))))))
 
 (deftest folds-toggle-open-and-shut
   (let [s (-> (st/initial "b") (st/toggle-fold "3/result"))]

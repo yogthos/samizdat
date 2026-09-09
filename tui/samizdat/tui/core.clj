@@ -29,10 +29,13 @@
   shows arrives through `samizdat.api.client` and everything it does goes
   back through a POST.
 
-  THE LAYOUT IS RE-READ EVERY FRAME. `resources/tui.edn` is userspace, so the
-  agent can rearrange its own UI while it runs and the next frame shows it —
-  that is the point of the file, and a layout cached at startup would make it
-  a lie. Reading it is a cached userspace lookup, not a file read."
+  THE LAYOUT IS RE-READ EVERY FRAME, and it comes from three places in
+  order: a local file a person edits, the version the harness serves (the
+  agent's, saved into the project), and the shipped template. That is the
+  point of the file — a layout fixed at startup would make every claim about
+  editing the UI while it runs a lie — and `samizdat.tui.layout` keeps it
+  cheap: the file is re-read only when its mtime moves, and the served body
+  is parsed once, when it arrives."
   (:require [clojure.string :as str]
             [ftxui.core :as ui]
             [samizdat.api.client :as client]
@@ -101,11 +104,17 @@
     (future (poll-once!))))
 
 (defn- answer!
-  "Record an answer to a questionnaire, and submit once the last one is in."
+  "Record an answer to a questionnaire, and submit once the last one is in.
+
+  `swap!` rather than reading and `reset!`ting: the poller writes into this
+  same atom every interval, and a reset would discard whichever poll landed
+  between the read and the write."
   [id _i answers]
-  (let [[next-state done?] (st/answer-question @state answers)]
-    (reset! state next-state)
-    (when done?
+  (let [done? (volatile! false)]
+    (swap! state (fn [s] (let [[next d] (st/answer-question s answers)]
+                           (vreset! done? d)
+                           next)))
+    (when @done?
       (let [r (client/decide! (:base @state) id {:decision :answer :answers answers})]
         (swap! state st/note-error (when-not (:ok r) (:error r)))
         (future (poll-once!))))))
@@ -133,6 +142,11 @@
   is the one that must not wait."
   []
   (let [base (:base @state)]
+    ;; The layout the harness holds, so a version the agent saved for itself
+    ;; reaches the screen. Only on success: an outage must not blank the
+    ;; arrangement that is already drawn.
+    (let [r (client/layout base)]
+      (when (:ok r) (layout/serve! (get-in r [:body :layout]))))
     (swap! state st/apply-runs (client/list-runs base))
     (when-let [rid (:run-id @state)]
       ;; The cursor is read here, after apply-runs may have selected a run —
@@ -202,12 +216,24 @@
 
 (defn- on-event
   "Global keys. Everything else — clicks, arrows, text — belongs to whichever
-  widget has the focus, so this consumes as little as it can."
+  widget has the focus, so this consumes as little as it can.
+
+  `y`/`n` are the exception, and only while a permission dialog is up: the
+  buttons are labelled `allow (y)` and `deny (n)`, and a label that names a
+  key has to mean it. `state/pending-decision` decides whether there is such
+  a dialog — over a questionnaire's answer box a `y` is a letter being
+  typed, and it goes through untouched."
   [{:keys [type key char control]}]
   (cond
     (and (= :key type) (= :ctrl-c key)) (do (ui/exit!) true)
     (and (= :character type) control (= "q" char)) (do (ui/exit!) true)
     (and (= :key type) (= :f5 key)) (do (future (poll-once!)) true)
+
+    (and (= :character type) (not control))
+    (if-let [[id d] (st/pending-decision @state char)]
+      (do (decide! id d) true)
+      false)
+
     :else false))
 
 (defn -main [& args]

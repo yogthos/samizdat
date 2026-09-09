@@ -49,11 +49,20 @@
 
 (defn- panel
   "A titled box. Every side panel is one, so a layout that puts two of them
-  in a column gets borders that line up without saying so."
+  in a column gets borders that line up without saying so.
+
+  `:height` is forwarded like `:width` because a column of panels is a
+  competition for rows: without a ceiling on the ones that do not need many,
+  the flexed panel below them is the one that gets squeezed off the screen."
   [props & children]
   (into [:vbox (cond-> {:border :rounded}
-                 (:flex props) (assoc :flex true)
-                 (:width props) (assoc :width (:width props)))]
+                 ;; The VALUE, not a coerced true: ftxui's flex kinds are
+                 ;; `:grow` (may take spare room, may not be squeezed) as
+                 ;; well as plain `true` (both), and flattening them cost a
+                 ;; layout the distinction that keeps a panel on screen.
+                 (:flex props) (assoc :flex (:flex props))
+                 (:width props) (assoc :width (:width props))
+                 (:height props) (assoc :height (:height props)))]
         (cond-> []
           (:title props) (conj [:text {:bold true} (str " " (:title props) " ")]
                                [:separator])
@@ -86,12 +95,19 @@
 
   ftxui's own `:collapsible`, so the mouse works on it for free — this is
   the widget FTXUI already opens and closes on a click, and wiring our own
-  hit-testing over a `:text` would be re-implementing it worse."
-  [state id label body]
-  [:collapsible {:label label
-                 :show (contains? (set (:expanded state)) id)
-                 :on-change (toggle-fn state id)}
-   body])
+  hit-testing over a `:text` would be re-implementing it worse.
+
+  `body-fn` is a THUNK, and it is called only when the fold is open. Passing
+  the body itself built every tool result on the branch into one element per
+  line on every frame whether or not anyone could see it: 175ms a frame at
+  two hundred turns with every fold shut, and ftxui redraws on a keystroke.
+  A shut fold is not on screen and its body does not get built."
+  [state id label body-fn]
+  (let [open? (contains? (set (:expanded state)) id)]
+    [:collapsible {:label label
+                   :show open?
+                   :on-change (toggle-fn state id)}
+     (if open? (body-fn) [:empty])]))
 
 ;; --- the activity log --------------------------------------------------------
 
@@ -142,6 +158,14 @@
   (let [lines (str/split-lines (str s))]
     (into [:vbox] (map (if diff? diff-line (fn [l] [:text l])) lines))))
 
+(defn- line-count
+  "How many lines `s` has, without cutting it into them. This is only ever a
+  number in a fold's LABEL, which is drawn on every frame for every turn on
+  screen — splitting a thousand-line result to count it is the body-building
+  the fold itself now avoids, moved into the header."
+  [s]
+  (inc (count (re-seq #"\n" (str s)))))
+
 (defn- failed? [turn]
   (contains? #{"failure" "mechanics"} (str (:category turn))))
 
@@ -164,7 +188,7 @@
      (when (not-empty (str reasoning_text))
        (fold state (fold-id turn :thinking)
              (str "thinking (" (count (str reasoning_text)) " chars)")
-             [:paragraph {:dim true} (str reasoning_text)]))
+             #(vector :paragraph {:dim true} (str reasoning_text))))
 
      (when tool_name
        [:hbox
@@ -174,23 +198,39 @@
         [:text {:dim true} (str "  turn " turn)]])
 
      (when (not-empty (str args))
-       (fold state (fold-id turn :args) "arguments" (body-block args false)))
+       (fold state (fold-id turn :args) "arguments" #(body-block args false)))
 
      (when (not-empty (str result))
        (fold state (fold-id turn :result)
-             (str "result (" (count (str/split-lines (str result))) " lines)")
-             (body-block result writing?)))
+             (str "result (" (line-count result) " lines)")
+             #(body-block result writing?)))
 
      [:separator {:dim true}]]))
+
+(def default-turns-shown
+  "How many turns the conversation draws when the layout does not say.
+
+  A default, not a policy: `:turns` in the layout is the number that counts,
+  and this is what a layout written before the prop existed gets."
+  60)
 
 (defn conversation
   "The agent's turns: what it said, what it called, and what came back.
 
   Thinking, arguments and results fold, closed by default — a log that
   opened every tool result is unreadable after three turns, and the header
-  alone is what a reader scans."
+  alone is what a reader scans.
+
+  BOUNDED, like every other panel. `:turns` in the layout says how many, and
+  it is the newest that many — a conversation is read from the bottom, and
+  the four hundred entries above the fold were being rebuilt on every
+  keystroke to be scrolled past. How far back is userspace for the same
+  reason `:prose-turns` is: how much history a reader wants is their
+  business, and every turn added costs a frame."
   [state props]
-  (let [turns (vec (get-in state [:branch :turns]))]
+  (let [all (vec (get-in state [:branch :turns]))
+        n (or (:turns props) default-turns-shown)
+        turns (if (> (count all) n) (subvec all (- (count all) n)) all)]
     (panel (assoc props :title (or (:title props)
                                    (some->> (:branch-id state) (str "BRANCH "))))
            (if (seq turns)
@@ -313,6 +353,26 @@
                                    (f (:id (nth rs i nil)))))}]
              (empty-note "no runs")))))
 
+(defn branches
+  "The beam: every branch on this run and what became of it.
+
+  A run here is a BEAM, so the branch being read is one of several and which
+  one is a choice. Without this the auto-picked branch was the only one
+  reachable — the state fold could switch and nothing on screen asked it to."
+  [state props]
+  (let [bs (vec (get-in state [:detail :branches]))]
+    (panel props
+           (if (seq bs)
+             [:menu {:entries (mapv #(clip (str (:id %) " " (:status %) "  "
+                                                (get-in % [:thesis :claim]))
+                                           32)
+                                    bs)
+                     :selected (max 0 (.indexOf (mapv :id bs) (:branch-id state)))
+                     :on-enter (fn [i]
+                                 (when-let [f (get-in state [:on :select-branch])]
+                                   (f (:id (nth bs i nil)))))}]
+             (empty-note "no branches")))))
+
 ;; --- the modals --------------------------------------------------------------
 
 (defn- lines-of
@@ -345,19 +405,27 @@
   (let [qs (vec questions)
         i (min (or (:question-cursor state) 0) (max 0 (dec (count qs))))
         q (nth qs i nil)
-        so-far (vec (:question-answers state))]
+        so-far (vec (:question-answers state))
+        opts (vec (:options q))
+        ;; Carry what has already been answered. Handing back only the
+        ;; latest would lose every earlier answer on the way to the last
+        ;; question.
+        answer (fn [a] (when-let [f (get-in state [:on :answer])]
+                         (f id i (conj so-far (str a)))))]
     [:vbox {:border :heavy :color :cyan}
      [:text {:bold true :color :cyan}
       (str " ? QUESTION " (inc i) " of " (count qs) " ")]
      [:separator]
      [:paragraph (str (:question q))]
-     [:menu {:entries (mapv str (:options q))
-             :on-enter (fn [n]
-                         (when-let [f (get-in state [:on :answer])]
-                           ;; Carry what has already been answered. Handing
-                           ;; back only the latest would lose every earlier
-                           ;; answer on the way to the last question.
-                           (f id i (conj so-far (str (nth (:options q) n nil))))))}]]))
+     (if (seq opts)
+       [:menu {:entries (mapv str opts)
+               :on-enter (fn [n] (answer (nth opts n nil)))}]
+       ;; No options is not a malformed question — `ask_human` takes a bare
+       ;; string and an open-ended question is the ordinary use of a tool by
+       ;; that name. Drawn as an empty menu it could not be answered AT ALL,
+       ;; and the branch parked until the deadline for want of a text box.
+       [:input {:placeholder "type an answer — Enter sends"
+                :on-enter answer}])]))
 
 (defn approvals
   "Questions waiting on a person: the permission gate and ask_human.
@@ -380,15 +448,29 @@
 ;; --- the bottom strip --------------------------------------------------------
 
 (defn input
-  "The compose box. What it sends is an INTERVENTION, not a chat message —
-  samizdat runs are autonomous and a person steers them at a turn boundary,
-  so this is the same seam the supervisor uses."
+  "The compose box, and the two things done to a run rather than said to it.
+
+  What the box sends is an INTERVENTION, not a chat message — samizdat runs
+  are autonomous and a person steers them at a turn boundary, so this is the
+  same seam the supervisor uses. Abort and resume sit beside it because they
+  are the other two, and because they were documented here long before
+  anything on screen called them."
   [state props]
   (panel (assoc props :title (or (:title props) "STEER"))
-         [:input {:value (or (:input state) "")
-                  :placeholder "a directive for the run — Enter sends"
-                  :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
-                  :on-enter (fn [s] (when-let [f (get-in state [:on :submit])] (f s)))}]))
+         [:hbox
+          [:input {:flex true
+                   :value (or (:input state) "")
+                   :placeholder "a directive for the run — Enter sends"
+                   :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
+                   :on-enter (fn [s] (when-let [f (get-in state [:on :submit])] (f s)))}]
+          ;; Spelled out rather than built by a helper taking the key as an
+          ;; argument: `every-handler-the-loop-offers-has-a-caller` reads
+          ;; these literally, and a key assembled at runtime is a key that
+          ;; ratchet cannot see.
+          [:button {:label "abort"
+                    :on-click (fn [] (when-let [f (get-in state [:on :abort])] (f)))}]
+          [:button {:label "resume"
+                    :on-click (fn [] (when-let [f (get-in state [:on :resume])] (f)))}]]))
 
 (defn status
   "The status line: whether there is a server, which run, and what it is
@@ -421,6 +503,7 @@
                  :widget/gates        gates
                  :widget/artifacts    artifacts
                  :widget/runs         runs
+                 :widget/branches     branches
                  :widget/input        input
                  :widget/status       status}]
   (layout/register! tag f))

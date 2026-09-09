@@ -29,10 +29,12 @@
   that the folds are wired to the toggle handler with ids stable across
   frames — a fold whose id moved would close itself every time the run
   advanced."
-  (:require [clojure.string :as str]
+  (:require [clojure.set]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [clojure.walk :as walk]
             [samizdat.tui.layout :as layout]
+            [samizdat.tui.state :as st]
             [samizdat.tui.widgets :as w]))
 
 (defn- render [tag state props]
@@ -138,6 +140,41 @@
       (is (str/includes? labels "thinking"))
       (is (str/includes? labels "result")))))
 
+(deftest a-closed-fold-does-not-carry-its-body
+  ;; Cost, not appearance. `fold` handed the body to :collapsible whether or
+  ;; not it was open, so every frame split every tool result on the branch
+  ;; into one element per line — 175ms a frame at 200 turns, with every fold
+  ;; SHUT, and ftxui redraws on every keystroke. A shut fold's body is not
+  ;; on screen and must not be built.
+  (let [out (render :widget/conversation
+                    {:branch {:turns turns} :turn-text turn-text} {})]
+    (is (not (str/includes? (texts out) "(ns a)"))
+        "the body of a closed fold is not in the tree at all")
+    (is (str/includes? (texts out) "result")
+        "but its header is, which is what a reader scans"))
+  (testing "and the body is back the moment it is opened"
+    (let [out (render :widget/conversation
+                      {:branch {:turns turns} :turn-text turn-text
+                       :expanded #{(w/fold-id 1 :result)}} {})]
+      (is (str/includes? (texts out) "(ns a)")))))
+
+(deftest the-conversation-draws-a-bounded-tail-of-a-long-branch
+  ;; Every other panel is bounded — the trace at 500, the file list at
+  ;; :modified-files-shown. The biggest one was not, so a 400-turn branch
+  ;; built 400 entries per frame. How many is userspace, like :prose-turns:
+  ;; how far back a reader scrolls is their business.
+  (let [turns (mapv (fn [n] {:turn n :tool_name "read_file" :result "x"})
+                    (range 1 401))
+        out (render :widget/conversation {:branch {:turns turns}} {:turns 40})
+        drawn (keep #(:key (props-of %)) (nodes-of :vbox out))]
+    (is (= 40 (count drawn)) "the tail the layout asked for")
+    (is (= "400" (last drawn)) "and it is the NEWEST forty, which is what is being read")
+    (is (= "361" (first drawn))))
+  (testing "a branch shorter than the bound is drawn whole"
+    (let [turns (mapv (fn [n] {:turn n :tool_name "read_file"}) (range 1 4))
+          out (render :widget/conversation {:branch {:turns turns}} {:turns 40})]
+      (is (= 3 (count (keep #(:key (props-of %)) (nodes-of :vbox out))))))))
+
 (deftest an-expanded-fold-is-open-and-its-body-is-drawn
   (let [id (w/fold-id 1 :result)
         out (render :widget/conversation {:branch {:turns turns} :turn-text turn-text :expanded #{id}} {})
@@ -232,6 +269,38 @@
     (is (re-find #"(?i)confirm" said))
     (is (re-find #"(?i)refut" said))))
 
+(deftest the-branch-picker-lists-the-beam-and-switches-to-one
+  ;; samizdat runs a BEAM. Without this widget the auto-picked branch was the
+  ;; only one a reader could ever see: :select-branch was in the handler map
+  ;; with nothing on screen calling it.
+  (let [picked (atom nil)
+        state {:detail {:branches [{:id "B1" :status "active" :thesis {:claim "parser first"}}
+                                   {:id "B2" :status "culled" :thesis {:claim "lexer first"}}]}
+               :branch-id "B1"
+               :on {:select-branch #(reset! picked %)}}
+        out (render :widget/branches state {})]
+    (is (str/includes? (texts out) "B1"))
+    (is (str/includes? (texts out) "culled") "and what became of each")
+    (let [menu (first (nodes-of :menu out))]
+      (is (zero? (:selected (props-of menu))) "open on the one being read")
+      ((:on-enter (props-of menu)) 1)
+      (is (= "B2" @picked)))))
+
+(deftest the-compose-box-can-also-abort-and-resume
+  ;; Both were in the handler map and documented in tui.edn's widget table,
+  ;; and neither had anything on screen that called it.
+  (let [hit (atom [])
+        state {:on {:abort #(swap! hit conj :abort)
+                    :resume #(swap! hit conj :resume)}}
+        out (render :widget/input state {})
+        by-label (into {} (map (juxt #(:label (props-of %)) #(:on-click (props-of %))))
+                       (nodes-of :button out))]
+    (is (contains? by-label "abort"))
+    (is (contains? by-label "resume"))
+    ((get by-label "abort"))
+    ((get by-label "resume"))
+    (is (= [:abort :resume] @hit))))
+
 (deftest the-status-line-says-whether-there-is-a-server
   (is (re-find #"(?i)offline|disconnect|no server"
                (texts (render :widget/status {:connected? false} {}))))
@@ -301,6 +370,30 @@
     (is (not (str/includes? said "migrate now?"))
         "the next question waits its turn")))
 
+(deftest a-question-with-no-options-is-answered-in-words
+  ;; ask_human's `normalize` accepts a bare string and gives it no options —
+  ;; and an open-ended question is the ordinary use of a tool by that name.
+  ;; Rendered as a menu that has nothing in it, that question could not be
+  ;; answered at all: the branch sat parked for the whole :wait-ms and came
+  ;; back "unanswered".
+  (let [answered (atom nil)
+        free {:id "q9" :kind "question"
+              :questions [{:question "what should I name the module?" :options []}]}
+        out (render :widget/approvals
+                    {:approvals [free] :on {:answer #(reset! answered %&)}} {})]
+    (is (str/includes? (texts out) "what should I name the module?"))
+    (is (empty? (nodes-of :menu out)) "no menu, because there is nothing to pick from")
+    (let [box (first (nodes-of :input out))]
+      (is (some? box) "an editor instead")
+      ((:on-enter (props-of box)) "mycelium")
+      (is (= ["q9" 0 ["mycelium"]] (vec @answered))
+          "and what was typed is the answer"))))
+
+(deftest a-question-with-options-still-gets-a-menu-not-a-text-box
+  (let [out (render :widget/approvals {:approvals [question]} {})]
+    (is (seq (nodes-of :menu out)))
+    (is (empty? (nodes-of :input out)))))
+
 (deftest the-questionnaire-advances-and-answers
   (let [answered (atom nil)
         state {:approvals [question] :question-cursor 1
@@ -315,6 +408,22 @@
           "the earlier answer is carried, not lost on the way to the last"))))
 
 ;; --- the property that matters most -----------------------------------------
+
+(deftest every-handler-the-loop-offers-has-a-caller
+  ;; The ratchet for the defect that made this review worth doing. :abort,
+  ;; :resume and :select-branch sat in the handler map, were documented in
+  ;; tui.edn's widget table, and had nothing on screen that called them —
+  ;; and no test could see it, because both halves were correct alone. Read
+  ;; off the source because that is where the seam is: a widget reaches the
+  ;; loop only by naming a key, and a key nothing names is dead.
+  (let [src (slurp "tui/samizdat/tui/widgets.clj")
+        called (set (map (comp keyword second)
+                         (re-seq #"\[:on :([a-z-]+)\]" src)))]
+    (is (= st/handler-keys called)
+        (str "handlers with no widget calling them: "
+             (pr-str (clojure.set/difference st/handler-keys called))
+             "; widgets calling handlers the loop does not offer: "
+             (pr-str (clojure.set/difference called st/handler-keys))))))
 
 (deftest every-widget-draws-something-from-an-empty-state
   ;; The first frame, before any poll has answered, is the state every user

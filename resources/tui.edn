@@ -8,6 +8,16 @@
 ;; EDN: no rebuild, and the agent can do it to itself at runtime through the
 ;; same seam that carries gates.edn and the manifests.
 ;;
+;; WHICH COPY THE TUI DRAWS, most local first:
+;;
+;;   1. $SAMIZDAT_TUI_LAYOUT, or .samizdat/tui.edn beside the project — a
+;;      person's own, re-read whenever it changes, so an edit shows up on the
+;;      next frame with the TUI still running;
+;;   2. what the harness serves from GET /v1/harness/layout — the stored row
+;;      above, which is how the AGENT rearranges its own UI. The TUI holds no
+;;      database handle, so it asks the server, which does;
+;;   3. this file, off the classpath, which is what draws offline.
+;;
 ;; The vocabulary is ftxui's own (see the ftxui-jolt README): :vbox, :hbox,
 ;; :border, :separator, :flex, :width, anything the toolkit draws. The only
 ;; tags this project adds are `:widget/*`, each standing in for one widget
@@ -43,31 +53,54 @@
  ;;   :widget/gates         gates that fired and predictions still unsettled.
  ;;   :widget/artifacts     claims made, and how each was judged.
  ;;   :widget/runs          the run picker.
+ ;;   :widget/branches      the beam: every branch and what became of it.
+ ;;                         Click one to read it.
  ;;   :widget/approvals     the question a person is being asked, if any: the
  ;;                         permission dialog, or ask_human's questionnaire.
  ;;                         Draws nothing when there is nothing pending.
  ;;   :widget/input         the compose box: interventions, abort, resume.
  ;;   :widget/status        the status line.
 
+ ;; THREE PANELS TO A COLUMN, not five. A bare :height is an EQUALITY
+ ;; constraint in ftxui, so a stack of pinned boxes cannot shrink to fit and
+ ;; the ones at the bottom are simply squeezed to nothing: five in the right
+ ;; gutter drew MODIFIED, CLAIMS and GATES as three empty rules. One flexed
+ ;; panel per column, the rest pinned, and the two diagnostic lists moved to
+ ;; a wide short row where their entries have somewhere to go.
+
  :layout
  [:vbox {:flex true}
 
   [:hbox {:flex true}
 
-   ;; The left gutter: what the agent is doing, and what it is spending.
+   ;; The left gutter: what the agent is doing, what it is spending, and
+   ;; which run all of it is about.
    [:vbox {:width 30}
-    [:widget/activity {:title "ACTIVITY LOG" :flex true}]
-    [:widget/context {:title "CONTEXT"}]]
+    [:widget/activity {:title "ACTIVITY LOG" :flex :grow}]
+    [:widget/context {:title "CONTEXT" :height 7}]
+    [:widget/runs {:title "RUNS" :height 6}]]
 
-   ;; The middle band is the conversation, and it takes the room.
-   [:widget/conversation {:flex true}]
+   ;; The middle band is the conversation, and it takes the room. `:turns` is
+   ;; how far back it draws — the newest that many. Every entry is rebuilt on
+   ;; every frame, so this is a frame-rate number as much as a history one;
+   ;; raise it to scroll further back and pay for it in redraws.
+   [:widget/conversation {:flex true :turns 60}]
 
-   ;; The right gutter: the work, and the rules it is being held to.
+   ;; The right gutter: which branch, what it is working on, what it has
+   ;; changed. BEAM is at the top because it decides what the conversation
+   ;; beside it IS — a run here is several branches, and the one on screen
+   ;; is a choice rather than the only one.
    [:vbox {:width 34}
-    [:widget/tasks {:title "TASKS" :flex true}]
-    [:widget/files {:title "MODIFIED"}]
-    [:widget/artifacts {:title "CLAIMS"}]
-    [:widget/gates {:title "GATES"}]]]
+    [:widget/branches {:title "BEAM" :height 6}]
+    [:widget/tasks {:title "TASKS" :height 8}]
+    [:widget/files {:title "MODIFIED" :flex :grow}]]]
+
+  ;; The run's own account of itself: what it has established, and what it
+  ;; was advised and has not answered. Wide and short — both are short lists
+  ;; of long lines, which is the opposite of what a gutter is for.
+  [:hbox {:height 7}
+   [:widget/artifacts {:title "CLAIMS" :flex true}]
+   [:widget/gates {:title "GATES" :flex true}]]
 
   ;; Above the compose box, because the branch is parked on it and it is the
   ;; only thing on screen that is waiting on you. Invisible when idle.

@@ -28,6 +28,18 @@
   user put a panel anywhere without anything being rewired."
   (:require [clojure.string :as str]))
 
+(def handler-keys
+  "Every action a widget may ask the loop to take.
+
+  Named here, in the toolkit-free half, so the suite can hold both ends of
+  the seam: that `samizdat.tui.core` offers exactly these, and that some
+  widget calls each one. Three of them — :abort, :resume and :select-branch
+  — were offered and documented for a whole release with nothing on screen
+  that called them, which no test could see because each half was correct on
+  its own."
+  #{:decide :answer :toggle :select-run :select-branch :input :submit
+    :abort :resume})
+
 (def max-trace
   "How many steps the UI holds. The server's ring is bounded and so is this:
   a TUI left running for a day would otherwise keep every step of every run
@@ -153,19 +165,23 @@
     s))
 
 (defn prose-wanted
-  "Which turns to fetch prose for: the newest `n` on the branch that are not
-  already held.
+  "Which turns to fetch prose for: the ones in the newest-`n` WINDOW that are
+  not already held.
 
-  Bounded, and newest-first, because that is what a reader is following — a
-  run of four hundred turns must not fetch four hundred bodies every poll,
-  and the ones being read are at the bottom."
+  The window is chosen first and the held turns are dropped out of it. The
+  other order — the newest n turns that are missing — reads the same and is
+  not: with the window full it asks for the n turns BELOW it, and the poll
+  after that for the n below those, so a four-hundred-turn branch fetched
+  all four hundred bodies over thirty-three polls and held the whole 5.5MB
+  the per-turn endpoint exists to avoid. Bounded means the set stops being
+  asked for, not that each poll asks for a bounded number."
   [s n]
   (let [held (set (keys (:turn-text s)))]
     (->> (get-in s [:branch :turns])
          (map :turn)
-         (remove held)
          (sort)
          (take-last n)
+         (remove held)
          vec)))
 
 (defn apply-runs
@@ -204,6 +220,20 @@
 
 (defn select-branch [s branch-id]
   (assoc s :branch-id branch-id :branch nil :turn-text {}))
+
+(defn pending-decision
+  "What a bare `y`/`n` means right now: `[approval-id decision]`, or nil.
+
+  Only over a yes/no PERMISSION question. A questionnaire's answer box takes
+  characters, and a `y` typed into it is a word being written, not a verdict
+  on a question nobody offered as yes-or-no."
+  [s ch]
+  (let [a (first (:approvals s))]
+    (when (and a (empty? (:questions a)))
+      (case (str ch)
+        "y" [(:id a) :allow]
+        "n" [(:id a) :deny]
+        nil))))
 
 (defn toggle-fold [s id]
   (update s :expanded (fn [e] (let [e (set e)]

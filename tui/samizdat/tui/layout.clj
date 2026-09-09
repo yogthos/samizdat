@@ -21,9 +21,9 @@
 
   The core owns the first: a conversation log knows how to fold a diff, the
   activity log knows the trace is manifest states. `resources/tui.edn` owns
-  the second, and it is userspace — read through the same seam as gates.edn
-  and the manifests, versioned in the project, and editable by the agent
-  while it runs.
+  the second, and it is userspace — versioned in the project alongside
+  gates.edn and the manifests, editable by a person as a file and by the
+  agent as a stored version, both of them while it runs.
 
   The file is hiccup. Every tag is ftxui's own except `:widget/*`, each of
   which stands in for one widget the core implements; `expand` replaces those
@@ -43,11 +43,29 @@
   The alternative is a UI that black-screens on the edit whose damage it is
   the only tool for seeing.
 
+  WHERE THE LAYOUT COMES FROM. Three sources, most local first:
+
+  1. a FILE, `SAMIZDAT_TUI_LAYOUT` or `.samizdat/tui.edn` beside the run —
+     what a person edits, re-read whenever its mtime moves, so an edit shows
+     up on the next frame with no restart;
+  2. what the HARNESS SERVES, `GET /v1/harness/layout`, folded in by the
+     poller — the project's stored `tui` policy, which is how the agent
+     rearranges its own UI: the server is bound to the project and can read
+     that row, and this process is a strict HTTP client that cannot;
+  3. the SHIPPED template off the classpath, which is what draws offline and
+     on the first frame.
+
+  This used to be one source, `userspace/edn-body`, and it could not work:
+  a front end binds no project, so that read fell through to the classpath
+  template every time, and userspace's read cache — invalidated only by a
+  write, which a front end never makes — then pinned it for the life of the
+  process. Every claim about editing the UI while it runs was false, in both
+  directions.
+
   Toolkit-free on purpose: hiccup is data, so everything here is covered by
   the suite with no terminal and no ftxui."
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
-            [samizdat.userspace :as userspace]))
+            [clojure.java.io :as io]))
 
 ;; --- the registry ------------------------------------------------------------
 ;;
@@ -135,10 +153,10 @@
 (defn template
   "The shipped layout, straight off the classpath.
 
-  Read here rather than through the userspace seam because this is the
-  fallback: a project whose stored layout is broken needs the file, and
-  going back through the seam that just served the broken one to get it
-  would be circular."
+  The last of the three sources and the fallback for the other two: a
+  project whose stored layout is broken needs the file, and asking the
+  source that just served the broken one to supply the replacement would be
+  circular."
   []
   (some-> (io/resource "tui.edn") slurp edn/read-string))
 
@@ -165,16 +183,80 @@
                          (if (nil? l) "absent" (pr-str (type l)))
                          "); showing the shipped layout")))))
 
-(defn current
-  "The project's layout, validated, falling back to the shipped one.
+;; --- the three sources -------------------------------------------------------
 
-  Through `userspace/edn-body`, so a project seeds its own copy on first read
-  and the agent's edits to it take effect on the next load. Unparseable EDN
-  is caught here rather than left to throw: a half-written file is exactly
-  what a runtime edit looks like for the instant it is being saved."
+(defn- parse
+  "An EDN layout body as a spec, or a spec carrying only the complaint.
+
+  Never throws. A half-written file is exactly what a runtime edit looks like
+  for the instant it is being saved, and the tool for seeing the damage must
+  not be the thing the damage takes out."
+  [body what]
+  (try
+    (let [v (edn/read-string (str body))]
+      (if (map? v) v {:error (str what " is not a map of layout settings")}))
+    (catch Throwable e
+      {:error (str what " did not parse: " (ex-message e))})))
+
+;; The body the harness last served, already parsed. Written by the poller
+;; through `serve!`; nil until the first successful fetch, and left alone by
+;; a failed one — an outage must not cost the layout that is on screen.
+(defonce ^:private served (atom nil))
+
+(defn serve!
+  "Take the layout body `GET /v1/harness/layout` returned. nil clears it."
+  [body]
+  (reset! served (when (not-empty (str body)) (parse body "the harness's tui.edn")))
+  nil)
+
+(defn file-path
+  "Where a person's own layout lives, if they have one.
+
+  `SAMIZDAT_TUI_LAYOUT` names it outright; otherwise `.samizdat/tui.edn`
+  beside the project, which is where the harness already keeps the files a
+  person and the agent both edit in place."
   []
-  (validate
-   (or (try (userspace/edn-body :policy "tui")
-            (catch Throwable e
-              {:error (str "tui.edn did not parse: " (ex-message e))}))
-       {})))
+  (or (not-empty (str (System/getenv "SAMIZDAT_TUI_LAYOUT")))
+      ".samizdat/tui.edn"))
+
+;; {:path :stamp :spec} — so the common case is a stat and not a parse. The
+;; stamp is mtime AND length: `lastModified` is milliseconds, and an edit
+;; saved inside one of them would otherwise not be seen.
+(defonce ^:private file-cache (atom nil))
+
+(defn forget-file!
+  "Drop the file cache, so the next read goes to disk. For tests."
+  []
+  (reset! file-cache nil)
+  nil)
+
+(defn- from-file
+  "The layout in `path`, re-read whenever its mtime moves. nil when there is
+  no such file.
+
+  A spec that FAILED to parse is not cached: a torn read of a file being
+  written would otherwise be remembered as the answer, and the finished
+  write — which need not change the mtime again — would never be seen."
+  [path]
+  (let [f (io/file (str path))]
+    (when (.isFile f)
+      (let [stamp [(.lastModified f) (.length f)]
+            c @file-cache]
+        (if (and (= (str path) (:path c)) (= stamp (:stamp c)))
+          (:spec c)
+          (let [spec (try (parse (slurp f) (str path))
+                          (catch Throwable e {:error (str path ": " (ex-message e))}))]
+            (when-not (:error spec)
+              (reset! file-cache {:path (str path) :stamp stamp :spec spec}))
+            spec))))))
+
+(defn current
+  "The layout to draw: the local file, else what the harness serves, else the
+  shipped template — validated, so a broken one costs its own panel and a
+  line in the status bar rather than the screen.
+
+  Cheap enough to call every frame, which is the point: the file is re-read
+  only when its mtime moves, and the served body was parsed when it arrived."
+  ([] (current (file-path)))
+  ([path]
+   (validate (or (from-file path) @served (template) {}))))

@@ -106,6 +106,31 @@
         (is (= ["a1" :allow] @decided)
             "the click answered the question the dialog was showing")))))
 
+(deftest an-open-ended-question-can-be-typed-into-and-sent
+  ;; The other half of the permission dialog's claim, and the one the data
+  ;; tests cannot make: that a person can actually ANSWER. `ask_human` takes
+  ;; a bare string, which has no options, and an empty menu is not a thing
+  ;; anybody can click — the branch sat parked for the whole deadline. So
+  ;; the keys go in as keys and the answer comes out or it does not.
+  (let [answered (atom nil)
+        q {:id "q9" :kind "question"
+           :questions [{:question "what should I name the module?" :options []}]}
+        app (fn [] (w/approvals {:approvals [q]
+                                 :on {:answer (fn [& xs] (reset! answered (vec xs)))}}
+                                {}))]
+    (ui/with-screen [s app]
+      (let [frame (ui/render-text s 70 12)]
+        (is (str/includes? frame "what should I name the module?"))
+        ;; Focus the editor, type, send.
+        (let [y (row-of frame "type an answer")]
+          (is (some? y) "the text box is on screen with its prompt")
+          (ui/send-mouse! s {:button :left :motion :pressed :x 3 :y y})
+          (ui/send-mouse! s {:button :left :motion :released :x 3 :y y}))
+        (ui/send-char! s "mycelium")
+        (ui/send-key! s :return)
+        (is (= ["q9" 0 ["mycelium"]] @answered)
+            "what was typed reached the handler that unparks the branch")))))
+
 (deftest the-whole-shipped-layout-renders-through-the-real-toolkit
   ;; The layout is userspace hiccup expanded against the registry, and every
   ;; widget is only ever checked as data. This is the one test that says the

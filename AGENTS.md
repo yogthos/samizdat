@@ -95,6 +95,15 @@ jolt tui           # the terminal UI; SAMIZDAT_URL / HARNESS_PORT point it at a 
 jolt tui-test      # the TUI's toolkit-bound tests: real FTXUI widgets, headless
 ```
 
+The TUI's own arrangement is EDN, and it comes from three places, most local
+first: `$SAMIZDAT_TUI_LAYOUT` or `.samizdat/tui.edn` (a person's, re-read
+whenever it changes, so an edit lands on the next frame); `GET
+/v1/harness/layout` (the project's stored `tui` policy — how the AGENT
+rearranges its own UI, served because a front end holds no database handle);
+then `resources/tui.edn` off the classpath. Adding a widget means registering
+a `:widget/*` tag in `tui/samizdat/tui/widgets.clj` and naming it in a layout
+— the core owns what a widget IS, the layout owns where it goes.
+
 `jolt tui-test` is separate from `jolt test` because it loads ftxui. It covers
 the one claim the data tests cannot make — that a CLICK reaches the fold, which
 is not the same claim as the widget returning a `:collapsible` with the right

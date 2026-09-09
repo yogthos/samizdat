@@ -99,6 +99,15 @@
    (GET base (str "/v1/runs/" run-id "/steps?since=" (or cursor 0)
                   "&limit=" limit))))
 
+(defn layout
+  "The project's terminal-UI layout, as EDN text under `:layout`.
+
+  A front end holds no database handle, so the stored `tui` policy — the one
+  the agent edits when it rearranges its own UI — is only readable through
+  the server, which is bound to the project."
+  [base]
+  (GET base "/v1/harness/layout"))
+
 (defn approvals
   "Questions this run is waiting on a person to answer — the permission gate
   and ask_human, which share one queue."

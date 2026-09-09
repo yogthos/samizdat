@@ -39,7 +39,8 @@
             [samizdat.config :as config]
             [samizdat.llm.client :as llm-client]
             [samizdat.store.db :as db]
-            [samizdat.system :as system]))
+            [samizdat.system :as system]
+            [samizdat.userspace :as userspace]))
 
 (defn json-response
   ([body] (json-response 200 body))
@@ -144,6 +145,25 @@
 (defn- gate-table [_req]
   (json-response {:gates (gates/describe) :thresholds (gates/config)}))
 
+(defn layout-body
+  "The project's terminal-UI layout, as the EDN text of its `tui` policy.
+
+  Served rather than read by the front end because only this process is
+  BOUND to the project: `userspace/body` reads the stored row here and falls
+  back to the shipped template, where the same call in the TUI's process —
+  which holds no database handle by design — can only ever see the template.
+  Without this the agent could save a new version of its own UI and nothing
+  would ever draw it.
+
+  Text, not parsed: the server has no business understanding a layout, and a
+  client that is going to `edn/read-string` it anyway gains nothing from a
+  round trip through JSON."
+  []
+  {:layout (userspace/body :policy "tui")})
+
+(defn- layout-table [_req]
+  (json-response (layout-body)))
+
 ;; --- routing ----------------------------------------------------------------
 ;;
 ;; A route is [method pattern handler]. A pattern segment starting with ':'
@@ -173,6 +193,9 @@
    [:get "/v1/models" #'models]
    [:post "/v1/chat/completions" #'chat-completions]
    [:get "/v1/harness/gates" #'gate-table]
+   ;; The terminal UI's own arrangement, so a front end that holds no
+   ;; database handle can still see the version the agent saved.
+   [:get "/v1/harness/layout" #'layout-table]
    [:get "/v1/harness/models" #'harness-models]
    [:get "/v1/runs" (fn [req] (json-response (api-runs/list-runs (system/conn)
                                                                  (long-param req "limit"))))]

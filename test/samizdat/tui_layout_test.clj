@@ -110,3 +110,94 @@
   (let [spec {:layout [:vbox [:widget/tasks {}]]}]
     (is (= (:layout spec) (:layout (layout/validate spec))))
     (is (nil? (:error (layout/validate spec))))))
+
+;; --- where the layout actually comes from ------------------------------------
+;;
+;; The bug these pin: `current` read the layout through `userspace/edn-body`,
+;; which in the TUI's process can only ever return the SHIPPED template — the
+;; TUI binds no project, so there is no stored row to read — and the
+;; userspace read cache then pinned that value for the life of the process,
+;; because nothing in a front end ever writes and nothing therefore ever
+;; invalidates. So `root`'s re-read-every-frame was a no-op after the first
+;; frame, an agent's saved version was invisible, and a person editing the
+;; file needed a restart. Three sources with a stated precedence instead.
+
+(defn- with-clean-layout [f]
+  (layout/serve! nil)
+  (layout/forget-file!)
+  (try (f) (finally (layout/serve! nil) (layout/forget-file!))))
+
+(deftest with-no-file-and-no-server-the-shipped-layout-is-what-draws
+  (with-clean-layout
+    (fn []
+      (is (= (:layout (layout/template)) (:layout (layout/current)))
+          "offline, first frame, nothing configured — it still draws"))))
+
+(deftest what-the-harness-serves-beats-the-shipped-template
+  ;; This is the agent editing its own UI. The server IS bound to the project,
+  ;; so it can read the stored `tui` policy; the TUI cannot, and asks.
+  (with-clean-layout
+    (fn []
+      (layout/serve! (pr-str {:prose-turns 5 :layout [:vbox [:widget/status {}]]}))
+      (is (= [:vbox [:widget/status {}]] (:layout (layout/current))))
+      (is (= 5 (:prose-turns (layout/current)))))))
+
+(deftest an-unparseable-served-layout-falls-back-and-says-so
+  (with-clean-layout
+    (fn []
+      (layout/serve! "{:layout [:vbox")
+      (is (= (:layout (layout/template)) (:layout (layout/current))))
+      (is (string? (:error (layout/current)))))))
+
+(deftest a-local-file-beats-what-the-harness-serves
+  ;; A person editing EDN is the requirement this file exists for, and they
+  ;; must not have to go through the harness's store to do it.
+  (with-clean-layout
+    (fn []
+      (let [f (java.io.File/createTempFile "tui-layout" ".edn")]
+        (try
+          (spit f (pr-str {:layout [:vbox [:widget/activity {:title "MINE"}]]}))
+          (layout/serve! (pr-str {:layout [:vbox [:widget/status {}]]}))
+          (is (= [:vbox [:widget/activity {:title "MINE"}]]
+                 (:layout (layout/current (.getPath f)))))
+          (finally (.delete f)))))))
+
+(deftest an-edit-to-the-file-takes-on-the-next-frame
+  ;; The whole claim of `root`: the layout is re-read, so a runtime edit
+  ;; shows up without a restart. It was false, and this is what says so.
+  (with-clean-layout
+    (fn []
+      (let [f (java.io.File/createTempFile "tui-layout" ".edn")
+            path (.getPath f)]
+        (try
+          (spit f (pr-str {:prose-turns 1 :layout [:vbox [:widget/status {}]]}))
+          (is (= 1 (:prose-turns (layout/current path))))
+          (spit f (pr-str {:prose-turns 99 :layout [:vbox [:widget/activity {}]]}))
+          ;; Pushed forward deliberately: two writes a millisecond apart can
+          ;; land on the same mtime, and a test that happened to pass on the
+          ;; clock rather than on the code would be no test at all.
+          (.setLastModified f (+ 2000 (.lastModified f)))
+          (is (= 99 (:prose-turns (layout/current path)))
+              "the edit took, with no restart and no cache to invalidate")
+          (is (= [:vbox [:widget/activity {}]] (:layout (layout/current path))))
+          (finally (.delete f)))))))
+
+(deftest a-half-written-file-does-not-take-the-screen-and-is-retried
+  ;; What a file being saved looks like for the instant it is being saved.
+  ;; It must not black-screen, and it must not be CACHED as broken either —
+  ;; the next frame has to try again or a torn read would be permanent.
+  (with-clean-layout
+    (fn []
+      (let [f (java.io.File/createTempFile "tui-layout" ".edn")
+            path (.getPath f)]
+        (try
+          (spit f "{:layout [:vbox")
+          (is (= (:layout (layout/template)) (:layout (layout/current path))))
+          (is (string? (:error (layout/current path))))
+          ;; Same mtime as far as the cache is concerned; the retry is what
+          ;; makes the finished write visible.
+          (spit f (pr-str {:layout [:vbox [:widget/status {}]]}))
+          (.setLastModified f 1000)
+          (is (= [:vbox [:widget/status {}]] (:layout (layout/current path)))
+              "a failed read is not remembered as the answer")
+          (finally (.delete f)))))))
