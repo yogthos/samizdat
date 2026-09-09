@@ -191,18 +191,29 @@
   [{:keys [llm-adapter llm-config conn run-id]} branch siblings turn]
   (let [summary (summary branch siblings)
         p (prompt/render "critic" {:summary summary})
-        reply (try
-                (:content (llm/chat llm-adapter llm-config
-                                    ;; BOTH halves of the critic's prompt come
-                                    ;; from resources. The system half was a
-                                    ;; str in this file, which made the
-                                    ;; critic the one seam where half the
-                                    ;; prompt was editable and half was not.
-                                    [{:role "system"
-                                      :content (prompt/prompt "critic-system")}
-                                     {:role "user" :content p}]
-                                    {:temperature 0.0}))
-                (catch Throwable _ nil))
+        answer (try
+                 (llm/chat llm-adapter llm-config
+                           ;; BOTH halves of the critic's prompt come
+                           ;; from resources. The system half was a
+                           ;; str in this file, which made the
+                           ;; critic the one seam where half the
+                           ;; prompt was editable and half was not.
+                           [{:role "system"
+                             :content (prompt/prompt "critic-system")}
+                            {:role "user" :content p}]
+                           {:temperature 0.0})
+                 (catch Throwable _ nil))
+        ;; BILLED BEFORE PARSED (karamazov-2rqb.1). The run owes for the call
+        ;; whatever came back, so this sits outside the `when scores` below:
+        ;; recording only the calls that answered usably would hide exactly
+        ;; the critic that is burning the budget and returning nothing.
+        _ (when (and conn run-id answer)
+            (journal/record-side-call! conn run-id
+                                       {:branch-id (:id branch) :turn turn
+                                        :kind :critic
+                                        :model (:model llm-config)
+                                        :usage (:usage answer)}))
+        reply (:content answer)
         scores (when reply (parse-scores reply))]
     (when scores
       (when (and conn run-id)

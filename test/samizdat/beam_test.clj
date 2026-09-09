@@ -471,3 +471,22 @@
       (is (= 1 (count (interventions/pending c rid)))
           "still pending, for the boundary a resume will reach")
       (finally (db/close c)))))
+
+(deftest spent-tokens-includes-the-side-models
+  ;; karamazov-2rqb.1. The beam ends a run :exhausted against this number, so
+  ;; a run whose reader and critic spend more than its branches do was running
+  ;; on an unbounded budget in everything but name.
+  (let [c (db/open! ":memory:")]
+    (try
+      (let [rid (runs/start-run! c {:problem "p" :token-budget 1000})]
+        (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "shell"
+                                     :result "ok" :category "success"
+                                     :usage {:prompt-tokens 100 :completion-tokens 20
+                                             :total-tokens 120}})
+        (journal/record-side-call! c rid {:branch-id "B1" :turn 1 :kind :digest
+                                          :usage {:prompt-tokens 4000 :completion-tokens 100
+                                                  :total-tokens 4100}})
+        (is (= 4220 (beam/spent-tokens {:conn c :run-id rid :token-budget 1000})))
+        (is (nil? (beam/spent-tokens {:conn c :run-id rid :token-budget nil}))
+            "a run with no budget still pays for no query"))
+      (finally (db/close c)))))

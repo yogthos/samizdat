@@ -165,11 +165,19 @@
           user (build-prompt {:problem (:problem branch)
                               :turns turns
                               :memories memories})
-          reply (:content (llm/chat llm-adapter llm-config
-                                    [{:role "system" :content (prompt/prompt "task-reflection")}
-                                     {:role "user" :content user}]
-                                    {:temperature 0.0}))
-          sections (parse-sections reply)
+          answer (llm/chat llm-adapter llm-config
+                           [{:role "system" :content (prompt/prompt "task-reflection")}
+                            {:role "user" :content user}]
+                           {:temperature 0.0})
+          ;; Before the parse, so a reflection that answered unusably still
+          ;; shows up as money spent (karamazov-2rqb.1).
+          _ (journal/record-side-call! conn run-id
+                                       {:branch-id (:id branch)
+                                        :turn (:turn branch)
+                                        :kind :reflection
+                                        :model (:model llm-config)
+                                        :usage (:usage answer)})
+          sections (parse-sections (:content answer))
           written (record! conn {:run-id run-id} sections)]
       (journal/note! conn run-id :task-reflection
                      {:branch-id (:id branch)

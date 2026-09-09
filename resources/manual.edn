@@ -201,6 +201,12 @@
     :summary "Every artifact this run banked, across all branches."}
    {:name samizdat.store.journal/branch-turns
     :summary "One branch's turns as light rows — tool, args, category, result — the query to reach for when a failure report names a branch and you want its whole trajectory, not one turn."}
+   {:name samizdat.store.journal/run-usage
+    :summary "What the run has spent: turns, side calls, tokens, and the share of prompt tokens the cache served. The token total covers BOTH the committed turns and the side models (the reader behind read_digest, the critic, the reflection, the trajectory scorer) — it is what the beam ends a run :exhausted against. :cache-hit-rate is nil rather than 0 when no provider on the run reported a cache lane."}
+   {:name samizdat.store.journal/record-side-call!
+    :summary "Record a provider call the run paid for that is not a turn. Anything in the harness that asks a model outside the branch's own turn calls this, or the tokens are spent where the budget cannot see them."}
+   {:name samizdat.agent.state/context-part-names
+    :summary "Every part the per-turn context block can carry, in reading order. A branch holds what each cost last turn as :context-sizes; `introspect` renders both, so a cap in gates.edn :context-budget can be retuned against a measurement."}
    {:name samizdat.store.journal/gate-tally
     :summary "Fired / met / met-late / unmet per gate for a run — whether the steering is being obeyed, per steer."}
    {:name samizdat.agent.telemetry/failure-exemplars

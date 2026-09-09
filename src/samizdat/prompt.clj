@@ -50,6 +50,7 @@
    "cell-shadowed"
    "cell-tool"
    "compaction-marker"
+   "context-empty"
    "compaction-summary"
    "critic"
    "critic-system"

@@ -111,7 +111,19 @@
   [{:keys [conn llm-adapter llm-config]} run-id branch-id]
   (let [rows (journal/branch-turns conn run-id branch-id)
         run (runs/get-run conn run-id)
-        ask (fn [p] (:content (llm/chat llm-adapter llm-config
-                                        [{:role "user" :content p}])))]
+        ;; The judge is asked :repeats times per :stride-th step, so this is
+        ;; the heaviest of the harness's side models by call count — and every
+        ;; one of those calls used to be spent off the books
+        ;; (karamazov-2rqb.1). `score-rows` keeps `ask` as a pure
+        ;; string-in-string-out seam; the billing lives here, where the run is.
+        ask (fn [p]
+              (let [answer (llm/chat llm-adapter llm-config
+                                     [{:role "user" :content p}])]
+                (journal/record-side-call! conn run-id
+                                           {:branch-id branch-id
+                                            :kind :trajectory
+                                            :model (:model llm-config)
+                                            :usage (:usage answer)})
+                (:content answer)))]
     (score-rows ask rows (assoc (gates/trajectory-policy)
                                 :problem (:problem run)))))

@@ -263,59 +263,63 @@
       (journal/note! conn run-id :shared-artifact-hit
                      {:branch-id (:id branch)
                       :data {:claim (:claim a) :source-branch (:branch_id a)}}))
-    (let [blocks (keep identity [;; WHAT THIS BRANCH IS WORKING ON, first in the
-                                 ;; block. Restated every turn rather than held
-                                 ;; at a fixed position near the top of the
-                                 ;; array: the block is appended at the END,
-                                 ;; which is where the prefix-cache boundary
-                                 ;; already is, so this costs nothing per turn —
-                                 ;; whereas a block maintained early in the
-                                 ;; array invalidates every cached token behind
-                                 ;; it each time the task changes. The task's
-                                 ;; full statement is pinned into the tape once
-                                 ;; on claim (tools/tasks); this is the
-                                 ;; reminder, and the end is where a model
-                                 ;; attends most.
-                                 (if-let [t (:task branch)]
-                                   (prompt/render "task-current"
-                                     {:id (:id t) :title (:title t)})
-                                   (prompt/prompt "task-none"))
-                                 ;; The run's settled state, first and complete:
-                                 ;; what is established and — the half nothing
-                                 ;; carried before — what is RULED OUT. Read
-                                 ;; from the artifacts table every turn, so it
-                                 ;; cannot drift from the record, and cheap:
-                                 ;; gen-20's whole confirmed set is under 400
-                                 ;; tokens of claim text. Unlike the blocks
-                                 ;; below it is not FTS-sampled, because the
-                                 ;; value of a ledger is that a branch can
-                                 ;; trust the absence of a line.
-                                 (artifacts/render-ledger
-                                  (journal/ledger conn run-id))
-                                 ;; Breadcrumb index: kept memories surfaced as
-                                 ;; ids + previews only, relevance-ranked by the
-                                 ;; branch's last-claim, recent when blank. nil
-                                 ;; on an empty store, so keep identity drops it.
-                                 (knowledge/breadcrumb-index conn last-claim)
-                                 ;; Unread mail from other branches on this run,
-                                 ;; a bounded preview; nil when the inbox is
-                                 ;; empty. Surfacing does not consume — the
-                                 ;; message tool's inbox action marks read.
-                                 (messages/render-inbox
-                                  conn run-id (:id branch)
-                                  (:inbox-lines (gates/threshold :context-budget)))
-                                 ;; And what the siblings DID, which the
-                                 ;; mailbox cannot say: it carries what a
-                                 ;; branch chose to announce, and a worker
-                                 ;; sharing a tree needs the ground truth.
-                                 ;; nil for a solo run, so the block's keep
-                                 ;; identity drops it and nothing changes for
-                                 ;; the loops that have one branch.
-                                 (shared-tree conn run-id (:id branch))
-                                 (failures/render fhits)
-                                 (artifacts/render ahits)])]
-      {:block (when (seq blocks) (str/join "\n\n" blocks))
-       :branch (update branch :shared-served (fnil into #{}) (map :id fresh))})))
+    (let [;; NAMED, so the turn can say what each part cost (karamazov-2rqb.3).
+          ;; These pairs are what `keep identity` used to be handed as bare
+          ;; strings; the order is the order the branch reads them in, and a
+          ;; renderer that answered nil drops out here exactly as before.
+          parts
+          (remove (comp nil? second)
+                  [;; WHAT THIS BRANCH IS WORKING ON, first in the block.
+                   ;; Restated every turn rather than held at a fixed position
+                   ;; near the top of the array: the block is appended at the
+                   ;; END, which is where the prefix-cache boundary already is,
+                   ;; so this costs nothing per turn — whereas a block
+                   ;; maintained early in the array invalidates every cached
+                   ;; token behind it each time the task changes. The task's
+                   ;; full statement is pinned into the tape once on claim
+                   ;; (tools/tasks); this is the reminder, and the end is where
+                   ;; a model attends most.
+                   [:task (if-let [t (:task branch)]
+                            (prompt/render "task-current"
+                                           {:id (:id t) :title (:title t)})
+                            (prompt/prompt "task-none"))]
+                   ;; The run's settled state, first and complete: what is
+                   ;; established and — the half nothing carried before — what
+                   ;; is RULED OUT. Read from the artifacts table every turn, so
+                   ;; it cannot drift from the record, and cheap: gen-20's whole
+                   ;; confirmed set is under 400 tokens of claim text. Unlike
+                   ;; the blocks below it is not FTS-sampled, because the value
+                   ;; of a ledger is that a branch can trust the absence of a
+                   ;; line.
+                   [:ledger (artifacts/render-ledger (journal/ledger conn run-id))]
+                   ;; Breadcrumb index: kept memories surfaced as ids +
+                   ;; previews only, relevance-ranked by the branch's
+                   ;; last-claim, recent when blank. nil on an empty store, so
+                   ;; the remove drops it.
+                   [:memories (knowledge/breadcrumb-index conn last-claim)]
+                   ;; Unread mail from other branches on this run, a bounded
+                   ;; preview; nil when the inbox is empty. Surfacing does not
+                   ;; consume — the message tool's inbox action marks read.
+                   [:inbox (messages/render-inbox
+                            conn run-id (:id branch)
+                            (:inbox-lines (gates/threshold :context-budget)))]
+                   ;; And what the siblings DID, which the mailbox cannot say:
+                   ;; it carries what a branch chose to announce, and a worker
+                   ;; sharing a tree needs the ground truth. nil for a solo run,
+                   ;; so nothing changes for the loops that have one branch.
+                   [:shared-tree (shared-tree conn run-id (:id branch))]
+                   [:failures (failures/render fhits)]
+                   [:artifacts (artifacts/render ahits)]])]
+      {:block (when (seq parts) (str/join "\n\n" (map second parts)))
+       ;; What each part cost this turn, in the order it was read, for
+       ;; `introspect` to render. In memory on the branch beside
+       ;; :shared-served rather than journalled: it describes the block the
+       ;; branch was last shown, and a row per turn per part would cost more
+       ;; than the question is worth.
+       :branch (-> branch
+                   (update :shared-served (fnil into #{}) (map :id fresh))
+                   (assoc :context-sizes
+                          (mapv (fn [[k v]] [k (count v)]) parts)))})))
 
 ;; --- one turn ---------------------------------------------------------------
 

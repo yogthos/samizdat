@@ -2513,6 +2513,29 @@
             "and what it said back, deliberation included"))
       (finally (db/close conn)))))
 
+(deftest a-critic-bills-the-run-even-when-its-answer-was-unusable
+  ;; karamazov-2rqb.1. The critic's note is written only when the reply parsed
+  ;; into four scores, and the usage used to be dropped entirely — so a critic
+  ;; that answered prose every round spent the run's tokens and left no trace
+  ;; anywhere the budget could reach. The bill is owed for the call, not for
+  ;; the answer.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p" :provider "t" :model "m"})
+        b (branch-with :thesis {:goal "g" :technique "t" :subClaims []})]
+    (try
+      (with-redefs [llm/chat (fn [& _]
+                               {:content "the branch seems fine to me"
+                                :usage {:prompt-tokens 900 :completion-tokens 40
+                                        :total-tokens 940}})]
+        (is (nil? (critic/score! {:conn conn :run-id rid} b [] 7))
+            "still no information, as before"))
+      (is (empty? (journal/notes conn rid :critic-score))
+          "and still no score note, because there was no score")
+      (let [u (journal/run-usage conn rid)]
+        (is (= 1 (:side-calls u)))
+        (is (= 940 (:total-tokens u)) "but the run paid for it"))
+      (finally (db/close conn)))))
+
 (deftest a-critic-score-clips-the-record-to-its-budget
   ;; gates.edn :verdict-record bounds what the journal keeps of a judgement's
   ;; input and reply — a critic that rambles must not grow the events table

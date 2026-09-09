@@ -60,7 +60,10 @@
   (fn [adapter cfg messages & _]
     (swap! seen conj {:adapter adapter :config cfg :messages messages})
     {:content reply :finish-reason "stop"
-     :usage {:prompt_tokens 10 :completion_tokens 3}}))
+     ;; The shape the CLIENT returns, not the wire's: adapters normalise to
+     ;; kebab keys (llm/adapter/openai.clj), and a fake in the wire's shape
+     ;; passes tests that production would fail.
+     :usage {:prompt-tokens 10 :completion-tokens 3 :total-tokens 13}}))
 
 (defn- user-text [call] (:content (last (:messages call))))
 
@@ -155,8 +158,13 @@
     (let [[n] (journal/notes conn run-id :digest)]
       (is (some? n) "one :digest note")
       (is (= ["src/a.clj"] (:paths n)))
-      (is (= 10 (get-in n [:usage :prompt_tokens])))
-      (is (pos? (:chars-in n)) "and how much the branch did not have to read"))))
+      (is (pos? (:chars-in n)) "and how much the branch did not have to read"))
+    ;; karamazov-2rqb.1: the tokens live on the side-call row, not in the note,
+    ;; because that is the row the run's budget sums. One home per fact.
+    (let [u (journal/run-usage conn run-id)]
+      (is (= 1 (:side-calls u)))
+      (is (= 13 (:total-tokens u))
+          "the reader's bill lands where spent-tokens can see it"))))
 
 (deftest the-readers-thinking-is-not-the-answer
   ;; The client merges a reasoning model's thinking into :content as a

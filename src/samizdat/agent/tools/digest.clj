@@ -137,11 +137,24 @@
                                         :ceiling ceiling}))
                              answer)]
                 (when (and conn run-id)
+                  ;; TWO RECORDS, one fact each. The note is the SAVING — what
+                  ;; the branch did not have to read — and the side call is the
+                  ;; BILL, on the table the run's token budget sums
+                  ;; (karamazov-2rqb.1). The usage used to live only in the
+                  ;; note, where nothing summed it, so the shunt's whole point
+                  ;; (move reading onto a cheaper model) moved spend out of the
+                  ;; budget's view along with it.
                   (journal/note! conn run-id :digest
                                  {:branch-id (:id branch)
                                   :data {:paths paths :chars-in chars :clipped clipped
-                                         :role role :model (:model config)
-                                         :usage (:usage reply)}}))
+                                         :role role :model (:model config)}})
+                  (journal/record-side-call! conn run-id
+                                             {:branch-id (:id branch)
+                                              :turn (:turn branch)
+                                              :kind :digest
+                                              :role role
+                                              :model (:model config)
+                                              :usage (:usage reply)}))
                 (base/ok branch (if (str/blank? answer) (msg {:empty true}) answer)
                          :digest {:paths paths :chars-in chars :role role}))
               (catch Throwable e
