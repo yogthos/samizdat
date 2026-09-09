@@ -127,15 +127,54 @@
          (sort-by (juxt :created_at :id))
          vec)))
 
+(defn- delegated?
+  "Whether these children came from the `split` tool rather than from `task
+  create`. `stubs` is the evidence: split is its only writer, and the same
+  test decides in cells/decompose whether a unit delegated.
+
+  The distinction is what a parent OWES. An epic somebody opened to group work
+  owes nothing once its parts are done. A parent that split owes the
+  composition — it wrote the code that calls the stubs and the tests that pin
+  it, and none of that has been run against the real pieces yet."
+  [kids]
+  (boolean (some #(seq (str/trim (str (:stubs %)))) kids)))
+
 (defn- closable-parents!
-  "Close every task whose children are all done. A parent is finished when its
-  parts are; leaving it open would keep the board reporting work that no
-  longer exists."
+  "Close every task whose children are all done AND that owes nothing itself.
+  A parent is finished when its parts are; leaving it open would keep the
+  board reporting work that no longer exists.
+
+  A parent that DELEGATED is the exception, and closing it was how the board
+  lost the assembly step: its pieces land, the last one closes, and the agent
+  that designed the boundary never gets to compose them (karamazov-ioo.15.4).
+  `unblock-assembled!` hands that one back instead."
   [conn run-id]
   (doseq [t (tasks/board conn {:run-id run-id})
           :let [kids (tasks/children-of conn (:id t))]
-          :when (and (seq kids) (not-any? open? kids) (open? t))]
+          :when (and (seq kids) (not-any? open? kids) (open? t)
+                     (not (delegated? kids)))]
     (tasks/close! conn (:id t))))
+
+(defn- unblock-assembled!
+  "Wake the parents whose pieces are all in. `split` blocks the row it was
+  called on and leaves the branch parked; this is the other half — the row
+  goes back to `open` once every piece has closed, and `workable` hands it out
+  again, this time to assemble.
+
+  Back to `open` and not to `in_progress`: `update!` clears branch_id on open,
+  which is what makes the row claimable, and the board opens a fresh owner per
+  attempt. The decompose loop wakes the parked branch itself instead, on the
+  tape where it drew the boundary; the board cannot yet, and a task whose
+  contract and tests are pinned into a new owner's context is the nearest it
+  has."
+  [conn run-id]
+  (doseq [t (tasks/board conn {:run-id run-id})
+          :when (= "blocked" (:status t))
+          :let [kids (tasks/children-of conn (:id t))]
+          :when (and (seq kids) (not-any? open? kids))]
+    (journal/note! conn run-id :board-unblock
+                   {:data {:task (:id t) :pieces (count kids)}})
+    (tasks/update! conn (:id t) {:status "open"})))
 
 (cell/defcell :board/plan
   {:doc "Make sure the board has work. An existing board is left alone — a
@@ -248,6 +287,7 @@
              :empty [:map [:board/verdict :keyword]]}]}
   (fn [{:keys [conn run-id root]} {:keys [branch] :as data}]
     (release-stale-claims! conn run-id)
+    (unblock-assembled! conn run-id)
     (closable-parents! conn run-id)
     ;; A given-up task is RELEASED back to the board — that is what makes it an
     ;; honest record of work still to do — which means the board would hand it
@@ -534,7 +574,15 @@
           ;; a task the board still shows is a truer record than one closed
           ;; because the loop got tired of it.
           spent? (>= attempts (max-review-attempts))
-          decision (cond pass? :pass
+          ;; A PARKED OWNER IS NOT AN UNFINISHED ONE. It called `split`, which
+          ;; blocked this row and left it waiting on the pieces now on the
+          ;; board. Reviewing it would judge a composition nothing has built
+          ;; yet, and both of the other endings are wrong: :revise re-dispatches
+          ;; it to redo the work it just handed down, :give-up releases the row
+          ;; it is parked on to whoever asks next (karamazov-ioo.15.4).
+          delegated? (state/parked? (:branch data))
+          decision (cond delegated? :delegated
+                         pass? :pass
                          (or (not landed?) spent?) :give-up
                          :else :revise)]
       (journal/note! conn run-id :board-review

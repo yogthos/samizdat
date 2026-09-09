@@ -105,6 +105,28 @@ child's tests pass together. The parent may adjust what the pieces delivered at
 assembly — seeing them compose is the first time anyone can tell whether the
 boundary was right (`prompts/assembly.md`).
 
+**The parent PARKS, and that is a state rather than an absence.** A successful
+split ends the branch's turn-taking: the branch goes `:parked`
+(`state/parked?`) and the row it holds goes `blocked`, still naming it. Three
+things follow from the row, and each of them used to be wrong. The claim is not
+up for grabs, so nothing hands the parent's task to another owner while the
+work it asked for is being built. The parent takes no more turns, so it cannot
+spend them implementing the very stubs it just delegated — a part whose
+contract is already met would ship having done nothing, which is the same state
+`verify` refuses at split time and which was one turn away and unchecked
+afterwards. And the parent is not finished, so nothing closes its row when the
+last piece lands: it owes the composition.
+
+Waking it belongs to whoever composed the loop, because only that layer knows
+when the pieces are in. `cells/decompose` resumes the parked branch itself —
+same id, same tape, same turn counter, with the assembly framing and what each
+piece delivered appended as a user turn, so the agent that drew the boundary is
+the agent that composes it. The board unblocks the row when the last piece
+closes and hands it out again as ordinary workable work, which is weaker: it
+opens a fresh owner with the contract pinned rather than the one that designed
+the split. `stubs` on the children is what tells a delegating parent from a
+grouping epic, which the board closes on its parts as before.
+
 **The holder is a branch, not a run.** On a team workflow the competing
 implementors are branches of one run, so a per-run claim is exclusive between
 runs and a no-op within one — which is precisely the case the board exists to

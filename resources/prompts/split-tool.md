@@ -40,7 +40,10 @@ Then declare the split:
 {% endfor %}
 The suite is red until they land, which is expected: the stubs are the failing
 tests. Each piece is done when its stubs are implemented and its own tests
-pass. When they come back, your job is to make YOUR task pass — and you may
-adjust what they delivered if the pieces do not fit together the way you
-planned.
+pass.
+
+You are parked here. This turn is your last until the pieces are in: your task
+stays yours, blocked while they are built, and you will be woken with what each
+one delivered. Then your job is to make YOUR task pass — and you may adjust
+what they delivered if the pieces do not fit together the way you planned.
 {% endif %}

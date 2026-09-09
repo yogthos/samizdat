@@ -39,6 +39,22 @@
   cells/decompose.clj for what a child's green means, which is its OWN tests
   rather than the tree's.
 
+  AND THE CALLER PARKS. A successful split ends the branch's turn-taking: the
+  branch goes `:parked` and the task it holds goes `blocked`, naming the
+  branch that is waiting on it. That is the whole point of the state existing.
+  A branch that delegated has nothing left to do until its pieces come back —
+  it used to keep its turns and spend them, and the worst thing it could spend
+  them on was implementing the very stubs it had just handed down, after which
+  each child's ship gate found its contract already met and shipped having
+  done nothing. This tool refuses a part whose stub is already filled for
+  exactly that reason; leaving the branch running left the same state one turn
+  away and unchecked.
+
+  Waking it is the caller's job, because only the caller knows when the pieces
+  are in: cells/decompose resumes the parked branch itself, on its own tape,
+  once its children land; the board unblocks the row when the last child
+  closes and hands it out again.
+
   Refusals are `base/rejected`: well-formed arguments the harness validated
   and declined, not charged to the branch. The words live in
   prompts/split-tool.md."
@@ -199,9 +215,24 @@
                           :stub-file (:file p)
                           :stubs (:stubs p)}))
                       parts)]
-        (base/ok branch (msg {:created (mapv (fn [p id] {:id id :name (:name p)
-                                                         :stubs (str/join ", " (:stubs p))})
-                                             parts ids)
-                              :parent parent})
+        ;; BLOCKED, not released: the row keeps naming the branch parked on
+        ;; it, so the claim is not up for grabs while the pieces are built and
+        ;; the same agent can be handed it back. `update!` leaves branch_id
+        ;; alone for every status but `open`, which is what makes that work.
+        (tasks/update! conn parent {:status "blocked"})
+        (base/ok (assoc branch
+                        :status :parked
+                        :inactive-reason (str "delegated " (count ids) " pieces")
+                        ;; The ids on the BRANCH as well as the result, so the
+                        ;; caller that composed this loop reads the delegation
+                        ;; off what came back instead of re-deriving it from
+                        ;; the board. The board walk stays the durable answer
+                        ;; (a crash between here and the caller loses this),
+                        ;; and the two agree because both come from `ids`.
+                        :delegated ids)
+                 (msg {:created (mapv (fn [p id] {:id id :name (:name p)
+                                                  :stubs (str/join ", " (:stubs p))})
+                                      parts ids)
+                       :parent parent})
                  :split/parent parent
                  :split/task-ids ids)))))

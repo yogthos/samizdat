@@ -333,3 +333,50 @@
               reviews (journal/notes conn rid :board-review)]
           (is (some #(= "give-up" (str (:decision %))) reviews)
               "the review recorded the give-up rather than a pass"))))))
+
+(deftest a-parent-that-delegated-comes-back-to-assemble-instead-of-being-closed
+  ;; karamazov-ioo.15.4. `split` blocks the row it was called on and parks the
+  ;; branch; the board's half of the wait is here. Two passes used to get this
+  ;; wrong in the same direction: closable-parents! closed the parent the
+  ;; moment its last piece landed, so the agent that designed the boundary
+  ;; never composed it, and the composition it had written — the code that
+  ;; calls the stubs, and its own tests — was never run against the real
+  ;; pieces.
+  ;;
+  ;; The difference is what the parent OWES, and `stubs` on the children is the
+  ;; evidence: an epic somebody opened to group work owes nothing once its
+  ;; parts are done; a parent that split owes the assembly.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        root (tasks/create! conn {:title "the feature" :type "feature" :run-id rid})
+        split-parent (tasks/create! conn {:title "build the report" :parent-id root
+                                          :run-id rid})
+        piece (tasks/create! conn {:title "parse-line" :parent-id split-parent
+                                   :run-id rid :stub-file "src/example/core.clj"
+                                   :stubs ["parse-line"]})
+        epic (tasks/create! conn {:title "a grouping" :parent-id root :run-id rid})
+        grouped (tasks/create! conn {:title "a part" :parent-id epic :run-id rid})
+        closable! @(ns-resolve 'cells.board 'closable-parents!)
+        unblock! @(ns-resolve 'cells.board 'unblock-assembled!)
+        workable @(ns-resolve 'cells.board 'workable)]
+    ;; where split left it: parked branch, blocked row, one piece to build
+    (tasks/claim! conn split-parent rid "T1")
+    (tasks/update! conn split-parent {:status "blocked"})
+    (testing "while its pieces are being built it is nobody's to take"
+      (unblock! conn rid)
+      (closable! conn rid)
+      (is (= "blocked" (:status (tasks/get-task conn split-parent))))
+      (is (not (contains? (set (map :id (workable conn rid))) split-parent))))
+    ;; the pieces land
+    (tasks/close! conn piece)
+    (tasks/close! conn grouped)
+    (unblock! conn rid)
+    (closable! conn rid)
+    (testing "a grouping with nothing of its own to do is closed"
+      (is (= "done" (:status (tasks/get-task conn epic)))))
+    (testing "a parent that delegated is handed back to be assembled"
+      (is (= "open" (:status (tasks/get-task conn split-parent))))
+      (is (nil? (:branch_id (tasks/get-task conn split-parent)))
+          "unclaimed, so the board can hand it to an owner")
+      (is (contains? (set (map :id (workable conn rid))) split-parent)))))

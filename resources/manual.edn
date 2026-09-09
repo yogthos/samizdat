@@ -59,7 +59,9 @@
    {:name samizdat.agent.state/add-message
     :summary "Append a message, optionally stamped with the turn it belongs to."}
    {:name samizdat.agent.state/describe
-    :summary "One line about a branch: status, turns, artifacts, why it stopped."}]}
+    :summary "One line about a branch: status, turns, artifacts, why it stopped."}
+   {:name samizdat.agent.state/parked?
+    :summary "Whether a branch stopped because it DELEGATED. `split` parks the caller and blocks the row it holds; the branch is not active (so its turns stop), not done (so nothing reads an answer off it) and not abandoned (so nothing hands its task to somebody else). Whoever composed the loop wakes it when its pieces land."}]}
 
  {:group "Changing the harness"
   :entries
@@ -125,6 +127,8 @@
     :summary "Read one tunable from gates.edn. Every gate budget in the harness is a value here."}
    {:name samizdat.agent.gates/reload-config!
     :summary "Re-read gates.edn from userspace and recompile the steer table. The policy tool's save does this for you."}
+   {:name samizdat.agent.gates/message-context
+    :summary "The render context a gate's prose is selmer-rendered against: turn count and budget, the branch's stated goal, its last failure, and whether it may call `split`. A :message-form in gates.edn passes it to sp/render-str so a gate written that way gets the same {% if %} and {{...}} as a plain :message-file."}
    {:name samizdat.userspace/save!
     :summary "Append a new version of any userspace piece (:cell :manifest :policy :prompt), with a rationale the history shows. Prefer the matching tool, which validates first and requires the rationale."}
    {:name samizdat.userspace/revert!

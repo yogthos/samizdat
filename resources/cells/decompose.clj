@@ -7,8 +7,8 @@
 ;;   attempt  run an implementor worker on the unit, on its own branch, then
 ;;            check ground truth — did this attempt actually change files.
 ;;   recover  the architect LLM call on a stuck unit (decompose vs fresh-approach).
-;;   fan      run the sub-unit solves (sequential for now; the reference defaults
-;;            to one-at-a-time too).
+;;   fan      run the sub-unit solves, one at a time — see fan-out for why that
+;;            is a decision and not a placeholder.
 ;; A landed unit changed the tree and its worker shipped; a stuck one is split
 ;; and its children solved first, then the parent re-attempted as the assembly.
 (ns cells.decompose
@@ -27,8 +27,20 @@
             [samizdat.store.runs :as runs]
             [samizdat.workflow :as wf]))
 
+(def ^:private attempt-suffixes
+  "The branch-id suffixes a unit's attempts run under: the direct build, the
+  hinted retry, the assembly. Enumerated because `attempt-node` has to be able
+  to NAME this unit's earlier attempts in order to take its task back off
+  them."
+  ["" "-h" "-a"])
+
+(defn- unit-branch-id
+  "The branch id every attempt of this unit shares."
+  [node]
+  (str "D" (str/replace (str (:id node)) #"[^A-Za-z0-9]" "_")))
+
 (defn- branch-id [node]
-  (str "D" (str/replace (str (:id node)) #"[^A-Za-z0-9]" "_")
+  (str (unit-branch-id node)
        (cond (:assembly node) "-a" (:hint node) "-h" :else "")))
 
 (defn- title-of
@@ -55,13 +67,34 @@
                      (when (:assembly node)
                        (str/join "\n" (map #(str "- " %) (:child-answers node))))])))
 
+(defn- wake-message
+  "What the parked parent is told when its pieces come back: the assembly
+  framing and one line per piece. A USER turn on its own tape, not a system
+  prompt on a new one — the agent being woken is the agent that designed the
+  boundary, and it is being told the news, not introduced to the job."
+  [node]
+  (str (wf/prompt-text "assembly") "\n\n"
+       (str/join "\n" (map #(str "- " %) (:child-answers node)))))
+
 (defn- attempt-node
   "Build the unit directly: run an implementor worker on its own branch, then the
   ground-truth check — did THIS attempt change files (a fresh baseline per
   attempt, so an earlier unit's edits don't count). :passed? = the worker shipped
-  and the tree changed. When git can't tell, a shipped worker is trusted."
+  and the tree changed. When git can't tell, a shipped worker is trusted.
+
+  A unit that DELEGATES parks instead of passing or failing: `split` leaves the
+  branch :parked, and this reports {:split [...]} carrying the parked branch
+  itself, so the recursion can hand it straight back once the pieces land.
+
+  `:resume` is that hand-back. The attempt then continues the parked branch —
+  same id, same tape, same turn counter — with the wake message appended,
+  rather than opening a stranger on a fresh tape who has to rediscover why the
+  boundary was drawn where it was. The architect FALLBACK does not resume: a
+  unit split from outside got stuck, and its tape is a record of being stuck."
   [{:keys [conn run-id root] :as ctx} worker node]
-  (let [bid (branch-id node)
+  (let [resume (:resume node)
+        parked (:branch resume)
+        bid (or (:id parked) (branch-id node))
         base (gitdiff/baseline root)
         prob (:problem node)
         ;; EVERY UNIT HOLDS A TASK, and that is what makes the rest work. The
@@ -80,6 +113,24 @@
                                          ;; nesting the split path does.
                                          :parent-id (:parent-task node)
                                          :run-id run-id}))
+        ;; TAKE THE ROW BACK FROM THIS UNIT'S EARLIER ATTEMPT. Every attempt
+        ;; runs on its own branch and claim! is first-writer-wins BY BRANCH
+        ;; (v12), so the hinted retry and the assembly asked for a row the
+        ;; direct build was still holding and got nil — opening with no task
+        ;; at all. That is both halves of the delegation gone at once: the
+        ;; per-turn block falls back to "No task claimed" (the nag that ate
+        ;; run 938b4eb8), and ship.clj reads the contract off held-by, so the
+        ;; attempt that composes every piece was judged with no contracted
+        ;; tests and no unfilled-stub check.
+        ;;
+        ;; BY NAME, and only this unit's own attempts. release! guards on
+        ;; branch_id, so naming a branch that does not hold the row is a
+        ;; no-op and no sibling's claim can be touched by this — which is
+        ;; what keeps it from being the general claim-stealing that v12
+        ;; exists to forbid.
+        _ (doseq [b (map #(str (unit-branch-id node) %) attempt-suffixes)
+                  :when (not= b bid)]
+            (tasks/release! conn task-id b))
         held (tasks/claim! conn task-id run-id bid)
         attempts (tasks/attempted! conn task-id)]
     (try
@@ -88,13 +139,19 @@
       (let [suffix (attempt-suffix node)
             ;; The row records the suffix beside the problem (v24), so a
             ;; resume or an export opens the unit on its own attempt framing.
+            ;; INSERT OR IGNORE, so waking a parked branch rejoins its row
+            ;; rather than rewriting how it ended.
             _ (runs/open-branch! conn run-id {:branch-id bid :problem prob :role :implementor
                                               :prompt-suffix suffix})
-            b (cond-> (assoc (state/new-branch
-                              {:id bid :problem prob
-                               ;; Scoped and enforced, as the board's owners are.
-                               :messages (turn/initial-messages prob suffix :implementor)})
-                             :role :implementor)
+            b (cond-> (or (some-> parked
+                                  (assoc :status :active)
+                                  (dissoc :delegated :inactive-reason)
+                                  (state/add-message "user" (wake-message node)))
+                          (assoc (state/new-branch
+                                  {:id bid :problem prob
+                                   ;; Scoped and enforced, as the board's owners are.
+                                   :messages (turn/initial-messages prob suffix :implementor)})
+                                 :role :implementor))
                 ;; Opens HOLDING its piece, so the contract and the tests it
                 ;; must satisfy are pinned in its context rather than restated
                 ;; once at turn zero and never again.
@@ -103,9 +160,13 @@
             ;; The attempt's own baseline reaches the worker's ship gate, so the
             ;; done tool's test rung diffs against exactly what THIS attempt
             ;; changed (a green suite with no diff of its own is not a ship).
+            ;;
+            ;; A woken branch picks its turn counter up where it parked, so a
+            ;; unit that delegated at turn 3 of 25 assembles with the 22 it has
+            ;; left rather than a fresh budget it did not earn.
             out (myc/run-compiled worker
                                   (assoc (wf/role-ctx ctx :implementor) :git-baseline base)
-                                  {:branch b :turn 1})
+                                  {:branch b :turn (or (:turn resume) 1)})
             done? (= :done (:verdict out))
             changed (gitdiff/changed-files root base)
             ;; DID IT DELEGATE? The agent splits by writing stubs and calling
@@ -123,7 +184,17 @@
             ;; split tool exists to refuse. Found by run 3b3ce405, where the
             ;; agent did create a loose task and only the missing parent kept
             ;; it from being read as a split.
-            kids (filterv #(seq (str/trim (str (:stubs %))))
+            ;;
+            ;; AND NOT THE PIECES THIS ATTEMPT IS ALREADY COMPOSING. `assemble`
+            ;; names the rows it dispatched, because otherwise the assembly
+            ;; attempt re-read them and reported a split instead of a result —
+            ;; so `assemble` saw no :passed? and every agent-made split ended
+            ;; "assembly did not land" whatever the pieces did. The architect
+            ;; fallback hid it: its children are described rather than stubbed,
+            ;; so the filter above already excluded them, and the fallback is
+            ;; what every end-to-end test drove.
+            kids (filterv #(and (seq (str/trim (str (:stubs %))))
+                                (not (contains? (:assembled node) (:id %))))
                           (tasks/children-of conn task-id))]
         (if (seq kids)
           {:task-id task-id
@@ -135,8 +206,23 @@
                            :task-id (:id k)
                            :parent (:id node)})
                         kids)
+           ;; THE PARKED BRANCH ITSELF, so the recursion can wake this exact
+           ;; agent when the pieces land instead of opening a stranger with
+           ;; the same name. Only when it really parked: a split found by the
+           ;; board walk after a crash has no branch to hand back, and the
+           ;; assembly then opens fresh, which is the old behaviour and the
+           ;; right fallback.
+           :branch (when (state/parked? (:branch out)) (:branch out))
+           :turn (:turn out)
            :attempts attempts}
-          (let [passed? (and done? (or (nil? changed) (seq changed)))]
+          (let [passed? (boolean (and done? (or (nil? changed) (seq changed))))]
+            ;; A landed unit's row is CLOSED, the way team.clj closes a
+            ;; worker's. Nothing else does it — `done` ships the branch and
+            ;; leaves the board alone — so a decompose tree that landed every
+            ;; piece used to end with every row still in_progress, which is
+            ;; RFC-008's named worst state for a shared board: work nobody is
+            ;; doing, indistinguishable from work that is progressing.
+            (when passed? (tasks/close! conn task-id))
             {:passed? passed?
              :task-id task-id
              :answer (get-in out [:branch :final-answer])
@@ -163,6 +249,29 @@
                            :decision (:kind decision)
                            :subtasks (mapv :name (:subtasks decision))}})
     decision))
+
+(defn- fan-out
+  "Run the sub-unit solves, one at a time, in order.
+
+  A `reduce` AND NOT A `mapv`, which is what this was. Each thunk is a whole
+  sub-unit solve — an implementor worker branch, so `llm/chat` and a park at
+  every provider call — and jolt's `mapv` is `(vec (apply map f colls))`, so
+  its function runs while the lazy seq's counted lock is held, and a fiber
+  cannot leave the CPU there (karamazov-p3jo, RFC-013 ADR-001). The whole
+  decompose loop therefore died on its first sub-unit under ebb while the
+  suite stayed green, because a test drives it from a plain thread where a
+  park is only a block. base-test's ratchet could not see it either: the lazy
+  body was `#(%)`, which names no parking call lexically.
+
+  SEQUENTIAL ON PURPOSE, not merely for now. `attempt-node` takes a fresh git
+  baseline per attempt and asks whether THIS attempt changed files, so
+  siblings running at the same time would each be credited with the others'
+  edits — a child that shipped without writing anything would pass on its
+  sibling's diff, which is the exact false pass the per-attempt baseline
+  exists to catch. A parallel fan wants ground truth scoped to the piece's own
+  contract first; `cells/team.clj` is the join to copy when it is."
+  [thunks]
+  (reduce (fn [acc thunk] (conj acc (thunk))) [] thunks))
 
 (defn- summarize [result]
   (letfn [(line [r ind]
@@ -206,7 +315,7 @@
           root {:id "T" :problem (:problem branch)}
           ops {:attempt (fn [node] (attempt-node ctx worker node))
                :recover (fn [node evidence] (recover-node ctx node evidence))
-               :fan (fn [thunks] (mapv #(%) thunks))}
+               :fan fan-out}
           result (dec/solve root 0 ops)
           landed? (= :landed (:status result))]
       (journal/note! conn run-id :decompose
