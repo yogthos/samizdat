@@ -18,8 +18,8 @@
 
 (ns samizdat.agent.tools.policy
   "The :policy kind of userspace, as a tool: gates.edn, phases.edn,
-  wordlists.edn, manual.edn, prompt-chain.edn — versioned per project like
-  every other piece of userspace.
+  wordlists.edn, manual.edn, prompt-chain.edn, tui.edn — versioned per
+  project like every other piece of userspace.
 
   This closes the gap karamazov-blt.5 named: RFC-010 lists 'move a threshold'
   among the supervisor's four tuning instruments and the supervisor prompt
@@ -52,7 +52,13 @@
 (def shipped-policies
   "The policy tables that ship, ENUMERATED not globbed — same reason as every
   other resource list (a classpath has no directory listing)."
-  ["gates" "manual" "phases" "prompt-chain" "roles" "wordlists"])
+  ;; "tui" is the terminal UI's arrangement, and it belongs here for the
+  ;; same reason the rest do: resources/tui.edn calls itself the seed of a
+  ;; stored table, samizdat.tui.layout names that table as how the agent
+  ;; rearranges its own UI, and the server hands it out at
+  ;; GET /v1/harness/layout — with the name left off this list, `policy save`
+  ;; refused the one edit all of that documented (karamazov-ym03).
+  ["gates" "manual" "phases" "prompt-chain" "roles" "tui" "wordlists"])
 
 (defn- msg [ctx] (prompt/render "policy-tool" ctx))
 

@@ -30,6 +30,7 @@
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.loop :as aloop]
+            [samizdat.agent.roles :as roles]
             [samizdat.agent.state :as state]
             [samizdat.agent.tools :as tools]
             [samizdat.agent.tools.base :as base]
@@ -896,3 +897,34 @@
     (is (not= :mechanics (:category r)))
     (is (= ["src/flight/draw.clj" "test/flight/ghost_test.clj"]
            (:files (state/plan (:branch r)))))))
+
+;; --- a refusal a branch cannot discharge is a deadlock ----------------------
+;;
+;; karamazov-iwm4, seen live in run b8ae2b1f. The supervisor stream's first
+;; deliberation called `eval` to introspect the image it was reasoning about,
+;; was told to call `plan` first, and could not: `plan` is not on the
+;; supervisor's surface in roles.edn, so the :role-surface refusal below would
+;; have declined it. The pass ended there having done nothing.
+
+(deftest the-plan-first-refusal-only-binds-a-branch-that-could-plan
+  (testing "an implementor with no plan is still refused the REPL"
+    (let [r (base/phase-refusal {:branch {:id "T0" :role :implementor}
+                                 :tool-name "eval"})]
+      (is (some? r) "the rule that made a run name its hypothesis still binds")
+      (is (:policy-refusal? r))
+      (is (str/includes? (str (:result r)) "say what you are exploring FOR"))))
+  (testing "and once it plans, the REPL is its own"
+    (is (nil? (base/phase-refusal
+               {:branch (assoc (state/declare-plan {:id "T0" :role :implementor}
+                                                   {:files ["src/a.clj"] :goal "g"})
+                               :id "T0" :role :implementor)
+                :tool-name "eval"}))))
+  (testing "a branch with no role at all is unrestricted and so is still bound"
+    (is (some? (base/phase-refusal {:branch {:id "T0"} :tool-name "eval"}))))
+  (testing "the supervisor is exempt, because it cannot call plan"
+    (is (not (roles/may-use? :supervisor "plan"))
+        "the premise: if this ever changes, the exemption should go with it")
+    (is (roles/may-use? :supervisor "eval"))
+    (is (nil? (base/phase-refusal {:branch {:id "SUP" :role :supervisor}
+                                   :tool-name "eval"}))
+        "it is shown eval, permitted eval, and must therefore be able to call it")))

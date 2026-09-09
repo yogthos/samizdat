@@ -16,6 +16,8 @@
             [samizdat.agent.tools :as ag-tools]
             [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm]
+            [mycelium.cell :as cell]
+            [samizdat.cells :as cells]
             [samizdat.store.db :as db]
             [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
@@ -584,3 +586,79 @@
         (is (seq @judged) "a judge was called")
         (is (some #(str/includes? % "Add a ghost replay to the game") @judged)
             "and one of them read the feature itself as the requirement")))))
+
+;; --- a revise must not report a test result there was none ------------------
+;; karamazov-q0u3. :feature/verify short-circuits on EITHER the reviewer or
+;; the critic sending work back, but the guidance guard checked only the
+;; reviewer — so a critic revise handed the next round a task reading "The
+;; tests did not pass: not run — review already sent it back". Run 2ec1df03
+;; spent 33 turns proving a green suite was green because of it.
+
+(defn- guidance-for
+  "The guidance :feature/route writes for the next round, from one data map."
+  [data]
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (try
+      (:revise/guidance
+       ((:handler (cell/get-cell! :feature/route))
+        {:conn conn :run-id rid :config {}}
+        (merge {:feature/revisions 0 :implement-strategy "board"
+                :results [{:status :done :subtask "t" :answer "a"}]
+                :board/landed 1}
+               data)))
+      (finally (db/close conn)))))
+
+(deftest a-critic-revise-does-not-claim-the-tests-failed
+  (let [g (str (guidance-for {:review/decision :pass
+                              :critic/decision :revise
+                              :critique/findings "- [low] the determinism test is missing"
+                              :verify/passed? false
+                              :verify/note "not run — review already sent it back"}))]
+    (is (str/includes? g "determinism test is missing")
+        "the finding that actually sent it back is what the next round gets")
+    (is (not (str/includes? g "The tests did not pass"))
+        "and nothing claims a test result, because no test was run")))
+
+(deftest a-reviewer-revise-does-not-either
+  ;; The case that was already handled; kept so the two stay symmetric.
+  (let [g (str (guidance-for {:review/decision :revise
+                              :review/findings "- [high] the handler ignores errors"
+                              :verify/passed? false
+                              :verify/note "not run — review already sent it back"}))]
+    (is (not (str/includes? g "The tests did not pass")))))
+
+(deftest a-real-test-failure-is-still-reported
+  (let [g (str (guidance-for {:review/decision :pass
+                              :critic/decision :pass
+                              :verify/passed? false
+                              :verify/note "2 failures in flight.wind-test"}))]
+    (is (str/includes? g "The tests did not pass"))
+    (is (str/includes? g "flight.wind-test")
+        "which is the most actionable guidance there is")))
+
+(deftest what-was-tried-records-who-bounced-it
+  ;; :feature/tried is what the supervisor reads to pick a different strategy,
+  ;; so "tests failed" against a critic bounce sends it after the wrong thing.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        outcome (fn [data]
+                  (-> ((:handler (cell/get-cell! :feature/route))
+                       {:conn conn :run-id rid :config {}}
+                       (merge {:feature/revisions 0 :implement-strategy "board"
+                               :results [{:status :done :subtask "t" :answer "a"}]
+                               :board/landed 1}
+                              data))
+                      :feature/tried last :outcome))]
+    (try
+      (is (= "critic bounced it"
+             (outcome {:review/decision :pass :critic/decision :revise
+                       :critique/findings "- [low] a missing test"
+                       :verify/passed? false
+                       :verify/note "not run — review already sent it back"})))
+      (is (= "tests failed"
+             (outcome {:review/decision :pass :critic/decision :pass
+                       :verify/passed? false :verify/note "2 failures"})))
+      (finally (db/close conn)))))

@@ -15,9 +15,16 @@
             [samizdat.lexicon :as lexicon]
             [samizdat.session :as session]
             [samizdat.store.db :as db]
+            [samizdat.agent.tools.base :as base]
+            [samizdat.agent.tools.experiments]
             [samizdat.store.knowledge :as knowledge]))
 
 (use-fixtures :each (fn [f] (session/reset!) (f) (session/reset!)))
+
+(defn- flake!
+  "n provider replies with nothing in them — the world, not the loop."
+  [n]
+  (dotimes [_ n] (session/observe! [:provider :empty-reply])))
 
 (deftest the-tally-counts-tools-by-outcome-and-mechanics-separately
   ;; Both axes matter. WHICH tool and HOW it went are different diagnoses, and
@@ -304,6 +311,22 @@
            when it was not")
       (finally (db/close c)))))
 
+(deftest a-confounded-experiment-teaches-nothing-and-is-not-written
+  ;; Worse than teaching nothing if it were written: `worse` and `unchanged`
+  ;; are recorded as a FAILURE against the lever, so an outage inside the
+  ;; window would leave a permanent negative record on a change that was never
+  ;; measured, and the next run reads it as settled (karamazov-7mo.1).
+  (let [c (db/open! ":memory:")]
+    (try
+      (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+      (session/experiment! "widen" {:change "budget 50k -> 80k" :hypothesis "h"})
+      (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+      (flake! 6)
+      (is (= :confounded (:verdict (session/verdict "widen"))))
+      (is (empty? (knowledge/distill-verdicts! c (session/experiments) {:run-id "r1"}))
+          "an experiment the world ruined concluded nothing about the lever")
+      (finally (db/close c)))))
+
 (deftest only-one-change-may-be-in-flight-and-that-is-enforced
   ;; The supervisor prompt has always said "one change per round". backpass's
   ;; VISION puts the general principle sharply: a rule the model can decline is
@@ -476,3 +499,222 @@
   (session/observe! [:verify :green])
   (is (= 1 (:turns (session/snapshot))))
   (is (empty? (session/branch-fitnesses "r1"))))
+
+;; --- a verdict that is only a measurement when it can be one ----------------
+;;
+;; karamazov-7mo.1, karamazov-7mo.2, karamazov-7mo.3. Three ways the number a
+;; supervisor reverts on could be something other than what its change did:
+;; the world moved under it, the SCALE moved under it, or an aggregate hid a
+;; branch it broke.
+
+(deftest a-window-the-provider-ruined-is-confounded-not-worse
+  ;; The failure this prevents: an endpoint hiccups inside the after-window,
+  ;; fitness drops because provider trouble is weighted into it, and a change
+  ;; that did nothing wrong is reverted on the strength of somebody else's
+  ;; outage.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/experiment! "widen" {:change "budget 50k -> 80k" :hypothesis "fewer parse errors"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (flake! 6)
+  (let [v (session/verdict "widen")]
+    (is (= :confounded (:verdict v))
+        "the full score says worse and the score with the world's terms
+         removed says unchanged — the two disagree, so the direction is not
+         attributable to the change")
+    (is (= :worse (:verdict (:full v))) "the full reading is still reported")
+    (is (= :unchanged (:verdict (:health-blind v))))))
+
+(deftest a-window-the-provider-recovered-in-is-confounded-too
+  ;; The mirror, and the more dangerous half: nothing later contradicts a
+  ;; change that was credited with the endpoint coming back.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (flake! 6)
+  (session/experiment! "reword" {:change "reworded the planner prompt"
+                                 :hypothesis "clearer first steps"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (let [v (session/verdict "reword")]
+    (is (= :confounded (:verdict v)))
+    (is (= :better (:verdict (:full v))))))
+
+(deftest a-steady-world-leaves-an-ordinary-verdict-alone
+  ;; The mechanism must not turn every verdict into a shrug. Provider trouble
+  ;; at the same rate on both sides is not a confound.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (flake! 3)
+  (session/experiment! "narrow" {:change "beam width 5 -> 2" :hypothesis "cheaper"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :mechanics
+                                         :signals {:parse-error true}}))
+  (flake! 4)
+  (is (= :worse (:verdict (session/verdict "narrow")))))
+
+(deftest a-confounded-experiment-still-holds-the-slot
+  ;; It is unsettled, not concluded. A supervisor that cannot measure this
+  ;; change must decide about it before it makes another.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/experiment! "one" {:change "a" :hypothesis "h"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (flake! 6)
+  (is (= :confounded (:verdict (session/verdict "one"))))
+  (is (thrown? clojure.lang.ExceptionInfo
+               (session/experiment! "two" {:change "b" :hypothesis "h"}))))
+
+(deftest both-halves-of-a-verdict-are-scored-on-one-scale
+  ;; karamazov-7mo.2. The before-fitness was computed under the weights in
+  ;; force when the experiment opened; the after under whatever is in force
+  ;; now. A gates save that touches :fitness while an experiment is open put
+  ;; the two halves in different units and the block reported the subtraction
+  ;; as a result.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/experiment! "retune" {:change ":fitness :tool-success 1.0 -> 3.0"
+                                 :hypothesis "successes should count for more"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (let [p (lexicon/policy :fitness)
+        heavier (assoc-in p [:weights :tool-success] 3.0)
+        v (session/verdict "retune" heavier)]
+    (is (:regraded v)
+        "the run changed the weights its own change is being judged by, and
+         the verdict says so")
+    (is (< (Math/abs (- 3.0 (:before v))) 1e-9)
+        "the before side is recomputed under the weights in force now, not
+         carried over from the ones it was stamped with")
+    (is (= :unchanged (:verdict v))
+        "on one scale the change moved nothing; on two it looked like a win")))
+
+(deftest an-ordinary-verdict-is-not-marked-regraded
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/experiment! "reword" {:change "reworded a prompt" :hypothesis "nothing"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (is (not (:regraded (session/verdict "reword")))))
+
+(deftest a-verdict-counts-the-branches-that-went-backwards
+  ;; karamazov-7mo.3. Metan's own d2->d3 aggregate moved -0.006 while 41% of
+  ;; pairs strictly regressed. One number cannot say that; the per-branch cut
+  ;; already exists and the verdict was not reading it.
+  (let [turn (fn [b cat sig] (session/observe-turn! {:tool "eval" :category cat
+                                                     :signals sig :branch ["r1" b]}))]
+    (dotimes [_ 6] (turn "B1" :success {}))
+    (dotimes [_ 6] (turn "B2" :success {}))
+    (session/experiment! "switch" {:change "implement strategy board -> team"
+                                   :hypothesis "fewer stalls"})
+    (dotimes [_ 8] (turn "B1" :success {}))
+    (dotimes [_ 8] (turn "B2" :mechanics {:parse-error true}))
+    (let [v (session/verdict "switch")]
+      (is (= 2 (:measured (:branches v))))
+      (is (= 1 (:regressed (:branches v)))
+          "one branch of the two went backwards, which one aggregate number
+           cannot say either way"))))
+
+(deftest a-branch-that-only-appeared-after-the-change-is-not-a-regression
+  (let [turn (fn [b cat] (session/observe-turn! {:tool "eval" :category cat
+                                                 :signals {} :branch ["r1" b]}))]
+    (dotimes [_ 6] (turn "B1" :success))
+    (session/experiment! "fan" {:change "beam width 1 -> 2" :hypothesis "more coverage"})
+    (dotimes [_ 8] (turn "B1" :success))
+    (dotimes [_ 8] (turn "B2" :failure))
+    (let [v (session/verdict "fan")]
+      (is (= 1 (:measured (:branches v)))
+          "B2 has no before, so it has no delta and cannot have regressed"))))
+
+(deftest the-block-says-why-a-verdict-is-not-a-measurement
+  ;; The three findings are worth nothing if the supervisor is shown a bare
+  ;; direction and reverts on it anyway.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success
+                                         :signals {} :branch ["r1" "B1"]}))
+  (session/experiment! "widen" {:change "budget 50k -> 80k" :hypothesis "fewer parse errors"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success
+                                         :signals {} :branch ["r1" "B1"]}))
+  (flake! 6)
+  (let [block (session/render)]
+    (is (str/includes? block "[confounded]"))
+    (is (str/includes? block "NOT ATTRIBUTABLE"))
+    (is (str/includes? block "unchanged (1.00 -> 1.00)")
+        "the second reading is shown, not just asserted")
+    (is (str/includes? block "0 of 1 measured branches went backwards"))
+    (is (str/includes? block "`confounded` means")
+        "and the block says what a confounded verdict obliges")))
+
+(deftest the-block-shows-both-scales-when-the-run-moved-its-own
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/experiment! "retune" {:change ":fitness :tool-success 1.0 -> 3.0"
+                                 :hypothesis "successes should count for more"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (with-redefs [lexicon/policy (let [orig lexicon/policy]
+                                 (fn [k] (cond-> (orig k)
+                                           (= :fitness k) (assoc-in [:weights :tool-success] 3.0))))]
+    (let [block (session/render)]
+      (is (str/includes? block "SCORED UNDER WEIGHTS THIS RUN CHANGED"))
+      (is (str/includes? block "stamped at 1.00 and is 3.00")))))
+
+(deftest the-block-shows-what-changed-since-the-supervisor-last-looked
+  ;; karamazov-k2g4. RFC-012 protocol rule 4: "the next evaluation is shown the
+  ;; counters since that mark. An edit that cannot be measured is drift."
+  ;; `render` took the mark and dropped it, so every pass read the whole
+  ;; session and had to infer whether its own last change moved anything.
+  (dotimes [_ 4] (session/observe-turn! {:tool "eval" :category :mechanics
+                                         :signals {:parse-error true}}))
+  (session/mark! "supervisor:r1")
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (let [block (session/render "supervisor:r1")]
+    (is (str/includes? block "Since your last look (6 turns)"))
+    (is (str/includes? block "fitness 1.00/turn")
+        "the delta is scored on its own, which is the whole point — the
+         session's own fitness is still negative here")
+    (is (str/includes? block "eval (success 6)"))
+    (is (not (str/includes? block "Since your last look (10 turns)"))
+        "the delta, not the tally again")))
+
+(deftest a-first-pass-has-no-delta-to-show
+  ;; The mark is stamped after the render, so the first look has nothing
+  ;; behind it and a section of zeroes would be worse than none.
+  (dotimes [_ 4] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (is (not (str/includes? (session/render "supervisor:r1") "Since your last look")))
+  (is (not (str/includes? (session/render) "Since your last look"))))
+
+(deftest a-quiet-interval-says-so-rather-than-showing-nothing
+  ;; A supervisor that changed something and sees no delta section cannot tell
+  ;; "nothing happened" from "the section is missing".
+  (dotimes [_ 4] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/mark! "supervisor:r1")
+  (is (str/includes? (session/render "supervisor:r1") "Nothing has happened since")))
+
+;; --- what the verdict TOOL hands back ---------------------------------------
+
+(deftest the-verdict-tool-says-what-a-confounded-verdict-obliges
+  ;; The block is not the only reader: a supervisor calls `verdict` directly,
+  ;; and that path reported the word `confounded` with no second reading and
+  ;; nothing to do about it.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/experiment! "widen" {:change "budget 50k -> 80k" :hypothesis "fewer parse errors"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (flake! 6)
+  (let [r (str (:result (base/run-tool {:tool-name "verdict" :args {"name" "widen"}
+                                        :branch {:id "B1"}})))]
+    (is (str/includes? r "confounded"))
+    (is (str/includes? r "unchanged") "the reading with the world's terms removed")
+    (is (str/includes? r "1.00 -> 1.00"))
+    (is (str/includes? r "settle") "and what to do about it")))
+
+(deftest the-verdict-tool-carries-the-branch-count-and-the-regrade
+  (let [turn (fn [b cat sig] (session/observe-turn! {:tool "eval" :category cat
+                                                     :signals sig :branch ["r1" b]}))]
+    (dotimes [_ 6] (turn "B1" :success {}))
+    (dotimes [_ 6] (turn "B2" :success {}))
+    (session/experiment! "switch" {:change "board -> team" :hypothesis "fewer stalls"})
+    (dotimes [_ 8] (turn "B1" :success {}))
+    (dotimes [_ 8] (turn "B2" :mechanics {:parse-error true}))
+    (let [r (str (:result (base/run-tool {:tool-name "verdict" :args {"name" "switch"}
+                                          :branch {:id "B1"}})))]
+      (is (str/includes? r "1 of 2")))))
+
+(deftest a-refused-second-change-names-what-is-holding-the-slot
+  ;; It listed `unsettled-losses` only, so a `confounded` change — which does
+  ;; hold the slot — was refused against nothing the supervisor could see.
+  (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (session/experiment! "one" {:change "a" :hypothesis "h"})
+  (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+  (flake! 6)
+  (let [r (str (:result (base/run-tool {:tool-name "experiment"
+                                        :args {"name" "two" "change" "b" "hypothesis" "h"}
+                                        :branch {:id "B1"}})))]
+    (is (str/includes? r "Refused"))
+    (is (str/includes? r "one [confounded]"))))

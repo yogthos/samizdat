@@ -343,4 +343,22 @@
  ;; absent: a missing root is skipped, never an error.
  [".samizdat/skills"
   ".agents/skills"
-  ".claude/skills"]}
+  ".claude/skills"]
+ ;; --- the exam (karamazov-fgsb) ----------------------------------------------
+ ;;
+ ;; What marks a file as part of the exam, and what marks an assertion inside
+ ;; one. Both are conventions of the project being worked on rather than of
+ ;; this harness — a Clojure repo says test/ and _test.clj, a Python one says
+ ;; test_x.py, a JS one says .spec.ts — so both are vocabulary a project can
+ ;; retune without a rebuild.
+ ;;
+ ;; :assertion-forms counts ASSERTIONS and deliberately not `deftest`. A test
+ ;; moved between files loses no assertion, and counting the naming form made
+ ;; a helper extraction (run e1b765e7, flight.autopilot) read as a gutting —
+ ;; the false positive that wasted the first pass of the measurement behind
+ ;; gates.edn :exam-ratchet. Widening either list weakens the detector, which
+ ;; is the usual direction of drift for a gate the run being watched can edit.
+ :exam
+ {:test-paths ["(^|/)tests?/" "_test\\." "\\.spec\\." "(^|/)test_[^/]*\\.(clj|cljc|cljs|py|js|ts)$"]
+  :assertion-forms ["\\(is\\s" "\\(are\\s" "(?m)^\\s*assert\\s" "\\bexpect\\("]}
+}

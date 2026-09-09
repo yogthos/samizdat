@@ -785,6 +785,55 @@
         it has produced 40 owned, reviewed changes and should be looked at, not
         quietly continued. Raise it for a genuinely large migration."}
 
+ :board-attempts-scope
+ {:value :claim
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-yjbp"]
+  :doc "WHAT :board-review-attempts COUNTS.
+
+        `:claim` — revisions within one claim. The round's own counter, seeded
+        to 0 every time a task is claimed. An owner gets N revisions; a task
+        given up and re-claimed next round starts over, so the number of
+        CLAIMS is unbounded and only the run's turn budget stops it.
+
+        `:task` — attempts on the task itself, the durable tasks.attempts
+        column. N attempts total across every claim, every round and every
+        resume; past that the task is left open and the loop stops paying for
+        it.
+
+        The two differ only when a task is given up and comes back, which is
+        exactly the case that matters and exactly the one a single round never
+        exercises. Run b8ae2b1f: task sz-218ca4 spent 113 turns, was given up
+        one test error from green, was released, and was re-claimed with the
+        counter back at zero.
+
+        MEASURED, and the answer was the opposite of the intuition that
+        raised the question. Across every run database on the machine: 17 runs
+        used a board, 27 tasks were claimed, and 4 of the 27 (15%) were
+        claimed more than once — so the case the two readings disagree about
+        is common, not rare. Of those four, two eventually landed, and BOTH
+        landed on their SECOND claim:
+
+          b8ae2b1f sz-218ca4  3 claims  unfinished
+          e1491f04 sz-3b7c4b  2 claims  unfinished
+          7857c6e7 sz-a3f3e1  2 claims  DONE on the second
+          ba7c9c32 sz-13c01c  2 claims  DONE on the second
+
+        Under `:task` at this threshold a task arriving on its second claim
+        already carries a durable count of 2, so `spent?` fires before its
+        owner works it. Both observed successes would have been killed to save
+        the wasted claims on the two failures — two saved failures against two
+        destroyed successes, and a success is what the loop is for.
+
+        So `:claim` is the default on evidence rather than on inertia. `:task`
+        stays because the harshness is a product of :board-review-attempts
+        being 2, and at a higher cap the trade could look different; anyone
+        flipping it should re-run that count over the run databases first. A
+        live A/B (runs 2ec1df03 and 075e783a) could NOT decide this: both arms
+        put the whole problem in one top-level task whose children were worked
+        inside a single claim, so neither reached a re-claim and `spent?`
+        never fired on either side."}
+
  :board-review-attempts
  {:value 2 :kind :threshold :capability-tunable? false
   :doc "How many times a critic may send one task back to its owner before the
@@ -853,6 +902,48 @@
         Below the bar a finding is still SHOWN — it may be the only warning
         anyone gets — and it is marked as uncorroborated, so acting on it is a
         deliberate choice rather than a mistake."}
+
+ :exam-ratchet
+ {:value {:mode :detect :min-drop 2}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-fgsb"]
+  :doc "WHAT HAPPENS WHEN A WRITE TAKES ASSERTIONS OUT OF A TEST FILE.
+
+        A run that cannot pass its tests can always pass them by changing
+        them, and it does not look like cheating from the inside. Run
+        170f4ec9 replaced four contract assertions (mul(2,3)==6 and three
+        more) with a bare `mul(1, 1)`, under a rewritten docstring explaining
+        that the contract assertions would come later, and shipped green.
+
+        :mode — :off, :detect or :refuse.
+
+        :detect is the default and the measurement is why. Across every run
+        database on the machine (22 runs, 190 writes to test files), counting
+        assertions only, the detector flags 6 events of which 5 landed and 3
+        are real: the gutting above; an entire `blank-titles` deftest deleted
+        as collateral in an edit whose purpose was repairing a different test
+        (a3ba69bb); and one assertion reduced to its bare call (a3c9fd3d).
+
+        :min-drop — how many assertions must go before it counts. TWO, and
+        this is the number the corpus decided. Both false alarms were drops of
+        exactly one — a line duplicated verbatim, and two assertions replaced
+        by one CORRECT one — while both severe cases were drops of two or
+        more. At >= 2 the rule caught both severe cases with no false alarm;
+        at >= 1 it was 3 true to 2 false. A warning that cries wolf teaches a
+        supervisor to skip the real one, so precision buys more here than
+        recall.
+
+        :refuse is NOT the default, and that is a decision rather than
+        caution. 100% precision over three true positives is not a mandate to
+        start declining writes, and the rule already misses a single-assertion
+        deletion, so refusing would trade a known miss for an unknown one. The
+        value exists so the call can be made again on more runs.
+
+        The comparison is of the FILE before and after the write, not of the
+        tool's arguments: 22 patch spans in that corpus are invisible at the
+        argument layer, because a patch names anchors rather than the text it
+        replaces. A detector reading arguments is blind to the tool a careful
+        model reaches for."}
 
  :fitness
  {:value
@@ -2596,7 +2687,11 @@
          and cannot mutate the branch, so that effect lives in the loop
          beside the turn-budget bookkeeping."
    :when (>= (:consecutive-failures branch) (threshold :stuck-threshold))
-   :message-form (str (prompt "stuck")
+   ;; Rendered rather than read raw: the prose names `split` only where the
+   ;; branch may call it, which is a {% if %} over message-context's
+   ;; :can-split (karamazov-ioo.15.2).
+   :message-form (str (sp/render-str (prompt "stuck")
+                                     (message-context branch max-turns))
                       (when-let [g (state/stated-goal branch)]
                         (str "\n\nYou are working on: " g))
                       (when-let [c (:last-failed-claim branch)]
@@ -2652,7 +2747,8 @@
    ;; RE-ANCHORED. A steer that says "nothing has advanced" without saying at
    ;; WHAT asks the model to compare an outcome against an intention it has to
    ;; remember. Naming the goal it stated is what makes the nudge answerable.
-   :message-form (str (prompt "progress-stalled")
+   :message-form (str (sp/render-str (prompt "progress-stalled")
+                                     (message-context branch max-turns))
                       "\n\nNothing has advanced in " (:turns-since-progress branch)
                       " turns."
                       (when-let [g (state/stated-goal branch)]

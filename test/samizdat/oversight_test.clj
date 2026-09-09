@@ -543,6 +543,33 @@
       (is (str/includes? (str (get-in note [:failure :error])) "read timeout")
           "the note names what ended the pass, in the provider's own words"))))
 
+(deftest an-abandoned-pass-whose-last-turn-looked-fine-still-says-why
+  ;; karamazov-n6ql, run b8ae2b1f: two passes recorded verdict abandoned with
+  ;; notes null AND failure null, because the failure heuristic reads only the
+  ;; last turn and that turn was a neutral `recall`. The branch was carrying
+  ;; the reason the whole time — loop.clj sets :inactive-reason on the branch
+  ;; it ends — and apply read only its :id.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        ctx {:conn conn :run-id rid :config {}}]
+    (runs/open-branch! conn rid {:branch-id "SUP"})
+    (journal/record-turn! conn rid {:branch-id "SUP" :turn 1 :tool-name "recall"
+                                    :category :neutral :result "nothing remembered"})
+    ((:handler (cell/get-cell! :oversight/apply))
+     ctx {:oversight/idle 87 :oversight/unmet 4 :oversight/verdict :abandoned
+          :oversight/branch {:id "SUP"
+                             :inactive-reason "four turns in a row produced no tool call"}})
+    (let [note (json/read-str
+                (str (:data (last (db/fetch conn ["SELECT data FROM events
+                                                    WHERE run_id = ? AND kind = 'oversight'
+                                                    ORDER BY id" rid]))))
+                :key-fn keyword)]
+      (is (= "abandoned" (:verdict note)))
+      (is (nil? (:failure note)) "the last turn was fine, so that field has nothing to say")
+      (is (str/includes? (str (:ended note)) "no tool call")
+          "and the reason the loop ended it is recorded instead of nothing"))))
+
 (deftest the-supervisors-calls-get-the-streams-own-read-timeout
   (cells/load-cells!)
   (let [conn (db/open! ":memory:")

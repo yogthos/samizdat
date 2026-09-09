@@ -35,6 +35,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [samizdat.agent.roles :as roles]
             [samizdat.agent.state :as state]
             [samizdat.agent.supervisor :as supervisor]
             [samizdat.prompt :as sp]
@@ -214,6 +215,40 @@
 ;; at FIRE time — tuning a threshold stays runtime-editable; only the form
 ;; structure compiles at load.
 
+(defn message-context
+  "The render context a gate's prose is selmer-rendered against.
+
+  ONE context for both ways a gate produces its message — the plain
+  `:message-file` and the `:message-form` that wraps `sp/render-str` around a
+  prompt — because a template that behaves differently depending on which
+  key a gate happened to use is a trap, and `{% if %}` silently reaching the
+  model as literal text is how it springs."
+  [branch max-turns]
+  ;; `goal` is in EVERY gate's render context, so any message template can
+  ;; re-anchor the branch to what it said it was doing. Eighteen of nineteen
+  ;; gates used to steer without it — "you are doing badly" with no "at
+  ;; WHAT" — and a model cannot compare an outcome against an intention it
+  ;; is expected to remember. Opt-in per template rather than appended
+  ;; everywhere: a gate that does not need it should not carry it.
+  (let [f (state/last-failure branch)]
+    {:turn-count (state/turn-count branch)
+     :max-turns max-turns
+     ;; THE TWO THINGS A DECISION NEEDS, in every gate's context so any
+     ;; template can use them: what this branch said it is doing, and — when
+     ;; it is being steered because something broke — what broke, in the
+     ;; failure's own words, with the turn number that makes it fetchable.
+     :goal (state/stated-goal branch)
+     :failed-tool (:tool f)
+     :failed-error (:error f)
+     :failed-turn (:turn f)
+     ;; WHAT THIS BRANCH MAY ACTUALLY CALL, for the steers that have to name
+     ;; a tool. A stall gate's job is to say what to do instead, and the move
+     ;; for a task that turned out to be several things is `split` — which
+     ;; only some surfaces carry. Through the same predicate loop.clj refuses
+     ;; calls with, so a gate can neither advertise a tool the branch would be
+     ;; refused for using nor stay silent about one it holds (karamazov-ioo.15.2).
+     :can-split (roles/may-use? (:role branch) "split")}))
+
 (defn- compile-form
   "Compile an EDN form into (fn [ctx] form) with the gate-context keys bound
   as plain locals — the environment both :when and :message-form build on.
@@ -247,24 +282,7 @@
   every other prompt seam."
   [{:keys [message-file message-suffix]}]
   (fn [{:keys [branch max-turns]}]
-    ;; `goal` is in EVERY gate's render context, so any message template can
-    ;; re-anchor the branch to what it said it was doing. Eighteen of nineteen
-    ;; gates used to steer without it — "you are doing badly" with no "at
-    ;; WHAT" — and a model cannot compare an outcome against an intention it
-    ;; is expected to remember. Opt-in per template rather than appended
-    ;; everywhere: a gate that does not need it should not carry it.
-    (let [f (state/last-failure branch)
-          ctx {:turn-count (state/turn-count branch)
-               :max-turns max-turns
-               ;; THE TWO THINGS A DECISION NEEDS, in every gate's context so
-               ;; any template can use them: what this branch said it is doing,
-               ;; and — when it is being steered because something broke —
-               ;; what broke, in the failure's own words, with the turn number
-               ;; that makes it fetchable.
-               :goal (state/stated-goal branch)
-               :failed-tool (:tool f)
-               :failed-error (:error f)
-               :failed-turn (:turn f)}]
+    (let [ctx (message-context branch max-turns)]
       (str (some-> message-file sp/prompt (sp/render-str ctx))
            (some-> message-suffix (sp/render-str ctx))))))
 

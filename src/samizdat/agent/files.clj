@@ -40,6 +40,7 @@
             [samizdat.escapes :as escapes]
             [samizdat.lisp :as lisp]
             [samizdat.prompt :as prompt]
+            [samizdat.agent.exam :as exam]
             [samizdat.store.journal :as journal]))
 
 (def ^:private clojure-exts #{"clj" "cljc" "cljs" "cljd" "edn" "bb"})
@@ -67,6 +68,29 @@
   extension."
   [path text whole?]
   (source/vet text {:whole? whole? :clojure? (clojure-file? path)}))
+
+(defn- exam-note!
+  "Record that a write took assertions out of the exam, and say so in the tool
+  result — or nil when it did not, or when the path is not part of the exam.
+
+  Compares the FILE, not the call's arguments. A patch names anchors rather
+  than the text it replaces, so an argument-level check is blind to it: 22 of
+  the patch spans in the corpus behind gates.edn :exam-ratchet could not be
+  read that way. Best effort on the journal, for the reason every other
+  counter is: noticing must never be able to fail the write it is noticing.
+
+  Returns the sentence to append, so the branch that did it is told at the
+  moment it did it rather than only in a record it will never read."
+  [{:keys [conn run-id branch]} path before after]
+  (when-let [w (exam/weakening path before after)]
+    (try
+      (when (and conn run-id)
+        (journal/note! conn run-id :exam-weakened
+                       {:branch-id (:id branch)
+                        :data {:path (str path) :before (:before w)
+                               :after (:after w) :drop (:drop w)}}))
+      (catch Throwable _ nil))
+    (msg {:exam-weakened true :detail (exam/describe path w)})))
 
 (defn- max-read-chars
   "How much of a file one `read` returns: the SMALLER of :file-read-chars and
@@ -289,7 +313,13 @@
                                      (str/split text #"\n" -1)))
                        text)]
             {:result (str path
-                          (when (pos? from) (str " (from line " from ")"))
+                          ;; ONE-BASED, like the anchors two lines up and
+                          ;; unlike `offset`, which is 0-based (system.md).
+                          ;; The header used to print `from` raw, so a read
+                          ;; from offset 76 announced line 76 and showed 77
+                          ;; first — and a branch that needed 76's anchor
+                          ;; constructed one instead (karamazov-bjv9).
+                          (when (pos? from) (str " (from line " (inc from) ")"))
                           ":\n" text
                           (when next
                             (str "\n" (msg {:more true :path path :next next
@@ -314,7 +344,7 @@
   edits touch one line, or when the result would not load — the same rule
   edit_file now follows (karamazov-2d3). :mechanics for a call made wrong,
   :success when the batch lands."
-  [{:keys [branch root args]}]
+  [{:keys [branch root args] :as ctx}]
   (let [path (str (:path args))
         edits (:edits args)]
     (cond
@@ -345,10 +375,11 @@
               (let [{:keys [problem note]} (vet-source path result false)]
                 (if problem
                   (miss branch (msg {:refused true :path path :syntax note}))
-                  (do
+                  (let [exam-msg (exam-note! ctx path (slurp abs) result)]
                     (spit abs result)
-                    {:result (msg {:patched true :path path :edits (count edits)
-                                   :plural (when (> (count edits) 1) "es")})
+                    {:result (str (msg {:patched true :path path :edits (count edits)
+                                        :plural (when (> (count edits) 1) "s")})
+                                  exam-msg)
                      :category :success :progress? true :branch branch}))))))
         (miss branch (msg {:outside-root true :path path :verb "patched"}))))))
 
@@ -508,7 +539,7 @@
   numbers rather than guessed. For a Clojure file, an edit that breaks the
   delimiter balance is flagged. :mechanics for a call made wrong (not found,
   ambiguous, escaping path); :success when the edit lands."
-  [{:keys [branch root args]}]
+  [{:keys [branch root args] :as ctx}]
   (let [path (str (:path args))
         old-text (str (:old_text args))
         ;; THE MODEL'S OWN TEXT, so drifted \uXXXX escapes are undone here —
@@ -571,12 +602,13 @@
                   ;; vis: "a syntax-breaking batch is refused whole and the
                   ;; file is left untouched."
                   (miss branch (msg {:refused true :path path :syntax note}))
-                  (do
+                  (let [exam-msg (exam-note! ctx path (slurp abs) edited)]
                     (spit abs edited)
-                    {:result (let [n (if replace-all? (count ranges) 1)]
-                               (msg {:edited true :path path :replacements n
-                                     :plural (when (> n 1) "s")
-                                     :fallback fallback}))
+                    {:result (str (let [n (if replace-all? (count ranges) 1)]
+                                    (msg {:edited true :path path :replacements n
+                                          :plural (when (> n 1) "s")
+                                          :fallback fallback}))
+                                  exam-msg)
                      :category :success :progress? true :branch branch
                      :fallback fallback}))))))
         (miss branch (msg {:outside-root true :path path :verb "edited"}))))))
@@ -622,7 +654,7 @@
   "Write `content` to a file under the root, creating parent directories.
   :success with :progress? — changing the tree is real work. An escaping path
   is refused and writes nothing."
-  [{:keys [branch root args]}]
+  [{:keys [branch root args] :as ctx}]
   (let [path (str (:path args))
         content (:content args)]
     (cond
@@ -661,15 +693,22 @@
               content* (or code content)]
           (when-let [parent (fs/parent abs)]
             (fs/create-dirs parent))
-          (spit abs content*)
-          {:result (msg {:wrote true :path path :chars (count content*)
-                         :repaired (boolean repaired)
-                         ;; :unbalanced was the old key and it was a lie by
-                         ;; omission — balanced-but-unreadable source has
-                         ;; nothing unbalanced about it and used to report
-                         ;; nothing at all (karamazov-ozv).
-                         :broken (boolean problem)
-                         :syntax note})
-           :category :success :progress? true :branch branch
-           :repaired? (boolean repaired)}))
+          ;; The file as it stands, before this write replaces it — "" when
+          ;; there is none, so a new test file counts as adding assertions
+          ;; rather than as removing the ones it does not have.
+          (let [exam-msg (exam-note! ctx path
+                                     (if (fs/exists? abs) (slurp abs) "")
+                                     content*)]
+            (spit abs content*)
+            {:result (str (msg {:wrote true :path path :chars (count content*)
+                                :repaired (boolean repaired)
+                                ;; :unbalanced was the old key and it was a lie by
+                                ;; omission — balanced-but-unreadable source has
+                                ;; nothing unbalanced about it and used to report
+                                ;; nothing at all (karamazov-ozv).
+                                :broken (boolean problem)
+                                :syntax note})
+                          exam-msg)
+             :category :success :progress? true :branch branch
+             :repaired? (boolean repaired)})))
         (miss branch (msg {:outside-root true :path path :verb "written"}))))))
