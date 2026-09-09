@@ -807,10 +807,32 @@
         one test error from green, was released, and was re-claimed with the
         counter back at zero.
 
-        `:claim` is the behaviour that shipped, so it is the default until
-        something measures the other one. Neither is obviously right — more
-        claims means more chances for work that is nearly done, and fewer
-        means the loop stops paying for a task nobody can land."}
+        MEASURED, and the answer was the opposite of the intuition that
+        raised the question. Across every run database on the machine: 17 runs
+        used a board, 27 tasks were claimed, and 4 of the 27 (15%) were
+        claimed more than once — so the case the two readings disagree about
+        is common, not rare. Of those four, two eventually landed, and BOTH
+        landed on their SECOND claim:
+
+          b8ae2b1f sz-218ca4  3 claims  unfinished
+          e1491f04 sz-3b7c4b  2 claims  unfinished
+          7857c6e7 sz-a3f3e1  2 claims  DONE on the second
+          ba7c9c32 sz-13c01c  2 claims  DONE on the second
+
+        Under `:task` at this threshold a task arriving on its second claim
+        already carries a durable count of 2, so `spent?` fires before its
+        owner works it. Both observed successes would have been killed to save
+        the wasted claims on the two failures — two saved failures against two
+        destroyed successes, and a success is what the loop is for.
+
+        So `:claim` is the default on evidence rather than on inertia. `:task`
+        stays because the harshness is a product of :board-review-attempts
+        being 2, and at a higher cap the trade could look different; anyone
+        flipping it should re-run that count over the run databases first. A
+        live A/B (runs 2ec1df03 and 075e783a) could NOT decide this: both arms
+        put the whole problem in one top-level task whose children were worked
+        inside a single claim, so neither reached a re-claim and `spent?`
+        never fired on either side."}
 
  :board-review-attempts
  {:value 2 :kind :threshold :capability-tunable? false
