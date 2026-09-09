@@ -46,6 +46,7 @@
             [samizdat.manifests :as manifests]
             [mycelium.core :as myc]
             [samizdat.session :as session]
+            [samizdat.steps :as steps]
             [samizdat.lsp.client :as lsp-client]
             [samizdat.store.db :as db]
             [samizdat.store.runs :as runs]
@@ -196,6 +197,10 @@
             (fn [body]
               (:body (myc/run-compiled (manifests/compiled-manifest "repair")
                                        {} {:body body}))))
+         ;; The manifest-state trace, buffered where an HTTP client can read
+         ;; it. Started before the server, so a client that connects on the
+         ;; first request is not polling a ring nothing is filling yet.
+         _ (steps/start-pump!)
          server (adapter/run-server handler {:port (get-in cfg [:http :port])})]
      (reset! system {:config cfg :conn c :server server})
      (log/info "samizdat up on port" (get-in cfg [:http :port])
@@ -235,6 +240,9 @@
                                  (log/warn "run" rid "did not stop within 15s;"
                                            "closing the system under it")))))]
                        ["http server" #(adapter/stop-server (:server s))]
+                       ;; After the server, so a request in flight can still
+                       ;; read the trace it was serving; the rings go with it.
+                       ["step pump" #(do (steps/stop-pump!) (steps/reset!))]
                        ;; Uninstall so a bare REPL after stop! parses with the
                        ;; built-in chain instead of resolving manifests against
                        ;; an unbound store.

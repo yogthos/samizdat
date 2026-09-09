@@ -44,7 +44,7 @@
   goes through the userspace seam, which is what decides whether the project's
   version or the template answers."
   [
-   "architect" "assembly"
+   "architect" "ask-tool" "assembly"
    "branch-cap"
    "branch-out"
    "cell-shadowed"

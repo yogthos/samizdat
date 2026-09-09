@@ -60,6 +60,26 @@
         (turn! solo srid "B1" 1 "write_file" "src/core.clj")
         (is (empty? (journal/sibling-writes solo srid "B1" 8)))))))
 
+(deftest a-sibling-that-patched-a-file-is-reported-like-any-other-writer
+  ;; `patch` is a file-writing tool — it is in gates.edn's :file-write
+  ;; vocabulary beside write_file and edit_file — but sibling-writes named
+  ;; only the other two, so anchored edits were invisible to the one
+  ;; mechanism that tells workers they share a tree. Two workers in one file,
+  ;; one of them patching, and neither was told.
+  ;;
+  ;; The vocabulary is userspace and tunable, so the query reads it rather
+  ;; than restating it: a project that adds a writing tool gets this for free,
+  ;; which is the failure mode that produced the gap in the first place.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "anchored"})]
+    (turn! conn rid "W1" 1 "read_file" "src/core.clj" :neutral)
+    (turn! conn rid "W2" 2 "patch" "src/core.clj")
+    (let [seen (journal/sibling-writes conn rid "W1" 8)]
+      (is (= ["src/core.clj"] (mapv :path seen)))
+      (is (= ["W2"] (:branches (first seen)))))
+    (testing "and the staleness notice sees it too"
+      (is (= "W2" (:branch (journal/changed-since-read conn rid "W1" "src/core.clj")))))))
+
 (deftest writing-a-file-a-sibling-changed-under-you-says-so
   (let [[conn rid] (fixture)
         ctx {:conn conn :run-id rid :branch {:id "W1"} :args {:path "src/core.clj"}}]

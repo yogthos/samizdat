@@ -34,10 +34,22 @@
             [samizdat.store.db :as db]
             [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
-            [samizdat.store.runs :as runs]))
+            [samizdat.store.runs :as runs]
+            [samizdat.store.tasks :as tasks]
+            [samizdat.steps :as steps]))
 
 (defn- parse-json [s]
   (when s (try (json/read-str s :key-fn keyword) (catch Throwable _ s))))
+
+(defn- kw-name
+  "A keyword as the name a reader expects — `loop/assemble`, not
+  `:loop/assemble`. `name` drops the namespace and `str` keeps the colon, so
+  neither is right on its own for a namespaced keyword going over the wire."
+  [k]
+  (cond
+    (nil? k) nil
+    (keyword? k) (subs (str k) 1)
+    :else (str k)))
 
 (defn list-runs [conn limit]
   {:runs (mapv (fn [r]
@@ -106,7 +118,13 @@
        :artifacts (mapv #(update % :witness parse-json)
                         (journal/artifacts conn run-id))
        :gates (journal/gate-tally conn run-id)
-       :interventions (interventions/history conn run-id)})))
+       :interventions (interventions/history conn run-id)
+       ;; The board and the tree, for the panels that show what is being
+       ;; worked on and what has changed under it. Both are queries over
+       ;; tables the loop already appends to, so they need no cooperation
+       ;; from the run and work the same on a finished one.
+       :tasks (tasks/board conn {:run-id run-id})
+       :modified (journal/run-writes conn run-id (gates/threshold :modified-files-shown))})))
 
 (defn journal-tail
   "Everything after `since`. The `next` cursor is what the client sends back,
@@ -120,6 +138,50 @@
      :events (mapv #(update % :data parse-json) events)
      :next (or (:id (last events)) (or since 0))
      :count (count events)}))
+
+(defn turn-detail
+  "One turn, whole — including the text `branch-detail` deliberately drops.
+
+  `branch-turns` leaves out assistant_text and reasoning_text because they
+  are the bulk: on one real run, 5.5MB against 62KB of results, enough that
+  the branch panel exceeded its socket timeout and never rendered. But the
+  model's prose is the substance of what a reader is following, so it has to
+  arrive somehow — one turn at a time, for the turns actually on screen.
+
+  This is `fetch_turn`'s query with an HTTP door on it."
+  [conn run-id branch-id turn]
+  (when-let [t (journal/branch-turn conn run-id branch-id turn)]
+    (update t :args parse-json)))
+
+(defn steps-tail
+  "The live manifest-state trace after `since` — the implementer walking its
+  state graph, for a front end to draw.
+
+  Deliberately the same shape as `journal-tail`, down to `next` and `count`,
+  so a client runs one poll loop over both feeds instead of two designs. It
+  takes no `conn`: steps are held in memory by samizdat.steps and are not a
+  durable record (see that namespace on why).
+
+  `dropped` is what this client missed to the ring's bound — 0 while it keeps
+  up. It is reported rather than hidden so a UI can say the trace has a hole
+  in it instead of drawing one that looks continuous."
+  [run-id since limit]
+  (let [{:keys [steps cursor dropped]} (steps/since run-id (or since 0)
+                                                    (max 0 (or limit 200)))]
+    {:run_id run-id
+     ;; Keywords on the bus, strings on the wire: :node, :cell and
+     ;; :transition are what a client renders, and a JSON reader hands back a
+     ;; string either way. `str` on a keyword keeps the colon, so a cell went
+     ;; over as ":loop/assemble" and a panel drew it that way; `kw-name`
+     ;; prints the name, namespace and all.
+     :steps (mapv (fn [s] (-> s
+                              (update :node kw-name)
+                              (update :cell kw-name)
+                              (update :transition kw-name)))
+                  steps)
+     :next cursor
+     :count (count steps)
+     :dropped dropped}))
 
 (defn branch-detail [conn run-id branch-id]
   (when-let [b (runs/get-branch conn run-id branch-id)]

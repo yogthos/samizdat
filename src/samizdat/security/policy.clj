@@ -37,6 +37,7 @@
   (:require [clojure.string :as str]
             [instaparse.combinators :as c]
             [instaparse.core :as insta]
+            [samizdat.approval :as approval]
             [samizdat.engine.proc :as proc]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
@@ -626,12 +627,20 @@
   (let [command (str (:command args))
         env (or (:env ctx) (into {} (System/getenv)))
         session (if (and conn run-id) (grants/for-run conn run-id) {:grants []})
-        {:keys [effect head complex? promoted? blocked-segment protected-path
-                malformed rule]}
+        {:keys [head complex? promoted? blocked-segment protected-path
+                malformed rule]
+         :as decided}
         (decide session command)
         rule-text (str/join " " (remove nil? [(name (:name rule)) (:pattern rule)
                                               (:path rule) (:segment rule)
                                               (:index rule)]))
+        ;; A person's chance to turn an :ask into an :allow, bounded by
+        ;; gates.edn :approval. Default `:mode :refuse` means this is
+        ;; identity and the harness behaves exactly as it always has —
+        ;; blocking is something a project opts into, never something a
+        ;; release turns on under an unattended run.
+        {:keys [effect note timed-out]}
+        (approval/resolve-ask ctx (assoc decided :input command :reason rule-text))
         known (secrets/known-values env command)]
     (case effect
       :deny
@@ -668,7 +677,14 @@
                                :markers (when complex?
                                           (str/join " or "
                                                     (map #(str "`" % "`")
-                                                         (complex-markers-in command))))})
+                                                         (complex-markers-in command))))
+                               ;; What a person said when they denied it, and
+                               ;; whether the refusal is a rule or simply
+                               ;; nobody being there. Both are absent under
+                               ;; the default :refuse mode, where the
+                               ;; template renders exactly as before.
+                               :note note
+                               :unanswered timed-out})
        :policy {:effect :ask
                 ;; No grant unlocks a COMPLEX command (invariant 5 downgrades
                 ;; it to :ask even over a grant), so suggesting `head *` for

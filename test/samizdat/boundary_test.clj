@@ -205,6 +205,11 @@
    ;; resource — but it is the only tool that changes what ANOTHER branch will
    ;; do, which is why the implementor role is denied it (roles.edn :denied).
    "intervene"   {:reach :harness-only}
+   ;; Reaches nothing on the host: it puts a question on an in-memory queue
+   ;; and parks until a person answers or the gates.edn deadline expires. The
+   ;; text it returns is what an OPERATOR typed, which is the one input on
+   ;; this graph that never came off the machine.
+   "ask_human"   {:reach :harness-only}
    "experiment"  {:reach :harness-only}
    "verdict"     {:reach :harness-only}
    "fetch_turn"  {:reach :harness-only}

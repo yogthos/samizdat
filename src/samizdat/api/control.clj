@@ -30,6 +30,7 @@
             [clojure.tools.logging :as log]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.resume :as resume]
+            [samizdat.approval :as approval]
             [samizdat.cancel :as cancel]
             [samizdat.llm.registry :as registry]
             [samizdat.prompt :as prompt]
@@ -122,13 +123,19 @@
                                                               :cancel (fn [] (some-> @cancel* (apply [])))})
                                                       (deliver promised rid))})]
                         (swap! active dissoc (:run-id r))
+                        ;; Release anything parked on a question this run
+                        ;; asked. Without it an aborted or finished run
+                        ;; leaves threads waiting on an answer nobody will
+                        ;; ever give, and the process never gets them back.
+                        (approval/abandon! (:run-id r))
                         r)
                       (catch Throwable e
                         (if (cancel/control-signal? e)
                           (log/info "run aborted:" (ex-message e))
                           (log/error "run failed:" (ex-message e)))
                         (when-let [rid (deref promised 0 nil)]
-                          (swap! active dissoc rid))
+                          (swap! active dissoc rid)
+                          (approval/abandon! rid))
                         {:status :error :error (ex-message e)})))))
         _ (reset! cancel* (:cancel started))
         ;; How long the request waits for the run row before answering 503.

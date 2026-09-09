@@ -65,6 +65,7 @@
             [mycelium.validation-test]
             [mycelium.workflow-test]
             [samizdat.agent-test]
+            [samizdat.approval-test]
             [samizdat.base-test]
             [samizdat.boundary-test]
             [samizdat.compaction-test]
@@ -155,10 +156,15 @@
             [samizdat.mechanics-test]
             [samizdat.repair-test]
             [samizdat.split-test]
+            [samizdat.steps-test]
             [samizdat.storm-test]
             [samizdat.stubs-test]
             [samizdat.tournament-test]
             [samizdat.trajectory-test]
+            [samizdat.tui-layout-test]
+            [samizdat.tui-readmodel-test]
+            [samizdat.tui-state-test]
+            [samizdat.tui-widgets-test]
             [samizdat.store-test]
             [samizdat.gui-api-test]
             [samizdat.gui-ops-test]
@@ -218,13 +224,19 @@
     samizdat.mechanics-test
     samizdat.repair-test
     samizdat.split-test
+    samizdat.steps-test
     samizdat.storm-test
     samizdat.stubs-test
     samizdat.tournament-test
     samizdat.trajectory-test
+    samizdat.tui-layout-test
+    samizdat.tui-readmodel-test
+    samizdat.tui-state-test
+    samizdat.tui-widgets-test
     samizdat.store-test
     samizdat.llm-test
     samizdat.agent-test
+    samizdat.approval-test
     samizdat.base-test
     samizdat.boundary-test
     samizdat.compaction-test

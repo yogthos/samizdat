@@ -42,6 +42,7 @@
             ;; before jdbc.core.
             [db.jdbc]
             [jdbc.core :as jdbc]
+            [samizdat.agent.gates :as gates]
             [samizdat.events :as events]
             [samizdat.session :as session]
             [samizdat.store.db :as db]))
@@ -251,6 +252,33 @@
   (try (some-> (json/read-str (str (:args row)) :key-fn keyword) :path str not-empty)
        (catch Throwable _ nil)))
 
+(defn- writing-tools
+  "The tools that change a file, from gates.edn's `:file-write` vocabulary.
+
+  Read rather than restated. These queries used to name write_file and
+  edit_file inline, which silently excluded `patch` — a writing tool that has
+  been in the vocabulary all along — so an anchored edit by a sibling was
+  invisible to both the collaboration list and the staleness notice: two
+  workers in one file, one of them patching, and neither told. Reading the
+  vocabulary means a project that adds a writing tool gets these for free,
+  which is the drift that produced the gap.
+
+  No fallback list: gates.edn is the source, and a second copy here would be
+  the one nobody edits."
+  []
+  (vec (gates/tool-vocab :file-write)))
+
+(defn- placeholders
+  "`sql` with its `@tools` marker replaced by an IN list of `n` parameters.
+
+  A marker in ONE string literal rather than SQL concatenated around a
+  computed fragment: the vocabulary is data, so its length is not known
+  here, but splitting the query into pieces leaves half-sentences in the
+  source that read as prose to base-test — and, more to the point, makes the
+  query unreadable to whoever has to check it."
+  [sql n]
+  (str/replace sql "@tools" (str/join ", " (repeat n "?"))))
+
 (defn sibling-writes
   "What OTHER branches on this run have done to the tree: one entry per path,
   naming every branch that has changed it and the turn it was last touched,
@@ -274,18 +302,53 @@
   Derived from the journal rather than reported by the branches, so it cannot
   drift from what actually happened and costs no turn to produce."
   [conn run-id branch-id limit]
-  (->> (db/fetch conn ["SELECT branch_id, turn, tool_name, args FROM turns
-                      WHERE run_id = ? AND branch_id <> ?
-                        AND tool_name IN ('write_file', 'edit_file')
-                        AND category = 'success'
-                      ORDER BY turn DESC, id DESC"
-                    run-id (str branch-id)])
+  (->> (let [tools (writing-tools)]
+         (db/fetch conn (into [(placeholders
+                                "SELECT branch_id, turn, tool_name, args FROM turns
+                                  WHERE run_id = ? AND branch_id <> ?
+                                    AND tool_name IN (@tools)
+                                    AND category = 'success'
+                                  ORDER BY turn DESC, id DESC"
+                                (count tools))
+                               run-id (str branch-id)]
+                              tools)))
        (keep (fn [r] (when-let [p (path-of r)]
                        {:branch (:branch_id r) :turn (:turn r) :path p})))
        (reduce (fn [acc {:keys [path branch turn]}]
                  (let [i (first (keep-indexed #(when (= path (:path %2)) %1) acc))]
                    (if i
                      (update-in acc [i :branches] (fn [bs] (if (some #{branch} bs) bs (conj bs branch))))
+                     (conj acc {:path path :turn turn :branches [branch]}))))
+               [])
+       (take limit)
+       vec))
+
+(defn run-writes
+  "Every path this run has changed: one entry per path, naming the branches
+  that touched it and the turn it was last changed, most recently first.
+
+  `sibling-writes` asks what the OTHER branches did, because a worker wants
+  to know who else is in a file. This asks what the RUN did, because someone
+  watching it wants to know what has changed on disk — the same query without
+  the branch exclusion, which is why they sit together."
+  [conn run-id limit]
+  (->> (let [tools (writing-tools)]
+         (db/fetch conn (into [(placeholders
+                                "SELECT branch_id, turn, tool_name, args FROM turns
+                                  WHERE run_id = ?
+                                    AND tool_name IN (@tools)
+                                    AND category = 'success'
+                                  ORDER BY turn DESC, id DESC"
+                                (count tools))
+                               run-id]
+                              tools)))
+       (keep (fn [r] (when-let [p (path-of r)]
+                       {:branch (:branch_id r) :turn (:turn r) :path p})))
+       (reduce (fn [acc {:keys [path branch turn]}]
+                 (let [i (first (keep-indexed #(when (= path (:path %2)) %1) acc))]
+                   (if i
+                     (update-in acc [i :branches]
+                                (fn [bs] (if (some #{branch} bs) bs (conj bs branch))))
                      (conj acc {:path path :turn turn :branches [branch]}))))
                [])
        (take limit)
@@ -306,19 +369,29 @@
   collaborating, and a harness that refuses the write decides for them which
   version wins, which is exactly the judgement it does not have."
   [conn run-id branch-id path]
-  (let [reads (db/fetch conn ["SELECT turn, args FROM turns
-                            WHERE run_id = ? AND branch_id = ?
-                              AND tool_name IN ('read_file', 'write_file', 'edit_file')
-                            ORDER BY turn DESC, id DESC"
-                           run-id (str branch-id)])
+  (let [tools (writing-tools)
+        ;; What counts as having LOOKED: a read, or a write of your own —
+        ;; either way this branch has seen the file at that turn.
+        seen-tools (into ["read_file"] tools)
+        reads (db/fetch conn (into [(placeholders
+                                     "SELECT turn, args FROM turns
+                                       WHERE run_id = ? AND branch_id = ?
+                                         AND tool_name IN (@tools)
+                                       ORDER BY turn DESC, id DESC"
+                                     (count seen-tools))
+                                    run-id (str branch-id)]
+                                   seen-tools))
         last-seen (some (fn [r] (when (= path (path-of r)) (:turn r))) reads)]
     (when last-seen
-      (->> (db/fetch conn ["SELECT branch_id, turn, tool_name, args FROM turns
-                          WHERE run_id = ? AND branch_id <> ? AND turn >= ?
-                            AND tool_name IN ('write_file', 'edit_file')
-                            AND category = 'success'
-                          ORDER BY turn DESC, id DESC"
-                        run-id (str branch-id) (long last-seen)])
+      (->> (db/fetch conn (into [(placeholders
+                                  "SELECT branch_id, turn, tool_name, args FROM turns
+                                    WHERE run_id = ? AND branch_id <> ? AND turn >= ?
+                                      AND tool_name IN (@tools)
+                                      AND category = 'success'
+                                    ORDER BY turn DESC, id DESC"
+                                  (count tools))
+                                 run-id (str branch-id) (long last-seen)]
+                                tools))
            (keep (fn [r] (when (= path (path-of r))
                            {:branch (:branch_id r) :turn (:turn r)
                             :tool (:tool_name r)})))

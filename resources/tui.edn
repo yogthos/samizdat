@@ -1,0 +1,76 @@
+;; The terminal UI's arrangement, as data. This file seeds version 1 of the
+;; "tui" policy table in the project; after that the stored row is
+;; authoritative and this is only the factory default.
+;;
+;; THIS IS USERSPACE. The core implements the widgets — what a conversation
+;; log is, how a diff folds, where the activity trace comes from — and this
+;; file decides which of them appear and where. Rearranging the UI is editing
+;; EDN: no rebuild, and the agent can do it to itself at runtime through the
+;; same seam that carries gates.edn and the manifests.
+;;
+;; The vocabulary is ftxui's own (see the ftxui-jolt README): :vbox, :hbox,
+;; :border, :separator, :flex, :width, anything the toolkit draws. The only
+;; tags this project adds are `:widget/*`, each standing in for one widget
+;; the core implements. Every widget is optional and every one may appear
+;; more than once — two conversation panes side by side is a layout, not a
+;; feature.
+;;
+;; A tag nothing implements draws a complaint in its own box and leaves the
+;; rest of the layout alone; a layout that is not hiccup at all falls back to
+;; this file. A bad edit costs you a panel, never the screen.
+
+{;; How many of the newest turns to fetch the model's PROSE for each poll.
+ ;;
+ ;; The branch listing deliberately leaves assistant and reasoning text out:
+ ;; on one real run that was 5.5MB against 62KB of results, enough that the
+ ;; panel exceeded its socket timeout and never drew at all. So the words are
+ ;; fetched a turn at a time, for the turns a reader is actually on — the
+ ;; newest, since a conversation is read from the bottom. Raise it to scroll
+ ;; back further; every turn added is another request per poll.
+ :prose-turns 12
+
+ ;; --- the widgets in this build ---------------------------------------------
+ ;;
+ ;;   :widget/conversation  the agent's turns: what it said, what it called,
+ ;;                         what came back. Thinking, tool arguments and diffs
+ ;;                         fold; click a header to open one.
+ ;;   :widget/activity      the ACTIVITY LOG — the manifest states the agent is
+ ;;                         walking, newest last (:start :measure :infer :parse
+ ;;                         :dispatch :journal :settle :arbiter :route).
+ ;;   :widget/tasks         the board: what is open, in progress, done.
+ ;;   :widget/files         files this run has written, newest first.
+ ;;   :widget/context       context-window fill, and what the run has spent.
+ ;;   :widget/gates         gates that fired and predictions still unsettled.
+ ;;   :widget/artifacts     claims made, and how each was judged.
+ ;;   :widget/runs          the run picker.
+ ;;   :widget/approvals     the question a person is being asked, if any: the
+ ;;                         permission dialog, or ask_human's questionnaire.
+ ;;                         Draws nothing when there is nothing pending.
+ ;;   :widget/input         the compose box: interventions, abort, resume.
+ ;;   :widget/status        the status line.
+
+ :layout
+ [:vbox {:flex true}
+
+  [:hbox {:flex true}
+
+   ;; The left gutter: what the agent is doing, and what it is spending.
+   [:vbox {:width 30}
+    [:widget/activity {:title "ACTIVITY LOG" :flex true}]
+    [:widget/context {:title "CONTEXT"}]]
+
+   ;; The middle band is the conversation, and it takes the room.
+   [:widget/conversation {:flex true}]
+
+   ;; The right gutter: the work, and the rules it is being held to.
+   [:vbox {:width 34}
+    [:widget/tasks {:title "TASKS" :flex true}]
+    [:widget/files {:title "MODIFIED"}]
+    [:widget/artifacts {:title "CLAIMS"}]
+    [:widget/gates {:title "GATES"}]]]
+
+  ;; Above the compose box, because the branch is parked on it and it is the
+  ;; only thing on screen that is waiting on you. Invisible when idle.
+  [:widget/approvals {}]
+  [:widget/input {}]
+  [:widget/status {}]]}
