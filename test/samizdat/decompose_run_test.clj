@@ -419,9 +419,17 @@
           (is (= :landed (:status result))
               (str "the tree landed: " (pr-str (dissoc result :children))))
           (testing "the parent parked and was woken, rather than replaced"
-            (is (= ["DT" "DT_parse_line" "DT_render_report" "DT"]
-                   (map :id @opened))
-                "the same branch id opens twice, and no DT-a stranger appears")
+            ;; The parent's two openings are ordered; the two PIECES between
+            ;; them are not — nothing sequences siblings of one split against
+            ;; each other, and asserting a sequence the scheduler does not
+            ;; promise fails whenever it picks the second piece first
+            ;; (karamazov-x7ji).
+            (let [ids (map :id @opened)]
+              (is (= ["DT" "DT"] [(first ids) (last ids)])
+                  "the same branch id opens twice, at both ends")
+              (is (= #{"DT_parse_line" "DT_render_report"} (set (butlast (rest ids))))
+                  "and the pieces between are the two pieces, no DT-a stranger")
+              (is (= 4 (count ids)) "four openings, not five"))
             (is (= [1 1 1 2] (map :turn @opened))
                 "and it picks its turn counter up where it parked"))
           (testing "the board tells the same story"

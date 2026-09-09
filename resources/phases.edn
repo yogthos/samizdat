@@ -125,9 +125,21 @@
   ;; the difference between this and the blanket eval withhold considered and
   ;; rejected in karamazov-qic. The mutation protocol does not use the eval
   ;; TOOL (mutation.clj references eval nowhere), so a supervisor's ability to
-  ;; change the harness does not depend on this.
+  ;; TUNE the harness never depended on this — which is what this note used to
+  ;; say, and it stopped one line too early. Its ability to LOOK did: the REPL
+  ;; and `introspect` are how the stream reads the image it is reasoning
+  ;; about, and it could reach neither.
+  ;; AND ONLY A BRANCH THAT COULD PLAN. `planned?` is made true by the `plan`
+  ;; tool and by nothing else, so a role whose surface lacks `plan` can never
+  ;; discharge this — the :role-surface rule below declines the very call this
+  ;; one demands. That was the supervisor: shown `eval` in its catalogue,
+  ;; permitted `eval` by roles.edn, and refused it forever. Its first
+  ;; deliberation in run b8ae2b1f spent the pass on this and steered nothing
+  ;; (karamazov-iwm4). Asking whether the branch MAY plan, rather than naming
+  ;; the exempt role, keeps this right if a role gains or loses the tool.
   {:rule :repl-needs-a-plan
-   :when (not (samizdat.agent.state/planned? branch))
+   :when (and (samizdat.agent.roles/may-use? (:role branch) "plan")
+              (not (samizdat.agent.state/planned? branch)))
    :tools #{"eval"}
    :message-file "repl-needs-a-plan"}
 

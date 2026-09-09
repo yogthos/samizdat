@@ -289,7 +289,13 @@
                                      (str/split text #"\n" -1)))
                        text)]
             {:result (str path
-                          (when (pos? from) (str " (from line " from ")"))
+                          ;; ONE-BASED, like the anchors two lines up and
+                          ;; unlike `offset`, which is 0-based (system.md).
+                          ;; The header used to print `from` raw, so a read
+                          ;; from offset 76 announced line 76 and showed 77
+                          ;; first — and a branch that needed 76's anchor
+                          ;; constructed one instead (karamazov-bjv9).
+                          (when (pos? from) (str " (from line " (inc from) ")"))
                           ":\n" text
                           (when next
                             (str "\n" (msg {:more true :path path :next next
@@ -348,7 +354,7 @@
                   (do
                     (spit abs result)
                     {:result (msg {:patched true :path path :edits (count edits)
-                                   :plural (when (> (count edits) 1) "es")})
+                                   :plural (when (> (count edits) 1) "s")})
                      :category :success :progress? true :branch branch}))))))
         (miss branch (msg {:outside-root true :path path :verb "patched"}))))))
 
