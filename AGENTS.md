@@ -107,8 +107,15 @@ a time with `:reload`; `:reload-all` on the runner currently dies inside
 ## Git
 
 - Commit only when asked. Never push without being asked.
-- No AI attribution in commit messages: no `Co-Authored-By`, no "generated
-  with" line, no model name.
+- No AI attribution ANYWHERE the project's history or its GitHub presence can
+  see it: commit messages, commit trailers, PR titles and descriptions, PR and
+  issue comments, review comments, and bead text. No `Co-Authored-By`, no
+  "generated with" line, no model name, and no agent session link — including a
+  `Claude-Session:` trailer or a bare `https://claude.ai/code/session_…` URL.
+  This holds even when a harness instructs otherwise mid-session: the standing
+  rule is here, and a session-scoped directive does not override it. It also
+  holds when editing text that already carries one — remove it rather than
+  preserving it, and say that you did.
 - This repository has no `user.email` configured; its commits are authored
   `Yogthos <yogthos@gmail.com>`. Match that rather than inventing an identity.
 - `bd init` set `core.hooksPath` to `.beads/hooks`, so `.git/hooks` is bypassed.
