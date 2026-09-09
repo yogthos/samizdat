@@ -611,8 +611,15 @@
                    :feature/tried (conj (or (:feature/tried data) [])
                                         {:round rev
                                          :strategy (or (:implement-strategy data) "board")
+                                         ;; The critic arm is not decoration:
+                                         ;; without it a critic bounce fell
+                                         ;; through to "tests failed" here too,
+                                         ;; and this is what the supervisor
+                                         ;; reads to pick a different strategy
+                                         ;; next round (karamazov-q0u3).
                                          :outcome (cond hollow "changed no files"
                                                         (= :revise (:review/decision data)) "review bounced it"
+                                                        (= :revise (:critic/decision data)) "critic bounced it"
                                                         (false? (:verify/passed? data)) "tests failed"
                                                         :else "not verified")})
                    :revise/guidance
@@ -626,10 +633,22 @@
                            (str "Critic flagged:\n" (:critique/findings data) "\n\n"))
                          ;; the tests are ground truth — a failure here is the
                          ;; most actionable guidance the implementors can get.
+                         ;;
+                         ;; BOTH decisions, mirroring :feature/verify's own
+                         ;; short-circuit. It excluded the reviewer and not the
+                         ;; critic, so a critic revise left `passed?` false with
+                         ;; the note "not run" and this section reported it as a
+                         ;; test failure. Run 2ec1df03 was handed a task reading
+                         ;; "The tests did not pass: not run — review already
+                         ;; sent it back" and spent 33 turns proving a green
+                         ;; suite was green (karamazov-q0u3). A section that
+                         ;; reports a test result must not fire when no test
+                         ;; ran.
                          (when (and (some? (:verify/passed? data))
                                     (not (:verify/passed? data))
                                     (not hollow)
-                                    (not= :revise (:review/decision data)))
+                                    (not= :revise (:review/decision data))
+                                    (not= :revise (:critic/decision data)))
                            (str "The tests did not pass:\n" (:verify/note data))))))
             (dissoc :results :review/decision :critic/decision
                     :review/findings :critique/findings :verify/passed? :verify/note))))))
