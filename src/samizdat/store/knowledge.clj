@@ -546,14 +546,17 @@
   without result accumulates a negative record and sinks in the ranking on its
   own. `too-early` is not written at all — an unfinished experiment has
   concluded nothing, and recording it would teach the next session that the
-  lever was tested when it was not."
+  lever was tested when it was not. Nor is `confounded`, for the same reason
+  and with more at stake: a window the provider ruined would otherwise leave a
+  permanent FAILURE against a lever nobody managed to measure, and the next
+  run reads that as settled (karamazov-7mo.1)."
   [conn experiments {:keys [run-id]}]
   ;; reduce, not (vec (for …)): the body writes to the store, and a store
   ;; call under the lazy seq's realization lock is a forbidden park when the
   ;; connection is contended (ADR-001 rule 1). Same as distill-findings!.
   (reduce
    (fn [acc {:keys [name change hypothesis verdict before after]}]
-     (if-not (and change (not= :too-early verdict))
+     (if-not (and change (not (#{:too-early :confounded} verdict)))
        acc
        (let [pattern (lever-key change)
              content (str "[lever] " change " — " (clojure.core/name verdict)

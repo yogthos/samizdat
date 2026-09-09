@@ -54,9 +54,11 @@
 
 (defn- empty-tally []
   {:started-at (str (java.time.Instant/now))
-   ;; name -> {:change :hypothesis :before :before-fitness}. The selection
-   ;; record: what was changed, what it was expected to do, and the tally it
-   ;; is measured against.
+   ;; name -> {:change :hypothesis :before :before-branches :before-fitness}.
+   ;; The selection record: what was changed, what it was expected to do, and
+   ;; the tallies it is measured against — the process-wide one and the same
+   ;; counts cut per branch, because a change that lifts the session while
+   ;; breaking one branch wants a different decision than one that lifts both.
    :experiments {}
    :turns 0
    ;; tool name -> category -> count. Both axes matter: WHICH tool and HOW it
@@ -305,10 +307,10 @@
   measurement: a change with no stated expectation cannot be wrong, and a
   change that cannot be wrong teaches nothing whichever way the numbers go."
   [name {:keys [change hypothesis]}]
-  (let [before (snapshot)
-        open (count (filter #(and (nil? (:settled %))
-                                  (not= :too-early (:verdict %)))
-                            (experiments)))
+  (let [in-flight (filterv #(and (nil? (:settled %))
+                                 (not= :too-early (:verdict %)))
+                           (experiments))
+        open (count in-flight)
         cap (:max-open-experiments (lexicon/policy :fitness))]
     ;; ENFORCED, not asked. The supervisor prompt has always said `one change
     ;; per round`, and a rule the model can decline is not a rule — a second
@@ -322,16 +324,90 @@
                       ;; file as forms — cannot resolve an alias it does not
                       ;; have, and the whole lint died on one keyword.
                       {:type :samizdat.session/too-many-open :open open :cap cap
-                       :unsettled (mapv :name (unsettled-losses))}))))
+                       ;; Everything holding the slot, not only the measured
+                       ;; losses: a `confounded` change blocks the next
+                       ;; experiment and used to be refused without being
+                       ;; named, so the refusal pointed at nothing.
+                       :unsettled (mapv (fn [e]
+                                          (str (:name e) " ["
+                                               (clojure.core/name (:verdict e)) "]"))
+                                        in-flight)}))))
   (let [before (snapshot)]
     (swap! tally assoc-in [:experiments (str name)]
            {:change (str change)
             :hypothesis (str hypothesis)
             :at (str (java.time.Instant/now))
             :before before
+            ;; The same counts cut per branch. Held separately because
+            ;; `snapshot` deliberately drops them, and a regression count
+            ;; needs a before per branch, not one for the session.
+            :before-branches (:branches @tally)
             :before-fitness (fitness-of before)})
     (mark! name)
     nil))
+
+(def ^:private health-weights
+  "The fitness weights that score the WORLD rather than the loop.
+
+  Provider trouble belongs in fitness — a turn lost to an empty reply is a
+  turn lost, and a change that stops them is worth making. But it is not
+  something a cell, a prompt or a threshold DID, so a change measured across
+  an outage is measured against somebody else's endpoint. Naming these lets a
+  verdict score the same two tallies a second time with the world's
+  contribution removed, and say when the two readings disagree.
+
+  IN src/ AND NOT IN gates.edn, for the reason `gates/self-grading-keys` is
+  (karamazov-kvw, karamazov-7mo M10): a list of `the terms we discount when
+  checking a verdict` living inside the file being checked could be emptied by
+  the party it checks."
+  #{:provider-empty :provider-failed :provider-retry})
+
+(defn- health-blind
+  "`p` with the world's terms zeroed. Every other weight is left exactly as the
+  supervisor tuned it, so the two readings differ in one thing only."
+  [p]
+  (update p :weights #(reduce (fn [w k] (assoc w k 0.0)) % health-weights)))
+
+(defn- direction
+  "Which way a per-turn move counts as having gone, inside `p`'s deadband."
+  [move p]
+  (cond
+    (nil? move) :too-early
+    (>= move (:meaningful-delta p)) :better
+    (<= move (- (:meaningful-delta p))) :worse
+    :else :unchanged))
+
+(defn- reading
+  "One scoring of an experiment's two tallies: before, after, and the direction
+  between them. Both sides go through `fitness-of` with the SAME policy, which
+  is the whole point — the before-fitness stamped at `experiment!` was computed
+  under whatever weights were in force then, and a gates save that touched
+  :fitness in between would have put the two halves in different units
+  (karamazov-7mo.2)."
+  [before-tally delta p]
+  (let [b (fitness-of before-tally p)
+        a (fitness-of delta p)
+        move (when (and a b) (- a b))]
+    {:before b :after a :delta move :verdict (direction move p)}))
+
+(defn- branch-regressions
+  "How many branches measured on both sides of the change went backwards, and
+  how many were measurable at all — nil when none were.
+
+  One aggregate cannot say this. Metan's own d2-to-d3 lift was -0.006 while
+  41% of (chain, task) pairs strictly regressed, and reverting is the right
+  call in the second case and not the first. The per-branch cut already exists
+  for the beam's cull; this reads it (karamazov-7mo.3). A branch that only
+  appeared after the change has no before, so it has no delta and cannot have
+  regressed."
+  [e p]
+  (let [now (:branches @tally)
+        moves (keep (fn [[k bt]]
+                      (:delta (reading bt (deep-diff bt (get now k)) p)))
+                    (:before-branches e))]
+    (when (seq moves)
+      {:measured (count moves)
+       :regressed (count (filter #(<= % (- (:meaningful-delta p))) moves))})))
 
 (defn verdict
   "What happened after an experiment, or nil when there is no such experiment.
@@ -340,30 +416,57 @@
   everything before it. Both are per-turn, so the comparison holds even when
   the two stretches are different lengths — which they always are.
 
-  `:too-early` is a real verdict and is reported as one. A supervisor that
-  reads three turns of noise as a result will keep changing things on the
-  strength of nothing, which is the failure mode this whole mechanism exists to
-  prevent."
-  [name]
-  (when-let [e (get-in @tally [:experiments (str name)])]
-    (let [p (lexicon/policy :fitness)
-          delta (deep-diff (:before e) (snapshot))
-          turns (or (:turns delta) 0)
-          after (fitness-of delta p)
-          before (:before-fitness e)
-          move (when (and after before) (- after before))]
-      (merge (select-keys e [:change :hypothesis :at])
-             {:turns-since turns
-              :before before
-              :after after
-              :delta move
-              :verdict
-              (cond
-                (< turns (:min-turns-for-verdict p)) :too-early
-                (nil? move) :too-early
-                (>= move (:meaningful-delta p)) :better
-                (<= move (- (:meaningful-delta p))) :worse
-                :else :unchanged)}))))
+  Three things can make that subtraction something other than a measurement of
+  the change, and each is reported rather than hidden:
+
+  `:too-early` — too few turns to tell. A supervisor that reads three turns of
+  noise as a result will keep changing things on the strength of nothing.
+
+  `:confounded` — the reading with the world's terms removed disagrees with the
+  full one, so the direction belongs to the provider as much as to the change
+  (karamazov-7mo.1). Both readings are returned; the supervisor settles it by
+  judgement, because from inside one process a change that FIXED empty replies
+  and an endpoint that simply came back look identical.
+
+  `:regraded` — the before side, recomputed under the weights in force now,
+  differs from the one stamped when the experiment opened. That means the run
+  changed how it is scored while being scored (karamazov-7mo.2). Nothing is
+  refused: the comparison is put back on one scale and the fact is stated,
+  which is the detection-over-prevention line M10 settled on.
+
+  `:branches` — how many measured branches went backwards, beside the
+  aggregate that cannot say so."
+  ([name] (verdict name (lexicon/policy :fitness)))
+  ([name p]
+   (when-let [e (get-in @tally [:experiments (str name)])]
+     (let [delta (deep-diff (:before e) (snapshot))
+           turns (or (:turns delta) 0)
+           full (reading (:before e) delta p)
+           blind (reading (:before e) delta (health-blind p))
+           stamped (:before-fitness e)
+           ;; Exact, not within a tolerance. Both sides are the same
+           ;; computation over the same counts, so identical weights give
+           ;; bit-identical doubles and ANY difference means the weights moved
+           ;; under the experiment.
+           regraded? (boolean (and stamped (:before full)
+                                   (not= (:before full) stamped)))]
+       (merge (select-keys e [:change :hypothesis :at])
+              (select-keys full [:before :after :delta])
+              {:turns-since turns
+               :full full
+               :health-blind blind
+               :regraded regraded?
+               ;; What the before side scored under the weights that were in
+               ;; force when the experiment opened. Kept so the block can show
+               ;; both numbers rather than only asserting the scale moved.
+               :before-as-stamped stamped
+               :branches (branch-regressions e p)
+               :verdict
+               (cond
+                 (< turns (:min-turns-for-verdict p)) :too-early
+                 (nil? (:delta full)) :too-early
+                 (not= (:verdict full) (:verdict blind)) :confounded
+                 :else (:verdict full))})))))
 
 (defn reverted!
   "Record that the supervisor acted on a verdict — reverted the change, or
@@ -558,6 +661,40 @@
 (defn- group-line [m]
   (str/join " | " (for [[k v] (sort-by key m)] (str (name k) " (" (counts-line v) ")"))))
 
+(defn- num2 [x] (when x (format "%.2f" x)))
+
+(defn- experiment-line
+  "One experiment as the supervisor reads it: what changed, what was expected,
+  and every reason the number might not be a measurement of it.
+
+  The wording is prompts/experiment-line.md — a supervisor being told its
+  verdict is not attributable has to be able to change what it is told."
+  [{:keys [name change hypothesis verdict before after turns-since settled
+           health-blind regraded branches] :as e}]
+  (str/trim-newline
+   (prompt/render
+    "experiment-line"
+    {:name name
+     :verdict (clojure.core/name verdict)
+     :reverted (= :reverted settled)
+     :kept (= :kept settled)
+     :before (num2 before)
+     :after (num2 after)
+     :turns turns-since
+     :many-turns (not= 1 turns-since)
+     :change change
+     :hypothesis hypothesis
+     ;; Only when it is the reason for the verdict. The second reading is
+     ;; computed every time and is noise on a verdict nothing confounded.
+     :blind (when (= :confounded verdict)
+              {:verdict (clojure.core/name (:verdict health-blind))
+               :before (num2 (:before health-blind))
+               :after (num2 (:after health-blind))})
+     :regraded (when regraded
+                 {:stamped (num2 (:before-as-stamped e))
+                  :now (num2 before)})
+     :branches branches})))
+
 (defn render
   "The session block a supervisor reads.
 
@@ -576,11 +713,26 @@
    (let [snap (snapshot)
          fs (findings snap)
          f (fitness-of snap)
-         exps (experiments)]
+         exps (experiments)
+         ;; nil until the supervisor has looked once. `since` is nil for a
+         ;; mark that does not exist AND for one nothing has happened under,
+         ;; and those are different things to be told (karamazov-k2g4).
+         seen? (and mark (contains? (:marks @tally) (str mark)))
+         d (when seen? (or (since mark) {}))
+         dt (or (:turns d) 0)
+         df (when (pos? dt) (fitness-of d))]
      (when (pos? (or (:turns snap) 0))
        (prompt/render
         "session-block"
-        {:turns (:turns snap)
+        {:quiet (and seen? (zero? dt))
+         :since (when (pos? dt)
+                  {:turns dt
+                   :fitness (when df (format "%.2f" df))
+                   :tools (when (seq (:tools d)) (group-line (:tools d)))
+                   :signals (when (seq (:signals d)) (counts-line (:signals d)))
+                   :verify (when (seq (:verify d)) (counts-line (:verify d)))
+                   :gates (when (seq (:gates d)) (group-line (:gates d)))})
+         :turns (:turns snap)
          :fitness (when f (format "%.2f" f))
          :tools (when (seq (:tools snap)) (group-line (:tools snap)))
          :signals (when (seq (:signals snap)) (counts-line (:signals snap)))
@@ -588,19 +740,7 @@
          :gates (when (seq (:gates snap)) (group-line (:gates snap)))
          :experiments
          (when (seq exps)
-           (str/join "\n"
-                     (for [{:keys [name change hypothesis verdict before after
-                                   turns-since settled]} exps]
-                       (str "- " name " [" (clojure.core/name verdict) "]"
-                            (case settled
-                              :reverted " (reverted)"
-                              :kept " (kept deliberately)"
-                              "")
-                            (when (and before after)
-                              (format " fitness %.2f -> %.2f over %d turns"
-                                      before after turns-since))
-                            "\n    changed: " change
-                            "\n    expected: " hypothesis))))
+           (str/join "\n" (map experiment-line exps)))
          :unsettled (let [n (count (unsettled-losses))] (when (pos? n) n))
          :findings (when (seq fs)
                      (str/join "\n"

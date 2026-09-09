@@ -81,5 +81,22 @@
                        :better (= :better (:verdict v))
                        :worse (= :worse (:verdict v))
                        :unchanged (= :unchanged (:verdict v))
-                       :too-early (= :too-early (:verdict v))}))
+                       :too-early (= :too-early (:verdict v))
+                       ;; The second reading, and only when it is the reason
+                       ;; for the verdict: on any other verdict it agrees with
+                       ;; the first and is noise.
+                       :confounded
+                       (when (= :confounded (:verdict v))
+                         (let [b (:health-blind v)]
+                           {:verdict (clojure.core/name (:verdict b))
+                            :numbers (when (and (:before b) (:after b))
+                                       (format "%.2f -> %.2f" (:before b) (:after b)))}))
+                       :regraded
+                       (when (:regraded v)
+                         (when-let [stamped (:before-as-stamped v)]
+                           (format "%.2f" stamped)))
+                       :branches
+                       (when-let [br (:branches v)]
+                         (when (pos? (:regressed br))
+                           {:regressed (:regressed br) :measured (:measured br)}))}))
         (base/fail branch (msg {:no-experiment true :name name}))))))
