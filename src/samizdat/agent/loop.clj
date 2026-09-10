@@ -40,6 +40,7 @@
             [samizdat.agent.arbiter :as arbiter]
             [samizdat.agent.files :as files]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.infer :as infer]
             [samizdat.config :as config]
             [samizdat.agent.phases :as phases]
@@ -1049,6 +1050,16 @@
       ;; the green cursor still points into a turn log the journal can
       ;; replay up to.
       (let [coverage (state/snapshot-covers? branch)
+            ;; HOW MUCH THIS TASK HAS WRITTEN, measured rather than estimated
+            ;; (karamazov-5ot9). Only on a turn that actually wrote a file:
+            ;; the budget cannot move on a read, and a git call per turn on a
+            ;; run that is exploring would be paid a hundred times to learn
+            ;; nothing. Carried on the branch so the gate's :when stays pure —
+            ;; the same shape state/unwritten and plan-stale? use.
+            branch (if (contains? (gates/tool-vocab :file-write) (str tool))
+                     (assoc branch :lines-written
+                            (gitdiff/changed-lines (:root ctx) (:git-baseline ctx)))
+                     branch)
             decision (arbiter/decide
                       {:branch branch
                        :max-turns max-turns

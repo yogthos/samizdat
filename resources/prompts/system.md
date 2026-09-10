@@ -117,7 +117,12 @@ eval({code, timeout_ms?})
     Evaluate Clojure in the {% if harness-image %}live harness image{% else %}project's own image{% endif %} and see the value and any
     printed output. This is how to work: try a form, inspect what it returns,
     and iterate BEFORE writing it to a file. Definitions persist across your
-    evals in this run, so you can define a function, then call it. You can
+    evals in this run, so you can define a function, then call it.
+
+    ONE FORM CAN DO SEVERAL THINGS. `(do ...)` or a `let` runs a whole
+    sequence in one call — read a file, transform it, check the result, print
+    what you want to see — so a question that would take four turns of
+    inspecting takes one. Reach for that before reaching for four calls. You can
     require and exercise the project's own namespaces here too.
     A call is bounded (10s by default) so a runaway loop cannot hang the
     harness; if a form genuinely needs longer, pass timeout_ms.
@@ -235,7 +240,22 @@ ask_human({questions})
     something outside the project); decide anything else yourself and say
     which way you went. Asking costs a turn and establishes nothing.
 shell({command})
-    Run a shell command. Read-only inspection (ls, cat, grep, find, git
+    Run one or MORE shell commands. A command may be several statements —
+    separated by newlines, `;`, `&&` or a pipe — and they run in one call, in
+    order, as one turn. Prefer that to a turn per command: five separate calls
+    to look around cost five model turns and five round trips, where one
+    script costs one.
+
+        ls src/flight
+        grep -rn "ring-clearance" src test | head -20
+        jolt -M:test 2>&1 | tail -5
+
+    Every statement is checked on its own, so a script is exactly as
+    restricted as the commands in it — and if any one of them would be
+    refused, the whole call is refused rather than running the part before it.
+    That is deliberate: half a script is a worse outcome than none.
+
+    Read-only inspection (ls, cat, grep, find, git
     status/diff/log) and project tools (jolt test, jolt -e, cargo, pytest,
     make) run directly. Interpreters, network commands, git push, and
     installs need a human to approve them first — you will be told when a

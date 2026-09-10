@@ -1463,6 +1463,36 @@
         writes vaguer memories, which is the failure mode this whole schema
         exists to avoid."}
 
+ :task-line-budget
+ {:value 500 :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-5ot9" "karamazov-fn68"]
+  :doc "How many lines of change one task is expected to fit in, added plus
+        deleted, before it should have been split.
+
+        WHY A NUMBER AT ALL. prompts/task-claimed.md already asks the right
+        question — is this ONE thing, or several wearing one title — and gives
+        no way to answer it. Measured across four live recordings on four
+        tasks: zero splits, zero calls to `task` or `split`, including on a
+        task whose own statement said 'Three changes to the feel of the flight,
+        and they interact' and numbered them. A judgement call with no
+        criterion is reliably answered 'one thing'.
+
+        A LINE BUDGET IS CHECKABLE FROM BOTH ENDS, which is why it is this and
+        not something more principled. Up front the model can estimate it; in
+        flight the harness can MEASURE it (gitdiff/changed-lines), so the
+        second half does not depend on the model agreeing with itself.
+
+        ADDED PLUS DELETED, not net: a change that rewrites two hundred lines
+        into two hundred different ones is not small, and net would score it
+        zero.
+
+        500 is a starting point, not a finding. The run this came from spent
+        120 turns and landed a nine-file plan of which the named files were
+        never written — so the number wants to be small enough to catch that
+        before the budget is gone, and large enough that an ordinary feature
+        is not split into rubble. Re-tune it against measured runs; that is
+        what it is data for."}
+
  :webfetch
  {:value {:timeout-ms 30000
           :max-timeout-ms 120000
@@ -2541,6 +2571,12 @@
    :storm            #{"done" "give_up"}
    :mechanics-streak #{"done" "give_up"}
    :safe-state       #{"thesis" "done" "give_up"}
+   ;; SPLIT IT, or SAY WHY IT IS ONE. `task` and `split` are the first; a
+   ;; `thesis` is the second, because "this is one coherent change and here is
+   ;; why" is exactly what a thesis registers. Without this entry the gate
+   ;; could only ever expire unmet, which is the shape :reflection was deleted
+   ;; for — 69 firings and 0 met across two models and five task shapes.
+   :over-budget      #{"task" "split" "thesis"}
    :done-blocked     #{"done" "give_up"}
    :turn-budget      #{"done" "give_up"}
    :wind-down        #{"done"}
@@ -3109,6 +3145,45 @@
                         (str "\n\nYou declared these and have not written them:\n"
                              (clojure.string/join "\n" (map #(str "  - " %) owed)))))
    :prediction "the branch writes or edits a file"
+   :window 3}
+
+  {:gate :over-budget
+   :priority 10.45
+   :budget :max-no-edit-nudges
+   :provenance ["karamazov-5ot9" "run dbe64eea-successor"]
+   :doc "THE TASK IS BIGGER THAN ONE TASK, and now there is evidence rather
+         than a judgement. The branch has written more than
+         :task-line-budget lines against the task it holds, which is the
+         measurable form of the question prompts/task-claimed.md already asks
+         at claim time and cannot answer: is this ONE thing, or several
+         wearing one title.
+
+         MEASURED, not estimated: gitdiff/changed-lines on the turns that
+         actually wrote, added plus deleted, untracked files included. So this
+         does not depend on the model agreeing with its own up-front estimate,
+         which is the half that was missing — four live recordings on four
+         tasks produced zero splits, including on a task whose own statement
+         said 'Three changes to the feel of the flight, and they interact'.
+
+         SITS BELOW :no-edits on purpose. no-edits says you are working and it
+         is not landing; this says it IS landing and there is more of it than
+         one task should hold. When both are true, the branch that has written
+         nothing recently needs the more specific steer first.
+
+         A SUGGESTION, like every gate here. Splitting a task the model
+         genuinely believes is one thing would be worse than not asking — and
+         the ship gate, the critic and the turn budget all remain downstream
+         of it. What it buys is that the question gets asked WHEN THE EVIDENCE
+         EXISTS rather than only at claim time, when nobody can answer it."
+   :when (and (state/active? branch)
+              (number? (:lines-written branch))
+              (> (:lines-written branch) (threshold :task-line-budget)))
+   :message-form (str (prompt "over-budget")
+                      "\n\nThis task has written "
+                      (:lines-written branch)
+                      " lines, against a budget of "
+                      (threshold :task-line-budget) ".")
+   :prediction "the branch splits the task or says why it is one change"
    :window 3}
 
   {:gate :studying

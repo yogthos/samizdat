@@ -98,6 +98,44 @@
       (when (or (some? tracked) (some? untracked))
         (vec (distinct (concat (or tracked []) (or untracked []))))))))
 
+(defn changed-lines
+  "How many lines the run has WRITTEN since `baseline`: added plus deleted,
+  tracked and untracked together. nil when git cannot answer.
+
+  THE UNTRACKED HALF IS THE POINT, and it is the same trap `changed-files`
+  names one function up: `git diff --numstat` is blind to a file that was
+  never added, and the prompt actively encourages creating namespaces. A
+  budget that counted only tracked edits would read a run that wrote four new
+  files as having spent nothing, which is exactly backwards — a new file is
+  the largest thing a task can produce.
+
+  ADDED PLUS DELETED, not net. A change that rewrites two hundred lines into
+  two hundred different ones is not a small change, and a net count would
+  score it zero. What the budget is asking about is how much work is in
+  flight, and a rewrite is work.
+
+  A binary file contributes nothing rather than failing the count: numstat
+  reports `-` for it, and a budget is about code the model wrote."
+  [root baseline]
+  (when (and root baseline)
+    (let [num (fn [s] (or (parse-long (str s)) 0))
+          tracked (some->> (git root "diff" "--numstat" baseline)
+                           str/split-lines
+                           (remove str/blank?)
+                           (map #(str/split % #"\t"))
+                           (map (fn [[a d & _]] (+ (num a) (num d))))
+                           (reduce + 0))
+          untracked (some->> (git root "ls-files" "--others" "--exclude-standard")
+                             str/split-lines
+                             (remove str/blank?)
+                             (map (fn [rel]
+                                    (try (-> (java.io.File. (str root) (str rel))
+                                             slurp str/split-lines count)
+                                         (catch Throwable _ 0))))
+                             (reduce + 0))]
+      (when (or (some? tracked) (some? untracked))
+        (+ (or tracked 0) (or untracked 0))))))
+
 (defn diff
   "The unified diff of the run's changes since `baseline`, bounded to keep it
   out of a runaway prompt. Empty string when there is nothing to show."
