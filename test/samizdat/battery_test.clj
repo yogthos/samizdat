@@ -232,3 +232,21 @@
       (is (not-any? #(= :status (first (:assert %)))
                     (:expect (battery/draft-case c (mk s))))
           (str s " happened TO the run and must not become a requirement")))))
+
+(deftest results-over-different-expectation-sets-are-not-comparable
+  ;; Found running the gate end to end on a real run. accept? compared raw
+  ;; :passed counts, so a baseline of 14/14 and a candidate of 14/15 read as
+  ;; 14 >= 14 and COMMITTED — a candidate that fails a target was accepted
+  ;; because it had been checked against one more expectation.
+  ;;
+  ;; Same-set comparison is the only meaningful one: the battery runs the same
+  ;; cases before and after, so unequal totals mean the caller compared two
+  ;; different things, and the honest answer is to refuse rather than to pick
+  ;; a winner between them.
+  (is (false? (battery/accept? {:passed 14 :total 14} {:passed 14 :total 15}))
+      "more expectations, same passes — not an improvement, not comparable")
+  (is (false? (battery/accept? {:passed 3 :total 4} {:passed 3 :total 3}))
+      "fewer expectations is the same error inverted: dropping a target the
+       baseline was held to must not read as holding steady")
+  (is (true? (battery/accept? {:passed 3 :total 4} {:passed 3 :total 4})))
+  (is (true? (battery/accept? {:passed 3 :total 4} {:passed 4 :total 4}))))

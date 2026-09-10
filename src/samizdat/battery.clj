@@ -132,9 +132,18 @@
 ;;; ------------------------------------------------------------- the gate rule
 
 (defn accept?
-  "Whether `after` may be committed given `before`. Ties accepted."
+  "Whether `after` may be committed given `before`. Ties accepted.
+
+  COMPARABLE OR REFUSED. The two results must cover the same number of
+  targets: the battery runs the same cases before and after, so unequal totals
+  mean the caller compared two different things. Found the hard way running the
+  gate on a real run — a baseline of 14/14 against a candidate of 14/15 read as
+  14 >= 14 and committed, accepting a candidate that failed a target because it
+  had been checked against one more expectation. Refusing is the honest answer;
+  picking a winner between two different measurements is not."
   [before after]
-  (>= (long (:passed after 0)) (long (:passed before 0))))
+  (and (= (long (:total before 0)) (long (:total after 0)))
+       (>= (long (:passed after 0)) (long (:passed before 0)))))
 
 (defn regressions
   "The names of targets that passed BEFORE and fail AFTER.

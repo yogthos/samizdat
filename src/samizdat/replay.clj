@@ -125,7 +125,11 @@
            :reason :replay/unknown-branch
            :branch b
            :known (vec (sort (keys (:replies case))))
-           :error "replay has no recording for this branch"}
+           ;; Terse, like :replay/exhausted above: the reader is the gate, and
+           ;; :reason / :branch / :known already carry everything it needs. A
+           ;; sentence here is model-facing prose in src/ and belongs in
+           ;; resources/prompts (base-test's ratchet).
+           :error "unknown replay branch"}
           (let [f (or (get @cursors b)
                       (let [f (complete-fn case b)]
                         (swap! cursors assoc b f)
