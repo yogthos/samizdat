@@ -301,6 +301,81 @@
            (finally (db/close conn))))
     (catch Throwable _ nil)))
 
+;;; ------------------------------------------------------------ memory carry
+
+(def ^:private memory-tables
+  "The tables a run's LEARNING lives in, as opposed to its record.
+
+  `knowledge` only, for now, and the restraint is the point: `runs`, `turns`,
+  `events` and the rest are what THIS run did, and carrying them forward would
+  hand the next run a history it did not live. What crosses the boundary is
+  what the harness came to believe, which is exactly the thing the epic is
+  about (karamazov-ei6t)."
+  ["knowledge"])
+
+(defn- copy-table!
+  "Copy every row of `table` from `from` to `to`, replacing on id collision.
+
+  INSERT OR REPLACE rather than INSERT: a memory carried forward and then
+  corroborated comes back with the same id and a higher count, and the newer
+  row is the one worth keeping. Column names are read from the source rather
+  than listed, so a migration that adds a column does not silently stop being
+  carried — which is the failure mode a hand-written column list has, and it
+  fails in the direction of losing exactly the newest field."
+  [from to table]
+  (let [rows (db/fetch from [(str "SELECT * FROM " table)])]
+    (when (seq rows)
+      (let [cols (mapv name (keys (first rows)))
+            placeholders (str/join ", " (repeat (count cols) "?"))
+            sql (str "INSERT OR REPLACE INTO " table
+                     " (" (str/join ", " cols) ") VALUES (" placeholders ")")]
+        (doseq [r rows]
+          (db/with-writer
+            (db/execute! to (into [sql] (map #(get r (keyword %))) cols))))))
+    (count rows)))
+
+(defn carry-memory!
+  "Seed the worktree at `root` with what this ARM has learned so far.
+
+  WHY THE ARENA NEEDS THIS AT ALL (karamazov-ei6t.1). Every run gets a fresh
+  worktree, and samizdat resolves its database from `:run :root`, so every run
+  also got a fresh knowledge store. Measured across three preserved runs:
+  30-35 memories written per run and ZERO ever recalled — which is structural,
+  not a defect. Memories are written at the END by distil-session! and
+  distil-project!, and the two recall calls a run makes happen mid-run against
+  an empty store. So the rig could not measure memory at all, and every later
+  round of the epic would have shown the same zero before and after.
+
+  PER ARM, NEVER PER SWEEP, and that is the line that keeps the comparison
+  honest: two arms sharing a store means arm B inherits arm A's learning and
+  the delta is no longer the arm. Across TASKS within an arm is deliberate —
+  the subject is one repository, and an agent learning where its tests live is
+  the realistic shape. Tasks are never compared to each other anyway.
+
+  The database is created and migrated here, before the child starts, because
+  the child's own `system/start!` opens whatever is already there."
+  [carry-db root]
+  (when (and carry-db (.exists (io/file (str carry-db))))
+    (let [dest (str root "/.samizdat/samizdat.sqlite3")
+          _ (io/make-parents (io/file dest))
+          to (db/open! dest)
+          from (db/connect (str carry-db))]
+      (try (reduce + 0 (map #(copy-table! from to %) memory-tables))
+           (finally (db/close from) (db/close to))))))
+
+(defn harvest-memory!
+  "Fold what this run learned back into the arm's carry database.
+
+  Taken from the PRESERVED recording rather than the worktree, so a run the
+  rig had to kill still contributes what it had learned by then — and so this
+  reads the same checkpointed file everything else does (`keep-recording!`)."
+  [recording carry-db]
+  (when (and carry-db recording (.exists (io/file (str recording))))
+    (let [to (db/open! (str carry-db))
+          from (db/connect (str recording))]
+      (try (reduce + 0 (map #(copy-table! from to %) memory-tables))
+           (finally (db/close from) (db/close to))))))
+
 ;;; ---------------------------------------------------------- the measurement
 
 (defn- harness-revision
@@ -411,6 +486,41 @@
      ;; happened and said nothing' rather than as a bug.
      :committed (vec (journal/notes conn run-id :mutation-committed))
      :refused (vec (journal/notes conn run-id :mutation-rolled-back))}))
+
+(defn recall-report
+  "What memory was ASKED and whether the answer was used (karamazov-ei6t.2).
+
+  The question this exists to settle: recall was called exactly twice in each
+  of three live runs of 167, 203 and 219 turns, while 30-35 memories were
+  written per run. Three explanations need different fixes — the model does
+  not know the tool is there; it calls it, gets nothing, and stops; or it
+  genuinely does not need memory on a small tree it can read directly. A count
+  cannot tell them apart.
+
+  So this reports, per call: what was asked, how many rows came back, how many
+  memories were live at the time, and whether the branch's NEXT turn touched
+  one of the ids it was handed. That last column is the one that matters and
+  the one nothing recorded before: a memory returned and ignored looked
+  exactly like a memory never returned.
+
+  `:used?` is a weak signal on purpose — it asks whether a returned id was
+  touched again, not whether the model was influenced, which no record can
+  answer. Read it as a floor."
+  [conn run-id]
+  (let [calls (vec (journal/notes conn run-id :recall))
+        touched (into #{} (map :id)
+                      (db/fetch conn ["SELECT id FROM knowledge WHERE use_count > 0"]))]
+    {:calls (count calls)
+     :turns (count (journal/turns conn run-id))
+     :hits (count (filter #(pos? (long (or (:returned %) 0))) calls))
+     :empty-store (count (filter #(zero? (long (or (:live %) 0))) calls))
+     :detail (mapv (fn [c]
+                     {:turn (:turn c)
+                      :query (:query c)
+                      :returned (:returned c)
+                      :live (:live c)
+                      :used? (boolean (some touched (:ids c)))})
+                   calls)}))
 
 (defn measure
   "One run's row, read off the journal after it ends.
@@ -561,6 +671,8 @@
     :verify-timeout-ms
     :keep?            — leave the worktree behind for inspection
     :recordings       — directory to keep each run's database (and log) in
+    :carry-db         — this ARM's accumulated memory, seeded in before the
+                        child starts and folded back after it ends
 
   WHAT BOUNDS A RUN, measured rather than assumed, because the first sweep was
   bounded by nothing and the rig's clock had to end every run:
@@ -592,7 +704,7 @@
   report arm A as better."
   [{:keys [repo sha arm problem max-turns beam-width token-budget dest
            max-revisions-hard verify-timeout-ms keep? http-port timeout-ms
-           stall-ms recordings]
+           stall-ms recordings carry-db]
     :or {verify-timeout-ms 600000 http-port 3997 timeout-ms 3600000
          stall-ms 1800000}}]
   (let [started (System/currentTimeMillis)
@@ -620,6 +732,13 @@
                        :at (str (java.time.Instant/now))}
                       (harness-revision) extra))]
     (try
+      ;; WHAT THIS ARM ALREADY KNOWS, before the child opens the database.
+      ;; Without it every run starts amnesiac and the memory rounds of
+      ;; karamazov-ei6t cannot be measured at all.
+      (let [n (try (carry-memory! carry-db root) (catch Throwable _ nil))]
+        (when (and n (pos? (long n)))
+          (println (format "   carried %d memor%s into %s"
+                           n (if (= 1 n) "y" "ies") (.getName (io/file dest))))))
       (spit in-f (pr-str {:root root :problem problem
                           :max-turns max-turns :beam-width beam-width
                           :token-budget token-budget
@@ -727,7 +846,11 @@
                 (keep-recording! src kept)
                 (reconcile-recording! (.getPath kept)))
               (when (.exists log-f)
-                (io/copy log-f (io/file (str recordings "/" nm ".log")))))
+                (io/copy log-f (io/file (str recordings "/" nm ".log"))))
+              ;; FROM THE PRESERVED COPY, so a run the rig had to kill still
+              ;; contributes what it had learned by then.
+              (when (.exists kept)
+                (harvest-memory! (.getPath kept) carry-db)))
             (catch Throwable _ nil)))
         (when-not keep? (drop-worktree! repo dest))))))
 
@@ -868,9 +991,14 @@
   TASK-MAJOR, ARM-INTERLEAVED WITHIN A TASK. Arms must be compared on the same
   task, so they alternate inside it; tasks do not need to be interleaved with
   each other because no claim is made across them. Ports step per run so a
-  child's listener cannot land in a predecessor's TIME_WAIT."
-  [{:keys [task-ids arms n out work base-port] :as opts
-    :or {base-port 3990 n 3}}]
+  child's listener cannot land in a predecessor's TIME_WAIT.
+
+  `memory?` (default true) carries each ARM's knowledge store forward across
+  its runs. Off gives the old amnesiac behaviour, which is the right control
+  arm for measuring whether memory helps at all — the question the epic it
+  serves has to be able to answer both ways (karamazov-ei6t.1)."
+  [{:keys [task-ids arms n out work base-port memory?] :as opts
+    :or {base-port 3990 n 3 memory? true}}]
   (let [t (tasks)
         subject (:subject t)
         chosen (if (seq task-ids)
@@ -890,10 +1018,17 @@
               ;; whose scope needs more turns needs its own number or its gate
               ;; profile measures the cap. Runs are compared within a task and
               ;; never across, so unequal budgets cost nothing.
+              ;; ONE CARRY DATABASE PER ARM, and the per-arm part is what
+              ;; keeps an A/B honest: two arms sharing a store means arm B
+              ;; inherits arm A's learning and the delta stops being the arm.
+              ;; Across TASKS within an arm is deliberate — the subject is one
+              ;; repository, an agent learning where its tests live is the
+              ;; realistic shape, and tasks are never compared to each other.
+              carry (when memory? (str work "/memory-" (name (:name arm)) ".sqlite3"))
               row (run-once! (merge opts
                                     {:repo (:repo subject) :sha (:sha subject)
                                      :arm arm :problem (:problem task)
-                                     :dest dest
+                                     :dest dest :carry-db carry
                                      :http-port (+ base-port (mod i 90))}
                                     (select-keys task [:max-turns :timeout-ms
                                                        :stall-ms :beam-width
@@ -905,7 +1040,8 @@
               ;; and silently omitted whatever run-once! defaulted — which is
               ;; how a row came to name a turn cap and nothing else while the
               ;; only bound that actually fired was the rig's clock.
-              row (assoc row :task (:id task) :difficulty (:difficulty task) :n k)]
+              row (assoc row :task (:id task) :difficulty (:difficulty task) :n k
+                         :memory-carried?  (boolean carry))]
           (append-row! out row)
           (println (format "[%d/%d] %-16s %-9s n=%d  %-11s by=%-7s green=%-5s turns=%-4s tok=%-9s edits=%s  %.1fmin"
                            (inc i) total (name (:id task)) (name (:name arm)) k

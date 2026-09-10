@@ -14,6 +14,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.lexicon :as lexicon]
             [samizdat.agent.tools.base :as base]
+            [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.prompt :as prompt]))
 
@@ -143,7 +144,28 @@
       (base/fail branch (msg {:no-memory true :id id})))
     (if-let [miss (base/missing ctx :query)]
       (base/malformed branch (str miss "\n\n" @usage))
-      (let [rows (knowledge/recall conn (base/arg ctx :query))]
+      (let [rows (knowledge/recall conn (base/arg ctx :query))
+            ;; WHAT WAS ASKED AND WHAT CAME BACK (karamazov-ei6t.2). Recall was
+            ;; called exactly twice per run in each of three live runs of 167,
+            ;; 203 and 219 turns, and nothing recorded what it returned — so a
+            ;; memory returned and ignored and a memory never returned looked
+            ;; identical in the record, and the question "is recall unused
+            ;; because it is unknown, or because it is useless?" had no
+            ;; evidence either way.
+            ;;
+            ;; The ids are kept so the NEXT turn can be read against them: that
+            ;; is the half that decides whether recall is worth anything, and
+            ;; it is the half a count alone cannot answer.
+            _ (when (and conn (:run-id ctx))
+                (try
+                  (journal/note! conn (:run-id ctx) :recall
+                                 {:branch-id (:id branch)
+                                  :data {:query (str (base/arg ctx :query))
+                                         :returned (count rows)
+                                         :ids (mapv :id rows)
+                                         :live (knowledge/live-count conn)
+                                         :turn (:turn ctx)}})
+                  (catch Throwable _ nil)))]
         (base/ok branch
                  (cond
                    (seq rows)

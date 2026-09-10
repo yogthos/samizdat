@@ -70,6 +70,33 @@
       (is (= ["fred likes fish"]
              (mapv :content (knowledge/recall @conn "fred")))))))
 
+(deftest a-recall-records-what-it-was-asked-and-what-came-back
+  ;; karamazov-ei6t.2. Recall was called exactly TWICE in each of three live
+  ;; runs of 167, 203 and 219 turns, while 30-35 memories were written per run.
+  ;; Nothing recorded what it returned, so "recall is unused because nobody
+  ;; knows about it" and "recall is unused because it never returns anything
+  ;; useful" left identical traces — and they need opposite fixes.
+  (let [c @conn
+        rid (runs/start-run! c {:problem "p" :provider "x" :model "m"
+                                :max-turns 5 :beam-width 1})]
+    (knowledge/remember! c {:content "jolt -M:test is the test command here"
+                            :kind "semantic"})
+    (testing "a hit records the ids, so the NEXT turn can be read against them"
+      (tools/run-tool {:tool-name "recall" :conn c :run-id rid :turn 7
+                       :branch {:id "B1"} :args {:query "test command"}})
+      (let [n (journal/last-note c rid :recall)]
+        (is (= "test command" (:query n)))
+        (is (= 1 (:returned n)))
+        (is (= 1 (count (:ids n))) "the ids are the half a count cannot answer")
+        (is (= 7 (:turn n)))))
+    (testing "and a MISS records itself too — an empty store and a bad query
+              call for opposite actions, and both look like silence otherwise"
+      (tools/run-tool {:tool-name "recall" :conn c :run-id rid :turn 8
+                       :branch {:id "B1"} :args {:query "zzzz-no-such-thing"}})
+      (let [n (journal/last-note c rid :recall)]
+        (is (= 0 (:returned n)))
+        (is (pos? (:live n)) "the store was not empty, so this was a missed query")))))
+
 (deftest recent-limits
   (dotimes [_ 3] (knowledge/remember! @conn {:content "row"}))
   (is (= 2 (count (knowledge/recent @conn 2)))))
