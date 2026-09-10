@@ -308,6 +308,30 @@
   :doc "How often `done` may be refused before the branch is told to give up.
         A cost ceiling because each refusal spends another model turn."}
 
+ :max-give-up-blocks
+ {:value 3 :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-ylte.1"]
+  :doc "How often `give_up` may be refused before it is accepted anyway.
+
+        THE RELIEF IS THE POINT, and without it the give_up rungs are a trap.
+        :max-done-blocks reads 'how often `done` may be refused before the
+        branch is told to give up' — giving up IS the escape hatch from a
+        refused done, so gating it with no ceiling leaves a stuck branch
+        refused at both exits, spending its whole budget being told no. That
+        is the quiet spin the rungs exist to stop, rebuilt one door along.
+
+        Found by team-test/supervisor-retries-a-worker-that-gave-up, whose
+        workers said `stuck`, were refused, and never gave up — so the
+        supervisor had nothing to retry.
+
+        Fail-open on the same reasoning cells/critic.clj gives for the
+        finalization judge: bounded so it cannot block forever, because a
+        backstop that can wedge the loop is worse than no backstop. What the
+        branch cannot do is end CHEAPLY: three refusals, each carrying a
+        message naming what an account is, and the record then shows an
+        abandonment whose reason never came — which is a finding rather than
+        a silence."}
+
  :turn-budget-notices
  {:value [0.6 0.85] :kind :threshold :capability-tunable? false
   :provenance ["dirge PR 738"]
@@ -2333,6 +2357,67 @@
    :doc "The lexical ship rungs (drg-4026 #44) — adding a rung is a data
          edit; the evidence computation stays in ship.clj."}
 
+  :give-up-reason-floor
+  {:value 60 :kind :threshold :capability-tunable? false
+   :provenance ["karamazov-ylte.1" "run dbe64eea-successor"]
+   :doc "How many characters an abandonment has to spend accounting for
+         itself. Crude on purpose and tunable because it is crude: the
+         property wanted is 'names what was tried and what blocked it', and
+         no lexical test decides that. A floor plus the engages-problem rung
+         rejects the formulas that carry no account at all — `stuck`,
+         `cannot proceed`, `no reason given` — which is what was actually
+         getting through, since nothing checked at all."}
+
+  :give-up-gates
+  ;; karamazov-ylte.1. `done` faces four lexical rungs, a test-verification
+  ;; rung and a focused verify. `give_up` faced NOTHING — five lines, an
+  ;; optional `reason`, and "no reason given" as its default — so the harness
+  ;; accepted an abandonment with no account of it whatever. Of the four ways
+  ;; a branch can end, this was the only one with no gate on it, which made it
+  ;; the cheapest, and a loop teaches by what it makes cheap.
+  ;;
+  ;; The account asked for is the same one the completeness refusal names as
+  ;; an honest ending: what you could not do, and what blocked you. A branch
+  ;; that genuinely cannot proceed can always say that; a branch that has
+  ;; merely stopped cannot, and that difference is the whole point of the rung.
+  ;;
+  ;; Same shape as :ship-gates — vector order is cond order, the forms see the
+  ;; symbols ship.clj binds (reason, problem, floor), and adding a rung is a
+  ;; data edit.
+  {:value
+   [{:name :reason-exists
+     :when (str/blank? (str reason))
+     ;; Shows the CALL, on base/missing's reasoning that a bare argument name
+     ;; teaches nothing.
+     :message-form (str "`give_up` needs a `reason`, and abandoning is the one"
+                        " ending that has to explain itself — nobody after you"
+                        " can reconstruct what stopped you.\n\n"
+                        "```tool-call\n"
+                        "{\"name\": \"give_up\", \"args\": {\"reason\":"
+                        " \"<what you were trying, what you tried, and what"
+                        " blocked it>\"}}\n"
+                        "```")}
+    {:name :reason-is-an-account
+     :when (< (count (str/trim (str reason))) floor)
+     :message-form (str "That is a verdict, not an account. Say what you were"
+                        " trying to do, what you TRIED, and what blocked it —"
+                        " the error, the command, the thing that would not"
+                        " work. If something genuinely cannot be done here,"
+                        " that is a finding and it is worth recording; if you"
+                        " cannot name what blocked you, you are not blocked"
+                        " yet and there is another approach to try.")}
+    {:name :reason-engages-problem
+     :when (and (not (str/blank? (str problem)))
+                (not (engages-problem? problem reason)))
+     :message-form (str "This reason shares no substantive term with what you"
+                        " were asked to do, so it does not say what was"
+                        " abandoned. Name the actual work and the actual"
+                        " obstacle.")}]
+   :kind :threshold :capability-tunable? false
+   :provenance ["karamazov-ylte.1" "run dbe64eea-successor"]
+   :doc "The lexical give_up rungs. Adding a rung is a data edit; the
+         evidence computation stays in ship.clj, exactly as :ship-gates."}
+
   :tool-vocab
   ;; Tier 1a: the tool vocabularies the gates and their settlers read — data
  ;; here, alongside the thresholds, so a vocabulary changes at runtime
@@ -2685,9 +2770,15 @@
   {:gate :done-blocked
    :priority 1
    :budget :max-done-blocks
-   :doc "done was called without the evidence it requires. The message says
-         which gate is unmet, because 'not yet' with no reason produces
-         another identical attempt."
+   :doc "A terminal call was refused — `done` without the evidence it
+         requires, or `give_up` without an account of what blocked it. The
+         message says which rung is unmet, because 'not yet' with no reason
+         produces another identical attempt.
+
+         BOTH calls, which is why :settle-called lists both: a refused
+         give_up that drew no steer and spent no budget would let a branch
+         retry the same empty reason until its turns ran out
+         (karamazov-ylte.1)."
    :when (some? done-block)
    :message-form (str done-block
                       (when-let [g (state/stated-goal branch)]

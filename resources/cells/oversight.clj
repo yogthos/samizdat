@@ -77,16 +77,55 @@
     (2609.09153v1 Algorithm 1 step 4) and the one karamazov-mpd names. No
     floor: one refusal is already the whole signal.
 
+  - GREEN WORK WAS SENT BACK. The round passed its own tests and a reviewer
+    refused it anyway, which is the first trigger's own subject arriving by a
+    different road: the branch believed it was finished, its tests agreed, and
+    something the task asked for still did not land. Either the statement
+    failed to carry a requirement or the ship gate let it through, and both
+    are the harness's words failing. No floor; one is the signal.
+
   A healthy run that is shipping gets no supervision, which is correct: there
-  is nothing to tune and saying so costs a turn of somebody's budget."
-  [{:keys [unmet-gates idle-turns errors at-cap? nothing-shipped? refused]}
+  is nothing to tune and saying so costs a turn of somebody's budget. THE
+  PREMISE OF THAT SENTENCE is that shipping means shipping something whole,
+  and karamazov-ylte.1 found where it does not hold. Run dbe64eea-successor's
+  owner shipped 89 turns of real work with ship-verify green; the critic then
+  failed the round [high] for a requirement the answer never mentioned. The
+  supervisor never saw it — 18 of its 30 passes were quiet — because a
+  confidently wrong ship trips none of the counters: gates met, turns not
+  idle, no crash, cap far off, something DID ship, nothing refused. That is
+  what the last trigger is for."
+  [{:keys [unmet-gates idle-turns errors at-cap? nothing-shipped? refused
+           sent-back-green?]}
    {:keys [unmet-floor idle-floor]}]
   (boolean (or (>= (or unmet-gates 0) unmet-floor)
                (>= (or idle-turns 0) idle-floor)
                (seq errors)
                (seq refused)
                at-cap?
-               nothing-shipped?)))
+               nothing-shipped?
+               sent-back-green?)))
+
+(defn sent-back-green?
+  "Whether the last round passed its own tests and was sent back regardless.
+
+  Both facts are already on the :route note the feature loop journals every
+  round, so nothing new is recorded to read this — :decision and
+  :tests-passed, neither of which anything looked at before.
+
+  THE DECISION COMES BACK A STRING. A journal note is JSON and JSON has no
+  keywords, so a comparison against :revise alone would compile, run, and
+  silently never fire — which is exactly karamazov-u5uy, where a status made
+  the same trip and every round counted as zero shipped forever. Compared by
+  name, so it holds either way.
+
+  NARROW ON PURPOSE. An ordinary revise on RED tests is the loop working, and
+  waking a supervisor for it would spend a model call on every round of every
+  feature run. It is the combination that is strange: the work satisfied the
+  only check it could apply to itself, and a reader still refused it."
+  [round]
+  (boolean (and round
+                (= "revise" (some-> (:decision round) name))
+                (true? (:tests-passed round)))))
 
 (defn at-cap?
   "Whether the outer loop's last round was at or past its soft cap, read from
@@ -209,7 +248,8 @@
                                 :errors (seq (concat (filter :error findings) crashes))
                                 :at-cap? (at-cap? round)
                                 :nothing-shipped? (nothing-shipped? results)
-                                :refused refused}
+                                :refused refused
+                                :sent-back-green? (sent-back-green? round)}
                                {:unmet-floor (gates/threshold :oversight-unmet-floor)
                                 :idle-floor (gates/threshold :oversight-idle-floor)}))))
      (assoc data :oversight/worth-a-look? false))))

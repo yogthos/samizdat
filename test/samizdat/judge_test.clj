@@ -52,6 +52,60 @@
   (is (str/includes? (judge/critique-message :incomplete "- add a test") "add a test"))
   (is (str/includes? (judge/critique-message :abstain nil) "could not be confirmed")))
 
+(deftest a-judge-reply-is-read-past-its-reasoning
+  ;; MEASURED on run dbe64eea-successor of the arena sweep. GLM-5.3 cannot be
+  ;; told not to think, so the critic's reply arrived with its scratchpad
+  ;; inline. :findings-regex is "(?is)FINDINGS:\\s*(.+)$" — greedy from the
+  ;; FIRST `FINDINGS:`, which was inside the <think> block. So the stored
+  ;; findings began mid-thought, carried `</think>`, and were appended to the
+  ;; retry's problem text: the next owner was handed the critic's musings as
+  ;; part of its task, including a bullet reasoning its way to "Not a finding."
+  ;;
+  ;; message/strip-think-blocks already exists and select.clj already uses it
+  ;; for exactly this ("<think>…</think>\ncritic" on the first live selection
+  ;; it ever made). The judge path simply never called it. Stripping happens
+  ;; HERE rather than at the call sites because there are three critics —
+  ;; :board/review, :feature/critique and cells/critic.clj — and a fourth
+  ;; would forget.
+  (let [reply (str "<think>\n"
+                   "Let me list what I might flag.\n"
+                   "FINDINGS:\n"
+                   "- Maybe note: can't verify the counts — not a finding, or "
+                   "[low]? I'll skip it. Actually, plausible. Not a finding.\n"
+                   "First line: `VERDICT: INCOMPLETE`.</think>\n"
+                   "VERDICT: INCOMPLETE\n\n"
+                   "FINDINGS:\n\n"
+                   "- [high] The required visual exercise was never done.")]
+    (testing "the findings are the judge's, not its scratchpad"
+      (let [f (judge/findings reply)]
+        (is (some? f))
+        (is (not (str/includes? f "</think>"))
+            "the reasoning terminator leaked into the retry's task text")
+        (is (not (str/includes? f "Not a finding"))
+            "a bullet the judge talked itself OUT of is not a finding")
+        (is (str/includes? f "[high] The required visual exercise"))))
+    (testing "and the verdict comes from the verdict line, not the scratchpad"
+      (is (= :incomplete (judge/parse-verdict reply)))))
+  (testing "a scratchpad that contradicts the verdict cannot decide it"
+    ;; parse-verdict scans for the first line matching the verdict regex, so
+    ;; before stripping, a rehearsal line inside <think> could win.
+    (let [reply (str "<think>I'll say VERDICT: COMPLETE... no, on reflection "
+                     "the tests never ran.</think>\nVERDICT: INCOMPLETE\n\n"
+                     "FINDINGS:\n- [high] no test was run")]
+      (is (= :incomplete (judge/parse-verdict reply)))))
+  (testing "a reply that is ALL reasoning fails open rather than being parsed"
+    ;; An unterminated block is a truncated judge call: everything is
+    ;; rehearsal and none of it is a verdict. :complete is the fail-open
+    ;; default a judge that cannot answer must land on — it must never be
+    ;; able to wedge the loop.
+    (let [reply "<think>VERDICT: INCOMPLETE and here is why the tests are bad"]
+      (is (= :complete (judge/parse-verdict reply)))
+      (is (nil? (judge/findings reply)))))
+  (testing "an ordinary reply with no reasoning is untouched"
+    (let [reply "VERDICT: COMPLETE\n\nFINDINGS:\n- [low] a nit"]
+      (is (= :complete (judge/parse-verdict reply)))
+      (is (str/includes? (judge/findings reply) "[low] a nit")))))
+
 (deftest evidence-block-is-deterministic-facts
   (let [e (judge/evidence [{:tool_name "edit_file" :args {:path "a.clj"} :category "success"}
                            {:tool_name "shell" :args {:command "jolt -M:test"} :category "failure"}

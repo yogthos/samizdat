@@ -39,6 +39,7 @@
   judge is told to say has to touch both."
   (:require [clojure.string :as str]
             [samizdat.agent.gates :as gates]
+            [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
             [samizdat.util :as util]))
 
@@ -59,6 +60,35 @@
   []
   (gates/threshold :judge-rules))
 
+(defn usable
+  "A judge reply with its reasoning removed, so the parsers read what the
+  judge SAID rather than what it considered saying.
+
+  MEASURED on run dbe64eea-successor. GLM-5.3 cannot be told not to think, so
+  the critic's reply arrived with its scratchpad inline, and `:findings-regex`
+  is greedy from the FIRST `FINDINGS:` — which was inside the <think> block.
+  The stored findings began mid-thought, carried `</think>`, and were appended
+  to the retry's problem: the next owner was handed the critic's musings as
+  part of its task, including a bullet it had talked itself out of (\"Not a
+  finding\"). The verdict was at the same risk, and that half is worse — the
+  verdict-line scan takes the first matching line, so a rehearsed
+  `VERDICT: COMPLETE` inside the reasoning outranks the real one after it.
+
+  `message/strip-think-blocks` already existed and `select.clj` already used
+  it for precisely this; the judge path never called it. It happens HERE and
+  not at the call sites because there are three critics — :board/review,
+  :feature/critique and cells/critic.clj — and a fourth would forget.
+
+  AN UNTERMINATED BLOCK IS ALL REASONING. strip-think-blocks removes matched
+  pairs only, so a truncated judge call leaves an open <think> and everything
+  after it is rehearsal. Cut there: what remains is empty, and both parsers
+  fail open on empty, which is what a judge that could not answer has to do."
+  [reply]
+  (let [s (message/strip-think-blocks (str reply))]
+    (if-let [i (str/index-of s "<think>")]
+      (str/trim (subs s 0 i))
+      s)))
+
 (defn parse-verdict
   "The verdict from a judge reply's verdict line.
 
@@ -74,6 +104,7 @@
   because a judge that cannot answer must never be able to wedge the loop."
   [reply]
   (let [{:keys [verdict-line-regex verdict-rules verdict-default]} (rules)
+        reply (usable reply)
         head (or (some #(when (re-find (re-pattern verdict-line-regex) %) %)
                        (str/split-lines (str reply)))
                  (first (str/split-lines (str reply)))
@@ -88,7 +119,7 @@
   "The FINDINGS section of a judge reply, verbatim, trimmed — or nil when it
   named none. What the critique passes back to the branch below the verdict."
   [reply]
-  (some-> (re-find (re-pattern (:findings-regex (rules))) (str reply))
+  (some-> (re-find (re-pattern (:findings-regex (rules))) (usable reply))
           second str/trim not-empty))
 
 (defn for-the-record

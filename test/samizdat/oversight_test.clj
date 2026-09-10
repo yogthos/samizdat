@@ -142,6 +142,51 @@
               to the supervisor, and now there is exactly one to hand it to"
       (is (worth-a-look? {:unmet-gates 0 :idle-turns 0 :errors nil :at-cap? true} floors)))))
 
+(deftest a-green-round-the-reviewer-sent-back-is-worth-a-look
+  ;; karamazov-ylte.1, run dbe64eea-successor. The owner shipped: 89 turns, a
+  ;; real diff, ship-verify green. The board critic then failed the round
+  ;; [high] for a requirement the answer never mentioned, and the round went
+  ;; to revise. THE SUPERVISOR NEVER SAW IT — 18 of its 30 passes were quiet,
+  ;; and this moment tripped none of the six triggers: gates were met, turns
+  ;; were not idle, nothing crashed, the soft cap was far off, something DID
+  ;; ship so nothing-shipped? was false, and no mutation was refused.
+  ;;
+  ;; The docstring's premise is that "a healthy run that is shipping gets no
+  ;; supervision, which is correct" — and it is, as long as shipping means
+  ;; shipping something whole. A confidently wrong ship looks identical to a
+  ;; healthy one from every counter the stream reads.
+  ;;
+  ;; The signal is narrow on purpose: the work passed its OWN tests and a
+  ;; reviewer refused it anyway. That is the first trigger's own subject — the
+  ;; harness's words failing to convey something — rather than an ordinary
+  ;; revise, where the tests were red and the loop is simply still working.
+  (let [floors {:unmet-floor 2 :idle-floor 25}
+        healthy {:unmet-gates 0 :idle-turns 0 :errors nil}]
+    (testing "green work sent back buys a pass"
+      (is (worth-a-look?
+           (assoc healthy :sent-back-green? true) floors)))
+    (testing "an ordinary revise on red tests does NOT — the loop is working"
+      (is (not (worth-a-look?
+                (assoc healthy :sent-back-green? false) floors))))
+    (testing "and the cheap default is untouched"
+      (is (not (worth-a-look? healthy floors))))))
+
+(deftest sent-back-green-reads-the-round-the-loop-already-writes
+  (cells/load-cells!)
+  (let [f @(ns-resolve 'cells.oversight 'sent-back-green?)]
+    (testing "the two facts are both on the :route note the feature loop
+              journals every round — nothing new has to be recorded"
+      (is (true? (f {:decision "revise" :tests-passed true})))
+      (is (true? (f {:decision :revise :tests-passed true}))
+          "the note round-trips through JSON, so the decision comes back a
+           string; reading only the keyword would make this silently never
+           fire, which is the shape of karamazov-u5uy"))
+    (testing "and it is neither of the things it must not be"
+      (is (false? (f {:decision "revise" :tests-passed false}))
+          "red tests sent back is the loop working, not a blind spot")
+      (is (false? (f {:decision "ship" :tests-passed true})))
+      (is (false? (f nil))))))
+
 ;; --- what the stage used to see, the stream now sees (RFC-012 F1/F4) --------
 
 (defn- reasoning-over

@@ -167,6 +167,103 @@
             (str/includes? msg "why"))
         "it has to name saying-what-blocked-you as the option it is")))
 
+(deftest giving-up-has-to-say-what-was-tried
+  ;; karamazov-ylte.1. `done` faces four lexical rungs, a test-verification
+  ;; rung and a focused verify. `give_up` faced NOTHING: five lines, an
+  ;; optional `reason`, and "no reason given" as a supported default — so the
+  ;; harness accepted an abandonment with no account of it at all. That is the
+  ;; sharpest form of silence being free: the one ending with no gate on it.
+  ;;
+  ;; The account asked for is the same one the completeness refusal now names
+  ;; as an honest ending: what you could not do, and what blocked you. A
+  ;; branch that genuinely cannot proceed can always say so; a branch that has
+  ;; simply stopped cannot, and that is the difference worth a rung.
+  ;; :tool-name is the multimethod's dispatch key. Omitting it sends every
+  ;; call to the unknown-tool default, which fails — so the refusal
+  ;; assertions below would pass without give_up being gated at all. Found
+  ;; that way on the first run of this test; it is the same shape as the
+  ;; injected-complete test that asserted a real loop and never entered one.
+  (let [ctx (fn [args] {:tool-name "give_up"
+                        :branch {:id "B1" :problem (str "Make the terrain fade into the distance "
+                                                        "and confirm on screen that it is visible.")}
+                        :args args :turn 9})]
+    (testing "a bare give_up is refused"
+      (let [r (tools/run-tool (ctx {}))]
+        (is (= :failure (:category r)) "not an ending")
+        (is (not= :abandoned (get-in r [:branch :status]))
+            "the branch stays active — a refused give_up is not an ending")
+        (is (str/includes? (str (:result r)) "give_up"))))
+    (testing "a reason that says nothing is refused too"
+      (doseq [empty-ish ["" "   " "stuck" "cannot proceed" "no reason given"]]
+        (let [r (tools/run-tool (ctx {:reason empty-ish}))]
+          (is (= :failure (:category r))
+              (str "refused: " (pr-str empty-ish)))
+          (is (not= :abandoned (get-in r [:branch :status]))))))
+    (testing "a real account is accepted, and it is still an ending"
+      (let [r (tools/run-tool
+               (ctx {:reason (str "The task needs a screenshot to confirm the "
+                                  "fade. I could not produce one: jolt -M:run "
+                                  "answers SYSTEM: Failed to initialize "
+                                  "platform on this host, and a pristine "
+                                  "vendor example fails the same way, so it is "
+                                  "the host and not the game.")}))]
+        (is (= :abandoned (get-in r [:branch :status])))
+        (is (true? (:gave-up? r)))))
+    (testing "and the refusal names what an account is, rather than the field"
+      (let [msg (str (:result (tools/run-tool (ctx {:reason "stuck"}))))]
+        (is (or (str/includes? msg "tried") (str/includes? msg "blocked"))
+            "a bare list of argument names teaches nothing (base/missing's rule)")))
+    (testing "a refused give_up carries :done-block, so the :done-blocked gate
+              steers it and :max-done-blocks bounds it — otherwise the rung
+              would create the quiet spin it exists to stop"
+      (let [r (tools/run-tool (ctx {:reason "stuck"}))]
+        (is (some? (:done-block r)))
+        (is (contains? (:done-blocked (gates/tool-vocab :settle-called)) "give_up")
+            "the gate's settle vocabulary already anticipated give_up")))))
+
+(deftest a-branch-that-cannot-account-for-itself-can-still-end
+  ;; THE RELIEF, and without it the rungs above are a trap rather than a gate.
+  ;; :max-done-blocks is "how often `done` may be refused before the branch is
+  ;; told to give up" — so giving up IS the escape hatch from a refused done.
+  ;; Gating it with no ceiling leaves a stuck branch refused at BOTH exits,
+  ;; spending its whole budget being told no, which is the quiet spin these
+  ;; rungs exist to stop, rebuilt one door along.
+  ;;
+  ;; Found by team-test/supervisor-retries-a-worker-that-gave-up: its workers
+  ;; said "stuck", were refused, never gave up, and the supervisor had nothing
+  ;; to retry. Fail-open on cells/critic.clj's own reasoning — a backstop that
+  ;; can wedge the loop is worse than no backstop. What a branch cannot do is
+  ;; end CHEAPLY.
+  (let [call (fn [branch] (tools/run-tool {:tool-name "give_up" :branch branch
+                                           :args {:reason "stuck"} :turn 9}))
+        ceiling (gates/threshold :max-give-up-blocks)]
+    (testing "refusals accumulate on the branch, so the count survives turns"
+      (let [b0 {:id "B1" :problem "make the terrain fade into the distance"}
+            r1 (call b0)]
+        (is (= 1 (:give-up-blocks (:branch r1))))
+        (is (= 2 (:give-up-blocks (:branch (call (:branch r1))))))))
+    (testing "at the ceiling the abandonment lands anyway"
+      (let [b {:id "B1" :problem "make the terrain fade into the distance"
+               :give-up-blocks ceiling}
+            r (call b)]
+        (is (= :abandoned (get-in r [:branch :status])))
+        (is (true? (:gave-up? r)))))
+    (testing "and the record says the account never came, so it reads as a
+              finding rather than as a silence"
+      (let [r (call {:id "B1" :problem "make the terrain fade into the distance"
+                     :give-up-blocks ceiling})]
+        (is (true? (:gave-up-unaccounted? r)))))
+    (testing "a branch that gave a real account is NOT marked unaccounted"
+      (let [r (tools/run-tool
+               {:tool-name "give_up"
+                :branch {:id "B1" :problem "make the terrain fade into the distance"}
+                :args {:reason (str "The fade needs a screenshot to confirm. I "
+                                    "could not produce one: the run answers "
+                                    "SYSTEM: Failed to initialize platform.")}
+                :turn 9})]
+        (is (= :abandoned (get-in r [:branch :status])))
+        (is (not (:gave-up-unaccounted? r)))))))
+
 ;; --- the same-file streak ---------------------------------------------------
 
 (deftest the-file-touch-streak-narrows-and-breaks
