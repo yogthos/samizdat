@@ -2584,3 +2584,56 @@
         (is (pos? cap))
         (is (<= (count (str (:reply note))) (+ cap 4)) "clipped to the budget, plus a marker"))
       (finally (db/close conn)))))
+
+;; --- retirement candidates (karamazov-ylte.3) -------------------------------
+
+(deftest a-gate-that-fires-across-runs-and-is-never-met-is-a-retirement-candidate
+  ;; The mirror of knowledge/graduation-candidates. journal/gate-tally already
+  ;; computes fired/met/met_late/unmet per gate and its own docstring says "a
+  ;; gate whose predictions never settle is not steering anything" — but it is
+  ;; scoped to ONE run and goes only to the residual report, so the supervisor
+  ;; never sees it and nothing crosses runs.
+  ;;
+  ;; The precedent is in the tree: :reflection was deleted on exactly this
+  ;; evidence, "69 firings and 0 met across two models, five task shapes and
+  ;; two harness generations" (gates.edn). A human read that off the record.
+  ;; This is that reading, made available to the supervisor.
+  (with-db [c]
+    (let [fire! (fn [rid gate outcome]
+                  (runs/open-branch! c rid {:branch-id "B1"})
+                  (let [id (journal/record-gate! c rid {:branch-id "B1" :turn 1 :gate gate
+                                                        :prediction "p" :window 2})]
+                    (when outcome (journal/settle-gate! c id outcome 2))))]
+      ;; :deadwood fires in three runs and is never met.
+      ;; :working fires in three runs and is met every time.
+      ;; :once fires in one run, unmet — one run is an afternoon, not evidence.
+      (doseq [r ["r1" "r2" "r3"]]
+        (let [rid (runs/start-run! c {:problem "p" :run-id r})]
+          (fire! rid :deadwood :unmet)
+          (fire! rid :working :met)))
+      (let [rid (runs/start-run! c {:problem "p"})]
+        (fire! rid :once :unmet))
+      (let [cands (journal/retirement-candidates c {:min-runs 3 :limit 8})
+            names (set (map :gate cands))]
+        (is (contains? names "deadwood")
+            "fired in three distinct runs, never once met")
+        (is (not (contains? names "working"))
+            "a gate whose advice is taken is steering and is not deadwood")
+        (is (not (contains? names "once"))
+            "one run is not evidence — the same distinct-run bar corroboration uses")))))
+
+(deftest met-late-keeps-a-gate-off-the-retirement-list
+  ;; journal.clj:608 already argues why met_late is its own column: a gate
+  ;; whose advice WORKS and whose window is wrong is a different repair from a
+  ;; gate nobody obeys. Folding them would nominate a gate for deletion when
+  ;; the fix is to widen its window.
+  (with-db [c]
+    (doseq [r ["r1" "r2" "r3"]]
+      (let [rid (runs/start-run! c {:problem "p" :run-id r})]
+        (runs/open-branch! c rid {:branch-id "B1"})
+        (let [id (journal/record-gate! c rid {:branch-id "B1" :turn 1 :gate :slow
+                                              :prediction "p" :window 2})]
+          (journal/settle-gate! c id :met-late 9))))
+    (is (empty? (filter #(= "slow" (:gate %))
+                        (journal/retirement-candidates c {:min-runs 3 :limit 8})))
+        "met-late is a window to widen, not a gate to delete")))

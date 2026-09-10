@@ -71,13 +71,20 @@
     (karamazov-u5uy). No floor, because zero out of a positive total is not
     a matter of degree.
 
+  - a MUTATION WAS REFUSED. The supervisor tried to change the harness and the
+    protocol said no. Left alone, the next pass re-derives the same edit —
+    which is the failure the paper's rejection memory exists to prevent
+    (2609.09153v1 Algorithm 1 step 4) and the one karamazov-mpd names. No
+    floor: one refusal is already the whole signal.
+
   A healthy run that is shipping gets no supervision, which is correct: there
   is nothing to tune and saying so costs a turn of somebody's budget."
-  [{:keys [unmet-gates idle-turns errors at-cap? nothing-shipped?]}
+  [{:keys [unmet-gates idle-turns errors at-cap? nothing-shipped? refused]}
    {:keys [unmet-floor idle-floor]}]
   (boolean (or (>= (or unmet-gates 0) unmet-floor)
                (>= (or idle-turns 0) idle-floor)
                (seq errors)
+               (seq refused)
                at-cap?
                nothing-shipped?)))
 
@@ -138,6 +145,7 @@
                       [:oversight/idle :any] [:oversight/round :any]
                       [:oversight/crashes :any] [:oversight/results :any]
                       [:oversight/self-graded :any]
+                      [:oversight/refused :any]
                       [:oversight/worth-a-look? :boolean]]
              :quiet  [:map [:oversight/worth-a-look? :boolean]]}]}
   (fn [{:keys [conn run-id]} data]
@@ -172,6 +180,18 @@
              ;; (karamazov-7mo M10). Named, never refused.
              self-graded (into [] (comp (mapcat :keys) (distinct))
                                (journal/notes conn run-id :self-graded))
+             ;; WHAT THE PROTOCOL REFUSED. mutation.clj journals these with
+             ;; {:reason :attempt} and, until now, nothing read them — the
+             ;; storage half of the paper's rejection memory with no
+             ;; retrieval half (karamazov-mpd, ylte.2). The in-run supervisor
+             ;; already sees a refusal because the tool returns it to branch
+             ;; SUP; what this reaches is the pass AFTER a compaction, and
+             ;; every later run.
+             ;; `notes` already parses the note back to its DATA map — the
+             ;; :stage-error reader beside this one relies on that too — so a
+             ;; (mapv :data ...) here yields [nil] and reads as 'a refusal
+             ;; happened with no reason', which is worse than not reading it.
+             refused (vec (journal/notes conn run-id :mutation-rolled-back))
              crashes (journal/notes conn run-id :stage-error)]
          (assoc data
                 :oversight/turns turns
@@ -182,12 +202,14 @@
                 :oversight/round round
                 :oversight/results results
                 :oversight/self-graded self-graded
+                :oversight/refused refused
                 :oversight/crashes crashes
                 :oversight/worth-a-look?
                 (worth-a-look? {:unmet-gates unmet :idle-turns since
                                 :errors (seq (concat (filter :error findings) crashes))
                                 :at-cap? (at-cap? round)
-                                :nothing-shipped? (nothing-shipped? results)}
+                                :nothing-shipped? (nothing-shipped? results)
+                                :refused refused}
                                {:unmet-floor (gates/threshold :oversight-unmet-floor)
                                 :idle-floor (gates/threshold :oversight-idle-floor)}))))
      (assoc data :oversight/worth-a-look? false))))
@@ -238,6 +260,7 @@
             ;; the bug this closes (karamazov-u5uy).
             [:oversight/results :any]
             [:oversight/self-graded {:optional true} :any]
+            [:oversight/refused {:optional true} :any]
             [:oversight/round {:optional true} :any]
             [:oversight/crashes {:optional true} :any]
             [:oversight/carry {:optional true} :any]]
@@ -306,6 +329,32 @@
                                            (when (seq surfaces)
                                              (prompt/render "drift" {:window window-runs
                                                                      :surfaces surfaces})))
+                                  ;; What this run already TRIED and the
+                                  ;; protocol refused, with the reason it
+                                  ;; gave. nil when nothing was refused, so
+                                  ;; the block takes no room — same shape as
+                                  ;; :drift above (ylte.2).
+                                  :refused (when-let [rs (seq (:oversight/refused data))]
+                                             (prompt/render
+                                              "mutation-refused"
+                                              {:attempts
+                                               (mapv (fn [r]
+                                                       {:reason (clip (:reason r)
+                                                                      (gates/threshold :oversight-note-chars))
+                                                        :targets (str/join ", " (map str (keys (:attempt r))))})
+                                                     rs)}))
+                                  ;; Gates that fire across runs and are never
+                                  ;; met. The mirror of :candidates above —
+                                  ;; that block asks whether to PROMOTE an
+                                  ;; episode, this one asks whether to DELETE
+                                  ;; a gate, and until now the supervisor
+                                  ;; could only add (karamazov-ylte.3).
+                                  :retire (let [rs (safely :retirement
+                                                           #(journal/retirement-candidates
+                                                             conn (gates/threshold :retirement))
+                                                           [])]
+                                            (when (seq rs)
+                                              (prompt/render "retirement" {:gates rs})))
                                   :catalog (safely :catalog #(wf/render-catalog conn) "")})
              ;; ONE branch for the run, carried by the stream. Opened once;
              ;; re-opening an existing id is a no-op that returns the row.

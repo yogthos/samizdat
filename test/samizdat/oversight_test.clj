@@ -585,3 +585,79 @@
     (is (= (:timeout-ms (gates/threshold :oversight))
            (get-in @seen [:llm-config :timeout-ms]))
         "gates.edn :oversight :timeout-ms reaches the pass's provider calls")))
+
+;; --- rejection memory (karamazov-ylte.2) ------------------------------------
+
+(deftest a-refused-mutation-reaches-the-supervisor
+  ;; Step 4 of the Procedural Graph paper's Algorithm 1: a candidate the gate
+  ;; turned down is kept and handed back as negative evidence, so the refiner
+  ;; stops re-proposing equivalent edits.
+  ;;
+  ;; samizdat had the storage and no retrieval. mutation.clj:193 journals
+  ;; :mutation-rolled-back with {:reason :attempt} — and its comment cites
+  ;; karamazov-mpd for exactly this reason, that the reason alone lets the next
+  ;; run re-derive the same edit — while the only readers were three tests in
+  ;; mutation_test. gather read :route, :implement-round, :stage-error and
+  ;; :self-graded, and not this. Same shape as karamazov-u5uy: a supervisory
+  ;; signal is only as real as the channel it arrives on.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :mutation-rolled-back
+                   {:data {:reason "soak did not terminate within the time budget"
+                           :attempt {"cells/loop.clj" "(ns cells.loop) ;; edited"}}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (= 1 (count (:oversight/refused gather)))
+          "gather carries the run's refused mutations")
+      (is (str/includes? (str prob) "REFUSED")
+          "and the brief names them, so a pass after a compaction still knows")
+      (is (str/includes? (str prob) "soak did not terminate")
+          "with the reason the protocol gave"))))
+
+(deftest a-refused-mutation-is-worth-a-model-call
+  ;; A refusal means the supervisor tried to change the harness and the
+  ;; protocol said no. That is precisely a moment where the next pass will
+  ;; re-derive the same edit unless something tells it not to, so it earns a
+  ;; look on its own — the run need not also be stalling.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :mutation-rolled-back
+                   {:data {:reason "validate: unreachable cells" :attempt {}}})
+    (let [g ((:handler (cell/get-cell! :oversight/gather)) {:conn conn :run-id rid :config {}} {})]
+      (is (true? (:oversight/worth-a-look? g))))))
+
+(deftest a-committed-mutation-is-not-a-refusal-and-buys-nothing
+  ;; The negative half only. An edit that went through is not evidence about
+  ;; what not to try, and a supervisor woken every time its own change landed
+  ;; would be paying a model call to be told it succeeded.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :mutation-committed {:data {:cells ["loop"]}})
+    (let [g ((:handler (cell/get-cell! :oversight/gather)) {:conn conn :run-id rid :config {}} {})]
+      (is (empty? (:oversight/refused g)))
+      (is (false? (:oversight/worth-a-look? g))))))
+
+(deftest dead-gates-reach-the-supervisor-as-deletion-candidates
+  ;; The mirror of the graduation block: :candidates asks whether to PROMOTE
+  ;; an episode to a rule, this asks whether to DELETE a gate that nothing
+  ;; obeys. Before it the supervisor could only ever add, and gates.edn's own
+  ;; record of deleting :reflection shows the evidence was always there and
+  ;; only a person ever read it.
+  (let [conn (db/open! ":memory:")]
+    (doseq [r ["r1" "r2" "r3"]]
+      (let [rid (runs/start-run! conn {:problem "p" :run-id r})]
+        (runs/open-branch! conn rid {:branch-id "B1"})
+        (let [id (journal/record-gate! conn rid {:branch-id "B1" :turn 1 :gate :deadwood
+                                                 :prediction "p" :window 2})]
+          (journal/settle-gate! conn id :unmet 2))))
+    (let [rid (runs/start-run! conn {:problem "p"})
+          ;; something to make the pass worth a look at all
+          _ (journal/note! conn rid :stage-error {:data {:stage "s" :error "boom"}})
+          {:keys [prob]} (reasoning-over conn rid)]
+      (is (str/includes? (str prob) "never met")
+          "the brief carries the retirement block")
+      (is (str/includes? (str prob) "deadwood")
+          "and names the gate")
+      (is (str/includes? (str prob) "Nothing here is retired for you")
+          "surfacing, not acting — the graduation block's discipline"))))

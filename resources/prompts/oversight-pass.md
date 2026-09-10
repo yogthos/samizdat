@@ -62,7 +62,9 @@ loop, not a bad afternoon. If you agree, `remember` it as a rule — kind
 as one; if it is noise, `retire` it with the reason. Left alone it stays an
 episode and ranks as one.
 {% for m in candidates %}- {{m.id}} seen in {{m.corroborations}} runs: {{m.content}}
-{% endfor %}{% endif %}{% if drift %}
+{% endfor %}{% endif %}{% if retire %}
+{{retire}}{% endif %}{% if refused %}
+{{refused}}{% endif %}{% if drift %}
 {{drift}}{% endif %}{% if catalog %}
 ## Workflows available
 {{catalog}}

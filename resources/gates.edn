@@ -1501,6 +1501,30 @@
         judgement — it hands over the episodes that have earned the
         question."}
 
+ :retirement
+ {:value {:min-runs 3 :limit 5}
+  :provenance ["karamazov-ylte.3" "2609.09153v1"]
+  :kind :policy :capability-tunable? false
+  :doc "WHEN A GATE HAS EARNED THE QUESTION OF BEING DELETED, mirroring
+        :memory :graduation-min-runs for episodes.
+
+        journal/retirement-candidates surfaces gates that fired in at least
+        :min-runs DISTINCT runs and were never once met. Distinct runs, not
+        firings, on corroborate!'s argument — a gate that fired forty times in
+        one bad afternoon is one observation. met-late does not count as never
+        met: a gate whose advice works and whose window is wrong is a window
+        to widen, not a gate to delete, which is why gate-tally keeps that
+        column separate in the first place.
+
+        The precedent this generalises is :reflection, deleted by hand on
+        '69 firings and 0 met across two models, five task shapes and two
+        harness generations'. The supervisor could only ever ADD before this;
+        two of the four accepted edits in 2609.09153v1's evolution run were
+        deletions, and a loop that cannot prune is half a loop.
+
+        The store surfaces and the supervisor judges — it never retires a gate
+        itself (karamazov-ylte.3)."}
+
  :drift
  {:value {:window-runs 10 :top-names 3}
   :kind :policy :capability-tunable? false

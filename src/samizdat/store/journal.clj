@@ -619,6 +619,49 @@
                 FROM gate_firings WHERE run_id = ? GROUP BY gate ORDER BY fired DESC"
                run-id]))
 
+(defn retirement-candidates
+  "Gates that have earned the question of being DELETED: fired in at least
+  `:min-runs` distinct runs and never once met, most-fired first.
+
+  THE MIRROR OF knowledge/graduation-candidates, and it exists because the
+  supervisor could only ever add. `gate-tally` above already computes the
+  number — its own docstring says a gate whose predictions never settle is
+  not steering anything — but it is scoped to one run and goes only to the
+  residual report, so nothing crossed runs and nobody was shown it.
+
+  The precedent is in the tree. gates.edn records :reflection being deleted on
+  exactly this evidence: \"69 firings and 0 met across two models, five task
+  shapes and two harness generations\". A person read that off the record by
+  hand. Two of the four accepted edits in 2609.09153v1's evolution run were
+  also deletions, and pruning is how MultiChallenge recovered from a bad prior
+  there — a loop that can only add is half a loop.
+
+  DISTINCT RUNS, not firings, on corroborate!'s argument: one run goes wrong
+  for reasons that have nothing to do with the gate, and a gate that fired
+  forty times in one bad afternoon is one observation.
+
+  MET-LATE COUNTS AS MET here, deliberately. journal.clj's gate-tally keeps it
+  a separate column because a gate whose advice works and whose WINDOW is
+  wrong is a different repair from a gate nobody obeys; folding them would
+  nominate a gate for deletion when the fix is to widen its window.
+
+  SURFACES, NEVER RETIRES. Deleting a gate is a judgement about the loop and
+  it is the supervisor's, exactly as promoting an episode to a rule is."
+  [conn {:keys [min-runs limit] :or {min-runs 3 limit 8}}]
+  (vec (db/fetch conn
+                 ["SELECT gate,
+                          count(*) AS fired,
+                          count(DISTINCT run_id) AS runs,
+                          sum(CASE WHEN outcome = 'unmet' THEN 1 ELSE 0 END) AS unmet
+                     FROM gate_firings
+                    GROUP BY gate
+                   HAVING count(DISTINCT run_id) >= ?
+                      AND sum(CASE WHEN outcome IN ('met', 'met-late') THEN 1 ELSE 0 END) = 0
+                      AND sum(CASE WHEN outcome = 'unmet' THEN 1 ELSE 0 END) > 0
+                    ORDER BY fired DESC
+                    LIMIT ?"
+                  (long min-runs) (long limit)])))
+
 ;; --- events -----------------------------------------------------------------
 
 (defn events-since
