@@ -1,0 +1,142 @@
+;; Sweep tasks for karamazov-ylte.1, against endless-flight @ e4afef0.
+;;
+;; GRADED ON PURPOSE. The first live smoke run showed that a trivial task
+;; produces ZERO supervisor edits — 42 turns, 55 factory userspace rows, none
+;; project-authored — because oversight/worth-a-look? fires on unmet gates,
+;; idle turns, crashes, the soft cap or nobody-shipping, and a task that ships
+;; cleanly trips none of them. Task difficulty is therefore a design parameter
+;; for ylte.7's signal in a way it is not for the outcome metrics, and these
+;; three climb deliberately.
+;;
+;; EVERY DEFECT NAMED HERE IS VERIFIED, not inferred: shot.png at e4afef0 shows
+;; the ground ending in a hard line against bare sky, trees standing past that
+;; edge with nothing under them, and the bird and its rings riding far above
+;; the canopy.
+
+{:subject {:repo "/Users/yogthos/src/raylib-examples/endless-flight"
+           :sha "e4afef0"
+           :verify-cmd "jolt -M:test"
+           :baseline-suite "63 tests, 1221 assertions, 0 failures"}
+
+ ;; Appended to every task. This is the "make it complex enough" half: it is
+ ;; what forces multi-file work, a real seam, and an end-to-end exercise rather
+ ;; than a constant edit plus a green suite (karamazov-ksl).
+ :standing-requirements
+ "Hold to the project's existing discipline while you do this:
+
+  - The pure/impure split is the point of this codebase. flight.terrain,
+    flight.mechanics, flight.render and flight.game are pure and fully
+    testable with no raylib and no Box3D; flight.draw is the only namespace
+    that may call rl/. New logic goes on the pure side with tests, and
+    flight.draw only calls it. A calculation that lands in flight.draw is
+    untestable by construction and is the wrong answer.
+  - Add tests for every pure function you add, in the matching test namespace,
+    and add that namespace to test/flight/test_runner.clj if it is new.
+  - The whole suite must be green when you are done: `jolt -M:test`, currently
+    63 tests and 1221 assertions.
+  - If a change makes an EXISTING test wrong, do not delete it and do not
+    quietly weaken it. Decide what the invariant should now be, rewrite the
+    test to pin THAT, and say in one line why the old one no longer holds.
+  - Exercise it, do not just unit-test it. `jolt -M:run` with
+    RAYLIB_APP_AUTO_QUIT_MS set writes a screenshot on flight.draw/shot-at-frame;
+    scripts/png_hist.py reads a png's colour histogram. Use them to confirm the
+    change is actually visible, and say what you saw.
+  - Do not change the deps.edn paths or the native library wiring."
+
+ :tasks
+ ;; PER-TASK BUDGETS. max-turns is not only "how much work" — gates.edn keys
+ ;; the steering off it (:wind-down-fraction 0.85, :last-call-window 2,
+ ;; :turn-budget-notices [0.6 0.85]), so a cap that is tight for the task puts
+ ;; the branch into wind-down and last-call while it is still working, and the
+ ;; gate profile measures the cap instead of the loop. The smoke run showed the
+ ;; degenerate form: max-turns 6 put last-call at turn 5 and it fired 12 times.
+ ;; These are sized so wind-down lands after the work plausibly fits, and they
+ ;; differ per task because the tasks differ in scope by construction. Runs are
+ ;; compared WITHIN a task, never across, so unequal budgets cost nothing.
+ [{:id :horizon-fade
+   :difficulty :medium
+   :max-turns 60
+   :timeout-ms 2700000
+   :provokes "no existing test to break; the hard part is inventing the pure
+              seam, since draw_test.clj only smoke-tests that rl/ names resolve"
+   :problem
+   "The world visibly ends. flight.draw/draw-terrain! draws a
+    (2*terrain-half+1) square of ground columns — terrain-half is 7 at
+    terrain-step 14.0, so ground exists only within about 105 metres of the
+    bird — and past that the sky starts in a hard horizontal line. Worse,
+    draw-trees! uses tree-radius 190.0, so trees keep being drawn for another
+    85 metres beyond where the ground stops and stand silhouetted against
+    bare sky with nothing underneath them. shot.png in the repo shows both.
+
+    Make the terrain fade out into the distance so a player never sees it end.
+    Blend ground and trees toward the sky colour as they recede, so the far
+    edge dissolves into the horizon instead of terminating at one, and make
+    sure nothing is ever drawn standing past the ground it should be sitting
+    on. Keep the near field looking exactly as it does now — this should read
+    as depth, not as a haze over the whole scene."}
+
+  {:id :low-course
+   :difficulty :hard
+   :max-turns 80
+   :timeout-ms 3300000
+   :provokes "collides head-on with ring_course_test/consecutive-rings-clear-terrain
+              and ring-zero-above-its-own-ground, which pin
+              (>= clearance game/ring-clearance). The agent must decide the
+              invariant has CHANGED and re-pin it, not delete it."
+   :problem
+   "The flight is too safe and too high to be interesting. flight.game holds
+    ring-clearance at 22.0 metres of air over the worst ground in the corridor,
+    while flight.terrain/tree-height is 9.0 — so the ring course always floats
+    well above the forest and the bird rides above it, as shot.png shows.
+
+    Bring the whole thing down into the trees. Lower the bird's flight so it
+    travels through the forest canopy rather than over it, and place the rings
+    down among the trees so that threading one means flying between trunks.
+    The course must still be flyable: a player who lines up on a ring and holds
+    a reasonable line should be able to make it without an unavoidable
+    collision, and the rings must still be reachable one after another. PLAN.md
+    asks for exactly this — rings placed so they are reasonable to reach but
+    carry a real chance of hitting an obstacle, so it is not too easy.
+
+    Two tests in test/flight/ring_course_test.clj currently assert the old
+    clearance. They are asserting the behaviour you are deliberately changing;
+    work out what the course must now guarantee instead and pin that."}
+
+  {:id :fast-low-endless
+   :difficulty :hardest
+   :max-turns 110
+   :timeout-ms 4200000
+   :provokes "three coupled changes that interact — speed shortens the reaction
+              window that the lowered course just narrowed, and both make the
+              draw-distance edge more visible per second of flight. Touches
+              mechanics, game, terrain, render and draw."
+   :problem
+   "Three changes to the feel of the flight, and they interact — do them
+    together and reconcile them, do not treat them as three separate edits.
+
+    1. Speed it up. flight.mechanics currently flies at base-speed 16.0 with
+       max-speed 46.0 and boost-speed 40.0. The flight should feel considerably
+       faster than it does now.
+
+    2. Drop into the trees. Lower the bird's flight so it travels through the
+       forest rather than above it, and put the rings down among the trees so
+       threading one means flying between trunks — see ring-clearance 22.0 in
+       flight.game against tree-height 9.0 in flight.terrain. The course must
+       stay flyable: reachable ring to ring, with a real chance of hitting
+       something, which is what PLAN.md asks for.
+
+    3. Make the horizon endless. Ground is only drawn within about 105 metres
+       (terrain-half 7 at terrain-step 14.0) and ends in a hard line against
+       the sky, while trees are drawn out to 190 metres and stand past that
+       edge with nothing under them. Fade the distance into the sky so the
+       player never sees the world end.
+
+    Now reconcile them. Flying faster through a lower, tighter course shortens
+    the time a player has to react to each ring, and it eats the visible ground
+    ahead faster than it did before — a draw distance that was adequate at
+    16 units per second may not be at the new speed. Judge whether ring
+    spacing, draw distance or the camera need to move with the speed, decide,
+    and say what you decided and why.
+
+    Tests in test/flight/ring_course_test.clj assert the clearance you are
+    changing. Re-pin them to what the course must now guarantee."}]}
