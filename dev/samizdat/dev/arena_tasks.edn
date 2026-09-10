@@ -59,32 +59,36 @@
  ;;
  ;; WHAT 60 COST. The owner spent all 60 turns in 25 minutes and called `done`
  ;; on turns 59 AND 60 — it believed it was finished and the cap took the last
- ;; word. The run then opened revision 1 and started again from nothing. So
- ;; the number that read as a work budget was in fact the thing that threw the
- ;; work away, and it missed by a handful of turns. These are roughly doubled,
- ;; and none exceeds :board-owner-turns, so the number written here is the
- ;; number that binds rather than one silently clamped somewhere else.
+ ;; word. The run then opened revision 1 and started again from nothing.
  ;;
- ;; :timeout-ms is the RIG's clock and it is meant never to fire. Doubled from
- ;; the first sweep, and sized at about one full owner pass at these turn caps
- ;; (~25 s a turn measured) plus the round's review, critic, verify and
- ;; supervisor time (~5 min measured between one owner ending and the next
- ;; beginning).
+ ;; WHAT 120 THEN SHOWED, on the first unwedged run (2026-09-10, 13:18). The
+ ;; owner finished its attempt at turn 89 and SHIPPED — `ship-verify` ran, the
+ ;; suite was green — so the cap was never reached and raising it further buys
+ ;; nothing. One attempt measures at ~90 turns, ~40 minutes, ~1.5M tokens.
+ ;; These sit just above that, with headroom and no slack.
  ;;
- ;; :stall-ms is the one that was missing. That run's last journalled activity
- ;; was 33 minutes before the rig killed it: it was not slow, it was wedged,
- ;; and doubling a timeout over a wedge buys twice the waiting. Set well above
- ;; the slowest legitimate quiet period, which is a provider call —
- ;; :llm :max-response-ms is 600000 and the retry ladder can spend that more
- ;; than once on one turn.
+ ;; :timeout-ms is the RIG's clock and it is meant never to fire, so it is
+ ;; sized to FIT the revisions rather than to be generous. This is the part
+ ;; that was wrong: at 8 hard revisions and ~45 minutes each, no clock this
+ ;; side of six hours could let the loop finish, so :ended-by was guaranteed
+ ;; to be :clock and the last attempt was guaranteed to be thrown away
+ ;; half-done. A clock that cuts mid-attempt wastes the whole attempt.
  ;;
- ;; :max-revisions-hard closes the loop. :feature/route is deliberately
- ;; supervisor-driven with NO numeric abandon — it keeps solving until a
- ;; supervisor says STOP — so an unattended run has no ending of its own and
- ;; the rig's clock had to be it. `:run :max-revisions-hard` is the guard the
- ;; harness already ships for exactly this case. Set above the soft cap of 6
- ;; so the deterministic strategy escalation gets its round before the guard
- ;; trips.
+ ;; :stall-ms is the one that was missing from the first sweep, when 33 of 64
+ ;; minutes were a wedge. Set well above the slowest legitimate quiet period,
+ ;; which is a provider call — :llm :max-response-ms is 600000 and the retry
+ ;; ladder can spend that more than once on one turn. On the unwedged run the
+ ;; longest idle was 46 seconds.
+ ;;
+ ;; :max-revisions-hard closes the loop, and it is the only real lever on
+ ;; spend. :feature/route is deliberately supervisor-driven with NO numeric
+ ;; abandon — it keeps solving until a supervisor says STOP — so an unattended
+ ;; run has no ending of its own. Each revision is a full attempt: ~1.5M
+ ;; tokens. 1 means two attempts, which is what the clock can hold, and it is
+ ;; what makes a run end because the LOOP decided rather than because the rig
+ ;; killed it. It is below the soft cap of 6, so the deterministic strategy
+ ;; escalation will not fire; that is a deliberate trade of exploration for
+ ;; spend, and it is the thing to raise first if the runs come back thin.
  ;;
  ;; :token-budget is deliberately ABSENT and that is a finding, not an
  ;; oversight: it is checked only at :beam/round-open, and a non-iterating
@@ -95,10 +99,10 @@
  ;; nothing.
  [{:id :horizon-fade
    :difficulty :medium
-   :max-turns 120
-   :timeout-ms 5400000
+   :max-turns 100
+   :timeout-ms 6300000
    :stall-ms 1200000
-   :max-revisions-hard 8
+   :max-revisions-hard 1
    :provokes "no existing test to break; the hard part is inventing the pure
               seam, since draw_test.clj only smoke-tests that rl/ names resolve"
    :problem
@@ -119,10 +123,10 @@
 
   {:id :low-course
    :difficulty :hard
-   :max-turns 140
+   :max-turns 110
    :timeout-ms 7200000
    :stall-ms 1200000
-   :max-revisions-hard 8
+   :max-revisions-hard 1
    :provokes "collides head-on with ring_course_test/consecutive-rings-clear-terrain
               and ring-zero-above-its-own-ground, which pin
               (>= clearance game/ring-clearance). The agent must decide the
@@ -148,10 +152,10 @@
 
   {:id :fast-low-endless
    :difficulty :hardest
-   :max-turns 150
-   :timeout-ms 9000000
+   :max-turns 120
+   :timeout-ms 8100000
    :stall-ms 1200000
-   :max-revisions-hard 8
+   :max-revisions-hard 1
    :provokes "three coupled changes that interact — speed shortens the reaction
               window that the lowered course just narrowed, and both make the
               draw-distance edge more visible per second of flight. Touches
