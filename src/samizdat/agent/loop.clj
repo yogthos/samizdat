@@ -224,6 +224,20 @@
                                        (assoc f :branches (str/join ", " (:branches f))))
                                      files)})))))
 
+(defn- learned-block
+  "What the previous run learned about this project, rendered — or nil.
+
+  nil on a first run, an empty store, or a store that learned nothing since,
+  so the block simply does not appear rather than announcing its own absence.
+  The prose is userspace like every other block's."
+  [conn run-id]
+  (when-let [prev (knowledge/last-run-before conn run-id)]
+    (when-let [rows (seq (knowledge/learned-since conn (:ended_at prev)))]
+      (prompt/render "learned-since"
+                     {:run (str (:id prev))
+                      :memories (str/join "\n"
+                                          (map #(str "- " (:content %)) rows))}))))
+
 (defn- context-block
   "What the harness adds to the branch's view before its next turn: the
   failures most like what it just tried, and — when sharing is on — the
@@ -297,6 +311,21 @@
                    ;; last-claim, recent when blank. nil on an empty store, so
                    ;; the remove drops it.
                    [:memories (knowledge/breadcrumb-index conn last-claim)]
+                   ;; WHAT THE LAST RUN LEARNED, once (karamazov-ei6t.9).
+                   ;; The breadcrumb index above answers a question the model
+                   ;; thought to ask, ranked against its own last claim; this
+                   ;; answers the one it does not know to ask, and nothing did
+                   ;; before — distil-project! spends every run producing
+                   ;; exactly this and no run had ever opened with it.
+                   ;;
+                   ;; ONCE, on the same reasoning and by the same mechanism as
+                   ;; the shared-artifact dedup beside it: the block re-renders
+                   ;; every turn, so a part that is news on turn 1 is a
+                   ;; standing tax by turn 40. Ported from lemmalog's context
+                   ;; assembler, which opens with a "new in memory since last
+                   ;; turn" section for the same reason.
+                   [:learned (when-not (:learned-shown? branch)
+                               (learned-block conn run-id))]
                    ;; Unread mail from other branches on this run, a bounded
                    ;; preview; nil when the inbox is empty. Surfacing does not
                    ;; consume — the message tool's inbox action marks read.
@@ -317,6 +346,7 @@
        ;; branch was last shown, and a row per turn per part would cost more
        ;; than the question is worth.
        :branch (-> branch
+                   (assoc :learned-shown? true)
                    (update :shared-served (fnil into #{}) (map :id fresh))
                    (assoc :context-sizes
                           (mapv (fn [[k v]] [k (count v)]) parts)))})))

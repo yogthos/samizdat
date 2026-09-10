@@ -702,7 +702,26 @@
 
    "CREATE INDEX IF NOT EXISTS side_calls_run ON side_calls(run_id)"])
 
+(def v26
+  "WHAT SUPPORTS A MEMORY, not just how much (karamazov-ei6t.5).
+
+  `corroborations` is a count, so the store can say a memory was seen three
+  times and cannot say BY WHAT. For a store whose failure mode is a
+  confidently false standing claim (karamazov-ko5b), \"show me the support\" is
+  the one diagnostic that was missing: the claim read as authoritative and
+  nothing could ask which run and which turn it came from.
+
+  A JSON array of run ids on the row rather than a join table. The set is
+  small and bounded by how many runs touch one memory, it is written on the
+  same UPDATE that bumps the count, and a memory is never queried BY its
+  supports — only shown with them. A table would buy a query nobody makes and
+  cost a write nobody wants on the corroboration path.
+
+  Nullable, so every row that predates this reads as \"support not recorded\"
+  rather than as \"no support\", which are different facts."
+  ["ALTER TABLE knowledge ADD COLUMN supported_by TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25])
+   v25 v26])

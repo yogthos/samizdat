@@ -282,6 +282,19 @@
  #{"you " "your " "you'll" "you can" "you should" "you may" "you might"
    "let me know"}
 
+ :negation-markers
+ ;; What makes a memory a DENIAL rather than an assertion (karamazov-ei6t.8).
+ ;; Used to tell a claim from its own negation over the same subject — the
+ ;; shape of karamazov-ko5b, where "require of flight.* FAILS" stood beside a
+ ;; run whose own turns showed requires loading.
+ ;;
+ ;; Matched with a trailing space so `no ` cannot read out of `note` and
+ ;; `not ` cannot read out of `nothing`. Same boundary discipline as the
+ ;; completeness lists, and the same warning: widening this makes the
+ ;; contradiction test fire on ordinary refinements, and a detector that
+ ;; refuses refinements is worse than no detector.
+ #{"not" "never" "fails" "failed" "cannot" "can't" "no" "without" "refuses"}
+
  :completeness-blocked
  ;; A stated LIMIT, which is a result rather than a plan. Same first-person
  ;; voice and the same work verb as an abandoned intention — "I have not been

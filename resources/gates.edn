@@ -1469,6 +1469,18 @@
                    :semantic 0.6 :identity 0.75 :overview 0.95
                    :note 0.5}
    :default-confidence 0.6
+   ;; WHEN TWO MEMORIES ARE JUDGED TO CONTRADICT (karamazov-ei6t.8). Both
+   ;; numbers make the test NARROWER as they rise, and narrow is the safe
+   ;; direction: a wide contradiction detector fires on every refinement of an
+   ;; existing memory, which is most of what a store learns, and a detector
+   ;; that refuses refinements is worse than none.
+   ;;
+   ;; :contradiction-min-word ignores short words before comparing subjects, so
+   ;; two memories sharing only "the" and "this" are not about the same thing.
+   ;; :contradiction-min-shared is how many substantive words they must share
+   ;; before their disagreement counts as being about one subject.
+   :contradiction-min-word 4
+   :contradiction-min-shared 2
    :use-reinforcement 0.05
    :recent-use-bonus 0.15
    :recent-use-window-runs 3

@@ -54,6 +54,7 @@
    "fetch-turn-miss" "file-thrash" "file-tool" "fork-thesis"
    "grep-tool" "image-denied" "image-down" "image-off"
    "image-timeout" "intervene-tool" "judge" "judge-exemptions" "judge-verify"
+   "learned-since"
    "judge-user" "juvenile-grace" "kernel-write-refused" "last-call"
    "ledger" "manual-group" "mechanics-streak" "memory-stale-completion"
    "memory-tool" "memory-unverified" "milestone" "mutation-refused"

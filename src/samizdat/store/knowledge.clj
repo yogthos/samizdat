@@ -38,7 +38,8 @@
             [clojure.tools.logging :as log]
             [samizdat.lexicon :as lexicon]
             [samizdat.memory :as memory]
-            [samizdat.store.db :as db]))
+            [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]))
 
 (defn- new-id
   "Six hex chars, same scheme as tasks — readable in a transcript, cheap
@@ -82,6 +83,8 @@
             ["SELECT * FROM knowledge WHERE content LIKE ? AND current = 1
               ORDER BY created_at DESC, id DESC LIMIT ?"
              (str "%" query "%") (long limit)]))
+
+(declare add-support!)
 
 (defn completion-claim?
   "Whether `content` asserts that work is FINISHED.
@@ -274,6 +277,10 @@
                                  idle_runs = 0
                            WHERE id = ?"
                           run-id id]))
+          ;; WHICH run, beside how many. The count alone cannot answer
+          ;; "who says so", which is the question a false standing claim needs
+          ;; asked of it (karamazov-ei6t.5).
+          (add-support! conn id run-id)
           (inc (or (:corroborations row) 1)))
       (or (:corroborations row) 1))))
 
@@ -287,6 +294,47 @@
                            WHERE rowid IN (SELECT rowid FROM knowledge WHERE id = ?)" id]))
     (catch Throwable e
       (log/warn "knowledge: unindexing" id "failed:" (ex-message e)))))
+
+(defn support
+  "Which runs corroborated this memory, and how it is standing (ei6t.5).
+
+  THE SET, not the count. `corroborations` says a memory has been seen three
+  times; it cannot say by what, and for a store whose failure mode is a
+  confidently false standing claim that is the diagnostic that was missing —
+  karamazov-ko5b read as authoritative and nothing could ask which run it came
+  from.
+
+  `:recorded? false` when the column is null, which is every row written
+  before v26. Absent support and no support are different facts and must not
+  read the same: the first is a gap in the record, the second is a claim
+  nothing has ever confirmed."
+  [conn id]
+  (when-let [row (get-by-id conn id)]
+    (let [raw (:supported_by row)
+          runs (when (seq (str raw))
+                 (try (vec (json/read-str (str raw))) (catch Throwable _ nil)))]
+      {:id id
+       :corroborations (:corroborations row)
+       :recorded? (some? runs)
+       :runs (or runs [])
+       :first-run (:run_id row)
+       :last-run (:last_run_id row)})))
+
+(defn- add-support!
+  "Append `run-id` to a memory's support set, deduped and order-preserving.
+  Silent on a missing run-id: a corroboration from no run is still a
+  corroboration, it just has nothing to cite."
+  [conn id run-id]
+  (when (and id (seq (str run-id)))
+    (let [row (get-by-id conn id)
+          cur (or (when (seq (str (:supported_by row)))
+                    (try (vec (json/read-str (str (:supported_by row))))
+                         (catch Throwable _ nil)))
+                  [])
+          nxt (if (some #{(str run-id)} cur) cur (conj cur (str run-id)))]
+      (db/with-writer
+        (db/execute! conn ["UPDATE knowledge SET supported_by = ? WHERE id = ?"
+                           (json/write-str nxt) id])))))
 
 (defn retire!
   "Mark a memory no longer true, with the reason. Returns the id, or nil when
@@ -486,8 +534,25 @@
           ;; Identity is the finding's KIND, in a column. The evidence
           ;; differs every run and the pattern is what recurs.
           pattern (str "finding:" (name kind))
-          existing (by-pattern conn pattern)]
+          existing (by-pattern conn pattern)
+          ;; THE NAMED POLICY (karamazov-ei6t.8). The three arms below were
+          ;; already here informally; what was missing is the fourth — a way
+          ;; to say these two cannot both be true. An ambiguous memory used to
+          ;; land, and landing quietly is how a claim that should have been
+          ;; questioned became standing (karamazov-ko5b).
+          decision (memory/update-policy {:content content} existing)]
      (conj acc
+     (if (= :escalate (:action decision))
+       ;; ESCALATED, NOT WRITTEN, and not overwritten either: overwriting
+       ;; picks a winner no evidence chose. The note is what oversight reads,
+       ;; the same path a refused mutation takes.
+       (do (journal/note! conn run-id :memory-escalation
+                          {:data {:pattern pattern
+                                  :proposed content
+                                  :held (:held decision)
+                                  :id (:id decision)}})
+           {:id (:id decision) :kind kind :escalated? true
+            :reason (:reason decision)})
      (if existing
        ;; A recurring finding is a RE-OBSERVATION, and corroborate! is its
        ;; record. It is NOT an outcome: `record-outcome! (= :good severity)`
@@ -520,7 +585,7 @@
                              ;; concluded. Started slightly above the default
                              ;; and left to earn the rest.
                              :confidence 0.7})
-        :kind kind :repeat? false :corroborations 1}))))
+        :kind kind :repeat? false :corroborations 1})))))
    []
    findings))
 
@@ -866,6 +931,45 @@
         evicted (try (evict! conn) (catch Throwable _ []))]
     {:findings (vec written) :verdicts (vec verdicts) :project (vec project)
      :aged aged :decayed decayed :evicted (vec evicted)}))
+
+(defn learned-since
+  "What was written to memory after `since`, most worth reading first.
+
+  THE OPENING BLOCK a run never had (karamazov-ei6t.9). Recall answers a
+  question the model thought to ask; this answers the one it does not know to
+  ask — what did the LAST run find out about this project. distil-project!
+  spends every run producing exactly that and nothing has ever read it at the
+  start of the next one.
+
+  Ported from lemmalog's change-log, whose context assembler opens with a
+  \"new in memory since last turn\" section. The epoch there is a counter; here
+  it is a timestamp, because knowledge rows already carry created_at and a
+  second clock would be a second thing to keep true.
+
+  Live rows only, and ranked, so a run that learned forty things opens with
+  the few that earned their place rather than the last forty written."
+  ([conn since] (learned-since conn since (:recall-limit (memory/policy))))
+  ([conn since limit]
+   (if-not (seq (str since))
+     []
+     (vec (take limit
+                (memory/rank
+                 (db/fetch conn ["SELECT * FROM knowledge
+                                   WHERE current = 1 AND created_at > ?
+                                   ORDER BY created_at DESC LIMIT ?"
+                                 (str since) (* 3 (long limit))])))))))
+
+(defn last-run-before
+  "The most recent run that ENDED before `run-id` started, or nil.
+
+  What 'since' means for `learned-since` at the start of a run: not a wall
+  clock the caller has to invent, but the boundary the previous run left."
+  [conn run-id]
+  (let [me (first (db/fetch conn ["SELECT started_at FROM runs WHERE id = ?" run-id]))]
+    (when-let [t (:started_at me)]
+      (first (db/fetch conn ["SELECT id, ended_at FROM runs
+                               WHERE ended_at IS NOT NULL AND ended_at <= ?
+                               ORDER BY ended_at DESC LIMIT 1" t])))))
 
 (defn standing
   "The memories with the highest standing, whatever they are about — what this
