@@ -196,6 +196,18 @@
   (log/warn "cell mutation rolled back:" reason)
   {:status :rolled-back :reason reason}))
 
+(defn- battery-reason
+  "Why a candidate was refused, naming the targets that flipped.
+
+  NAMES, not a ratio. '1/2' tells a supervisor a candidate was worse and
+  nothing it can act on, so the next round re-derives the same edit — which is
+  precisely the loop the paper's rejection memory exists to break. The names
+  go into the rollback note, which ylte.2 now feeds back into the brief."
+  [{:keys [passed total regressions]}]
+  (str "battery: " passed "/" total
+       (when (seq regressions)
+         (str " — broke " (clojure.string/join ", " regressions)))))
+
 (defn apply-cell-edit!
   "Run the mutation protocol after the agent has edited cell files on disk.
 
@@ -208,9 +220,13 @@
 
   Returns {:status :committed} on success (the edit is live), or
   {:status :rolled-back :reason \"...\"} with the registry and files restored."
-  [{:keys [dirs loop-def soak-input compile-fn conn run-id] :as opts}]
+  [{:keys [dirs loop-def soak-input compile-fn soak-fn battery-fn conn run-id] :as opts}]
   (let [dirs (or dirs cells/default-dirs)
         compile-fn (or compile-fn myc/pre-compile)
+        ;; Injected so a test can drive the ORDER of the ladder, and so the
+        ;; battery can be supplied by the caller rather than requiring this
+        ;; namespace to reach up into the workflow layer for a way to run one.
+        soak-fn (or soak-fn soak)
         ;; CHECKPOINT — the last known-good state to roll back to: the registry
         ;; as loaded, and the on-disk content the loader last loaded (the
         ;; pre-edit content, since nothing has reloaded the agent's edit yet).
@@ -236,14 +252,30 @@
       (if-let [reason (validate compile-fn loop-def)]
         (rollback! opts checkpoint reason)
         ;; SOAK — does the edited cell actually run without throwing?
-        (if-let [reason (soak compile-fn loop-def soak-input)]
+        (if-let [reason (soak-fn compile-fn loop-def soak-input)]
           (rollback! opts checkpoint reason)
-          ;; COMMIT — the edit stands; it is already live in the registry.
-          (do (when (and conn run-id)
-                (journal/note! conn run-id :mutation-committed
-                               {:data {:cells (keys (cells/loaded))}}))
-              (log/info "cell mutation committed")
-              {:status :committed})))
+          ;; BATTERY — does the edited cell REGRESS? The soak proves the edit
+          ;; does not crash; this is the paper's Step 3, replaying held-out
+          ;; recorded work against the candidate and refusing a candidate that
+          ;; scores below the retained baseline (karamazov-ylte.4). It runs
+          ;; LAST of the three because it is the dearest: a replay per case,
+          ;; and there is no point paying it for an edit the soak already
+          ;; rejected.
+          ;;
+          ;; OPT-IN. A project with no battery behaves exactly as before —
+          ;; otherwise every project without recorded cases could not tune
+          ;; itself at all, which would be a worse failure than the one the
+          ;; gate prevents.
+          (let [b (when battery-fn (battery-fn))]
+            (if (and b (not (:ok? b)))
+              (rollback! opts checkpoint (battery-reason b))
+              ;; COMMIT — the edit stands; it is already live in the registry.
+              (do (when (and conn run-id)
+                    (journal/note! conn run-id :mutation-committed
+                                   {:data {:cells (keys (cells/loaded))
+                                           :battery (select-keys b [:passed :total])}}))
+                  (log/info "cell mutation committed")
+                  {:status :committed})))))
       (catch Throwable e
         ;; RELOAD failed (syntax error): the loader restored the registry;
         ;; restore the file and report.

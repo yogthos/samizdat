@@ -375,3 +375,51 @@
           (is (str/includes? (str (:reason r)) "feature"))
           (is (str/includes? (str (:reason r)) "Save under the owning name"))))
       (finally (us/unbind!)))))
+
+;; --- the battery gate (karamazov-ylte.4) ------------------------------------
+
+(deftest the-battery-gate-sits-between-soak-and-commit
+  ;; The paper's Step 3. The soak proves an edit does not CRASH; the battery
+  ;; proves it does not REGRESS. Order matters: the battery costs a replay per
+  ;; case, so it must not run for an edit the soak already rejected.
+  ;;
+  ;; In mutation_test and not battery_test because it needs THIS fixture — a
+  ;; real cell dir. With :dirs [] the protocol's store-mode guard reads
+  ;; whatever cells the process last loaded, so the test passed alone and
+  ;; failed in the suite, which is the worst way for a test to be wrong.
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+  (cells/load-cells! (:dirs (opts)))
+  (let [order (atom [])
+        r (mut/apply-cell-edit!
+           (merge (opts)
+                  {:compile-fn (fn [& _] (swap! order conj :validate) {})
+                   :soak-fn (fn [& _] (swap! order conj :soak) nil)
+                   :battery-fn (fn [] (swap! order conj :battery)
+                                 {:ok? true :passed 2 :total 2 :targets []})}))]
+    (is (= [:validate :soak :battery] @order)
+        "validate, then soak, then the battery — cheapest refusal first")
+    (is (= :committed (:status r)))))
+
+(deftest a-battery-regression-rolls-back-and-names-what-broke
+  ;; The refusal a supervisor can act on. "1/2" is not actionable; the name of
+  ;; the target that flipped is, and it lands in :mutation-rolled-back, which
+  ;; the oversight brief now reads back (karamazov-ylte.2).
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+  (cells/load-cells! (:dirs (opts)))
+  (let [r (mut/apply-cell-edit!
+           (merge (opts)
+                  {:soak-fn (fn [& _] nil)
+                   :battery-fn (fn [] {:ok? false :passed 1 :total 2
+                                       :regressions ["routes to ship"]
+                                       :targets [{:name "routes to ship" :ok? false}]})}))]
+    (is (= :rolled-back (:status r)))
+    (is (str/includes? (str (:reason r)) "routes to ship"))))
+
+(deftest with-no-battery-configured-the-protocol-is-unchanged
+  ;; The battery is opt-in until cases exist. A project with none must behave
+  ;; exactly as before, or it could not tune itself at all — a worse failure
+  ;; than the one the gate prevents.
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+  (cells/load-cells! (:dirs (opts)))
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n + 10))")
+  (is (= :committed (:status (mut/apply-cell-edit! (opts))))))

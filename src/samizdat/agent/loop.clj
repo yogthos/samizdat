@@ -342,7 +342,14 @@
                     (fn [c]
                       (assoc c :reasoning-effort
                              (thinking/effort-for branch (:reasoning-effort c) off))))]
-    ((infer/complete-fn ctx) (infer/of-branch branch))))
+    ;; AN INJECTED `complete` WINS. RFC-004 already says the model call is
+    ;; "the ONE effect, as an injectable value" and that a test or a probe
+    ;; passes its own — but this call site hardcoded the constructor, so the
+    ;; only way to substitute one was with-redefs. Deterministic replay
+    ;; (samizdat.replay) needs it as a first-class seam rather than a test
+    ;; hack, because the validation gate runs it in production
+    ;; (karamazov-ylte.4). Absent from ctx, nothing changes.
+    ((or (:complete ctx) (infer/complete-fn ctx)) (infer/of-branch branch))))
 
 (defn- settle-predictions!
   "Close out any prediction whose window has passed or whose expectation the
