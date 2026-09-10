@@ -28,3 +28,18 @@ Your call was well formed — this is a policy refusal, not a mistake to repair.
 cannot recover. If you want the run to end, let it end on its own terms or
 raise the problem rather than removing the only worker.
 {% endif %}
+{% if contradicted %}That directive says `{{tool}}` does not work, and this run's own record says otherwise: `{{tool}}` succeeded {{worked}} time(s) in the turns already journalled.
+
+One failure is not a property of the environment. The shape this refuses is a
+real one — a supervisor once read a single failed `require` at its own turn 2
+as "requires do not work in this project", wrote it as a standing directive,
+and the implementer stopped trying something that worked; that same run had
+already required four namespaces successfully by turn 14.
+
+If you meant a narrower claim, say the narrower thing: which call, on which
+turn, with what error. If you believe the record is wrong, say what you
+observed and why it contradicts the journal — that is a finding worth having,
+and it is not this directive.
+
+What you tried to send: {{text}}
+{% endif %}
