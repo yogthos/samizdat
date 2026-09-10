@@ -99,6 +99,39 @@
          :recorded (count (get-in case [:replies branch-id] []))
          :error "replay exhausted"}))))
 
+(defn case-complete-fn
+  "One `complete` for a whole case, keeping a cursor PER BRANCH and dispatching
+  on the tape's `:id`.
+
+  Prefer this to `complete-fn` for anything driving a real run. A beam is
+  several conversations, and one cursor across them interleaves the recording
+  so every branch reads another's next line.
+
+  AN UNKNOWN BRANCH IS REFUSED, and that is the point. Driving a real replay,
+  the feature loop escalated T0 through five revisions and then fanned out to
+  four workers — ten branches the recording had never seen. Serving them the
+  recorded branch's replies produced a run that looked like a clean replay and
+  was not one: a reply written in one context, replayed into another, is not
+  that branch's conversation, and every worker's turn 11 came back
+  __no_call__ because of it. A battery scored on that is scored on fiction.
+  The refusal is named so a gate can report which branch the recording lacked
+  rather than silently measuring a fabrication."
+  [case]
+  (let [cursors (atom {})]
+    (fn [tape]
+      (let [b (:id tape)]
+        (if-not (contains? (:replies case) b)
+          {:ok false
+           :reason :replay/unknown-branch
+           :branch b
+           :known (vec (sort (keys (:replies case))))
+           :error "replay has no recording for this branch"}
+          (let [f (or (get @cursors b)
+                      (let [f (complete-fn case b)]
+                        (swap! cursors assoc b f)
+                        f))]
+            (f tape)))))))
+
 (defn branches
   "The branch ids a case can replay, longest conversation first."
   [case]

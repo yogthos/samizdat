@@ -154,3 +154,42 @@
           (is (identical? complete (:complete @seen))
               "the driver's ctx carries the caller's complete through to the turn")
           (finally (db/close c)))))))
+
+(deftest a-branch-the-recording-does-not-have-is-refused-not-substituted
+  ;; Found driving a real replay. The feature loop escalated T0 -> T0v1..v5 and
+  ;; then fanned out to workers W0v6..W3v6 — ten branches the recording had
+  ;; never seen. A convenience fallback that served T0's replies to each of
+  ;; them produced a run that looked like a clean replay and was not one:
+  ;; feeding one conversation's replies into a different conversation is not
+  ;; replaying, and turn 11 of every worker came back __no_call__ because the
+  ;; reply belonged to another context.
+  ;;
+  ;; A battery scored on that is scored on fiction, so an unknown branch is
+  ;; refused by name and the caller decides what that means.
+  (let [c (db/open! ":memory:")
+        rid (recorded-run c)
+        complete (replay/case-complete-fn (replay/record c rid))]
+    (is (true? (:ok (complete {:id "T0"}))) "a recorded branch is served")
+    (let [r (complete {:id "W0v6"})]
+      (is (false? (:ok r)))
+      (is (= :replay/unknown-branch (:reason r)))
+      (is (= "W0v6" (:branch r))
+          "named, so a gate can say WHICH branch the recording lacked"))))
+
+(deftest one-complete-keeps-a-cursor-per-branch
+  ;; A beam is several conversations. One cursor across them interleaves the
+  ;; recording and every branch reads someone else's next line.
+  (let [c (db/open! ":memory:")
+        rid (recorded-run c)
+        complete (replay/case-complete-fn (replay/record c rid))]
+    (is (= (get-in (complete {:id "T0"}) [:response :content])
+           (first (get-in (replay/record c rid) [:replies "T0"]))))
+    (testing "a second branch starts at ITS own beginning, not where T0 left off"
+      (let [c2 (db/open! ":memory:")
+            rid2 (recorded-run c2)
+            case2 (replay/record c2 rid2)
+            f (replay/case-complete-fn case2)]
+        (f {:id "T0"}) (f {:id "T0"})
+        (is (= (get-in (f {:id "T0"}) [:response :content])
+               (nth (get-in case2 [:replies "T0"]) 2))
+            "T0 advanced by three, independently")))))
