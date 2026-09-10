@@ -389,6 +389,14 @@
   []
   (:grep-hits (gates/threshold :context-budget)))
 
+(defn glob-msg
+  "One of glob's branch-facing sentences, from prompts/glob-tool.md. Its own
+  template rather than grep's: the two tools fail differently — a glob that
+  matches nothing is usually anchored wrongly, a grep that matches nothing
+  usually is not — and one template answering both would have to hedge."
+  [ctx]
+  (prompt/render "glob-tool" ctx))
+
 (defn grep-msg
   "One of grep's branch-facing sentences, from prompts/grep-tool.md. Its own
   template rather than file-tool.md's: read/write/edit speak about one path,
@@ -461,6 +469,43 @@
                                  {:path reported :line (inc i) :text line}))
                              (str/split (slurp file) #"\n" -1)))
              (concat project referenced)))))
+
+(defn glob-project
+  "Every project file whose path matches `pattern`, relative to `root`.
+
+  WHY IT EXISTS (karamazov-fn68). There was no way to find a file by NAME.
+  `grep` searches contents and `read_file` opens a path you already know, so
+  `where do the ring tests live` was a shell call — and on the fast-low-endless
+  arena run 74 of 120 turns went to `shell`. Some of that is a missing tool.
+
+  PORTED FROM opencode's glob tool, whose decisions are worth keeping:
+  ripgrep-style `**` patterns, .git excluded always, a hard result limit with
+  the truncation SAID rather than implied. What is not ported is its ripgrep
+  dependency — samizdat globs through `fs/glob` already, in grep-project, and
+  a second search backend would be a second thing to keep true.
+
+  UNLIKE grep-project THIS IS NOT LIMITED TO CLOJURE SOURCES. grep-project
+  globs the Clojure extensions because reading every binary in a tree to regex
+  it would be absurd; matching a NAME costs nothing, and a model looking for
+  `deps.edn`, `shot.png` or `**/*.md` is asking a reasonable question that a
+  source-only glob would answer wrongly — with silence.
+
+  Hidden directories are skipped by `fs/glob` itself, so cache and VCS noise
+  never matches, which is the same property grep-project relies on."
+  ([root pattern] (glob-project root pattern nil))
+  ([root pattern {:keys [paths]}]
+   (let [root* (str (fs/canonicalize (or root ".")))
+         scopes (remove str/blank? (map str (cond (nil? paths) []
+                                                  (coll? paths) paths
+                                                  :else [paths])))]
+     (->> (fs/glob root* (str pattern))
+          (map #(str (fs/relativize root* (fs/canonicalize (str %)))))
+          (filter #(in-scope? scopes %))
+          ;; Sorted, so two runs asking the same question get the same answer
+          ;; in the same order — a result set that reshuffles per call reads as
+          ;; the tree having changed.
+          sort
+          vec))))
 
 (defn grep-page
   "The window of `hits` from `offset`, at most `limit` of them, as

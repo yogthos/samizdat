@@ -45,6 +45,40 @@
   ;; question to MEASURE, not to assume.
   (files/with-stale (files/patch-file ctx) ctx))
 
+(defmethod base/run-tool "glob" [{:keys [branch root] :as ctx}]
+  ;; Find files by NAME (karamazov-fn68). :neutral — locating establishes
+  ;; nothing, exactly like grep and read_file.
+  ;;
+  ;; It pages for the same reason grep does: a tool that silently truncates
+  ;; teaches the model that its answer was complete (karamazov-2py). The limit
+  ;; and the continuation are grep's, reused rather than reinvented, so the two
+  ;; search tools answer in one shape.
+  (if-let [m (base/missing ctx :pattern)]
+    (base/malformed branch m)
+    (let [pattern (str (base/arg ctx :pattern))
+          offset (or (some-> (base/arg ctx :offset) str parse-long) 0)
+          hits (try (files/glob-project (or root ".") pattern
+                                        {:paths (base/arg ctx :paths)})
+                    (catch Throwable e [::error (ex-message e)]))]
+      (cond
+        (and (seq hits) (= ::error (first hits)))
+        (base/malformed branch (files/glob-msg {:bad-pattern true :pattern pattern
+                                                :detail (second hits)}))
+
+        (empty? hits)
+        (base/ok branch (files/glob-msg {:no-matches true :pattern pattern}))
+
+        :else
+        (let [{:keys [hits from total next]} (files/grep-page hits offset (files/grep-limit))]
+          (base/ok branch
+                   (str (files/glob-msg {:found true :total total :pattern pattern
+                                         :from (inc from) :to (+ from (count hits))})
+                        "\n"
+                        (str/join "\n" hits)
+                        (when next
+                          (files/glob-msg {:more true :remaining (- total (+ from (count hits)))
+                                           :next next :pattern (pr-str pattern)})))))))))
+
 (defmethod base/run-tool "grep" [{:keys [branch root] :as ctx}]
   ;; Search the project's Clojure sources for a regex. :neutral — searching
   ;; establishes nothing, like read_file. The search logic (files/grep-project)

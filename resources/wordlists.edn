@@ -282,6 +282,27 @@
  #{"you " "your " "you'll" "you can" "you should" "you may" "you might"
    "let me know"}
 
+ :html-strip
+ ;; Turning a fetched page into readable text (karamazov-fn68.2). Ordered
+ ;; [pattern replacement] pairs applied in sequence: script and style dropped
+ ;; whole before anything else, then the block tags that imply a line break,
+ ;; then every remaining tag, then the entities.
+ ;;
+ ;; DATA because it is a vocabulary, and base-test is right to insist: a
+ ;; project fetching a site that marks up its docs differently should be able
+ ;; to retune this without a rebuild. The CONFINEMENT — which hosts may be
+ ;; reached at all — stays mechanism in src/, because a guard the agent can
+ ;; edit is not a guard.
+ [["(?is)<(script|style)\\b.*?</\\1>" " "]
+  ["(?is)<!--.*?-->" " "]
+  ["(?i)<br\\s*/?>" "\n"]
+  ["(?i)</(p|div|li|h[1-6]|tr)>" "\n"]
+  ["(?s)<[^>]+>" ""]
+  ["&nbsp;" " "] ["&amp;" "&"] ["&lt;" "<"] ["&gt;" ">"]
+  ["&quot;" "\""] ["&#39;" "'"]
+  ["[ \t]+" " "]
+  ["\n{3,}" "\n\n"]]
+
  :negation-markers
  ;; What makes a memory a DENIAL rather than an assertion (karamazov-ei6t.8).
  ;; Used to tell a claim from its own negation over the same subject — the

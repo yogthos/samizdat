@@ -52,7 +52,7 @@
    "eval-error" "eval-image" "eval-syntax" "eval-terminates-process"
    "experiment-line" "experiment-tool" "explore-cap" "failure-log"
    "fetch-turn-miss" "file-thrash" "file-tool" "fork-thesis"
-   "grep-tool" "image-denied" "image-down" "image-off"
+   "glob-tool" "grep-tool" "image-denied" "image-down" "image-off"
    "image-timeout" "intervene-tool" "judge" "judge-exemptions" "judge-verify"
    "learned-since"
    "judge-user" "juvenile-grace" "kernel-write-refused" "last-call"
@@ -74,7 +74,7 @@
    "task-reflection-input" "task-required" "task-tests" "team-worker"
    "thinking-runaway" "trajectory-judge" "turn-deadline" "uncertain-effect"
    "verify-hollow" "verify-red" "verify-timeout" "verify-unknown"
-   "watch-intervention" "websearch-tool" "wind-down" "workflow-select"
+   "watch-intervention" "webfetch-tool" "websearch-tool" "wind-down" "workflow-select"
    "workflow-select-system"])
 
 (defn prompt

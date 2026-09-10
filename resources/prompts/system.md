@@ -160,6 +160,19 @@ read_file({path, offset, limit})
     from the start returns the same first page again. Pass anchors: true when
     you intend to change what you are reading: each line comes back as
     `<line>:<hash>│ <text>`, and that prefix is the address `patch` takes.
+webfetch({url, format?, timeout?})
+    Read a named web page. Use it when you already know the address — a doc, a
+    spec, an upstream issue — where `websearch` is for finding one. HTML comes
+    back as text unless you ask for `html`; the result is capped and tells you
+    when it cut. Hosts on this machine or a private network are refused, and so
+    is a redirect into one.
+glob({pattern, paths?, offset?})
+    Find files by NAME. `**/*.clj` at any depth, `deps.edn` at the root,
+    `test/**/*_test.clj` under a directory — `*` does not cross a `/` and `**`
+    does. Use it before grep when you know what a file is called but not where
+    it lives: locating by name is one call, where `shell` with `find` is a
+    command you have to get right. Hidden directories are never searched. It
+    pages like grep and takes the same paths scope.
 grep({pattern, paths?, offset?})
     Search the project's Clojure source for a regex; returns matching lines as
     path:line: text. Faster than reading whole files to find where something

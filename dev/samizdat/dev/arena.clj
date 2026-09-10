@@ -1040,9 +1040,11 @@
   child's listener cannot land in a predecessor's TIME_WAIT.
 
   `memory?` (default true) carries each ARM's knowledge store forward across
-  its runs. Off gives the old amnesiac behaviour, which is the right control
-  arm for measuring whether memory helps at all — the question the epic it
-  serves has to be able to answer both ways (karamazov-ei6t.1)."
+  its runs, and an ARM may override it with its own `:memory?`. Off gives the
+  amnesiac behaviour, which is the control this epic needs — and it has to be
+  settable PER ARM, or treatment and control cannot run in the same sweep and
+  the comparison inherits the provider drift that interleaving exists to
+  cancel (karamazov-ei6t.1)."
   [{:keys [task-ids arms n out work base-port memory?] :as opts
     :or {base-port 3990 n 3 memory? true}}]
   (let [t (tasks)
@@ -1070,7 +1072,14 @@
               ;; Across TASKS within an arm is deliberate — the subject is one
               ;; repository, an agent learning where its tests live is the
               ;; realistic shape, and tasks are never compared to each other.
-              carry (when memory? (str work "/memory-" (name (:name arm)) ".sqlite3"))
+              ;; PER ARM, defaulting to the sweep's setting. It was
+              ;; sweep-level, which made an amnesiac CONTROL impossible to run
+              ;; beside a remembering arm — the comparison would have had to
+              ;; be across sweeps, confounded by exactly the provider drift
+              ;; that arm-interleaving inside a task exists to cancel. An
+              ;; arm's :memory? false is the control this epic needs.
+              carry (when (get arm :memory? memory?)
+                      (str work "/memory-" (name (:name arm)) ".sqlite3"))
               row (run-once! (merge opts
                                     {:repo (:repo subject) :sha (:sha subject)
                                      :arm arm :problem (:problem task)
@@ -1087,7 +1096,7 @@
               ;; how a row came to name a turn cap and nothing else while the
               ;; only bound that actually fired was the rig's clock.
               row (assoc row :task (:id task) :difficulty (:difficulty task) :n k
-                         :memory-carried?  (boolean carry))]
+                         :memory? (boolean carry))]
           (append-row! out row)
           (println (format "[%d/%d] %-16s %-9s n=%d  %-11s by=%-7s green=%-5s turns=%-4s tok=%-9s edits=%s  %.1fmin"
                            (inc i) total (name (:id task)) (name (:name arm)) k

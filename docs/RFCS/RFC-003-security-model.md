@@ -101,6 +101,13 @@ flowchart LR
     toolcall --> websearch
     websearch --> redact
 
+    webfetch[webfetch tool: outbound HTTP to a MODEL-SUPPLIED URL]
+    egress[Egress confinement: no loopback, link-local or RFC1918;
+           the redirect target re-checked]
+    toolcall --> webfetch
+    webfetch --> egress
+    egress --> redact
+
     plan[plan tool: records declared paths on the branch]
     toolcall --> plan
     plan --> redact
@@ -111,7 +118,7 @@ flowchart LR
     files --> root
     root --> redact
 
-    reads[read tools: read_file, grep]
+    reads[read tools: read_file, grep, glob]
     readroots[Project root + declared reference roots]
     toolcall --> reads
     reads --> readroots
@@ -266,6 +273,7 @@ Reading the load-bearing solid edges:
 | 3 | `resolve` reaches nothing except through `scrub → sub`, and `sub`'s only outlet is `redact`. | `run-shell`'s structure. |
 | 4 | `grants` are written only by a human. | The model has no edge into the grants table; the API's write path is human-only. |
 | 5 | A complex command never rides an `allow`. | `policy/decide` promotes it to a whole-command claim. `policy-test/complex-commands-never-ride-an-allow`. |
+| 7 | A `webfetch` never reaches loopback, link-local or an RFC1918 host, and never follows a redirect into one. | `webfetch/allowed?` on the request and again on the `location` header. Hardcoded in src on purpose, like invariant 6: a host list in agent-editable gates.edn could be widened by the party it confines. Known limit, stated rather than hidden — the check is string-shaped, so a public NAME that resolves to a private address is not caught; a DNS round trip inside a guard is a place where a slow resolver hangs the harness, and the redirect re-check is what covers the common case. |
 | 6 | The run config (`.samizdat/config.edn`) — the ship-gate definition — is not writable by the run it gates. | `files/run-config?` refuses it in `write_file`/`edit_file`/`patch`; `policy/decide` hard-denies any shell statement naming it under a write-capable head (grants do not unlock it). Reads stay open. `files-test/the-run-config-is-not-writable-by-the-run-it-gates`, `policy-test/the-shell-cannot-mutate-the-run-config-either`. Hardcoded in src on purpose: a protected list in agent-editable gates.edn could be unprotected by the party it protects against (karamazov-kvw). |
 
 **A property is only as strong as the graph it is checked against.** Adding a
