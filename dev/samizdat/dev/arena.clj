@@ -55,6 +55,7 @@
             [samizdat.session :as session]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
+            [samizdat.store.knowledge :as knowledge]
             [samizdat.store.runs :as runs]
             [samizdat.system :as system]))
 
@@ -521,6 +522,51 @@
                       :live (:live c)
                       :used? (boolean (some touched (:ids c)))})
                    calls)}))
+
+(defn memory-eval
+  "Score a knowledge store against questions whose answers are known.
+
+  karamazov-ei6t.14, the shape of lemmalog's scenario::run_eval — accuracy
+  against ground truth rather than an argument about whether recall feels
+  better. What is NOT copied is its benchmarks: LongMemEval and LoCoMo are
+  long-conversation QA over prose, and samizdat's memory is about a codebase
+  and a harness, written mostly by mechanical distillers from its own journal.
+
+  THE FIXTURE IS BETTER THAN SYNTHETIC AND IT IS ALREADY HERE. A preserved
+  recording holds memories real runs actually wrote, so a question with a
+  checkable answer falls straight out of one — `what is the test command`,
+  `is python3 allowed`. A synthetic corpus would measure how well recall
+  ranks text somebody invented for it to rank.
+
+  `cases` are {:ask :expect} where :expect is a substring the right memory
+  must contain. Substring rather than a judge on purpose: this scores
+  RETRIEVAL, and grading it with a model would fold the model's reading into
+  the number the retrieval is being measured by.
+
+  Reports :recall@k as well as :hit — a store that has the answer at rank 5
+  and a store that does not have it at all are different failures, and only
+  the first is a ranking problem."
+  [conn cases k]
+  (let [scored (mapv (fn [{:keys [ask expect]}]
+                       (let [rows (knowledge/recall conn ask k)
+                             pos (first (keep-indexed
+                                         (fn [i r]
+                                           (when (str/includes?
+                                                  (str/lower-case (str (:content r)))
+                                                  (str/lower-case (str expect)))
+                                             (inc i)))
+                                         rows))]
+                         {:ask ask :expect expect :rank pos
+                          :returned (count rows) :hit? (some? pos)}))
+                     cases)
+        n (count scored)]
+    {:n n
+     :hits (count (filter :hit? scored))
+     :accuracy (if (pos? n) (double (/ (count (filter :hit? scored)) n)) 0.0)
+     :mean-rank (let [rs (keep :rank scored)]
+                  (when (seq rs) (double (/ (reduce + rs) (count rs)))))
+     :empty (count (filter #(zero? (:returned %)) scored))
+     :detail scored}))
 
 (defn measure
   "One run's row, read off the journal after it ends.
