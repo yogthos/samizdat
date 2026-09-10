@@ -564,10 +564,22 @@
           ;; runs the review and then verifies its own candidates against the
           ;; same diff, so the owner is sent back only what the diff supports
           ;; — see its docstring for why one pass was not enough.
-          chat (fn [content]
-                 (try (:content (llm/chat llm-adapter llm-config
-                                          [{:role "user" :content content}]))
-                      (catch Throwable _ nil)))
+          ;; EVERY PASS IS RECORDED, whatever it answered. A judge call that
+          ;; came back unusable still cost money, and the two passes are
+          ;; counted apart so a reader can see whether verify ran and what it
+          ;; adds (karamazov-2rqb.1's rule, applied to the critic).
+          chat (fn [pass content]
+                 (let [r (try (llm/chat llm-adapter llm-config
+                                        [{:role "user" :content content}])
+                              (catch Throwable _ nil))]
+                   (try (journal/record-side-call!
+                         conn run-id {:branch-id (:board/branch-id data)
+                                      :kind (keyword (str "critic-" (name pass)))
+                                      :role :critic
+                                      :model (:model llm-config)
+                                      :usage (:usage r)})
+                        (catch Throwable _ nil))
+                   (:content r)))
           reviewed (when (and landed? (not det))
                      (try (judge/review {:chat chat
                                          :requirement requirement

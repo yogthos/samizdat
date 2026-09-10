@@ -196,6 +196,36 @@
     (is (or (str/includes? p "FALSE_POSITIVE") (str/includes? p "VERIFIED"))
         "the verdict contract has to be in the instructions the judge reads")))
 
+(deftest a-review-names-which-pass-each-call-is
+  ;; MEASURED as a gap on sweep5 run 2: the critique note carried six real
+  ;; findings and side_calls held one row, a reflection. Both judge calls were
+  ;; invisible — no count, no tokens — so the record could not say whether the
+  ;; verify pass had run at all, nor what the second pass costs. That is the
+  ;; hole karamazov-2rqb names: a call the run paid for that nothing sums.
+  ;;
+  ;; So `chat` takes the pass as its first argument. The cell that owns the
+  ;; provider records the side call under that kind, and a reader can then see
+  ;; two rows per review that found something and one per clean review.
+  (let [seen (atom [])
+        chat (fn [pass _content]
+               (swap! seen conj pass)
+               (if (= :review pass)
+                 "VERDICT: INCOMPLETE\n\nFINDINGS:\n- [high] A real defect."
+                 "- [high] A real defect. VERIFIED."))
+        out (judge/review {:chat chat :requirement "r" :diff "d"
+                           :evidence "e" :answer "a"})]
+    (is (= [:review :verify] @seen)
+        "both passes, each naming itself")
+    (is (= :incomplete (:verdict out)))
+    (is (str/includes? (:findings out) "A real defect")))
+  (testing "a clean review never makes the second call, so it costs one row"
+    (let [seen (atom [])
+          chat (fn [pass _] (swap! seen conj pass) "VERDICT: COMPLETE")
+          out (judge/review {:chat chat :requirement "r" :diff "d"
+                             :evidence "e" :answer "a"})]
+      (is (= [:review] @seen))
+      (is (nil? (:findings out))))))
+
 (deftest evidence-block-is-deterministic-facts
   (let [e (judge/evidence [{:tool_name "edit_file" :args {:path "a.clj"} :category "success"}
                            {:tool_name "shell" :args {:command "jolt -M:test"} :category "failure"}

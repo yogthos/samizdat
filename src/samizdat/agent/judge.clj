@@ -432,10 +432,17 @@
 (defn review
   "One review, both passes, against an injected `chat`.
 
-  `chat` is a 1-arg fn taking the user message and returning the reply text,
-  or nil on failure — the effect seam, so this namespace stays pure and the
-  cell that owns the provider supplies it (AGENTS.md's rule for a capability:
-  mechanism here, the decision in a cell).
+  `chat` is `(fn [pass content] -> reply-text-or-nil)` — the effect seam, so
+  this namespace stays pure and the cell that owns the provider supplies it
+  (AGENTS.md's rule for a capability: mechanism here, the decision in a cell).
+
+  IT TAKES THE PASS, and that argument is not decoration. On sweep5 run 2 the
+  critique note carried six real findings and `side_calls` held one row, for a
+  reflection — both judge calls were invisible, so the record could not say
+  whether the verify pass had run, nor what a second pass costs. Naming the
+  pass lets the cell record each call under its own kind, which is the sum
+  karamazov-2rqb exists to restore: a call the run paid for that nothing
+  counts is a bill moved out of view.
 
   Returns {:verdict :candidates :findings}. `:candidates` is what pass 1 said
   and `:findings` is what survived pass 2; the record keeps both, so a reader
@@ -464,7 +471,8 @@
   pass, and a critic quietly running one is indistinguishable from one running
   two until you read its findings."
   [{:keys [chat requirement evidence diff answer transcript]}]
-  (let [reply (chat (critic-prompt {:requirement requirement :evidence evidence
+  (let [reply (chat :review
+                    (critic-prompt {:requirement requirement :evidence evidence
                                     :diff diff :answer answer
                                     :transcript transcript}))
         verdict (if reply (parse-verdict reply) :complete)
@@ -473,7 +481,8 @@
                    ;; Skipped when pass 1 found nothing, so a clean review
                    ;; still costs exactly one call.
                    (verified-findings
-                    {:reply (chat (verify-prompt {:candidates candidates :diff diff}))
+                    {:reply (chat :verify
+                                  (verify-prompt {:candidates candidates :diff diff}))
                      :candidates candidates})
                    candidates)]
     {:verdict verdict :candidates candidates :findings verified}))

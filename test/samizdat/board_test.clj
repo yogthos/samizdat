@@ -171,6 +171,21 @@
         (run-board conn {})
         (testing "the board made both calls, in order"
           (is (= [:review :verify] (take 2 @calls))))
+        (testing "both passes are counted as money the run spent"
+          ;; sweep5 run 2 carried six real findings and one side_calls row, for
+          ;; a reflection — the judge's calls were invisible, so nothing could
+          ;; say whether verify had run or what it costs (karamazov-2rqb).
+          ;; The board reviews once per ATTEMPT, so a task that is sent back
+          ;; and re-reviewed bills two pairs — which is the cost of the second
+          ;; pass made visible, and the number to read when deciding whether
+          ;; :judge-verify? earns it.
+          (let [rows (db/fetch conn ["SELECT kind, role FROM side_calls
+                                       WHERE kind LIKE 'critic-%'"])
+                by-kind (frequencies (map :kind rows))]
+            (is (pos? (get by-kind "critic-review" 0)))
+            (is (= (get by-kind "critic-review") (get by-kind "critic-verify"))
+                "every review that found something is paired with its verify")
+            (is (every? #(= "critic" (:role %)) rows))))
         (testing "and the finding the second pass rejected never reached the record"
           (let [note (journal/last-note conn
                                         (:id (first (db/fetch conn ["SELECT id FROM runs"])))
@@ -200,7 +215,11 @@
         (tasks/create! conn {:title "the handler"})
         (run-board conn {})
         (is (= [:review] (distinct @calls))
-            "a clean review never reaches the verify pass")))))
+            "a clean review never reaches the verify pass")
+        (is (= ["critic-review"]
+               (mapv :kind (db/fetch conn ["SELECT kind FROM side_calls
+                                             WHERE kind LIKE 'critic-%'"])))
+            "and it is billed for one call, not two")))))
 
 (deftest the-board-works-its-own-tree-and-the-backlog-not-role-housekeeping
   ;; A role branch (supervisor, reviewer) creates run-scoped tasks for its own

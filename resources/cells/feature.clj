@@ -324,10 +324,18 @@
                       ;; assembles its own review is a caller that can forget
                       ;; the verify pass, and this cell and :board/review had
                       ;; already drifted once over the requirement slot.
-                      chat (fn [content]
-                             (try (:content (llm/chat llm-adapter llm-config
-                                                      [{:role "user" :content content}]))
-                                  (catch Throwable _ nil)))
+                      chat (fn [pass content]
+                             (let [r (try (llm/chat llm-adapter llm-config
+                                                    [{:role "user" :content content}])
+                                          (catch Throwable _ nil))]
+                               (try (journal/record-side-call!
+                                     conn run-id {:branch-id (:id branch)
+                                                  :kind (keyword (str "critic-" (name pass)))
+                                                  :role :critic
+                                                  :model (:model llm-config)
+                                                  :usage (:usage r)})
+                                    (catch Throwable _ nil))
+                               (:content r)))
                       {:keys [verdict findings]}
                       (judge/review {:chat chat
                                      :requirement (:problem branch)
