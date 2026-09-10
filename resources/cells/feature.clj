@@ -314,23 +314,31 @@
               (if det
                 {:decision :revise}
                 (let [diff (gitdiff/diff root git-baseline)
-                      evidence (judge/evidence rows)
                       ;; THE REQUIREMENT is the feature the run was asked
                       ;; for. This passed the pre-requirement keys (:rules,
                       ;; the answer as :transcript), so the judge's
                       ;; requirement section rendered empty (karamazov-iev2).
-                      prompt (judge/critic-prompt {:requirement (:problem branch)
-                                                   :evidence evidence
-                                                   :diff diff
-                                                   :answer answer})
-                      reply (try (:content (llm/chat llm-adapter llm-config
-                                                     [{:role "user" :content prompt}]))
-                                 (catch Throwable _ nil))
-                      verdict (if reply (judge/parse-verdict reply) :complete)
-                      blocking (when reply (judge/blocking-findings reply))]
+                      ;;
+                      ;; BOTH PASSES, through judge/review, which is also why
+                      ;; the prompt is no longer built here: a caller that
+                      ;; assembles its own review is a caller that can forget
+                      ;; the verify pass, and this cell and :board/review had
+                      ;; already drifted once over the requirement slot.
+                      chat (fn [content]
+                             (try (:content (llm/chat llm-adapter llm-config
+                                                      [{:role "user" :content content}]))
+                                  (catch Throwable _ nil)))
+                      {:keys [verdict findings]}
+                      (judge/review {:chat chat
+                                     :requirement (:problem branch)
+                                     :evidence (judge/evidence rows)
+                                     :diff diff
+                                     :answer answer})
+                      blocking (when findings
+                                 (judge/blocking-findings (str "FINDINGS:\n" findings)))]
                   {:decision (if (and (= :complete verdict) (not blocking)) :ship :revise)
                    :verdict verdict
-                   :findings (judge/for-the-record :reply-chars (judge/findings reply))}))
+                   :findings (judge/for-the-record :reply-chars findings)}))
               decision (:decision judged)]
           (journal/note! conn run-id :critique
                          {:data {:decision decision :deterministic (boolean det)

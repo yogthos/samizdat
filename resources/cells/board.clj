@@ -560,22 +560,31 @@
           ;; body or title, the same text :board/claim hands the owner.
           requirement (let [t (tasks/get-task conn task)]
                         (str (or (not-empty (str (:body t))) (:title t))))
-          reply (when (and landed? (not det))
-                  (try (:content (llm/chat llm-adapter llm-config
-                                           [{:role "user"
-                                             :content (judge/critic-prompt
-                                                       {:requirement requirement
-                                                        :evidence (judge/evidence rows)
-                                                        :diff diff
-                                                        :answer answer})}]))
-                       (catch Throwable _ nil)))
+          ;; BOTH PASSES, through the one seam that owns them. judge/review
+          ;; runs the review and then verifies its own candidates against the
+          ;; same diff, so the owner is sent back only what the diff supports
+          ;; — see its docstring for why one pass was not enough.
+          chat (fn [content]
+                 (try (:content (llm/chat llm-adapter llm-config
+                                          [{:role "user" :content content}]))
+                      (catch Throwable _ nil)))
+          reviewed (when (and landed? (not det))
+                     (try (judge/review {:chat chat
+                                         :requirement requirement
+                                         :evidence (judge/evidence rows)
+                                         :diff diff
+                                         :answer answer})
+                          (catch Throwable _ nil)))
           verdict (cond (not landed?) :unfinished
                         det :deterministic
-                        (nil? reply) :complete ; fail-open: a broken judge ships
-                        :else (try (judge/parse-verdict reply)
-                                   (catch Throwable _ :complete)))
-          blocking (when reply (try (judge/blocking-findings reply)
-                                    (catch Throwable _ nil)))
+                        ;; fail-open: a broken judge ships
+                        (nil? reviewed) :complete
+                        :else (:verdict reviewed))
+          candidates (:candidates reviewed)
+          verified (:findings reviewed)
+          blocking (when verified (try (judge/blocking-findings
+                                        (str "FINDINGS:\n" verified))
+                                       (catch Throwable _ nil)))
           pass? (and landed?
                      (nil? det)
                      (= :complete verdict)
@@ -608,7 +617,10 @@
                              :decision decision :landed (boolean landed?)
                              ;; WHY, beside the verdict (karamazov-3htz).
                              :reason (judge/for-the-record :reply-chars det)
-                             :findings (judge/for-the-record :reply-chars (judge/findings reply))}})
+                             ;; The VERIFIED findings, which is what the retry
+                             ;; is handed and what a later reader sees.
+                             :findings (judge/for-the-record :reply-chars verified)
+                             :candidates (judge/for-the-record :reply-chars candidates)}})
       (when pass? (tasks/close! conn task))
       (when (= :give-up decision)
         ;; back to the board, unattributed, so the next round or a human sees
@@ -620,7 +632,7 @@
              :board/findings (when (= :revise decision)
                                (or det
                                    blocking
-                                   (judge/critique-message verdict (judge/findings reply))))
+                                   (judge/critique-message verdict verified)))
              ;; counts TASKS finished with, not attempts — a re-attempt is the
              ;; same task, and the runaway guard is about board size
              :board/worked (cond-> (or (:board/worked data) 0)

@@ -140,6 +140,68 @@
         (is (= "done" (:status (tasks/get-task conn id)))
             "and it closed once the critic was satisfied")))))
 
+(deftest the-critic-verifies-its-own-findings-before-they-reach-the-owner
+  ;; PASS 2, running in the real board — not judge/verified-findings called
+  ;; directly. That distinction is the point: an earlier test in this epic was
+  ;; named for a real loop and only ever called the function underneath it,
+  ;; and a 684,076-token bill was how that came out. The stub answers pass 1
+  ;; and pass 2 DIFFERENTLY, so a board that never made the second call would
+  ;; fail here rather than pass quietly.
+  (let [calls (atom [])
+        speculative "- [high] The retry loop leaks a connection on the error path."]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        ;; pass 2 carries the candidates and the verify contract
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :verify)
+                            {:content (str speculative
+                                           " FALSE_POSITIVE — no such path in the diff.")
+                             :finish-reason "stop"})
+
+                        (judge-call? messages)
+                        (do (swap! calls conj :review)
+                            {:content (str "VERDICT: INCOMPLETE\n\nFINDINGS:\n" speculative)
+                             :finish-reason "stop"})
+
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "the handler"})
+        (run-board conn {})
+        (testing "the board made both calls, in order"
+          (is (= [:review :verify] (take 2 @calls))))
+        (testing "and the finding the second pass rejected never reached the record"
+          (let [note (journal/last-note conn
+                                        (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+                                        :board-review)]
+            (is (some? note))
+            (is (str/includes? (str (:candidates note)) "leaks a connection")
+                "pass 1 said it, and the record keeps that it was considered")
+            (is (not (str/includes? (str (:findings note)) "leaks a connection"))
+                "pass 2 rejected it, so it is not what the owner is told to fix")))))))
+
+(deftest a-clean-review-does-not-pay-for-a-second-pass
+  ;; The verify call is skipped when pass 1 found nothing, so the common case
+  ;; — a review that passes — costs exactly one model call, as it did before.
+  (let [calls (atom [])]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :verify)
+                            {:content "No issues found." :finish-reason "stop"})
+                        (judge-call? messages)
+                        (do (swap! calls conj :review)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "the handler"})
+        (run-board conn {})
+        (is (= [:review] (distinct @calls))
+            "a clean review never reaches the verify pass")))))
+
 (deftest the-board-works-its-own-tree-and-the-backlog-not-role-housekeeping
   ;; A role branch (supervisor, reviewer) creates run-scoped tasks for its own
   ;; bookkeeping — the task tool practically requires it. Those are not feature

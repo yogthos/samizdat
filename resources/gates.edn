@@ -777,6 +777,41 @@
         Never scaled UP for a struggling run: a run in trouble spending longer
         per check is how a turn budget disappears into one command."}
 
+ :judge-verify?
+ {:value true :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-ylte.1" "dirge code_review.rs" "roborev"]
+  :doc "Whether a review runs its second pass: the judge re-reads its own
+        candidate findings against the diff and drops what the diff does not
+        support.
+
+        ON, because one pass is what a single-shot judge FIRST thought. The
+        review on run dbe64eea-successor emitted five findings, of which two
+        were style opinions and one was a bullet it argued itself out of and
+        left in anyway. dirge and roborev have both run two passes from the
+        start; this is the port.
+
+        It costs a second model call per review that found anything — and
+        NOTHING on a clean review, which skips it. Off is a legitimate stance
+        for a project that would rather pay one call and read the noise."}
+
+ :review-severities
+ {:value ["critical" "high" "medium" "low"] :kind :threshold
+  :capability-tunable? false
+  :provenance ["karamazov-ylte.1" "dirge code_review.rs" "dirge-uz95"]
+  :doc "EVERY severity a finding may carry, blocking or not — the vocabulary
+        prompts/judge.md asks for, written down where the reader can see it.
+
+        This is the parse protocol, not policy in its own right: a finding is
+        one SEGMENT of a findings block, and a segment starts at each line
+        carrying one of these tags. The verify pass needs that granularity to
+        attribute VERIFIED / FALSE_POSITIVE per finding rather than per block
+        — without it one drop clears a whole block, including findings the
+        judge explicitly kept (dirge-uz95). So it travels with the template:
+        change the tags judge.md asks for and change this in the same edit.
+
+        :review-blocking-severities below is the SUBSET that blocks a ship,
+        which is a genuine project judgement and stays separate."}
+
  :review-blocking-severities
  {:value ["critical" "high"] :kind :threshold :capability-tunable? false
   :doc "The finding severities a review BLOCKS a ship on. Anything else is
@@ -2223,6 +2258,13 @@
    ;; two halves are one decision and belong in one editable place.
    :verdict-line-regex "(?i)\\bVERDICT\\b"
    :findings-regex "(?is)FINDINGS:\\s*(.+)$"
+   ;; What a second-pass reply says when it cleared every candidate. Paired
+   ;; with prompts/judge-verify.md, which asks for exactly this phrase, and
+   ;; load-bearing: it is the one signal that separates "the judge checked and
+   ;; found nothing" from "the judge produced nothing parseable", and those
+   ;; two must not be treated alike — the first clears the findings, the
+   ;; second keeps them.
+   :verify-clean-regex "(?i)\\bno issues found\\b"
    ;; Ordered, first match wins, and each entry is a verdict with the words
    ;; that must ALL appear on the verdict line for it to apply. The order IS
    ;; the precedence rule: negative before abstain before positive, because

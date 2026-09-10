@@ -289,6 +289,195 @@
                           f))
         f))))
 
+(defn- severity-line?
+  "Whether `line` opens a finding: it carries one of gates.edn
+  :review-severities as a bracketed tag."
+  [line]
+  (let [sevs (gates/threshold :review-severities)]
+    (boolean (and (seq sevs)
+                  (re-find (re-pattern (str "(?i)\\[(" (str/join "|" sevs) ")\\]"))
+                           (str line))))))
+
+(defn finding-segments
+  "A findings text split into one segment per finding.
+
+  Ported from dirge's `split_on_severity_lines`. A new segment starts at each
+  severity-labelled line, and samizdat's format already gives that — one
+  finding per line, each prefixed with its tag — so the verify pass gets
+  per-finding granularity with no format migration.
+
+  WHY PER FINDING AND NOT PER BLOCK. The verify pass marks each candidate
+  VERIFIED or FALSE_POSITIVE; attributing those per block lets one drop clear
+  findings the judge explicitly kept, which is the bug dirge-uz95 records.
+  Continuation lines stay with the finding they belong to, and any preamble
+  before the first tag is its own segment so a summary is never glued onto a
+  finding."
+  [text]
+  (when (seq (str text))
+    (->> (str/split-lines (str text))
+         (reduce (fn [acc line]
+                   (if (and (severity-line? line) (seq acc)
+                            (seq (str/trim (peek acc))))
+                     (conj acc (str line "\n"))
+                     (if (seq acc)
+                       (conj (pop acc) (str (peek acc) line "\n"))
+                       (conj acc (str line "\n")))))
+                 [])
+         (filterv #(seq (str/trim %))))))
+
+(defn- false-positive?
+  "Whether a verify segment carries the judge's drop verdict.
+
+  The STRUCTURED token only, so prose like \"guards against false positives\"
+  in a real finding does not clear it. A segment carrying a VERIFIED or
+  CONFIRMED marker as well is contradictory and is KEPT — fail closed, since
+  clearing a possibly-real blocking finding is the worse error. `UNVERIFIED`
+  is stripped before that check so it cannot read as `VERIFIED`, which is a
+  correction dirge made after it misfired."
+  [segment]
+  (let [up (str/upper-case (str segment))]
+    (and (str/includes? up "FALSE_POSITIVE")
+         (not (or (str/includes? (str/replace up "UNVERIFIED" "") "VERIFIED")
+                  (str/includes? up "CONFIRMED"))))))
+
+(defn- clean-pass?
+  "Whether a verify reply says it cleared every candidate."
+  [reply]
+  (boolean (re-find (re-pattern (:verify-clean-regex (rules))) (str reply))))
+
+(defn dedupe-findings
+  "Drop duplicate findings a consolidation pass missed.
+
+  Order-preserving and keyed on the head of each segment normalised to
+  alphanumerics — dirge's `dedupe_findings`, a cheap mechanical backstop to
+  the model's own merging rather than a replacement for it."
+  [text]
+  ;; THE WHOLE SEGMENT, normalised — not a prefix of it. A truncation length
+  ;; would be a number in src/ deciding something a project might want
+  ;; different, which base-test's ratchet is right to refuse, and nobody
+  ;; actually wants to tune how many characters of a finding count as its
+  ;; identity. Normalising away punctuation and case already collapses the
+  ;; near-duplicates a prefix was reaching for: "contradicts the diff." and
+  ;; "contradicts the diff!" have the same key. Removing the decision beats
+  ;; moving it to gates.edn or granting it an exemption.
+  (let [key-of (fn [seg] (-> (str/lower-case (str seg))
+                             (str/replace #"[^a-z0-9]" "")))]
+    (->> (finding-segments text)
+         (reduce (fn [{:keys [seen out]} seg]
+                   (let [k (key-of seg)]
+                     (if (contains? seen k)
+                       {:seen seen :out out}
+                       {:seen (conj seen k) :out (conj out seg)})))
+                 {:seen #{} :out []})
+         :out
+         (str/join)
+         str/trim
+         not-empty)))
+
+(defn verify-prompt
+  "The second pass's user message: the verify instructions, the candidate
+  findings, and the diff to check them against."
+  [{:keys [candidates diff]}]
+  (str (prompt/prompt "judge-verify")
+       "\n\n--- candidate findings ---\n" (str/trim (str candidates))
+       "\n--- end candidates ---\n\n"
+       "--- diff ---\n" (str diff) "\n--- end diff ---"))
+
+(defn verified-findings
+  "The candidate findings that survived the verify pass, as text — or nil when
+  the pass cleared them all.
+
+  PASS 2 of dirge's two-pass reviewer, and the reason the whole port is worth
+  it: pass 1 emits candidates, pass 2 re-reads each one against the diff and
+  drops what the diff does not support. A single-pass judge ships whatever it
+  first thought, and the one that ran on run dbe64eea-successor emitted five
+  findings including two it visibly agonised over.
+
+  FAIL-SAFE, which is the opposite of pass 1's fail-open and deliberately so.
+  Pass 1 failing means no findings, and a review that found nothing is a
+  review that blocks nothing. Pass 2 failing means the candidates are
+  unverified — but they are still the only work anybody did, so an errored or
+  unparseable second pass keeps them rather than silently clearing a real
+  blocking finding.
+
+  So findings are cleared only two ways: the judge said it found none, or its
+  explicit FALSE_POSITIVE verdicts account for every candidate. Anything else
+  — nothing parseable, a partial answer, silence — keeps pass 1."
+  [{:keys [reply candidates]}]
+  (let [cands (finding-segments candidates)]
+    (cond
+      (empty? cands) nil
+      (clean-pass? reply) nil
+      (str/blank? (str reply)) (dedupe-findings candidates)
+      :else
+      (let [segs (finding-segments reply)
+            dropped (count (filterv false-positive? segs))
+            ;; A SURVIVOR HAS TO BE A FINDING. Filtering only on
+            ;; false-positive? let any prose the judge emitted through as the
+            ;; findings text — "Hmm, hard to say." would have REPLACED two real
+            ;; candidates with itself. dirge's parse_findings has the same
+            ;; rule for the same reason: a block with no severity label is
+            ;; narration, and narration never fabricates a finding.
+            kept (->> segs
+                      (remove false-positive?)
+                      (filter #(severity-line? (first (str/split-lines %)))))
+            survivors (not-empty (str/trim (str/join kept)))]
+        (cond
+          survivors (dedupe-findings survivors)
+          ;; Nothing survived and the explicit drops do not account for every
+          ;; candidate: the pass is ambiguous, not clean. Keep the candidates.
+          (< dropped (count cands)) (dedupe-findings candidates)
+          :else nil)))))
+
+(defn review
+  "One review, both passes, against an injected `chat`.
+
+  `chat` is a 1-arg fn taking the user message and returning the reply text,
+  or nil on failure — the effect seam, so this namespace stays pure and the
+  cell that owns the provider supplies it (AGENTS.md's rule for a capability:
+  mechanism here, the decision in a cell).
+
+  Returns {:verdict :candidates :findings}. `:candidates` is what pass 1 said
+  and `:findings` is what survived pass 2; the record keeps both, so a reader
+  can see what was considered as well as what was concluded.
+
+  TWO PASSES, ported from dirge (which took the craft from roborev):
+
+    1. review — the judge reads the requirement, the diff and the evidence
+       and emits candidate findings.
+    2. verify — the SAME judge re-reads each candidate against the diff and
+       drops what the diff does not support.
+
+  One pass ships whatever the judge first thought. The review on run
+  dbe64eea-successor emitted five findings, of which two were style opinions
+  and one was a bullet it argued itself out of and left in anyway.
+
+  THE FAILURE MODES ARE OPPOSITE, deliberately. Pass 1 fails OPEN — no reply
+  means no findings, and a review that found nothing blocks nothing, which is
+  what a judge that cannot answer must do rather than wedge the loop. Pass 2
+  fails SAFE — the candidates are then unverified, but they are still the only
+  work anybody did, so they stand rather than being silently cleared.
+
+  It is EXTRACTED rather than written at each call site because there are
+  three critics — :board/review, :feature/critique and cells/critic.clj — and
+  the argument is the one `usable` makes: a fourth would forget the second
+  pass, and a critic quietly running one is indistinguishable from one running
+  two until you read its findings."
+  [{:keys [chat requirement evidence diff answer transcript]}]
+  (let [reply (chat (critic-prompt {:requirement requirement :evidence evidence
+                                    :diff diff :answer answer
+                                    :transcript transcript}))
+        verdict (if reply (parse-verdict reply) :complete)
+        candidates (when reply (findings reply))
+        verified (if (and candidates (gates/threshold :judge-verify?))
+                   ;; Skipped when pass 1 found nothing, so a clean review
+                   ;; still costs exactly one call.
+                   (verified-findings
+                    {:reply (chat (verify-prompt {:candidates candidates :diff diff}))
+                     :candidates candidates})
+                   candidates)]
+    {:verdict verdict :candidates candidates :findings verified}))
+
 (defn critique-message
   "The single consolidated note injected back into the branch when the judge
   does not pass, so its next turn sees exactly what to fix."

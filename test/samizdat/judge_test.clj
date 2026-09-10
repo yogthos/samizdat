@@ -106,6 +106,96 @@
       (is (= :complete (judge/parse-verdict reply)))
       (is (str/includes? (judge/findings reply) "[low] a nit")))))
 
+(deftest findings-split-into-one-segment-per-finding
+  ;; Ported from dirge's split_on_severity_lines. A new segment starts at each
+  ;; severity-labelled line, which samizdat's format already gives us — one
+  ;; finding per line, each prefixed with its severity tag — so the verify
+  ;; pass gets per-finding granularity without a format migration.
+  (let [text (str "- [high] The visual exercise was never done.\n"
+                  "  It said so in the task and the answer omits it.\n"
+                  "- [low] Colour duplication between palette and draw.\n"
+                  "- [medium] The answer's fade band contradicts the diff.")]
+    (is (= 3 (count (judge/finding-segments text))))
+    (is (str/includes? (first (judge/finding-segments text))
+                       "It said so in the task")
+        "a finding's continuation lines stay with it"))
+  (testing "preamble before the first severity line is its own segment, so a
+            summary line is never glued onto a finding"
+    (let [segs (judge/finding-segments "A one-line summary.\n- [high] a real one")]
+      (is (= 2 (count segs)))
+      (is (str/includes? (second segs) "[high]"))))
+  (is (empty? (judge/finding-segments "")))
+  (is (empty? (judge/finding-segments nil))))
+
+(deftest the-verify-pass-drops-only-what-it-explicitly-calls-a-false-positive
+  ;; Pass 2, ported from dirge (roborev's VerifyDedupePreamble). The judge
+  ;; re-reads each candidate against the diff and marks it VERIFIED or
+  ;; FALSE_POSITIVE. Every rule below is one dirge learned from a live
+  ;; misfire, so they are pinned rather than assumed.
+  (let [candidates (str "- [high] A real defect.\n"
+                        "- [low] A speculative one.\n")]
+    (testing "a FALSE_POSITIVE segment is dropped and the rest survive"
+      (let [reply (str "- [high] A real defect. VERIFIED.\n"
+                       "- [low] A speculative one. FALSE_POSITIVE — not in the diff.\n")
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? out "A real defect"))
+        (is (not (str/includes? out "A speculative one")))))
+    (testing "a segment carrying BOTH markers is kept — fail closed, because
+              clearing a possibly-real blocking finding is the worse error"
+      (let [reply "- [high] A real defect. VERIFIED, though arguably FALSE_POSITIVE.\n"
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? out "A real defect"))))
+    (testing "UNVERIFIED must not read as a VERIFIED marker (dirge's own note).
+              ONE candidate here on purpose: with two, the ambiguity rule below
+              would keep them both and the assertion would pass without the
+              UNVERIFIED guard doing anything — which is how it read on the
+              first run of this test."
+      (let [one "- [high] A real defect.\n"
+            reply "- [high] A real defect. FALSE_POSITIVE — UNVERIFIED speculation.\n"
+            out (judge/verified-findings {:reply reply :candidates one})]
+        (is (nil? out) "the UNVERIFIED substring was hiding the drop")))
+    (testing "prose about false positives is not the structured token"
+      (let [reply (str "- [high] A real defect. VERIFIED: this guards against "
+                       "false positives downstream.\n")
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? out "A real defect"))))
+    (testing "a clean pass clears everything"
+      (is (nil? (judge/verified-findings
+                 {:reply "No issues found." :candidates candidates}))))
+    (testing "FAIL-SAFE: an unparseable verify keeps the pass-1 candidates
+              rather than silently dropping real work"
+      (doseq [reply [nil "" "Hmm, hard to say."]]
+        (is (str/includes? (str (judge/verified-findings
+                                 {:reply reply :candidates candidates}))
+                           "A real defect")
+            (str "kept on: " (pr-str reply)))))
+    (testing "and a verify that drops SOME but re-emits nothing parseable is
+              ambiguous, so the candidates stand"
+      (let [reply "- [low] A speculative one. FALSE_POSITIVE.\n"
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? (str out) "A real defect")
+            "one explicit drop does not account for two candidates")))))
+
+(deftest duplicate-findings-are-merged-mechanically
+  ;; dirge's dedupe_findings: a cheap order-preserving backstop to the LLM's
+  ;; consolidation, keyed on severity plus the head of the finding normalised
+  ;; to alphanumerics.
+  (let [text (str "- [high] The fade band contradicts the diff.\n"
+                  "- [high] The fade band contradicts the diff!\n"
+                  "- [low] Colour duplication.\n")
+        out (judge/finding-segments (judge/dedupe-findings text))]
+    (is (= 2 (count out)))
+    (is (str/includes? (first out) "fade band"))
+    (is (str/includes? (second out) "Colour duplication"))))
+
+(deftest the-verify-prompt-carries-the-candidates-and-the-diff
+  (let [p (judge/verify-prompt {:candidates "- [high] A real defect."
+                                :diff "diff --git a/src/x.clj"})]
+    (is (str/includes? p "A real defect"))
+    (is (str/includes? p "diff --git a/src/x.clj"))
+    (is (or (str/includes? p "FALSE_POSITIVE") (str/includes? p "VERIFIED"))
+        "the verdict contract has to be in the instructions the judge reads")))
+
 (deftest evidence-block-is-deterministic-facts
   (let [e (judge/evidence [{:tool_name "edit_file" :args {:path "a.clj"} :category "success"}
                            {:tool_name "shell" :args {:command "jolt -M:test"} :category "failure"}

@@ -312,6 +312,32 @@
     {:harness-rev (str/trim (:out (git root "rev-parse" "--short" "HEAD")))
      :harness-clean? (str/blank? (str/trim (:out (git root "status" "--porcelain"))))}))
 
+(defn load-average
+  "The machine's 1-minute load average, or nil if it cannot be read.
+
+  STAMPED ON EVERY ROW because a wall-clock measurement on a contended box is
+  not a measurement of the harness. Run dbe64eea-successor's retry attempt
+  measured 0.62 minutes a turn against the first attempt's 0.37 in the SAME
+  RUN, and the difference was three of this repository's own test suites
+  running beside it — load average 26 on a 10-core machine. Nothing in the row
+  said so, so the number read as 'the retry is slower', and the budget was
+  very nearly re-tuned around it.
+
+  karamazov-7mo.4's rule is that a score without its fixture, revision, model
+  and scorer beside it is only a number. Contention belongs on that list: it
+  is the one confound a rig sharing a machine with its own development cannot
+  avoid and can always record.
+
+  Read from `uptime` rather than a management bean: jolt has no
+  java.lang.management, and the bean returned nil here — measured, before this
+  read like a machine with no load rather than a call that does not work."
+  []
+  (try
+    (some-> (re-find #"load averages?:\s+([0-9.]+)" (str (:out (sh "uptime"))))
+            second
+            Double/parseDouble)
+    (catch Throwable _ nil)))
+
 (defn suite-green?
   "Whether the subject's own verify command passes in `root`. The scorer, named
   and recorded, not inferred from the harness's opinion of itself.
@@ -585,10 +611,12 @@
                 :max-revisions-hard max-revisions-hard
                 :timeout-ms timeout-ms
                 :stall-ms stall-ms}
+        load-at-start (load-average)
         fail (fn [status extra]
                (merge {:arm (:name arm) :sha sha :status status
                        :wall-ms (- (System/currentTimeMillis) started)
                        :budget budget
+                       :load [load-at-start (load-average)]
                        :at (str (java.time.Instant/now))}
                       (harness-revision) extra))]
     (try
@@ -661,6 +689,9 @@
                     :green? (suite-green? root (:verify-cmd row) verify-timeout-ms)
                     :wall-ms (- (System/currentTimeMillis) started)
                     :budget budget
+                    ;; Both ends, because a sweep that started quiet and ended
+                    ;; contended is exactly the shape that misleads.
+                    :load [load-at-start (load-average)]
                     :at (str (java.time.Instant/now))}
                    span
                    (harness-revision)
