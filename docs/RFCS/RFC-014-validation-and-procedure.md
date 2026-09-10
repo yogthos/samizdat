@@ -84,6 +84,23 @@ docstring.
 conversation, per branch, in order, off `turns.assistant_text`. `complete-fn`
 serves it back in the shape `infer/complete-fn` produces.
 
+**Free in tokens, not in wall-clock.** A replay pays no provider and its cost
+is bounded and repeatable, which is what lets the gate run one per case. It is
+not instant: every tool the recorded conversation calls genuinely executes, so
+a replayed run reads real files, runs real shells and takes real seconds. A
+measured 125-turn replay spent 0 provider tokens — against 684,076 for the same
+run before the drivers actually carried the injected `complete` — and still
+took minutes.
+
+**One cursor per branch, and an unknown branch is refused.** A beam is several
+conversations. `case-complete-fn` dispatches on the tape's `:id` and keeps a
+cursor for each, because one cursor across them interleaves the recording and
+every branch reads another's next line. A branch the recording does not have is
+refused by name rather than served the nearest one: driving a real replay, the
+feature loop escalated `T0` through five revisions and fanned out to four
+workers, ten branches the recording had never seen, and substituting produced a
+run that looked like a clean replay and was not one.
+
 **Only the model's side is recorded.** The tape the harness assembled, the
 gates that fired, where it routed — those are exactly what an edit is allowed
 to change, and recording them would pin the thing under test.
@@ -159,7 +176,7 @@ decides.
 | `replay/record` | A run's model-side conversation as a case, with the run id and time it was taken. |
 | `replay/complete-fn` | Case + branch → a `complete`. Stateful; one per branch, since two branches are two conversations. |
 | `battery/check` | Expectations against a finished run → `{:ok? :passed :total :targets}`. |
-| `battery/accept?` | Whether a candidate may commit. `>=`, ties included. |
+| `battery/accept?` | Whether a candidate may commit. `>=`, ties included; refuses outright when the two results cover different numbers of targets. |
 | `battery/regressions` | Targets that passed before and fail after — the flips only. |
 | `battery/vocabulary` | Every assertion verb a case may use. |
 | `procedure/load-graph` | A graph definition as queryable facts that remember their definition. |
@@ -194,11 +211,15 @@ is a worse failure than the one the gate prevents.
 |---|---|
 | A case records the model's side only. | `replay/record` selects `assistant_text`; `replay-test/a-case-is-the-runs-replies-in-order-per-branch`. |
 | Replay never invents a reply. | `:replay/exhausted`; `replay-test/a-replay-that-runs-past-its-recording-says-so-rather-than-inventing`. |
-| Replay is deterministic and costs nothing. | `replay-test/replay-costs-nothing-and-is-deterministic`. |
+| Replay is deterministic and spends no provider tokens. | `replay-test/replay-costs-nothing-and-is-deterministic`. |
+| A branch the recording lacks is refused, never substituted. | `:replay/unknown-branch`; `replay-test/a-branch-the-recording-does-not-have-is-refused-not-substituted`. |
+| One cursor per branch. | `replay-test/one-complete-keeps-a-cursor-per-branch`. |
+| An injected `complete` reaches the turn through a real driver. | `replay-test/a-drivers-injected-complete-actually-reaches-the-turn`, which runs `beam/run!` with `llm/chat` redefined to throw. |
 | An injected `complete` does not change the live path. | `replay-test/without-an-injected-complete-nothing-changes`. |
 | An unknown assertion refuses rather than passing. | `verb :default` throws; `battery-test/an-unknown-assertion-is-refused-at-check-time-not-ignored`. |
 | A case cannot carry executable code. | The vocabulary is a closed multimethod; `battery-test/a-case-cannot-smuggle-a-form`. |
 | A tie commits. | `battery/accept?` is `>=`; `battery-test/accept-on-tie`. |
+| Two results over different target sets are incomparable, not a pass. | `battery/accept?` requires equal `:total`; found on real data, where a 14/14 baseline against a 14/15 candidate read as `14 >= 14` and committed. |
 | A pre-existing failure cannot block an edit. | `battery/regressions` filters on `was-ok`; `battery-test/a-regression-names-the-targets-that-broke`. |
 | The battery runs after the soak, never before. | `battery-test/the-gate-sits-between-soak-and-commit`. |
 | A refusal names what broke. | `mutation/battery-reason`; `battery-test/a-regression-rolls-back-and-names-what-broke`. |

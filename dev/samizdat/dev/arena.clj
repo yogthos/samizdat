@@ -55,19 +55,39 @@
             [samizdat.session :as session]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
+            [samizdat.store.runs :as runs]
             [samizdat.system :as system]))
 
 ;;; ------------------------------------------------------------------ shell
 
 (defn- sh
-  "Run a command, returning {:out :err :exit}. Nothing here is interactive, and
-  every destructive call passes its force flag explicitly (AGENTS.md)."
+  "Run a command, returning {:out :exit}, with stderr merged into `:out`.
+  Nothing here is interactive, and every destructive call passes its force
+  flag explicitly (AGENTS.md).
+
+  ONE STREAM, READ TO THE END, and both halves of that matter. Reading two
+  pipes in sequence from one thread deadlocks the moment the one not being
+  read fills its buffer, and the chattiest command this runs is `jolt -A:dev
+  -Spath`, which writes dependency-resolution progress to stderr on a cold
+  cache — so the sweep's classpath probe was one slow download away from
+  hanging the whole sweep before its first run.
+
+  The obvious repair — send stderr to a file — does not work on jolt 0.8.6:
+  `.redirectError` is accepted and ignored, exactly like `.redirectOutput`
+  (see `drain-to!`), so the file is never written AND the pipe is still there
+  to fill. Measured: a child writing 4000 stderr lines with `.redirectError`
+  set to a file never finished. Merging is the only form that needs no second
+  reader at all.
+
+  Callers that used to read `:err` read `:out` now; the only one is
+  `worktree!`, reporting why a checkout failed, and a merged message says that
+  no less well."
   [& args]
-  (let [pb (doto (ProcessBuilder. ^java.util.List (vec args)) (.redirectErrorStream false))
+  (let [pb (doto (ProcessBuilder. ^java.util.List (vec args))
+             (.redirectErrorStream true))
         p (.start pb)
-        out (slurp (.getInputStream p))
-        err (slurp (.getErrorStream p))]
-    {:out out :err err :exit (.waitFor p)}))
+        out (slurp (.getInputStream p))]
+    {:out out :err out :exit (.waitFor p)}))
 
 (defn- git [dir & args] (apply sh "git" "-C" (str dir) args))
 
@@ -91,6 +111,196 @@
   [repo dest]
   (try (git repo "worktree" "remove" "--force" (str dest)) (catch Throwable _ nil)))
 
+;;; -------------------------------------------------- waiting on the child
+
+(defn- drain-to!
+  "Copy `p`'s output into `file` on a plain OS thread, until the stream ends.
+
+  THE CHILD'S STDOUT MUST BE READ BY SOMEBODY. jolt 0.8.6 accepts
+  `ProcessBuilder.redirectOutput` and does nothing with it — the file is never
+  created, in either the `File` or the `Redirect/to` form — so the process
+  keeps the default PIPE and a rig that only asked for the redirect is a rig
+  that never reads it. Once the child has written a pipe buffer's worth (64 KB
+  on this platform) its next write blocks forever.
+
+  THIS IS THE 33-MINUTE WEDGE, and it was the rig's own doing rather than the
+  harness's. Run dbe64eea journalled turns for half an hour, filled the pipe
+  mid-log, and stopped: process alive, nothing progressing, no error anywhere,
+  and the log that would have shown it never existed. Measured directly — a
+  child writing 200 KB with `.redirectOutput(File)` set had not exited after
+  10 seconds, while the same child with the redirect merely *dropped* exits in
+  207 ms.
+
+  A PLAIN `Thread`, not a `future`. jolt's futures are fibers, and a fiber
+  parked in a blocking read is delicate here (karamazov-p3jo); a host thread
+  blocking on a read is just a thread blocking on a read. It is a daemon so it
+  can never hold the sweep open, and it ends on its own when the child's
+  stream closes.
+
+  FLUSHED PER CHUNK rather than left to the stream's buffer. The log's whole
+  job is to be readable WHILE a run is in trouble — a sweep is watched by
+  tailing it — and a daemon thread holding the last few kilobytes when the
+  parent exits would lose exactly the end, which is the part that says what
+  went wrong."
+  [^java.lang.Process p ^java.io.File file]
+  (doto (Thread.
+         (fn []
+           (try
+             (with-open [in (.getInputStream p)
+                         out (java.io.FileOutputStream. file)]
+               (let [buf (byte-array 8192)]
+                 (loop []
+                   (let [n (.read in buf)]
+                     (when (pos? n)
+                       (.write out buf 0 n)
+                       (.flush out)
+                       (recur))))))
+             (catch Throwable _ nil))))
+    (.setDaemon true)
+    (.start)))
+
+(defn- last-activity
+  "The newest timestamp in the child's journal, or nil if it has not written
+  one yet. The child's own record of being alive.
+
+  ALL THREE TABLES, because a run can be busy without taking a turn. `turns`
+  and `events` miss the reviewer, the critic and the supervisor's own calls
+  entirely — those land in `side_calls` — and a feature round spends real
+  minutes there between one owner ending and the next beginning. Watching
+  turns alone would call a working review a wedge."
+  [conn]
+  (->> ["SELECT MAX(t) AS t FROM (SELECT MAX(created_at) AS t FROM turns
+                                  UNION ALL
+                                  SELECT MAX(created_at) AS t FROM events
+                                  UNION ALL
+                                  SELECT MAX(created_at) AS t FROM side_calls)"]
+       (db/fetch conn)
+       first
+       :t))
+
+(defn- open-child-db
+  "A read connection to the child's database, once it exists.
+
+  Safe from another process because db/connect sets WAL, which is exactly the
+  case its docstring is about: before WAL, pointing a reader at a live run's
+  file killed the branch that was writing. nil until the child has created the
+  file, which it does at system/start!."
+  [root]
+  (let [f (io/file (str root "/.samizdat/samizdat.sqlite3"))]
+    (when (and (.exists f) (pos? (.length f)))
+      (try (db/connect (.getPath f)) (catch Throwable _ nil)))))
+
+(defn await-child!
+  "Wait for `p` to exit. Returns {:ended-by :loop|:clock|:stall …}.
+
+  OUR OWN CLOCK, NOT `.waitFor(n, unit)`. Measured on jolt 0.8.6: a timed
+  `.waitFor` waits about 1.24x what it is asked for — 1000 ms came back at
+  1233, 20000 at 24800, 60000 at 74183, 120000 at 148904, a stable ~24%
+  overshoot — and asked in `TimeUnit/SECONDS` it returns immediately instead
+  of waiting at all. So the sweep's only stop handle was inaccurate at the
+  unit we used and absent at the other: the 45-minute cap on the one recorded
+  run actually fired at 55.6 minutes. `Thread/sleep` is accurate to a few
+  milliseconds at every scale tested, so a poll against
+  `System/currentTimeMillis` is.
+
+  THE STALL CHECK IS THE ONE THAT EARNS ITS KEEP. That same run's last
+  journalled activity was at 03:00:31 and the rig killed it at 03:33:49: 33
+  minutes in which the child took no turn, fired no gate, wrote no event and
+  cost nothing but the sweep's wall clock. Doubling a timeout over a wedge
+  buys twice the waiting. The child's own journal is the liveness signal, so
+  a wedge is named — `:stall`, with the last activity and the idle span — and
+  the sweep moves on to the next run instead of paying out the whole cap.
+
+  `stall-ms` must stay well above the slowest legitimate quiet period, which
+  is a provider call: :llm :max-response-ms is 600000 and the retry ladder can
+  spend that more than once on one turn."
+  [p {:keys [root timeout-ms stall-ms poll-ms]
+      :or {poll-ms 15000}}]
+  (let [t0 (System/currentTimeMillis)
+        conn (atom nil)]
+    (try
+      (loop [seen nil
+             seen-at t0]
+        (let [now (System/currentTimeMillis)]
+          (cond
+            (not (.isAlive p))
+            {:ended-by :loop :waited-ms (- now t0) :last-activity-at seen}
+
+            (and timeout-ms (>= (- now t0) timeout-ms))
+            {:ended-by :clock :waited-ms (- now t0) :last-activity-at seen}
+
+            (and stall-ms (>= (- now seen-at) stall-ms))
+            {:ended-by :stall :waited-ms (- now t0) :last-activity-at seen
+             :idle-ms (- now seen-at)}
+
+            :else
+            (do
+              (Thread/sleep (long poll-ms))
+              (when-not @conn (reset! conn (open-child-db root)))
+              (let [t (try (some-> @conn last-activity) (catch Throwable _ seen))]
+                (if (and t (not= t seen))
+                  (recur t (System/currentTimeMillis))
+                  (recur seen seen-at)))))))
+      (finally
+        (when-let [c @conn] (try (db/close c) (catch Throwable _ nil)))))))
+
+(defn- kill!
+  "Stop the child and everything under it, returning whether anything survived.
+
+  `.destroyForcibly` then a bounded confirmation, because a sweep that
+  believed a run had ended while its process was still working ran two arms at
+  once and contaminated both. The confirmation polls rather than calling the
+  timed `.waitFor` for the reason await-child! gives."
+  [p]
+  (.destroyForcibly p)
+  (let [deadline (+ (System/currentTimeMillis) 15000)]
+    (loop []
+      (cond
+        (not (.isAlive p)) false
+        (>= (System/currentTimeMillis) deadline) true
+        :else (do (Thread/sleep 200) (recur))))))
+
+(defn keep-recording!
+  "Copy the child's database out of the worktree as ONE file, with nothing
+  left behind in a write-ahead log.
+
+  A PLAIN FILE COPY LOSES THE RUN. db/connect puts every database in WAL mode,
+  and a child we killed with `.destroyForcibly` never got to check its log
+  back in — so the pages sit in `<db>-wal` and the file named `.sqlite3` holds
+  only whatever the last automatic checkpoint had folded in. Measured on a
+  short run killed the way the rig kills one: main file 4096 bytes, WAL
+  988,832, and a copy of the main file alone could not even find the `events`
+  table. On a long run the automatic checkpoint saves most of it and loses the
+  TAIL — which is precisely the part that says how the run ended.
+
+  Checkpointing the SOURCE is sound for the same reason reconciling it is: the
+  process that owned it is confirmed dead, so there is no writer to race."
+  [src dest]
+  (let [c (db/connect (str src))]
+    (try (db/execute! c "PRAGMA wal_checkpoint(TRUNCATE)")
+         (finally (db/close c))))
+  (io/copy (io/file (str src)) (io/file (str dest))))
+
+(defn reconcile-recording!
+  "Mark a killed child's run row for what it is, in the copy that is kept.
+
+  A run row says `running` from the moment the beam opens until it finishes,
+  so a child we killed leaves the preserved recording asserting forever that
+  it is still going. `runs/reconcile-orphans!` is the harness's own answer and
+  it is sound here for exactly its own reason: it is only ever right when
+  nothing can be running, and we have just confirmed the process is dead.
+
+  `interrupted` is deliberately a status `battery/draft-case` REFUSES. A run
+  the clock ended is not a case — the loop did not choose that ending — and
+  the point of writing the honest status is that the refusal happens for the
+  true reason rather than because the row still claims to be running."
+  [path]
+  (try
+    (let [conn (db/connect (str path))]
+      (try (runs/reconcile-orphans! conn)
+           (finally (db/close conn))))
+    (catch Throwable _ nil)))
+
 ;;; ---------------------------------------------------------- the measurement
 
 (defn- harness-revision
@@ -107,7 +317,11 @@
   and recorded, not inferred from the harness's opinion of itself.
 
   nil, never false, when the command could not be run: `sh` failing to launch
-  and a suite failing are different facts, and only the second is a red test."
+  and a suite failing are different facts, and only the second is a red test.
+
+  Waits on its own clock for the reason `await-child!` gives: jolt's timed
+  `.waitFor` overshoots by about a quarter, so a ten-minute verify bound was
+  really twelve and a half."
   [root verify-cmd timeout-ms]
   (try
     (let [args (str/split (str verify-cmd) #"\s+")
@@ -115,10 +329,14 @@
                (.directory (io/file (str root)))
                (.redirectErrorStream true))
           p (.start pb)
-          done? (.waitFor p timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)]
+          deadline (+ (System/currentTimeMillis) (long timeout-ms))
+          done? (loop []
+                  (cond (not (.isAlive p)) true
+                        (>= (System/currentTimeMillis) deadline) false
+                        :else (do (Thread/sleep 500) (recur))))]
       (if done?
         (zero? (.exitValue p))
-        (do (.destroyForcibly p) false)))
+        (do (kill! p) false)))
     (catch Throwable _ nil)))
 
 (defn edits
@@ -217,7 +435,18 @@
   (memoize
    (fn []
      (let [harness (System/getProperty "user.dir")
-           raw (str/trim (last (str/split-lines (:out (sh "jolt" "-A:dev" "-Spath")))))]
+           ;; The LAST line that looks like a classpath, not simply the last
+           ;; line. `sh` merges stderr in now (it has to; see its docstring),
+           ;; so dependency-resolution chatter shares the stream and a cold
+           ;; cache can put a progress line after the answer.
+           raw (->> (str/split-lines (:out (sh "jolt" "-A:dev" "-Spath")))
+                    (map str/trim)
+                    (filter #(and (str/includes? % ":")
+                                  (or (str/starts-with? % "/")
+                                      (str/starts-with? % "./"))))
+                    last)]
+       (when (str/blank? (str raw))
+         (throw (ex-info "could not read the harness classpath from jolt -Spath" {})))
        (->> (str/split raw #":")
             (map (fn [e] (if (str/starts-with? e "./") (str harness (subs e 1)) e)))
             (str/join ":"))))))
@@ -242,7 +471,17 @@
            started (System/currentTimeMillis)
            row (try
                  (system/start! #'server/handler
-                                {:run {:root (:root in)}
+                                {:run (cond-> {:root (:root in)}
+                                        ;; THE RUNAWAY GUARD, opted into
+                                        ;; because a sweep is unattended.
+                                        ;; :feature/route has no numeric
+                                        ;; abandon by default — it keeps
+                                        ;; solving until a supervisor says
+                                        ;; STOP — and there is no supervisor
+                                        ;; watching a sweep at 3am.
+                                        (:max-revisions-hard in)
+                                        (assoc :max-revisions-hard
+                                               (:max-revisions-hard in)))
                                  :http {:port (:http-port in)}})
                  (try
                    (session/reset!)
@@ -285,79 +524,131 @@
     :repo :sha        — the subject repository and the pinned baseline
     :arm              — {:name kw :setup <quoted form, optional>}
     :problem          — the task text
-    :max-turns :beam-width :token-budget
+    :max-turns        — the cap on ONE BRANCH, not on the run; see below
+    :beam-width :token-budget
+    :max-revisions-hard — the feature loop's runaway guard; see below
     :dest             — where to put the worktree
     :http-port        — the child's server port
-    :timeout-ms       — hard cap on the child
+    :timeout-ms       — wall-clock cap on the child
+    :stall-ms         — how long the child may journal nothing before it is
+                        called wedged
     :verify-timeout-ms
     :keep?            — leave the worktree behind for inspection
+    :recordings       — directory to keep each run's database (and log) in
 
-  THE CHILD PROCESS IS THE ABORT UNIT, and it has to be. `beam/run!` called
-  directly never registers in `api.control/active` — that registration happens
-  in `control/start-run!`'s `on-start`, which the rig does not go through — so
-  a rig run cannot be stopped through the control API, and the in-process
-  version of this had no way to stop a wedged run at all (observed: a trivial
-  task churning past 40 turns on a 6-turn budget through a done / __no_call__ /
-  last-call loop, with nothing able to reach it). `timeout-ms` and
-  `.destroyForcibly` are that handle now, and a killed child is recorded as
-  `:timeout` rather than being lost.
+  WHAT BOUNDS A RUN, measured rather than assumed, because the first sweep was
+  bounded by nothing and the rig's clock had to end every run:
+
+    `max-turns` is PER BRANCH and never the run's total. On a board-driven
+    round it is the OWNER's cap (gates.edn :board-owner-turns takes the min of
+    the two), and the feature loop multiplies it by every revision and every
+    task in a round. On the one recorded run it was 60, the owner spent
+    exactly 60 and came back exhausted, and the loop then started revision 1
+    from nothing — so the number that looked like a work budget was in fact
+    the thing that threw the work away. It is also what the steering gates key
+    off (:wind-down-fraction 0.85, :last-call-window 2), which is the reason
+    it cannot simply be raised to infinity.
+
+    `token-budget` does NOT bound one of these runs, and the row says so.
+    :beam/round-open is the only place it is checked, and a non-iterating
+    manifest — feature, team, decompose — has one round for the whole job.
+    Filed as its own defect; not worked around here, because a rig that
+    quietly patched the harness would stop measuring it.
+
+    `max-revisions-hard` is the one that closes the loop. :feature/route is
+    deliberately supervisor-driven with no numeric abandon, and a run nobody
+    is watching is precisely the case its `:run :max-revisions-hard` guard
+    exists for. An unattended sweep opts in; that is what turns 'the clock
+    killed it' into an ending the loop chose.
 
   Returns the row. Never throws for a run that failed: a failure IS a
   measurement, and a sweep that died on arm B's third run would silently
   report arm A as better."
   [{:keys [repo sha arm problem max-turns beam-width token-budget dest
-           verify-timeout-ms keep? http-port timeout-ms recordings]
-    :or {verify-timeout-ms 600000 http-port 3997 timeout-ms 3600000}}]
+           max-revisions-hard verify-timeout-ms keep? http-port timeout-ms
+           stall-ms recordings]
+    :or {verify-timeout-ms 600000 http-port 3997 timeout-ms 3600000
+         stall-ms 1800000}}]
   (let [started (System/currentTimeMillis)
         root (worktree! repo sha dest)
         in-f (str root "/.arena-in.edn")
         out-f (str dest "-row.edn")
+        log-f (io/file (str dest "-child.log"))
+        ;; SETUP IS TIMED SEPARATELY. It used to sit inside :wall-ms with
+        ;; nothing to separate it from the run, and on the first sweep that
+        ;; hid several minutes of cold `jolt -Spath` inside a number read as
+        ;; the run's duration. A budget cannot be sized against a figure that
+        ;; silently includes the rig.
+        budget {:turns-per-branch max-turns
+                :beam-width beam-width
+                :token-budget token-budget
+                :max-revisions-hard max-revisions-hard
+                :timeout-ms timeout-ms
+                :stall-ms stall-ms}
         fail (fn [status extra]
                (merge {:arm (:name arm) :sha sha :status status
                        :wall-ms (- (System/currentTimeMillis) started)
+                       :budget budget
                        :at (str (java.time.Instant/now))}
                       (harness-revision) extra))]
     (try
       (spit in-f (pr-str {:root root :problem problem
                           :max-turns max-turns :beam-width beam-width
-                          :token-budget token-budget :http-port http-port
+                          :token-budget token-budget
+                          :max-revisions-hard max-revisions-hard
+                          :http-port http-port
                           :setup (:setup arm)}))
-      (let [log-f (io/file (str dest "-child.log"))
-            pb (doto (ProcessBuilder.
+      (let [pb (doto (ProcessBuilder.
                       ^java.util.List
                       ["jolt" "-Scp" (harness-classpath) "-e" (pr-str child-main)])
                  ;; THE LINE THIS NAMESPACE EXISTS FOR.
                  (.directory (io/file root))
-                 (.redirectErrorStream true)
-                 ;; REDIRECT TO A FILE rather than draining the pipe from a
-                 ;; future. Two failure classes go away with it: a child that
-                 ;; blocks forever because nobody emptied a full pipe buffer,
-                 ;; and a reader future parked on a fiber (jolt's futures are
-                 ;; fibers, and parking inside one is delicate here —
-                 ;; karamazov-p3jo). The OS writes the file; nothing in this
-                 ;; process has to keep up.
-                 (.redirectOutput log-f))
+                 ;; Both streams on one pipe, and `drain-to!` empties it.
+                 ;; Asking ProcessBuilder to write the file instead is what
+                 ;; the first sweep did, and jolt honours neither redirect
+                 ;; form — see drain-to!, which is also the wedge that ended
+                 ;; that sweep.
+                 (.redirectErrorStream true))
             _ (doto (.environment pb)
                 (.put "ARENA_IN" in-f)
                 (.put "ARENA_OUT" out-f)
                 (.put "HARNESS_ROOT" root))
+            setup-ms (- (System/currentTimeMillis) started)
+            child-at (System/currentTimeMillis)
             p (.start pb)
+            drain (drain-to! p log-f)
             pid (try (.pid p) (catch Throwable _ nil))
-            done? (.waitFor p timeout-ms java.util.concurrent.TimeUnit/MILLISECONDS)
+            waited (await-child! p {:root root :timeout-ms timeout-ms
+                                    :stall-ms stall-ms})
+            ended-by (:ended-by waited)
             ;; TRUST NOTHING. A sweep that believed a run had ended while its
             ;; process was still working ran two arms at once and contaminated
-            ;; both — observed, and the reason this check exists. `alive?` is
-            ;; the ground truth, and the row carries it so an overlap can
-            ;; never again be invisible in the record.
-            _ (when-not done? (.destroyForcibly p))
-            _ (when (.isAlive p)
-                (.destroyForcibly p)
-                (.waitFor p 15000 java.util.concurrent.TimeUnit/MILLISECONDS))
-            stray? (.isAlive p)
+            ;; both — observed, and the reason this check exists. The row
+            ;; carries :left-alive? so an overlap can never again be invisible
+            ;; in the record.
+            stray? (kill! p)
+            ;; LET THE LOG CATCH UP before anything reads or copies it. The
+            ;; last lines a killed child wrote are the ones that say what it
+            ;; was doing, and they are still in flight in the drain thread the
+            ;; moment the process dies. Bounded, because a hung reader must
+            ;; not become a new way for the sweep to wedge.
+            _ (try (.join drain 5000) (catch Throwable _ nil))
             span {:pid pid :left-alive? stray?
+                  :ended-by ended-by
+                  :setup-ms setup-ms
+                  :child-ms (- (System/currentTimeMillis) child-at)
+                  :last-activity-at (:last-activity-at waited)
+                  :idle-ms (:idle-ms waited)
                   :ended-at (str (java.time.Instant/now))}]
         (cond
-          (not done?) (fail :timeout (merge span {:timeout-ms timeout-ms}))
+          ;; A WEDGE AND A LONG RUN ARE DIFFERENT RESULTS and the status says
+          ;; which. :stalled means the child was alive and journalling
+          ;; nothing; :timeout means it was working and ran out of clock. The
+          ;; first is a bug to chase and the second is a budget to raise, and
+          ;; reporting both as :timeout is how 33 idle minutes read as work.
+          (= :stall ended-by) (fail :stalled span)
+          (= :clock ended-by) (fail :timeout span)
+
           (not (.exists (io/file out-f)))
           (fail :no-row (merge span
                                {:exit (try (.exitValue p) (catch Throwable _ nil))
@@ -369,6 +660,7 @@
             (merge {:arm (:name arm) :sha sha
                     :green? (suite-green? root (:verify-cmd row) verify-timeout-ms)
                     :wall-ms (- (System/currentTimeMillis) started)
+                    :budget budget
                     :at (str (java.time.Instant/now))}
                    span
                    (harness-revision)
@@ -385,15 +677,29 @@
         ;; The db, not a derived case: what expectations a case should carry is
         ;; a judgement made later, and re-deriving them from a db is possible
         ;; while re-deriving a db from a case is not.
+        ;;
+        ;; AND THE CHILD'S LOG, which the first sweep dropped with the
+        ;; worktree. The one wedge it produced could not be diagnosed
+        ;; afterwards for exactly that reason: the journal shows a run going
+        ;; quiet and only the log can say what it went quiet inside.
         (when recordings
           (try
-            (let [src (io/file (str root "/.samizdat/samizdat.sqlite3"))]
+            (io/make-parents (io/file (str recordings "/x")))
+            (let [nm (.getName (io/file dest))
+                  src (io/file (str root "/.samizdat/samizdat.sqlite3"))
+                  kept (io/file (str recordings "/" nm ".sqlite3"))]
               (when (.exists src)
-                (io/make-parents (io/file (str recordings "/x")))
-                (io/copy src (io/file (str recordings "/"
-                                          (.getName (io/file dest)) ".sqlite3")))))
+                ;; The process is confirmed dead by now, which is the one
+                ;; condition that makes both of these sound: nothing can be
+                ;; writing the log we are folding in, and no run can be
+                ;; running that we are about to mark interrupted.
+                (keep-recording! src kept)
+                (reconcile-recording! (.getPath kept)))
+              (when (.exists log-f)
+                (io/copy log-f (io/file (str recordings "/" nm ".log")))))
             (catch Throwable _ nil)))
         (when-not keep? (drop-worktree! repo dest))))))
+
 
 ;;; ----------------------------------------------------------------- sweeps
 
@@ -454,6 +760,13 @@
                   :shipped (count (filter #(= :completed (:status %)) rs))
                   :green (count (filter :green? rs))
                   :rig-errors (count (filter #(= :rig-error (:status %)) rs))
+                  ;; HOW EACH RUN ENDED, and it is the first thing to read.
+                  ;; A sweep whose runs the rig ended is not measuring the
+                  ;; loop: :loop means the run reached its own ending,
+                  ;; :clock that it ran out of wall time, :stall that it went
+                  ;; quiet and was killed. Only :loop rows can seed a battery
+                  ;; case, because only those have a status the loop chose.
+                  :ended-by (frequencies (map #(or (:ended-by %) :?) rs))
                   :median {:turns (med (map :turns rs))
                            :tokens (med (map :tokens rs))
                            :fitness (med (map :fitness rs))
@@ -552,14 +865,21 @@
                                      :dest dest
                                      :http-port (+ base-port (mod i 90))}
                                     (select-keys task [:max-turns :timeout-ms
-                                                       :beam-width :token-budget])))
-              row (assoc row :task (:id task) :difficulty (:difficulty task) :n k
-                         :budget {:max-turns (or (:max-turns task) (:max-turns opts))
-                                  :beam-width (or (:beam-width task) (:beam-width opts))})]
+                                                       :stall-ms :beam-width
+                                                       :token-budget
+                                                       :max-revisions-hard])))
+              ;; :budget comes back on the row from run-once!, which is the
+              ;; one place that knows every default that was applied. Writing
+              ;; a second copy here re-derived it from the task and the opts
+              ;; and silently omitted whatever run-once! defaulted — which is
+              ;; how a row came to name a turn cap and nothing else while the
+              ;; only bound that actually fired was the rig's clock.
+              row (assoc row :task (:id task) :difficulty (:difficulty task) :n k)]
           (append-row! out row)
-          (println (format "[%d/%d] %-16s %-9s n=%d  %-11s green=%-5s turns=%-4s tok=%-9s edits=%s  %.1fmin"
+          (println (format "[%d/%d] %-16s %-9s n=%d  %-11s by=%-7s green=%-5s turns=%-4s tok=%-9s edits=%s  %.1fmin"
                            (inc i) total (name (:id task)) (name (:name arm)) k
-                           (str (:status row)) (str (:green? row))
+                           (str (:status row)) (str (name (or (:ended-by row) :?)))
+                           (str (:green? row))
                            (str (:turns row)) (str (:tokens row))
                            (str (count (:saves (:edits row))))
                            (/ (or (:wall-ms row) 0) 60000.0)))
@@ -575,16 +895,27 @@
   Observed the hard way: a stopped-and-relaunched sweep left its predecessor
   still spawning children inside the image, three arms ran at once against one
   provider and one machine, and every timing in the rows was contaminated. A
-  sweep must be killable by killing one process, so it gets one."
-  [& [out n]]
-  (let [rows (sweep-tasks! {:arms [{:name :baseline}]
+  sweep must be killable by killing one process, so it gets one.
+
+  Trailing arguments name tasks to run, so a budget change can be proved on
+  one task before nine runs are committed to it.
+
+  ARENA_WORK and ARENA_RECORDINGS override the scratch and keep directories.
+  The recordings are the point of the sweep — they are what seeds the battery
+  (karamazov-ylte.4) — and the default lands them under the platform temp
+  directory, which macOS eventually sweeps. A sweep whose evidence expires is
+  the same failure as the one that deleted its worktrees, one clock later."
+  [& [out n & task-ids]]
+  (let [tmp (System/getProperty "java.io.tmpdir")
+        rows (sweep-tasks! {:arms [{:name :baseline}]
                             :n (if n (parse-long (str n)) 3)
+                            :task-ids (mapv keyword task-ids)
                             :out (or out "arena-rows.edn")
-                            :work (str (System/getProperty "java.io.tmpdir") "/arena")
+                            :work (or (System/getenv "ARENA_WORK") (str tmp "/arena"))
                             :base-port 3990
                             :beam-width 1
-                            :recordings (str (System/getProperty "java.io.tmpdir")
-                                             "/arena-recordings")
+                            :recordings (or (System/getenv "ARENA_RECORDINGS")
+                                            (str tmp "/arena-recordings"))
                             :verify-timeout-ms 600000})]
     (println "\n=== SUMMARY ===")
     (clojure.pprint/pprint (summarize rows))

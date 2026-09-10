@@ -44,19 +44,61 @@
   - Do not change the deps.edn paths or the native library wiring."
 
  :tasks
- ;; PER-TASK BUDGETS. max-turns is not only "how much work" — gates.edn keys
- ;; the steering off it (:wind-down-fraction 0.85, :last-call-window 2,
- ;; :turn-budget-notices [0.6 0.85]), so a cap that is tight for the task puts
- ;; the branch into wind-down and last-call while it is still working, and the
- ;; gate profile measures the cap instead of the loop. The smoke run showed the
- ;; degenerate form: max-turns 6 put last-call at turn 5 and it fired 12 times.
- ;; These are sized so wind-down lands after the work plausibly fits, and they
- ;; differ per task because the tasks differ in scope by construction. Runs are
- ;; compared WITHIN a task, never across, so unequal budgets cost nothing.
+ ;; PER-TASK BUDGETS, RESIZED AGAINST THE FIRST SWEEP'S ONE RECORDING
+ ;; (run dbe64eea, horizon-fade, 2026-09-10). Read that run before changing
+ ;; any of these, because every number below is answering something it did.
+ ;;
+ ;; :max-turns is PER BRANCH, never the run's total. On a board round it is
+ ;; the OWNER's cap — gates.edn :board-owner-turns (150) takes the min of the
+ ;; two — and the feature loop multiplies it by every revision and every task
+ ;; in a round. It is also what the steering gates key off
+ ;; (:wind-down-fraction 0.85, :last-call-window 2, :turn-budget-notices
+ ;; [0.6 0.85]), so a cap tight for the task puts the branch into wind-down
+ ;; while it is still working and the gate profile measures the cap instead of
+ ;; the loop.
+ ;;
+ ;; WHAT 60 COST. The owner spent all 60 turns in 25 minutes and called `done`
+ ;; on turns 59 AND 60 — it believed it was finished and the cap took the last
+ ;; word. The run then opened revision 1 and started again from nothing. So
+ ;; the number that read as a work budget was in fact the thing that threw the
+ ;; work away, and it missed by a handful of turns. These are roughly doubled,
+ ;; and none exceeds :board-owner-turns, so the number written here is the
+ ;; number that binds rather than one silently clamped somewhere else.
+ ;;
+ ;; :timeout-ms is the RIG's clock and it is meant never to fire. Doubled from
+ ;; the first sweep, and sized at about one full owner pass at these turn caps
+ ;; (~25 s a turn measured) plus the round's review, critic, verify and
+ ;; supervisor time (~5 min measured between one owner ending and the next
+ ;; beginning).
+ ;;
+ ;; :stall-ms is the one that was missing. That run's last journalled activity
+ ;; was 33 minutes before the rig killed it: it was not slow, it was wedged,
+ ;; and doubling a timeout over a wedge buys twice the waiting. Set well above
+ ;; the slowest legitimate quiet period, which is a provider call —
+ ;; :llm :max-response-ms is 600000 and the retry ladder can spend that more
+ ;; than once on one turn.
+ ;;
+ ;; :max-revisions-hard closes the loop. :feature/route is deliberately
+ ;; supervisor-driven with NO numeric abandon — it keeps solving until a
+ ;; supervisor says STOP — so an unattended run has no ending of its own and
+ ;; the rig's clock had to be it. `:run :max-revisions-hard` is the guard the
+ ;; harness already ships for exactly this case. Set above the soft cap of 6
+ ;; so the deterministic strategy escalation gets its round before the guard
+ ;; trips.
+ ;;
+ ;; :token-budget is deliberately ABSENT and that is a finding, not an
+ ;; oversight: it is checked only at :beam/round-open, and a non-iterating
+ ;; manifest (feature, team, decompose) has one round for the whole job, so
+ ;; setting one here would look like a spend ceiling and be none.
+ ;;
+ ;; Runs are compared WITHIN a task, never across, so unequal budgets cost
+ ;; nothing.
  [{:id :horizon-fade
    :difficulty :medium
-   :max-turns 60
-   :timeout-ms 2700000
+   :max-turns 120
+   :timeout-ms 5400000
+   :stall-ms 1200000
+   :max-revisions-hard 8
    :provokes "no existing test to break; the hard part is inventing the pure
               seam, since draw_test.clj only smoke-tests that rl/ names resolve"
    :problem
@@ -77,8 +119,10 @@
 
   {:id :low-course
    :difficulty :hard
-   :max-turns 80
-   :timeout-ms 3300000
+   :max-turns 140
+   :timeout-ms 7200000
+   :stall-ms 1200000
+   :max-revisions-hard 8
    :provokes "collides head-on with ring_course_test/consecutive-rings-clear-terrain
               and ring-zero-above-its-own-ground, which pin
               (>= clearance game/ring-clearance). The agent must decide the
@@ -104,8 +148,10 @@
 
   {:id :fast-low-endless
    :difficulty :hardest
-   :max-turns 110
-   :timeout-ms 4200000
+   :max-turns 150
+   :timeout-ms 9000000
+   :stall-ms 1200000
+   :max-revisions-hard 8
    :provokes "three coupled changes that interact — speed shortens the reaction
               window that the lowered course just narrowed, and both make the
               draw-distance edge more visible per second of flight. Touches
