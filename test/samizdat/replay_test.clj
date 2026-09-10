@@ -19,7 +19,9 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.infer :as infer]
+            [samizdat.agent.beam :as beam]
             [samizdat.agent.loop :as aloop]
+            [samizdat.llm.client :as llm]
             [samizdat.replay :as replay]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
@@ -101,31 +103,54 @@
 
 ;; --- the seam: replay drives the REAL loop ----------------------------------
 
-(deftest an-injected-complete-replaces-the-provider-in-the-real-loop
-  ;; The claim the whole gate rests on: replay is not a parallel code path. The
-  ;; loop's own call-model honours (:complete ctx), so a replayed run goes
-  ;; through the same assemble -> infer -> parse -> dispatch -> journal ->
-  ;; settle -> arbiter -> route that a live one does. RFC-004 always said the
-  ;; model call was "the ONE effect, as an injectable value"; the call site
-  ;; hardcoded the constructor, so this makes the design's own claim true.
+(deftest an-injected-complete-reaches-call-model
+  ;; The seam itself. NOT proof that a run can use it — see the next test,
+  ;; which is the one that matters and which this test's earlier name
+  ;; ("...in-the-real-loop") wrongly claimed to be.
   (let [asked (atom 0)
         complete (fn [_tape]
                    (swap! asked inc)
                    {:ok true :response {:content "Thought: hi\n```json\n{\"tool\":\"done\"}\n```"
                                         :finish-reason "stop"
                                         :usage {:total-tokens 0}}})
-        branch {:id "T0" :messages [] :problem "p"}
-        out (aloop/call-model {:complete complete :llm-config {}} branch)]
-    (is (= 1 @asked) "the injected complete was called, not the provider")
-    (is (true? (:ok out)))
-    (is (str/includes? (get-in out [:response :content]) "done"))))
+        out (aloop/call-model {:complete complete :llm-config {}}
+                              {:id "T0" :messages [] :problem "p"})]
+    (is (= 1 @asked))
+    (is (true? (:ok out)))))
 
 (deftest without-an-injected-complete-nothing-changes
-  ;; The other half, and the one that keeps this seam honest: a ctx with no
-  ;; :complete must build one exactly as before. A seam that quietly altered
-  ;; the live path would be a worse bug than the one it fixes.
+  ;; A seam that quietly altered the live path would be a worse bug than the
+  ;; one it fixes.
   (let [built (atom false)]
     (with-redefs [infer/complete-fn
                   (fn [_ctx] (reset! built true) (fn [_] {:ok true :response {:content ""}}))]
       (aloop/call-model {:llm-config {}} {:id "T0" :messages []})
-      (is (true? @built) "the constructor is still what a ctx without :complete uses"))))
+      (is (true? @built)))))
+
+(deftest a-drivers-injected-complete-actually-reaches-the-turn
+  ;; THE TEST THAT WAS MISSING, and the defect it pins is the reason to have
+  ;; it. beam/run! and workflow/run! BUILD their ctx from a named key list
+  ;; rather than threading the caller's opts, so :complete was silently
+  ;; dropped between the driver and call-model. Every unit test passed —
+  ;; call-model honoured an injected complete, replay served replies, the
+  ;; case recorded — and a real replayed run still called the provider on
+  ;; every branch and spent 684k tokens. A seam nothing can reach is not a
+  ;; seam, and only a driver-level test says so.
+  (let [asked (atom 0)
+        complete (fn [_tape]
+                   (swap! asked inc)
+                   {:ok true :response {:content "x" :finish-reason "stop"
+                                        :usage {:total-tokens 0}}})
+        seen (atom nil)]
+    (with-redefs [beam/run-rounds (fn [ctx _branches _turn]
+                                    (reset! seen ctx)
+                                    {:status :completed :branches []})
+                  llm/chat (fn [& _]
+                             (throw (ex-info "the provider must not be called" {})))]
+      (let [c (db/open! ":memory:")]
+        (try
+          (beam/run! {:conn c :config {:run {:width 1}} :llm-adapter :a
+                      :llm-config {} :problem "p" :complete complete})
+          (is (identical? complete (:complete @seen))
+              "the driver's ctx carries the caller's complete through to the turn")
+          (finally (db/close c)))))))

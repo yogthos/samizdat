@@ -989,7 +989,7 @@
   land a `done` wins and the rest are abandoned, since paying for four more
   provider calls after the answer exists is pure waste."
   [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
-           token-budget abort on-start seed-run quarantine] :as opts}]
+           token-budget abort on-start seed-run quarantine complete] :as opts}]
   (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
         ;; Tokens the whole run may spend; nil is unbounded. Enforced by
         ;; :beam/round-open against the journal, sized against below.
@@ -1080,6 +1080,13 @@
         _ (repl/ensure-project-roots! root)
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
+             ;; The injected model call, when the caller supplied one
+             ;; (samizdat.replay). This ctx is BUILT here rather than threaded
+             ;; from opts, so a key the caller passes reaches call-model only
+             ;; if it is named — which is why replay looked wired and spent
+             ;; real tokens on every branch of a real run. nil when absent, and
+             ;; call-model falls back to infer/complete-fn exactly as before.
+             :complete complete
              :max-turns max-turns :beam? (> width 1) :beam-width width
              :token-budget token-budget
              :root root
