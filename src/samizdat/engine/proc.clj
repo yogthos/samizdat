@@ -111,14 +111,31 @@
         finished? (try
                     (.waitFor p ms java.util.concurrent.TimeUnit/MILLISECONDS)
                     (catch Throwable _ false))]
-    (if-not finished?
-      (do (reap! proc) {:timeout true :ms ms})
-      ;; Exited, so this deref returns immediately and only collects the
-      ;; already-complete stdout/stderr.
-      (let [done @proc]
-        {:exit (:exit done)
-         :out (or (:out done) "")
-         :err (or (:err done) "")}))))
+    (try
+      (if-not finished?
+        (do (reap! proc) {:timeout true :ms ms})
+        ;; Exited, so this deref returns immediately and only collects the
+        ;; already-complete stdout/stderr.
+        (let [done @proc]
+          {:exit (:exit done)
+           :out (or (:out done) "")
+           :err (or (:err done) "")}))
+      ;; CLOSE THE PIPES. `:out :string` reads the child's output into a
+      ;; string and leaves the pipe fds open: measured 2 fds per call, never
+      ;; released, so 30 spawns cost 60 descriptors and 60 cost 120. That is
+      ;; the leak behind provenance A-3 — the suite "holds ~260 fds at peak"
+      ;; and needed `ulimit -n 1024` — and it is not only a test problem: the
+      ;; `shell` tool comes through here, so a long run that shells out a few
+      ;; hundred times exhausts its own descriptors and starts failing to open
+      ;; the database ("sqlite step failed: unable to open database file",
+      ;; which is exactly how it surfaced).
+      ;;
+      ;; In a `finally` so the timeout path closes too, and each close is
+      ;; independent: a stream already closed by the shim must not stop the
+      ;; other two from being closed.
+      (finally
+        (doseq [stream [(.getInputStream p) (.getErrorStream p) (.getOutputStream p)]]
+          (try (some-> stream .close) (catch Throwable _ nil)))))))
 
 (defn available?
   "Whether `bin` can be executed at all. Used by the smoke probes and to give

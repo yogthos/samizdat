@@ -80,15 +80,45 @@
           (swap! state #(-> % (st/note-error (when-not (:ok r) (:error r)))
                             (cond-> (:ok r) st/clear-input))))))))
 
+(defn- start!
+  "Start a run on the compose box, as its problem statement.
+
+  Only `:problem` goes up: everything else POST /v1/runs takes — the turn
+  budget, the beam width, the model — is left to the server's own config,
+  which is what an omitted key means. The GUI has a form for those because
+  it has room for one; this is one line, and the statement is the part that
+  cannot be defaulted.
+
+  OFF THE UI THREAD, and that is not optional: the endpoint does not answer
+  when the run row is written — beam/run! opens every branch first — so a
+  start legitimately takes tens of seconds, which is why the client allows
+  it 40. A UI that stopped redrawing for that long is the frozen-but-alive
+  failure this project keeps finding."
+  [text]
+  (let [{:keys [base]} @state]
+    (if-let [problem (st/steer-payload text)]
+      (do (swap! state st/note-notice "starting…")
+          (future
+            (swap! state st/apply-start
+                   (client/start-run! base {:problem problem}))
+            (poll-once!)))
+      (swap! state st/note-error "type a problem statement first"))))
+
+;; `if-not run-id` rather than `when run-id`: both of these used to do
+;; NOTHING AND SAY NOTHING with no run selected, which is indistinguishable
+;; from a button that is not wired to anything — and that is exactly how it
+;; was reported.
 (defn- abort! []
   (let [{:keys [base run-id]} @state]
-    (when run-id
+    (if-not run-id
+      (swap! state st/note-error "no run selected")
       (let [r (client/abort! base run-id)]
         (swap! state st/note-error (when-not (:ok r) (:error r)))))))
 
 (defn- resume! []
   (let [{:keys [base run-id]} @state]
-    (when run-id
+    (if-not run-id
+      (swap! state st/note-error "no run selected")
       (let [r (client/resume! base run-id)]
         (swap! state st/note-error (when-not (:ok r) (:error r)))))))
 
@@ -129,6 +159,7 @@
    :select-branch #(swap! state st/select-branch %)
    :input         #(swap! state st/set-input %)
    :submit        steer!
+   :start         start!
    :abort         abort!
    :resume        resume!})
 
@@ -147,6 +178,11 @@
     ;; arrangement that is already drawn.
     (let [r (client/layout base)]
       (when (:ok r) (layout/serve! (get-in r [:body :layout]))))
+    ;; Beside the layout because it is the same KIND of thing — what the
+    ;; harness is, rather than what a run is doing — and because both survive
+    ;; a run being deselected. Cheap: the server caches the git side (gates.edn
+    ;; :git-snapshot-ttl-ms), so this is not three shell-outs per poll.
+    (swap! state st/apply-project (client/project base))
     (swap! state st/apply-runs (client/list-runs base))
     (when-let [rid (:run-id @state)]
       ;; The cursor is read here, after apply-runs may have selected a run —

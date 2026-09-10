@@ -301,6 +301,53 @@
     ((get by-label "resume"))
     (is (= [:abort :resume] @hit))))
 
+(deftest the-compose-box-can-start-a-run
+  ;; The gap this whole change is about: with no run selected the box's Enter
+  ;; went to :submit, which has nothing to steer, so a fresh harness could not
+  ;; be given its first problem from the UI at all. Enter now means :start
+  ;; while nothing is selected, and the button means it either way.
+  (let [hit (atom [])
+        state {:input "build a parser"
+               :on {:start #(swap! hit conj [:start %])
+                    :submit #(swap! hit conj [:submit %])}}
+        out (render :widget/input state {})
+        inp (first (nodes-of :input out))
+        by-label (into {} (map (juxt #(:label (props-of %)) #(:on-click (props-of %))))
+                       (nodes-of :button out))]
+    (is (contains? by-label "start") "and it is on screen, not only on a key")
+    ((get by-label "start"))
+    (is (= [[:start "build a parser"]] @hit)
+        "the button starts on what is in the box, not on an empty string")
+    (reset! hit [])
+    ((:on-enter (props-of inp)) "build a parser")
+    (is (= [[:start "build a parser"]] @hit)
+        "Enter with no run selected starts one")
+    (is (re-find #"(?i)problem|start" (str (:placeholder (props-of inp))))
+        "and the box says so rather than offering to steer nothing"))
+  (testing "with a run selected Enter steers it instead"
+    (let [hit (atom [])
+          state {:run-id "r1"
+                 :on {:start #(swap! hit conj [:start %])
+                      :submit #(swap! hit conj [:submit %])}}
+          out (render :widget/input state {})
+          inp (first (nodes-of :input out))]
+      ((:on-enter (props-of inp)) "try the other parser")
+      (is (= [[:submit "try the other parser"]] @hit))
+      (is (re-find #"(?i)directive|steer" (str (:placeholder (props-of inp))))))))
+
+(deftest the-compose-box-is-just-the-box-unless-a-layout-asks-for-a-title
+  ;; A titled, bordered panel around one input line spent two rows saying
+  ;; "STEER" above a box whose own placeholder already says what it is. The
+  ;; header is userspace like every other piece of the arrangement: absent by
+  ;; default, drawn when a layout names it.
+  (let [bare (render :widget/input {} {})]
+    (is (not (re-find #"(?i)steer" (texts bare)))
+        "no title, and nothing claiming one")
+    (is (nil? (:border (props-of bare))) "and no box of its own"))
+  (let [titled (render :widget/input {} {:title "STEER"})]
+    (is (str/includes? (texts titled) "STEER"))
+    (is (some? (:border (props-of titled))))))
+
 (deftest the-status-line-says-whether-there-is-a-server
   (is (re-find #"(?i)offline|disconnect|no server"
                (texts (render :widget/status {:connected? false} {}))))
@@ -310,10 +357,90 @@
                                     :detail {:run {:status "running"}}}
                                    {}))))))
 
+(def ^:private proj
+  {:project "samizdat" :branch "tui-start-a-run"
+   :staged 1 :unstaged 2 :untracked 3
+   :last_commit "Let the TUI start a run"
+   :provider "glm" :model "glm-5.3" :context_window 128000})
+
+(deftest the-footer-says-which-project-branch-and-model
+  ;; Ported from dirge's status line, which reads
+  ;; `project:branch | model | used/ctx (pct%) | Nmsgs | state`. Samizdat's
+  ;; had the run id and the base URL and nothing about WHAT was being worked
+  ;; on or by which model — the two things a person glancing at a long run
+  ;; actually wants, and the two that say whether the harness is pointed where
+  ;; they think it is.
+  (let [said (texts (render :widget/status
+                            {:connected? true :run-id "61aba012-b68a-4adc"
+                             :project proj
+                             :detail {:run {:status "running" :model "glm-5.3"
+                                            :max_turns 40
+                                            :usage {:total-tokens 9475 :turns 3}}}}
+                            {}))]
+    (is (str/includes? said "samizdat:tui-start-a-run")
+        "project and branch, the way dirge writes it")
+    (is (str/includes? said "glm-5.3") "the model actually answering")
+    (is (re-find #"9\.?5?k */ *128k" said) "tokens against the window, abbreviated")
+    (is (str/includes? said "7%") "and as a percentage of it")
+    (is (re-find #"3 */ *40" said) "turns against the ceiling")
+    (is (str/includes? said "running") "and what the run is doing")
+    (is (str/includes? said "61aba012") "the run, short")))
+
+(deftest the-footer-draws-before-anything-has-answered
+  ;; The first frame: no project, no run, offline. Every segment is optional
+  ;; and the strip still has to be a strip.
+  (let [said (texts (render :widget/status {:connected? false} {}))]
+    (is (re-find #"(?i)offline" said))
+    (is (re-find #"(?i)no run" said)))
+  (testing "and a harness outside a git tree has a project but no branch"
+    (let [said (texts (render :widget/status
+                              {:connected? true
+                               :project {:project "plain" :model "m"}}
+                              {}))]
+      (is (str/includes? said "plain"))
+      (is (not (str/includes? said "plain:")) "no dangling separator"))))
+
+(deftest the-footer-warns-before-a-fold-not-after
+  ;; dirge's own refinement: the denominator is the window, so the gauge reads
+  ;; 0-100 and a fold is flagged by a marker instead of the percentage running
+  ;; past 100 (dirge-l4rp, dirge-cx7t).
+  (let [at (fn [used] (texts (render :widget/status
+                                     {:connected? true :project proj
+                                      :detail {:run {:usage {:total-tokens used}}}}
+                                     {})))]
+    (is (not (re-find #"fold" (at 10000))) "quiet well below the window")
+    (is (re-find #"fold" (at 100000)) "flagged approaching it")
+    (is (re-find #"fold!" (at 120000)) "and urgently at the top")))
+
+(deftest the-git-panel-shows-the-branch-and-what-is-dirty
+  ;; dirge's left-panel GIT box: branch, the three counts git itself
+  ;; distinguishes, and the last commit's subject.
+  (let [said (texts (render :widget/git {:project proj} {}))]
+    (is (str/includes? said "tui-start-a-run"))
+    (is (re-find #"\+1" said) "staged")
+    (is (re-find #"~2" said) "unstaged")
+    (is (re-find #"\?3" said) "untracked")
+    (is (str/includes? said "Let the TUI start a run") "and the last commit"))
+  (testing "a clean tree says so rather than showing three zeroes"
+    (let [said (texts (render :widget/git
+                              {:project {:project "p" :branch "main" :staged 0
+                                         :unstaged 0 :untracked 0
+                                         :last_commit "x"}}
+                              {}))]
+      (is (re-find #"(?i)clean" said))))
+  (testing "outside a repo it says that, and does not invent a branch"
+    (let [said (texts (render :widget/git {:project {:project "p"}} {}))]
+      (is (re-find #"(?i)not a git|no repo|no branch" said))))
+  (testing "and it draws before the first poll answers"
+    (is (vector? (render :widget/git {} {})))))
+
 (deftest the-input-box-is-an-editor-bound-to-the-handlers
+  ;; :run-id is what makes Enter mean :submit — with none selected there is
+  ;; nothing to steer and it means :start instead, which is what
+  ;; `the-compose-box-can-start-a-run` covers.
   (let [sent (atom nil)
         out (render :widget/input
-                    {:input "do the thing" :on {:submit #(reset! sent %)}}
+                    {:run-id "r1" :input "do the thing" :on {:submit #(reset! sent %)}}
                     {})
         input (first (nodes-of :input out))]
     (is (= "do the thing" (:value (props-of input))))

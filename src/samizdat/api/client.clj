@@ -108,6 +108,16 @@
   [base]
   (GET base "/v1/harness/layout"))
 
+(defn project
+  "Which project the harness is working on, which branch, how dirty, and
+  which model — GET /v1/harness/project.
+
+  Asked of the server rather than read locally because the front end holds no
+  filesystem knowledge of the project: a TUI pointed at a harness elsewhere
+  would otherwise caption whatever repo it was started from."
+  [base]
+  (GET base "/v1/harness/project"))
+
 (defn approvals
   "Questions this run is waiting on a person to answer — the permission gate
   and ask_human, which share one queue."

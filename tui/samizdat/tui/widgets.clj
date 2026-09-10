@@ -36,7 +36,8 @@
 
   Toolkit-free: hiccup is data. `ftxui` appears nowhere in this file."
   (:require [clojure.string :as str]
-            [samizdat.tui.layout :as layout]))
+            [samizdat.tui.layout :as layout]
+            [samizdat.tui.state :as st]))
 
 ;; --- shared shapes -----------------------------------------------------------
 
@@ -73,6 +74,27 @@
   drew nothing is indistinguishable from one that failed to draw."
   [s]
   [:text {:dim true} (str "  " s)])
+
+(defn fmt-tokens
+  "A token count short enough for a footer: 9475 -> \"9k\", 1250000 -> \"1.2M\".
+  Ported from dirge's status line, which learned that the exact figure is
+  noise at a glance and the magnitude is the signal."
+  [n]
+  (let [n (or n 0)]
+    (cond
+      (>= n 1000000) (format "%.1fM" (double (/ n 1000000)))
+      (>= n 1000) (str (quot n 1000) "k")
+      :else (str n))))
+
+(defn project-label
+  "`project:branch`, or just the project when there is no branch to name — a
+  detached HEAD, or a harness outside a git tree. Never a dangling separator."
+  [{:keys [project branch]}]
+  (let [p (str (or project ""))]
+    (cond
+      (str/blank? p) nil
+      (not-empty (str branch)) (str p ":" branch)
+      :else p)))
 
 (defn fold-id
   "The identity of one foldable section, stable across frames.
@@ -445,48 +467,182 @@
       (seq (:questions a)) (questionnaire state a)
       :else (permission-dialog state a))))
 
+(defn git
+  "The working tree at a glance: branch, what is dirty, and the last commit.
+
+  Ported from dirge's left-panel GIT box. The three counts are kept separate
+  because git keeps them separate — a path can be staged AND edited again
+  since, so one \"dirty\" number would hide the case a reader most needs to
+  see before shipping.
+
+  Everything comes from GET /v1/harness/project: this process reads no git of
+  its own, so a TUI pointed at a harness on another machine shows THAT
+  machine's tree rather than confidently mislabelling its own."
+  [state props]
+  (let [{:keys [branch staged unstaged untracked last_commit] :as p} (:project state)
+        counts (mapv #(or % 0) [staged unstaged untracked])
+        dirty (reduce + counts)]
+    (panel props
+           (cond
+             (nil? p) (empty-note "no harness yet")
+             (nil? branch) (empty-note (if (some? staged)
+                                         "detached HEAD"
+                                         "not a git working tree"))
+             :else
+             [:vbox
+              [:text {:color :green} (str " \u2387 " (clip branch 24))]
+              (if (zero? dirty)
+                [:text {:dim true} "  clean"]
+                [:hbox
+                 [:text {:color (if (pos? (nth counts 0)) :green :default)}
+                  (str "  +" (nth counts 0))]
+                 [:text {:color (if (pos? (nth counts 1)) :yellow :default)}
+                  (str " ~" (nth counts 1))]
+                 [:text {:color (if (pos? (nth counts 2)) :yellow :default)}
+                  (str " ?" (nth counts 2))]])
+              (when (not-empty (str last_commit))
+                [:text {:dim true} (str "  " (clip last_commit 30))])]))))
+
 ;; --- the bottom strip --------------------------------------------------------
 
 (defn input
-  "The compose box, and the two things done to a run rather than said to it.
+  "The compose box, and the three things done to a run rather than said to it.
 
-  What the box sends is an INTERVENTION, not a chat message — samizdat runs
-  are autonomous and a person steers them at a turn boundary, so this is the
-  same seam the supervisor uses. Abort and resume sit beside it because they
-  are the other two, and because they were documented here long before
-  anything on screen called them."
+  ONE BOX, TWO MEANINGS, and `state/enter-action` decides which. With a run
+  selected what it sends is an INTERVENTION, not a chat message — samizdat
+  runs are autonomous and a person steers them at a turn boundary, so that is
+  the same seam the supervisor uses. With no run selected there is nothing to
+  steer, so the words are the problem statement for a new run: the TUI could
+  reach every run the server already had and could not make one, which made
+  the first thing anybody typed into a fresh harness an error message.
+
+  `start` is a button as well as a key, because with a run already selected
+  Enter belongs to steering and starting another needs somewhere to click.
+  Abort and resume sit beside it because they are the rest of what is done
+  to a run rather than said to it.
+
+  NO TITLE unless a layout asks for one. A bordered panel spent two rows
+  captioning a single input line whose own placeholder already says what it
+  takes; the caption is userspace like the rest of the arrangement, so
+  `{:title \"STEER\"}` brings it back."
   [state props]
-  (panel (assoc props :title (or (:title props) "STEER"))
-         [:hbox
-          [:input {:flex true
-                   :value (or (:input state) "")
-                   :placeholder "a directive for the run — Enter sends"
-                   :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
-                   :on-enter (fn [s] (when-let [f (get-in state [:on :submit])] (f s)))}]
-          ;; Spelled out rather than built by a helper taking the key as an
-          ;; argument: `every-handler-the-loop-offers-has-a-caller` reads
-          ;; these literally, and a key assembled at runtime is a key that
-          ;; ratchet cannot see.
-          [:button {:label "abort"
-                    :on-click (fn [] (when-let [f (get-in state [:on :abort])] (f)))}]
-          [:button {:label "resume"
-                    :on-click (fn [] (when-let [f (get-in state [:on :resume])] (f)))}]]))
+  (let [starting? (= :start (st/enter-action state))
+        ;; Spelled out rather than built by a helper taking the key as an
+        ;; argument: `every-handler-the-loop-offers-has-a-caller` reads these
+        ;; literally, and a key assembled at runtime is a key that ratchet
+        ;; cannot see. That is also why the branch is over two whole handlers
+        ;; rather than over one name.
+        on-enter (if starting?
+                   (fn [s] (when-let [f (get-in state [:on :start])] (f s)))
+                   (fn [s] (when-let [f (get-in state [:on :submit])] (f s))))
+        ;; The layout's own sizing still applies to the bare row — it is the
+        ;; element that stands where the panel used to.
+        row [:hbox (select-keys props [:flex :width :height])
+             [:input {:flex true
+                      :value (or (:input state) "")
+                      :placeholder (if starting?
+                                     "the problem to work on — Enter starts a run"
+                                     "a directive for the run — Enter sends")
+                      :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
+                      :on-enter on-enter}]
+             [:button {:label "start"
+                       :on-click (fn [] (when-let [f (get-in state [:on :start])]
+                                          (f (or (:input state) ""))))}]
+             [:button {:label "abort"
+                       :on-click (fn [] (when-let [f (get-in state [:on :abort])] (f)))}]
+             [:button {:label "resume"
+                       :on-click (fn [] (when-let [f (get-in state [:on :resume])] (f)))}]]]
+    (if (:title props) (panel props row) row)))
+
+(def ^:private fold-warn-fraction
+  "Where the footer starts flagging a fold, as a fraction of the window.
+
+  dirge's numbers and its reasoning: the denominator is the WINDOW, so the
+  gauge reads 0-100 rather than running past 100 once usage passes the
+  fold-trigger budget — a fold is flagged by a marker instead (dirge-l4rp,
+  dirge-cx7t). samizdat's own ladder rungs are gates.edn :compaction; these
+  two are the front end's warning line, not the policy, which is why they are
+  not read from there."
+  0.75)
+
+(def ^:private fold-urgent-fraction 0.90)
+
+(defn- fill-segment
+  "`used / window (pct%)` with a fold marker as the window fills, or nil when
+  there is no window to measure against."
+  [used window]
+  (when (and window (pos? window))
+    (let [pct (quot (* 100 (or used 0)) window)
+          frac (/ (double (or used 0)) window)]
+      (str (fmt-tokens used) " / " (fmt-tokens window) " (" pct "%"
+           (cond (>= frac fold-urgent-fraction) " fold!"
+                 (>= frac fold-warn-fraction) " fold"
+                 :else "")
+           ")"))))
 
 (defn status
-  "The status line: whether there is a server, which run, and what it is
-  doing. The first thing to look at when nothing else is moving."
+  "The footer: where the harness is pointed, what is answering, what the run
+  has spent, and what it is doing.
+
+  Ported from dirge's status line, which reads
+  `project:branch | model | used/ctx (pct%) | Nmsgs | state`. Samizdat's said
+  only the run id and the base URL — nothing about WHICH project or WHICH
+  model, which are the two things that say whether the harness is pointed
+  where the reader thinks it is. A stale serve process answering on the
+  expected port is exactly the confusion these segments remove.
+
+  Every segment is optional and the strip draws with none of them: the first
+  frame has no project, no run and no connection. The connection dot stays
+  leftmost and is samizdat's own addition — dirge's UI is the process doing
+  the work, where this one is a client that can be pointed anywhere and has
+  to say when it has lost the thing it is watching."
   [state props]
-  (let [run (get-in state [:detail :run])]
-    [:hbox {:bg :gray-dark}
-     (if (:connected? state)
-       [:text {:color :green} " ● connected "]
-       [:text {:color :red} " ○ offline "])
-     [:text {:dim true} (str " " (or (:run-id state) "no run") " ")]
-     (when run [:text (str " " (:status run) " ")])
-     (when-let [e (:error state)] [:text {:color :red} (str " " (clip e 40) " ")])
-     (when-let [e (:layout-error state)] [:text {:color :yellow} (str " " (clip e 60) " ")])
-     [:filler]
-     [:text {:dim true} (str (or (:base state) "") " ")]]))
+  (let [run (get-in state [:detail :run])
+        p (:project state)
+        model (or (:model run) (:model p))
+        used (get-in run [:usage :total-tokens])
+        turns (get-in run [:usage :turns])
+        fill (fill-segment used (:context_window p))
+        sep [:text {:dim true} " \u2502 "]]
+    (into [:hbox {:bg :gray-dark}]
+          (remove nil?
+                  [(if (:connected? state)
+                     [:text {:color :green} " \u25cf connected "]
+                     [:text {:color :red} " \u25cb offline "])
+                   (when-let [l (project-label p)]
+                     [:text {:bold true} (str " " (clip l 34))])
+                   (when model sep)
+                   (when model [:text {:color :cyan} (clip (str model) 20)])
+                   (when fill sep)
+                   (when fill [:text {:dim true} fill])
+                   (when turns sep)
+                   (when turns [:text {:dim true}
+                                (str turns (when-let [m (:max_turns run)]
+                                             (str " / " m))
+                                     " turns")])
+                   (when run sep)
+                   (when run [:text (str (:status run))])
+                   sep
+                   [:text {:dim true} (if-let [r (:run-id state)]
+                                        (subs (str r) 0 (min 8 (count (str r))))
+                                        "no run")]
+                   (when-let [e (:error state)]
+                     [:text {:color :red} (str " " (clip e 40) " ")])
+                   ;; Cyan, not red, and only when there is no error to report
+                   ;; instead: a notice says what is happening ("starting…"),
+                   ;; and a strip carrying both at once does not tell the
+                   ;; reader which of them is the news.
+                   (when-let [n (and (not (:error state)) (:notice state))]
+                     [:text {:color :cyan} (str " " (clip n 40) " ")])
+                   (when-let [e (:layout-error state)]
+                     [:text {:color :yellow} (str " " (clip e 60) " ")])
+                   [:filler]
+                   ;; Scheme stripped: "http://" is seven columns that say
+                   ;; nothing, and with the project, model, fill and turn
+                   ;; segments now on this line the strip overran an
+                   ;; ordinary terminal and clipped the run id into the URL.
+                   [:text {:dim true}
+                    (str " " (str/replace (str (or (:base state) "")) #"^https?://" "") " ")]]))))
 
 ;; --- registration ------------------------------------------------------------
 ;;
@@ -495,6 +651,7 @@
 ;; its own box rather than taking the frame down (samizdat.tui.layout).
 
 (doseq [[tag f] {:widget/activity     activity
+                 :widget/git          git
                  :widget/approvals    approvals
                  :widget/conversation conversation
                  :widget/tasks        tasks

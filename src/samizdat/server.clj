@@ -32,6 +32,7 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.api.control :as control]
             [samizdat.api.openai :as openai]
             [samizdat.api.runs :as api-runs]
@@ -164,6 +165,56 @@
 (defn- layout-table [_req]
   (json-response (layout-body)))
 
+;; {:at ms :root path :snapshot m} — see gates.edn :git-snapshot-ttl-ms for why
+;; a cache exists at all.
+(defonce ^:private git-cache (atom nil))
+
+(defn cached-snapshot
+  "`gitdiff/snapshot` for `root`, at most once per :git-snapshot-ttl-ms.
+
+  Keyed on the root as well as the clock, so a harness whose project moved
+  does not serve the previous one's branch for the rest of the window."
+  [root]
+  (let [ttl (or (gates/threshold :git-snapshot-ttl-ms) 0)
+        now (System/currentTimeMillis)
+        c @git-cache]
+    (if (and c (= root (:root c)) (< (- now (:at c)) ttl))
+      (:snapshot c)
+      (let [s (gitdiff/snapshot root)]
+        (reset! git-cache {:at now :root root :snapshot s})
+        s))))
+
+(defn project-body
+  "What a front end needs to caption itself: which project, which branch, how
+  dirty, which model.
+
+  Served rather than read locally for the same reason the layout is: the TUI
+  holds no filesystem knowledge of the project and no database handle, so a
+  TUI pointed at a harness on another machine — or merely started from
+  another directory — would otherwise caption the wrong repo with perfect
+  confidence. Only this process knows what it is working on.
+
+  Every field is nullable and the endpoint never fails: a harness outside a
+  git tree still has a project name, and a front end that cannot draw a
+  branch should still draw the rest of its footer."
+  []
+  (let [cfg (system/config)
+        root (get-in cfg [:run :root])
+        snap (cached-snapshot root)]
+    {:project (some-> root (str/split #"/") last not-empty)
+     :root root
+     :branch (:branch snap)
+     :staged (:staged snap)
+     :unstaged (:unstaged snap)
+     :untracked (:untracked snap)
+     :last_commit (:last-commit snap)
+     :provider (some-> (get-in cfg [:llm :provider]) name)
+     :model (get-in cfg [:llm :model])
+     :context_window (get-in cfg [:llm :context-window])}))
+
+(defn- project-table [_req]
+  (json-response (project-body)))
+
 ;; --- routing ----------------------------------------------------------------
 ;;
 ;; A route is [method pattern handler]. A pattern segment starting with ':'
@@ -197,6 +248,9 @@
    ;; database handle can still see the version the agent saved.
    [:get "/v1/harness/layout" #'layout-table]
    [:get "/v1/harness/models" #'harness-models]
+   ;; Which project, which branch, how dirty, which model — the footer and the
+   ;; GIT panel. Served because only this process is bound to the project.
+   [:get "/v1/harness/project" #'project-table]
    [:get "/v1/runs" (fn [req] (json-response (api-runs/list-runs (system/conn)
                                                                  (long-param req "limit"))))]
    ;; `(or (:status r) 200)`, the same shape resume uses: a handler that refuses

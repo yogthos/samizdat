@@ -37,8 +37,8 @@ needing cmake and a C++17 compiler). This is also why the TUI is not part of
 | `F5` | poll now, without waiting out the interval |
 | `Ctrl-C`, `Ctrl-Q` | quit |
 | arrows + `Enter` | pick a run in RUNS, a branch in BEAM, an option in a questionnaire |
-| type + `Enter` | send what is in the compose box |
-| `abort` / `resume` | the two things done *to* a run rather than said to it |
+| type + `Enter` | **with no run selected**, start a run on what you typed; **with one**, send it as a directive |
+| `start` / `abort` / `resume` | the three things done *to* a run rather than said to it |
 
 The mouse is on, and folds are ftxui's own collapsibles — clicking one is how
 it opens, with no hit-testing of our own.
@@ -49,9 +49,32 @@ untouched (`samizdat.tui.state/pending-decision` decides which). Everything
 else — arrows, text, clicks — belongs to whichever widget has the focus; the
 global handler consumes as little as it can.
 
-What the compose box sends is an **intervention**, not a chat message.
-Samizdat runs autonomously and a person steers it at a turn boundary, so this
-is the same seam the supervisor uses.
+### The compose box does two things
+
+One box, and whether there is a run selected decides what Enter means.
+
+**With no run selected** the words are a **problem statement**, and Enter
+starts a run on them. Nothing else on screen can give a fresh harness its
+first problem — before this the box answered "no run selected" and dropped
+what you had typed.
+
+**With a run selected** the words are an **intervention** for it, not a chat
+message. Samizdat runs autonomously and a person steers it at a turn
+boundary, so that is the same seam the supervisor uses.
+
+The `start` button does it either way, which is how you start a second run
+while reading the first. Only the problem statement is sent — the turn budget,
+the beam width and the model are left to the server's own config, which is
+what an omitted key means; the GUI has a form for those because it has room
+for one. The request runs off the UI thread, because `POST /v1/runs` does not
+answer until the beam has opened every branch, which can take tens of seconds.
+The status line says `starting…` while it does, in cyan: that is a notice, not
+an error, and it travels in its own field so the strip never claims both at
+once.
+
+`abort` and `resume` with no run selected say "no run selected" rather than
+doing nothing silently — a button that quietly no-ops is indistinguishable
+from one that is not wired up, which is exactly how it got reported.
 
 ## What is on screen
 
@@ -71,8 +94,9 @@ right gutter, a wide short row, and the bottom strip.
 | `:widget/gates` | gates that fired, and predictions still unsettled |
 | `:widget/artifacts` | claims made, and how each was judged |
 | `:widget/approvals` | the one question a person is being asked, if any. Draws nothing when there is none |
-| `:widget/input` | the compose box, plus abort and resume |
-| `:widget/status` | connected or offline, which run, its status, the last error |
+| `:widget/git` | the working tree: branch, `+staged ~unstaged ?untracked`, and the last commit's subject |
+| `:widget/input` | the compose box, plus start, abort and resume. Bare by default — pass `{:title "STEER"}` for a caption |
+| `:widget/status` | the footer — see below |
 
 Two details worth knowing because they look like bugs otherwise:
 
@@ -83,6 +107,56 @@ Two details worth knowing because they look like bugs otherwise:
 - **The conversation is bounded** — the newest `:turns` of them, 60 by
   default. Every entry is rebuilt on every frame, so this is a frame-rate
   number as much as a history one.
+
+### The footer
+
+Ported from dirge's status line, which reads
+`project:branch | model | used/ctx (pct%) | Nmsgs | state`:
+
+```
+ ● connected  samizdat:tui-start-a-run │ glm-5.3 │ 9k / 128k (7%) │ 1 / 1 turns │ aborted │ 61aba012   127.0.0.1:3986
+```
+
+Left to right: the connection, the project and its git branch, the model
+actually answering, tokens against the model's context window, turns against
+the run's ceiling, what the run is doing, the run id, and which harness this
+is pointed at. Every segment is optional — the first frame has none of them.
+
+The connection dot is samizdat's own addition rather than dirge's. dirge's UI
+*is* the process doing the work; this one is a client that can be pointed
+anywhere, so it has to be able to say it has lost the thing it is watching.
+
+Two details carried over deliberately:
+
+- **The denominator is the window, not the fold-trigger budget.** So the
+  percentage reads 0–100 instead of running past 100 once a fold became due,
+  and an imminent fold is flagged with a `fold` / `fold!` marker at 75% and
+  90% instead.
+- **`project:branch` collapses to just the project** on a detached HEAD or
+  outside a git tree — never a dangling separator.
+
+### Where the project data comes from
+
+`GET /v1/harness/project`, which the poller folds in beside the layout. The
+footer and the GIT panel both read it:
+
+```json
+{"project": "samizdat", "root": "/Users/yogthos/src/samizdat",
+ "branch": "tui-start-a-run", "staged": 0, "unstaged": 16, "untracked": 0,
+ "last_commit": "Let the TUI start a run, and drop the caption over its input",
+ "provider": "glm", "model": "glm-5.3", "context_window": 128000}
+```
+
+Served rather than read locally for the same reason the layout is: only the
+harness process is bound to the project. A TUI that shelled out to git itself
+would caption whichever directory it happened to be started from — silently,
+and wrongly, whenever it is pointed at a harness on another machine.
+
+The server caches the git side for `:git-snapshot-ttl-ms` (gates.edn, 3s by
+default), because the snapshot is three `git` calls and the poller asks every
+1.5s per connected front end. dirge learned the same thing the harder way: it
+read `.git/HEAD` once per painted frame and froze its UI on large repos until
+it cached the lookup.
 
 ## Rearranging it, while it runs
 

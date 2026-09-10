@@ -39,12 +39,15 @@
   (let [cfg (config/load-config {:llm {:provider :glm}})
         {:keys [base-url model temperature]} (:llm cfg)]
     (testing "the provider defaults resolve to dirge's working GLM config"
-      ;; provider defaults are read by key-env detection; assert the static
-      ;; provider table rather than a live-env-dependent selection.
-      (is (= "https://open.bigmodel.cn/api/coding/paas/v4"
-             (get-in config/providers-for-test [:glm :base-url])))
-      (is (= "glm-5.3" (get-in config/providers-for-test [:glm :model])))
-      (is (= 0.2 (get-in config/providers-for-test [:glm :temperature]))))))
+      ;; Asserted on the LOADED config, which is the claim worth making. It
+      ;; used to bind these three and then assert the static table instead,
+      ;; with a comment about key-env detection — because naming a provider
+      ;; did not in fact expand its preset, so the loaded values were
+      ;; whatever the environment had detected. Now it does, and the binding
+      ;; is the thing under test rather than dead.
+      (is (= "https://open.bigmodel.cn/api/coding/paas/v4" base-url))
+      (is (= "glm-5.3" model))
+      (is (= 0.2 temperature)))))
 
 (deftest provider-temperature-wins-over-family-default
   ;; A provider that pins a temperature (GLM's 0.2) beats the 0.7 family
@@ -144,6 +147,72 @@
     (when edn-content
       (spit (java.io.File. dir "config.edn") edn-content))
     home))
+
+(deftest a-config-file-that-names-a-provider-gets-that-provider
+  ;; The provider was chosen by `detect-provider` ALONE — HARNESS_PROVIDER, else
+  ;; the first provider whose key-env is in the environment — and the file
+  ;; layers were merged on top of the preset that choice had already expanded.
+  ;; So `{:llm {:provider :glm}}` in a config file set the :provider key and
+  ;; nothing else: the run kept DeepSeek's base-url, DeepSeek's api-key and
+  ;; deepseek-v4-flash, while naming itself glm and dispatching the GLM
+  ;; adapter. Wrong endpoint, wrong key, wrong model, no complaint.
+  ;;
+  ;; A layer that names a provider now selects that provider's preset, which is
+  ;; the only reading of "provider: glm" that means anything.
+  (let [home (temp-config-home "{:llm {:provider :glm}}")
+        root (temp-project-root nil)]
+    (try
+      (with-redefs [config/config-home (fn [] home)]
+        (let [{:keys [provider base-url model temperature]}
+              (:llm (config/load-config {:run {:root root}}))]
+          (is (= :glm provider))
+          (is (= "https://open.bigmodel.cn/api/coding/paas/v4" base-url)
+              "GLM's endpoint, not whichever provider the environment detected")
+          (is (= "glm-5.3" model))
+          (is (= 0.2 temperature) "and GLM's coding temperature")))
+      (finally (delete-recursively (java.io.File. home))
+               (delete-recursively (java.io.File. root)))))
+  (testing "a project file overrides the global one's provider"
+    (let [home (temp-config-home "{:llm {:provider :glm}}")
+          root (temp-project-root "{:llm {:provider :deepseek}}")]
+      (try
+        (with-redefs [config/config-home (fn [] home)]
+          (let [{:keys [provider base-url model]}
+                (:llm (config/load-config {:run {:root root}}))]
+            (is (= :deepseek provider))
+            (is (str/includes? base-url "deepseek"))
+            (is (= "deepseek-v4-flash" model))))
+        (finally (delete-recursively (java.io.File. home))
+                 (delete-recursively (java.io.File. root))))))
+  (testing "a file may name the provider and still pin one of its keys"
+    (let [home (temp-config-home "{:llm {:provider :glm :model \"glm-4.6\"}}")
+          root (temp-project-root nil)]
+      (try
+        (with-redefs [config/config-home (fn [] home)]
+          (let [{:keys [base-url model]} (:llm (config/load-config {:run {:root root}}))]
+            (is (= "glm-4.6" model) "the pin wins over the preset")
+            (is (str/includes? base-url "bigmodel") "the rest of the preset still applies")))
+        (finally (delete-recursively (java.io.File. home))
+                 (delete-recursively (java.io.File. root))))))
+  (testing "a provider spelled as a string is the provider it names"
+    ;; EDN written by a person, not by code: `:provider "glm"` is what someone
+    ;; who has seen the JSON in /health writes, and reading it as an unknown
+    ;; provider would have been a crash on a legible file.
+    (let [home (temp-config-home "{:llm {:provider \"glm\"}}")
+          root (temp-project-root nil)]
+      (try
+        (with-redefs [config/config-home (fn [] home)]
+          (is (= :glm (get-in (config/load-config {:run {:root root}}) [:llm :provider]))))
+        (finally (delete-recursively (java.io.File. home))
+                 (delete-recursively (java.io.File. root))))))
+  (testing "a provider no table knows is an error, not a silent fallback"
+    (let [home (temp-config-home "{:llm {:provider :nope}}")
+          root (temp-project-root nil)]
+      (try
+        (with-redefs [config/config-home (fn [] home)]
+          (is (thrown? Exception (config/load-config {:run {:root root}}))))
+        (finally (delete-recursively (java.io.File. home))
+                 (delete-recursively (java.io.File. root)))))))
 
 (deftest a-global-config-sits-beneath-the-project-config
   (let [home (temp-config-home "{:http {:port 4100} :llm {:model \"global-model\" :base-url \"http://global\"}}")

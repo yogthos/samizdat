@@ -24,9 +24,11 @@
             [clojure.test :refer [deftest testing is]]
             [jolt.process :as p]
             [ring-chez.adapter :as adapter]
+            [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.api.control :as control]
             [samizdat.server :as server]
             [samizdat.store.db :as db]
+            [samizdat.system :as system]
             [samizdat.userspace :as userspace]))
 
 (defn- request [body]
@@ -76,6 +78,54 @@
       (finally
         (userspace/bind! prev)
         (db/close conn)))))
+
+(deftest the-harness-serves-the-project-it-is-working-on
+  ;; Same seam as the layout above, for the footer and the GIT panel: only
+  ;; this process knows which directory it was pointed at, so a TUI reading
+  ;; git in its OWN process would caption whichever repo it happened to be
+  ;; started from — confidently, and wrongly, whenever it is pointed at a
+  ;; harness elsewhere.
+  (with-redefs [system/config (fn [] {:run {:root "/tmp/some/where/myproject"}
+                                      :llm {:provider :glm :model "glm-5.3"
+                                            :context-window 128000}})
+                server/cached-snapshot (fn [_] {:branch "trunk" :staged 1
+                                                :unstaged 2 :untracked 3
+                                                :last-commit "did a thing"})]
+    (let [b (server/project-body)]
+      (is (= "myproject" (:project b)) "the basename, which is what a footer has room for")
+      (is (= "trunk" (:branch b)))
+      (is (= [1 2 3] [(:staged b) (:unstaged b) (:untracked b)]))
+      (is (= "did a thing" (:last_commit b)))
+      (is (= "glm" (:provider b)) "a string on the wire, not a keyword")
+      (is (= "glm-5.3" (:model b)))
+      (is (= 128000 (:context_window b)))))
+  (testing "outside a git tree it still names the project"
+    (with-redefs [system/config (fn [] {:run {:root "/tmp/plain"}
+                                        :llm {:provider :local :model "m"}})
+                  server/cached-snapshot (fn [_] nil)]
+      (let [b (server/project-body)]
+        (is (= "plain" (:project b)))
+        (is (nil? (:branch b)))
+        (is (nil? (:staged b)) "absent, not zero — 'no repo' is not 'clean'")))))
+
+(deftest the-git-snapshot-is-cached-so-git-is-off-the-poll-path
+  ;; Three shell-outs per request and a poller asking every 1.5s per front
+  ;; end. dirge read .git/HEAD once per painted frame and froze its UI on
+  ;; large repos until it cached (dirge-vuzz); this is that lesson taken up
+  ;; front, with the window in gates.edn.
+  (let [calls (atom 0)]
+    (with-redefs [gitdiff/snapshot (fn [_] (swap! calls inc) {:branch "b"})]
+      (reset! @#'server/git-cache nil)
+      (is (= {:branch "b"} (server/cached-snapshot "/r")))
+      (is (= {:branch "b"} (server/cached-snapshot "/r")))
+      (is (= 1 @calls) "the second read came from the cache")
+      (testing "a different root is not the cached one"
+        (is (= {:branch "b"} (server/cached-snapshot "/other")))
+        (is (= 2 @calls)))
+      (testing "and an expired window reads again"
+        (swap! @#'server/git-cache assoc :at 0)
+        (server/cached-snapshot "/other")
+        (is (= 3 @calls))))))
 
 (deftest content-length-is-octets-not-characters
   ;; A 3-byte em-dash decodes to one char. Judging completeness by char count
