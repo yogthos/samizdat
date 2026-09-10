@@ -96,6 +96,7 @@
             [samizdat.judge-test]
             [samizdat.team-test]
             [samizdat.claims-test]
+            [samizdat.symbolic-differential-test]
             [samizdat.board-test]
             [samizdat.planner-test]
             [samizdat.decompose-test]
@@ -275,6 +276,7 @@
     samizdat.judge-test
     samizdat.team-test
     samizdat.claims-test
+    samizdat.symbolic-differential-test
     samizdat.board-test
     samizdat.planner-test
     samizdat.decompose-test

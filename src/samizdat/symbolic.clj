@@ -515,6 +515,56 @@
            :else (recur t' (inc n) (conj fired (:rule h)))))
        t))))
 
+(defn cycles
+  "Rule pairs that rewrite each other's output back, as data. Empty when a
+  ruleset terminates on every term it can reach from its own right-hand sides.
+
+  AUTHORING TIME, NOT RUN TIME, and that is the whole point. `rewrite` already
+  bounds a cycle — it throws at the limit naming the rules — but it throws
+  INSIDE a run, on a ruleset that was accepted when it was written. The agent
+  authors rulesets, so it gets a spent budget and a stack rather than \"these
+  two rules undo each other, here they are\".
+
+  This is mycelium's argument for manifests, one layer down: compile-time
+  validation is what makes an agent-editable thing safe to edit, and a
+  manifest that cannot reach :end is refused when it is SAVED rather than when
+  it is walked.
+
+  ADAPTED, NOT PORTED. lemmalog rejects a program whose NEGATION cycles, which
+  it can do because it derives facts to a fixpoint and negation-as-absence
+  makes stratification meaningful. symbolic has no derivation, no negation and
+  no strata — `fire` reports matches and never writes back — so there is
+  nothing to stratify. What it does have is `rewrite`, whose fixpoint can fail
+  to converge, and that is where the same class of bug lives here.
+
+  DETECTS THE PAIRWISE CASE ONLY, and says so rather than implying more: a
+  three-rule cycle a -> b -> c -> a is not found here, and `rewrite`'s bound
+  remains the backstop for everything this misses. A cheap check that catches
+  the common shape beats an expensive one nobody runs, and the pairwise shape
+  is what an agent editing two rules actually writes."
+  [rules]
+  (let [rs (vec rules)]
+    (vec (distinct
+          (for [[i a] (map-indexed vector rs)
+                [j b] (map-indexed vector rs)
+                ;; i < j, not i /= j: a cycle is one finding, and reporting it
+                ;; once from each end reads as two problems.
+                :when (and (< i j) (:has-then a) (:has-then b))
+                :let [there (try (first-match [b] (:then a)) (catch Throwable _ nil))
+                      back (when there
+                             (try (first-match [a] (:result there))
+                                  (catch Throwable _ nil)))]
+                :when (and back (= (:result back) (:then a)))]
+            [(:name a) (:name b)])))))
+
+(defn check-ruleset
+  "Every structural finding about a compiled ruleset, as data:
+  {:ok? :cycles}. The shape `procedure/check` uses, for the same reason — a
+  caller deciding whether to accept an edit wants the findings, not a throw."
+  [rules]
+  (let [cs (cycles rules)]
+    {:ok? (empty? cs) :cycles cs}))
+
 ;;; ------------------------------------------------------------ specificity
 
 (defn- skolemize
@@ -693,6 +743,49 @@
               b ((:run r) db)
               :when (or (nil? (:guard r)) ((:guard r) b))]
           {:rule (:name r) :bindings b})))
+
+(defn hypothetical
+  "What `where` would answer if `extra` were also true, without asserting it.
+
+  lemmalog's `what_if` (design 4.5) is a lookahead over a MUTABLE store: assume
+  facts, run to fixpoint, answer, then restore the store byte-identically —
+  relations, change log, epoch, dirty flags — because a hypothetical that
+  leaves a trace answers the next question against a store nobody meant to
+  change.
+
+  HERE THE RESTORE IS FREE AND THE DISCIPLINE IS NOT. A fact db is an
+  immutable value, so assuming facts is building another db and the original
+  cannot be touched. What does NOT come free is the habit: a caller that wants
+  to know what a claim implies before writing it has to be given somewhere to
+  ask, or it will assert first and check afterwards — which is the order
+  karamazov-ko5b went in.
+
+  So this is a small function with a large docstring, and the test beside it
+  asserts the property rather than trusting it."
+  [db extra where]
+  (query (reduce (fn [d t] (apply pldb/db-fact d (fact-rel t) t))
+                 db
+                 extra)
+         where))
+
+(defn would-rewrite
+  "What `rules` would do to each of `terms`, without installing them.
+
+  The rule half of the same lookahead. An agent proposing a ruleset can see
+  what it does to the terms it cares about before a save makes it live —
+  which, with `check-ruleset` refusing a cycle at save, is the difference
+  between authoring a ruleset and finding out what it does by running one.
+
+  A term whose rewrite throws is reported as its failure rather than taking
+  the caller down: this is a preview, and a preview that dies is worse than
+  one that says which term it could not answer for."
+  [rules terms]
+  (mapv (fn [t]
+          (try {:term t :becomes (rewrite rules t) :ok? true}
+               (catch Throwable e
+                 {:term t :ok? false :error (ex-message e)
+                  :why (:error (ex-data e))})))
+        terms))
 
 ;;; -------------------------------------------------------------- contention
 

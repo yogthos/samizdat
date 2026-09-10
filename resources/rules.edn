@@ -1,0 +1,39 @@
+;; Rewrite rules the agent may author, as userspace (karamazov-ei6t.10).
+;;
+;; WHY THIS FILE EXISTS AS A POLICY rather than as a registry of its own.
+;; samizdat already versions cells, prompts, manifests and policy tables in
+;; userspace: every save is a new version, every version is revertable, and a
+;; save whose reload fails is rolled back before the next turn. Rules were the
+;; one rule-shaped surface an agent could not edit that way — gates.edn holds
+;; some as :when forms, procedure.clj builds others in code, and there was no
+;; install / revert for a ruleset an agent wrote.
+;;
+;; A :policy body is EDN read through the same seam, so a rule batch here
+;; inherits the whole mutation protocol for free. lemmalog built a rule
+;; registry with versioned batches for this; samizdat had the machinery
+;; already and was simply not pointing it at rules.
+;;
+;; WHAT A SAVE IS CHECKED FOR. `policy save` compiles this with
+;; symbolic/ruleset — so a malformed rule, a guard over an unbound variable,
+;; or a :then using a variable no :when binds is refused at SAVE — and then
+;; runs symbolic/check-ruleset, which refuses a pair of rules that rewrite
+;; each other back. rewrite/ already bounds a cycle at run time by throwing,
+;; but that is a spent budget and a stack trace inside a run, on a ruleset
+;; that was accepted when it was written. This is mycelium's argument for
+;; manifests one layer down: compile-time validation is what makes an
+;; agent-editable thing safe to edit.
+;;
+;; WHAT LEMMALOG'S BACKFILL DOES NOT TRANSLATE TO. There, installing a rule
+;; mid-session must re-run it over facts already stored, or the rule is
+;; worthless — evaluation reacted only to pending deltas. symbolic derives
+;; nothing and stores nothing: `fire` reports matches against the facts it is
+;; handed, every time it is called. There are no stale derivations to rebuild
+;; and no orphans to clear when a rule is removed. The versioning half of that
+;; finding applies here; the backfill half has nothing to act on.
+;;
+;; Ships EMPTY on purpose. A rule nobody measured is a rule that steers on a
+;; guess, and this project has the receipts for what that costs — a
+;; hand-written prior scored below no prior at all (RFC-014). Add one when
+;; there is a run that wanted it.
+
+{:rules []}

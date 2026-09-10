@@ -45,6 +45,7 @@
             [samizdat.manual :as manual]
             [samizdat.agent.roles :as roles]
             [samizdat.prompt :as prompt]
+            [samizdat.symbolic :as sym]
             [samizdat.store.journal :as journal]
             [samizdat.store.userspace]
             [samizdat.userspace :as userspace]))
@@ -58,7 +59,7 @@
   ;; rearranges its own UI, and the server hands it out at
   ;; GET /v1/harness/layout — with the name left off this list, `policy save`
   ;; refused the one edit all of that documented (karamazov-ym03).
-  ["gates" "manual" "phases" "prompt-chain" "roles" "tui" "wordlists"])
+  ["gates" "manual" "phases" "prompt-chain" "roles" "rules" "tui" "wordlists"])
 
 (defn- msg [ctx] (prompt/render "policy-tool" ctx))
 
@@ -93,6 +94,21 @@
     "wordlists" (do (lexicon/reload!)
                     ;; Force the wordlist regexes to compile.
                     (lexicon/wordlist :usage-cap-signals))
+    "rules"     ;; Compiling is most of the check: a malformed rule, a guard
+                ;; over an unbound variable, or a :then using a variable no
+                ;; :when binds all throw in `ruleset`. check-ruleset then
+                ;; refuses a pair that rewrite each other back — rewrite/
+                ;; bounds that at run time by throwing, but a spent budget and
+                ;; a stack inside a run is a worse way to learn it than a
+                ;; refused save (karamazov-ei6t.12).
+                (let [body (edn/read-string (str (userspace/body :policy "rules")))
+                      compiled (sym/ruleset (:rules body))
+                      {:keys [ok? cycles]} (sym/check-ruleset compiled)]
+                  (when-not ok?
+                    (throw (ex-info (str "these rules rewrite each other back, so "
+                                         "no term they touch reaches a fixpoint: "
+                                         (str/join ", " (map pr-str cycles)))
+                                    {:cycles cycles}))))
     "manual"    ;; Every :name in the manual must resolve; render walks them.
                 (manual/render)
     "roles"     ;; Every role must still declare a surface, and every tool it
