@@ -282,6 +282,49 @@
  #{"you " "your " "you'll" "you can" "you should" "you may" "you might"
    "let me know"}
 
+ :completeness-blocked
+ ;; A stated LIMIT, which is a result rather than a plan. Same first-person
+ ;; voice and the same work verb as an abandoned intention — "I have not been
+ ;; able to test the visual output" against "I still need to test the CLI" —
+ ;; and the opposite meaning: one says what the run FOUND, the other what it
+ ;; chose to leave.
+ ;;
+ ;; MEASURED, on run dbe64eea-successor of the arena sweep. The owner was told
+ ;; to exercise its change on screen; the host had no window server, so the
+ ;; requirement was impossible. Against the real problem text, the two most
+ ;; natural ways to SAY that were both refused by this rung, while an answer
+ ;; that simply did not mention the requirement shipped. The critic then
+ ;; failed the round for exactly that: "the requirement is silently dropped
+ ;; rather than met or escalated as a blocker". A gate that refuses the honest
+ ;; answer and passes the silent one is not failing to catch omission, it is
+ ;; selecting for it.
+ ;;
+ ;; The precedent this restores is run 623ccae8, which met a display-less host
+ ;; by running its own counterfactual and writing "HONEST LIMIT: actual frame
+ ;; rendering cannot be verified on this display-less host". That shipped only
+ ;; because the nominal phrasing happens to carry no forward marker — the
+ ;; behaviour was right and the gate let it through by luck.
+ ;;
+ ;; The same do-not-widen warning applies, and HARDER here, because this list
+ ;; silences the rung rather than firing it — every phrase added is a way for
+ ;; an abandoned plan to escape.
+ ;;
+ ;; So it is anchored on FIRST-PERSON INABILITY, and that anchor is the whole
+ ;; design. A third-person obstacle phrase reads the same in a limit and in a
+ ;; plan: "I will fix the parser that fails to handle escapes" states an
+ ;; obstacle and is exactly the abandoned intention this rung exists to catch.
+ ;; Only the model saying IT could not do the thing distinguishes them, and
+ ;; every entry below therefore names the model as the one blocked.
+ ;;
+ ;; The cost is a phrasing like "I still need to verify this, but the run
+ ;; fails" — a limit with a plan's opening, which still refuses. That is the
+ ;; right trade: the refusal now tells the model to say what it could not do
+ ;; and why, so the fix is one rephrase away, while the looser list would have
+ ;; turned the rung off for a whole class of genuine plans.
+ #{"i could not" "i couldn't" "i cannot" "i can't"
+   "i was unable" "i am unable" "i'm unable" "i have not been able"
+   "i haven't been able" "i was not able" "i wasn't able"}
+
  :tool-error-classes
  ;; What a failed tool result SAYS, mapped to what the branch should do about
  ;; it (samizdat.agent.toolerr, ported from dirge tool_error_class.rs). The

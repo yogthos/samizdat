@@ -70,6 +70,9 @@
 (def ^:private completeness-second-person
   (util/generation-cache lexicon/gen
                          #(lexicon/wordlist :completeness-second-person)))
+(def ^:private completeness-blocked
+  (util/generation-cache lexicon/gen
+                         #(lexicon/wordlist :completeness-blocked)))
 
 (defn- word-starting-with?
   "Whether `needle` occurs in `haystack` at the START of a word.
@@ -106,24 +109,50 @@
 (defn unfinished-claim?
   "Whether the answer says, in the model's own first-person voice, that work
   remains (dirge completeness_gate.rs, karamazov-g86). Fires only when ONE
-  SENTENCE holds all three: a first-person forward marker, a concrete work
-  verb (exact token, so 'latest' cannot read as 'test'), and no
-  second-person address — advice to the reader is a legitimate ending, a
-  plan to keep working is not. The conjunction IS the control: a run that
-  edits real files, verifies, claims nothing false, and stops halfway is the
-  most ordinary bad ending an autonomous run has, and this is its one
-  lexical tell. The lists are wordlists.edn data; dirge's warning against
-  widening them travels with the lists."
+  SENTENCE holds a first-person forward marker and a concrete work verb
+  (exact token, so 'latest' cannot read as 'test') and NEITHER exemption:
+  second-person address — advice to the reader is a legitimate ending — nor
+  a stated limit. The conjunction IS the control: a run that edits real
+  files, verifies, claims nothing false, and stops halfway is the most
+  ordinary bad ending an autonomous run has, and this is its one lexical
+  tell. The lists are wordlists.edn data; dirge's warning against widening
+  them travels with the lists.
+
+  WHY A LIMIT IS NOT A PLAN, which is the second exemption and the one with
+  a measurement behind it. \"I still need to implement the CLI\" is work the
+  run chose to leave. \"I have not been able to test the visual output: the
+  host has no window server\" is what the run FOUND — the same voice, the
+  same verb, the opposite meaning, and the second is a result.
+
+  The exemption is anchored on FIRST-PERSON inability, and that anchor is
+  load-bearing: a third-person obstacle reads identically in a limit and in a
+  plan (\"I will fix the parser that fails to handle escapes\" names an
+  obstacle and IS an abandoned intention), so keying on one would switch the
+  rung off for the shape it exists to catch.
+
+  Measured on run dbe64eea-successor of the arena sweep, against its real
+  problem text: the owner was asked to exercise its change on screen, the
+  host had no window server, and the two most natural ways to say so were
+  both refused here while an answer that never mentioned the requirement
+  shipped. The critic then failed the round for precisely that — \"the
+  requirement is silently dropped rather than met or escalated as a
+  blocker\". A gate that refuses the honest answer and passes the silent one
+  does not merely fail to catch omission; it selects for it.
+
+  The exemption is per SENTENCE, not per answer, so an honest limit in one
+  sentence cannot license an abandoned plan in the next."
   [answer]
   (let [fwd (completeness-forward)
         verbs (completeness-work-verbs)
-        second-p (completeness-second-person)]
+        second-p (completeness-second-person)
+        blocked (completeness-blocked)]
     (boolean
      (some (fn [sentence]
              (let [s (str " " (str/lower-case (str/trim sentence)) " ")]
                (and (some #(word-starting-with? s %) fwd)
                     (some #(word-starting-with? s %) verbs)
-                    (not-any? #(word-starting-with? s %) second-p))))
+                    (not-any? #(word-starting-with? s %) second-p)
+                    (not-any? #(word-starting-with? s %) blocked))))
            (str/split (str answer) #"[.!?\n]+")))))
 
 (defn answer-tokens

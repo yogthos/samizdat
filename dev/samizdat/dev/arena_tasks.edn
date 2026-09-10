@@ -12,6 +12,20 @@
 ;; the ground ending in a hard line against bare sky, trees standing past that
 ;; edge with nothing under them, and the bird and its rings riding far above
 ;; the canopy.
+;;
+;; A REQUIREMENT THE ENVIRONMENT CANNOT MEET IS A TRAP, and this task set laid
+;; two. The visual exercise below asked for a screenshot, and an arena child is
+;; spawned from a tool, so it has no macOS window server and raylib answers
+;; `SYSTEM: Failed to initialize platform` — measured at turn 81 of run
+;; dbe64eea-successor, and already recorded from the 2026-08-29 campaign. The
+;; same bullet named `scripts/png_hist.py`, and `python3` is not on the shell
+;; allow list, so the tool the task told the agent to use was refused at turn
+;; 77. The owner met both walls, dropped the requirement without saying so, and
+;; the critic failed the round for it — which is a real defect in the harness
+;; (fixed: wordlists :completeness-blocked) but was ALSO the rig asking for the
+;; impossible and then measuring the answer. The requirement stays, because
+;; karamazov-ksl is right that an exercise is the point; what changed is that
+;; it now names the wall and says that reporting it is the answer.
 
 {:subject {:repo "/Users/yogthos/src/raylib-examples/endless-flight"
            :sha "e4afef0"
@@ -38,9 +52,14 @@
     quietly weaken it. Decide what the invariant should now be, rewrite the
     test to pin THAT, and say in one line why the old one no longer holds.
   - Exercise it, do not just unit-test it. `jolt -M:run` with
-    RAYLIB_APP_AUTO_QUIT_MS set writes a screenshot on flight.draw/shot-at-frame;
-    scripts/png_hist.py reads a png's colour histogram. Use them to confirm the
-    change is actually visible, and say what you saw.
+    RAYLIB_APP_AUTO_QUIT_MS set writes a screenshot on flight.draw/shot-at-frame.
+    Use it to confirm the change is actually visible, and say what you saw.
+    THIS MAY BE IMPOSSIBLE HERE, and if it is, saying so IS the answer: a run
+    started from a background process has no window server, raylib reports
+    `SYSTEM: Failed to initialize platform`, and no frame can ever be drawn.
+    If you hit that, say in your answer what you tried and what it printed.
+    Do not leave the requirement unmentioned — an unmentioned requirement
+    reads as met.
   - Do not change the deps.edn paths or the native library wiring."
 
  :tasks

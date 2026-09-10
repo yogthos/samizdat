@@ -88,6 +88,85 @@
               :evidence [] :uncovered-numbers []}))
       "an honest finished answer ships"))
 
+(deftest a-stated-limit-is-a-result-not-a-plan
+  ;; karamazov-ylte.1, run dbe64eea-successor. The owner was told to exercise
+  ;; the change visually; the host had no window server ("SYSTEM: Failed to
+  ;; initialize platform"), so the requirement was impossible. It shipped an
+  ;; answer that did not mention it at all, and the critic failed the round
+  ;; for "the requirement is silently dropped rather than met or escalated".
+  ;;
+  ;; Measured on the real problem text before the fix: the two most natural
+  ;; ways to SAY it were refused by this rung, and saying nothing shipped. A
+  ;; gate that refuses the honest answer and passes the silent one is not
+  ;; merely failing to catch omission, it is selecting for it.
+  ;;
+  ;; The distinction is PLAN versus LIMIT. "I will implement the CLI" is work
+  ;; the run chose to leave; "I could not verify it on this host" is the
+  ;; result. Same first-person voice, same work verb, opposite meanings — so
+  ;; it is a third exemption on the conjunction, beside second-person address.
+  (testing "the honest phrasings ship"
+    (is (not (ship/unfinished-claim?
+              (str "The fade math is pure in flight.render with tests. I have "
+                   "not been able to test the visual output: the host has no "
+                   "window server.")))
+        "`I have not been able to` is a limit, not a plan")
+    (is (not (ship/unfinished-claim?
+              "I could not complete the visual check; the screenshot never wrote."))
+        "`I could not`")
+    (is (not (ship/unfinished-claim?
+              "I was unable to verify the render because raylib cannot open a window."))
+        "`I was unable to`")
+    (is (not (ship/unfinished-claim?
+              "I cannot test this on screen; the platform fails to initialise here."))
+        "`I cannot`"))
+  (testing "FIRST-PERSON inability is the anchor, and it is the whole design.
+            A third-person obstacle reads identically in a limit and in a
+            plan, so exempting on one would turn the rung off for the very
+            shape it exists to catch."
+    (is (ship/unfinished-claim?
+         "I will fix the parser that fails to handle escaped delimiters.")
+        "an obstacle named in a PLAN is still a plan")
+    (is (ship/unfinished-claim?
+         "The suite is green. I still need to write the tests that cannot run yet.")
+        "`cannot` about the work, not about the model")
+    (is (ship/unfinished-claim?
+         (str "Suite green. I still need to verify this on screen, but the run "
+              "fails to initialize the platform on this host."))
+        "a limit with a plan's opening still refuses — the message now tells
+         the model to say what IT could not do, so the fix is one rephrase"))
+  (testing "a plain plan is still refused — the exemption must not swallow the rung"
+    (is (ship/unfinished-claim?
+         "The parser is done. I still need to implement the CLI entry point."))
+    (is (ship/unfinished-claim?
+         "Tests pass for headings. Next I will add the paragraph handling."))
+    (is (ship/unfinished-claim?
+         "I will be implementing the retry path next.")))
+  (testing "and a limit is not a licence to abandon the whole task"
+    (is (ship/unfinished-claim?
+         (str "I could not get the tests to run. I will implement the parser "
+              "tomorrow."))
+        "one sentence stating a limit does not exempt a DIFFERENT sentence
+         that is a plain plan")))
+
+(deftest the-completeness-refusal-does-not-teach-omission
+  ;; The message the rung hands back is the only instruction the model gets
+  ;; at this point, and it used to offer "restate the answer as what IS done"
+  ;; as a bare alternative — which is precisely the omission the critic later
+  ;; fails the round for. Its other branch, putting the remainder on the
+  ;; board, is the `task` tool, which no recorded run has ever called
+  ;; (karamazov-5ot9). So in practice it read as: drop it.
+  (let [msg (ship/ship-gate-block
+             {:answer (str "Built the mdlite converter. I still need to "
+                           "implement the code-block handling.")
+              :problem "build the mdlite converter"
+              :evidence [] :uncovered-numbers []})]
+    (is (string? msg))
+    (is (not (str/includes? msg "restate the answer as what IS done"))
+        "the phrase that instructed the model to omit")
+    (is (or (str/includes? msg "could not")
+            (str/includes? msg "why"))
+        "it has to name saying-what-blocked-you as the option it is")))
+
 ;; --- the same-file streak ---------------------------------------------------
 
 (deftest the-file-touch-streak-narrows-and-breaks

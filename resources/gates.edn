@@ -2302,12 +2302,32 @@
     ;; (:completeness-* in wordlists.edn); this rung is just the decision.
     {:name :completeness
      :when (unfinished-claim? answer)
+     ;; THE MESSAGE IS THE ONLY INSTRUCTION THE MODEL GETS HERE, and the
+     ;; earlier wording offered "restate the answer as what IS done" as a bare
+     ;; alternative — which is the omission the critic later fails the round
+     ;; for. Its other branch, putting the remainder on the board, is the
+     ;; `task` tool, and no recorded run has ever called it (karamazov-5ot9),
+     ;; so in practice this read as: drop it. Measured on run
+     ;; dbe64eea-successor, where the owner met an impossible requirement and
+     ;; shipped an answer that did not mention it.
+     ;;
+     ;; Three options now, and the middle one is the one that was missing: a
+     ;; requirement you COULD NOT meet is a result, said out loud, and the
+     ;; rung no longer refuses it (wordlists :completeness-blocked).
      :message-form (str "One sentence of this answer says, in your own voice,"
                         " that work remains — a first-person plan to do more"
-                        " is not a result. Either do that work now and finish"
-                        " again, or restate the answer as what IS done and put"
-                        " what is left on the board (the task tool), so the"
-                        " record is honest either way.")}]
+                        " is not a result. Three honest endings, and only"
+                        " these:\n"
+                        "  - do that work now and finish again;\n"
+                        "  - if something BLOCKED you, say so in the answer:"
+                        " what you could not do and why, with the error or the"
+                        " evidence. That is a result, not a failure, and it"
+                        " ships;\n"
+                        "  - if it is simply left, put it on the board (the"
+                        " task tool) so it is somebody's next task.\n"
+                        "Do not answer by leaving it out. A requirement that"
+                        " goes unmentioned reads as met, and that is the one"
+                        " ending that is not honest.")}]
    :kind :threshold :capability-tunable? false
   :provenance ["drg-4026 #44"]
    :doc "The lexical ship rungs (drg-4026 #44) — adding a rung is a data
