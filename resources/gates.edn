@@ -1463,6 +1463,51 @@
         writes vaguer memories, which is the failure mode this whole schema
         exists to avoid."}
 
+ :plan-phase
+ {:value {:enabled true
+          :skip-under-words 40
+          :max-design-attempts 2
+          :design-turns 10}
+  :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-vale" "AI-DLC"]
+  :doc "The pre-construction plan phase: an implementation plan produced and
+        critiqued BEFORE any code, mirroring the post-construction diff critic
+        at the elaboration boundary.
+
+        WHY IT EXISTS. Every gate the implementer had fired AFTER construction —
+        the diff critic, the ship gate, the line budget — so a run spent its
+        whole budget building the wrong or incomplete thing and learned so only
+        at review. Four recordings on four tasks produced zero splits, and one
+        shipped 89-146 turns with a requirement silently dropped. This asks
+        'would this plan satisfy the requirement' while the answer is still
+        cheap to act on.
+
+        :enabled false takes the whole phase out, which is the control arm for
+        measuring whether it pays (an arena A/B, like :memory?).
+
+        :skip-under-words is the TRIAGE floor: a task whose statement is
+        shorter than this and names no list is obviously one small change, and
+        planning it is the tax the heuristic exists to avoid. Above it, the
+        agent decides — a cheap call, not a full loop.
+
+        :design-turns caps the owner's planning exploration: it reads the code
+        and declares a plan, it does not build. :max-design-attempts bounds the
+        plan-critic loop so a plan the critic keeps refusing cannot spin — the
+        same bound the diff critic has.
+
+        WHO APPROVES is not here: it is :approval :mode. Unattended (:refuse),
+        the critic is the gate and construction proceeds on a clear contract.
+        Attended (:block), the plan also goes to the person, on the same queue
+        ask_human uses."}
+
+ :board-design-turns
+ {:value 10 :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-vale"]
+  :doc "The owner's turn cap while PLANNING, distinct from :board-owner-turns
+        which caps construction. Small: reading enough code to name the files
+        and tests a change needs is not the change itself. Never wider than the
+        run's own cap, like the owner cap."}
+
  :task-line-budget
  {:value 500 :kind :threshold :capability-tunable? false
   :provenance ["karamazov-5ot9" "karamazov-fn68"]

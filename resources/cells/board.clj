@@ -40,6 +40,7 @@
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.judge :as judge]
+            [samizdat.approval :as approval]
             [samizdat.agent.loop :as turn]
             [samizdat.agent.skills :as skills]
             [samizdat.agent.state :as state]
@@ -389,6 +390,217 @@
             (remove str/blank?
                     [(wf/prompt-text "roles/implementor")
                      (skills/load-skill "repl-workflow")])))
+
+(defn- safely
+  "A board stage that throws records the error and falls through to `fallback`
+  rather than taking the run down — feature.clj's discipline, kept local so
+  board.clj need not reach into it. A cancellation is the run being stopped,
+  not a stage failure, so it rethrows."
+  [conn run-id stage data body fallback]
+  (try (body)
+       (catch Throwable e
+         (when (and (resolve 'samizdat.cancel/control-signal?)
+                    ((resolve 'samizdat.cancel/control-signal?) e))
+           (throw e))
+         (try (journal/note! conn run-id :stage-error
+                             {:data {:stage (name stage) :error (ex-message e)}})
+              (catch Throwable _ nil))
+         (fallback data))))
+
+(defn- plan-phase-cfg [] (gates/threshold :plan-phase))
+
+(defn- looks-trivial?
+  "The triage heuristic: whether a task is obviously one small change and the
+  plan phase can be skipped (karamazov-vale).
+
+  DETERMINISTIC on purpose, not a model call. The point of triage is to keep
+  the phase off cheap tasks, and spending a provider call to decide whether to
+  spend more provider calls is the tax it exists to avoid (karamazov-9sa: do
+  not add a speculative model call). A task is trivial when its statement is
+  short AND names no list — an enumeration or several 'and's is the shape that
+  hides several changes in one title, which is exactly what the phase is for.
+
+  Errs toward PLANNING when unsure: a false 'trivial' skips the gate on a task
+  that needed it, while a false 'substantial' only spends a cheap plan on a
+  small task, and the design step's own brief says a one-line plan is the right
+  plan for a one-line change. The asymmetry is deliberate."
+  [task]
+  (let [text (str (:body task) " " (:contract task) " " (:title task))
+        words (count (re-seq #"\S+" text))
+        listy? (or (re-find #"(?m)^\s*[-*\d]+[.)]\s" text)
+                   (<= 2 (count (re-seq #"(?i)\band\b" text))))]
+    (and (< words (long (:skip-under-words (plan-phase-cfg))))
+         (not listy?))))
+
+(cell/defcell :board/triage
+  {:doc "Decide whether this claimed task gets a plan phase or goes straight to
+        construction. Cheap and deterministic — see looks-trivial?. :skip when
+        the phase is disabled or the task is obviously one small change; :plan
+        otherwise."
+   :effects [:db]
+   :requires [:conn :run-id]
+   :input  [:map [:board/task {:optional true} :any]]
+   :output [:map [:board/plan-decision :keyword]]}
+  (fn [{:keys [conn run-id]} {:keys [board/task] :as data}]
+    (let [t (tasks/get-task conn task)
+          decision (cond
+                     (not (:enabled (plan-phase-cfg))) :skip
+                     (looks-trivial? t) :skip
+                     :else :plan)]
+      (journal/note! conn run-id :triage {:data {:task task :decision decision}})
+      (assoc data :board/plan-decision decision))))
+
+(cell/defcell :board/design
+  {:doc "The owner reads the code and produces an implementation PLAN, without
+        building it. A bounded worker loop (gates.edn :board-design-turns) under
+        the design brief, whose product is the plan the branch declares.
+
+        Fail-open on a missing plan: if the owner spends its small budget
+        without declaring one, construction still proceeds — forcing a plan the
+        owner could not produce would wedge, and the diff critic is still
+        downstream."
+   :effects [:net :db]
+   :requires [:config :conn :run-id]
+   :input  [:map [:board/task {:optional true} :any]
+            [:board/branch-id {:optional true} :any]
+            [:board/plan-attempts {:optional true} :int]
+            [:board/design-findings {:optional true} :any]]
+   :output [:map [:board/plan-text :any] [:board/plan-attempts :int]]}
+  (fn [{:keys [conn run-id] :as ctx} {:keys [board/task board/branch-id] :as data}]
+    (safely conn run-id :design data
+      (fn []
+        (let [attempt (or (:board/plan-attempts data) 0)
+              t (tasks/get-task conn task)
+              did (str "design-" branch-id (when (pos? attempt) (str "r" attempt)))
+              findings (:board/design-findings data)
+              prob (cond-> (str (or (:body t) (:title t)))
+                     (not (str/blank? (str findings)))
+                     (str "\n\nA review of your last plan sent this back. "
+                          "Address it:\n" findings))
+              suffix (prompt/prompt "design-brief")
+              ictx (let [rc (wf/role-ctx ctx :implementor)
+                         cap (gates/threshold :board-design-turns)]
+                     (cond-> rc
+                       cap (assoc :max-turns (if-let [rcap (:max-turns rc)]
+                                               (min cap rcap) cap))))
+              b (-> (state/new-branch
+                     {:id did :problem prob
+                      :messages (turn/initial-messages prob suffix :implementor)})
+                    (assoc :task {:id task :title (:title t)} :role :implementor))
+              out (try (myc/run-compiled (wf/worker-compiled) ictx {:branch b :turn 1})
+                       (catch Throwable _ nil))
+              ;; The worker loop returns {:branch <finished branch>}, the same
+              ;; shape board/work reads its answer from — not the beam's
+              ;; {:done-branch}/{:branches}. state/plan reads what the owner
+              ;; declared with the `plan` tool.
+              plan (some-> (:branch out) state/plan)
+              plan-text (when plan
+                          (str "Goal: " (:goal plan)
+                               "\nFiles: " (str/join ", " (:files plan))
+                               "\nTests: " (str/join ", " (:tests plan))))]
+          (journal/note! conn run-id :design
+                         {:data {:task task :attempt (inc attempt)
+                                 :declared (boolean plan-text)}})
+          (assoc data :board/plan-text plan-text
+                 :board/plan-attempts (inc attempt))))
+      (fn [d] (assoc d :board/plan-text nil
+                     :board/plan-attempts (inc (or (:board/plan-attempts d) 0)))))))
+
+(cell/defcell :board/design-review
+  {:doc "The PLAN critic: judge the declared plan against the requirement
+        BEFORE construction (karamazov-vale). judge/review-plan is the same
+        two-pass machinery the diff critic uses, so a plan finding the plan
+        does not support is dropped exactly as a diff finding is.
+
+        Bounded by :plan-phase :max-design-attempts, and FAIL-OPEN past it:
+        a plan the critic keeps refusing routes to construction anyway rather
+        than wedging the task — the diff critic remains downstream. A missing
+        plan (design produced none) is :ok for the same reason."
+   :effects [:net :db]
+   :requires [:conn :run-id]
+   :input  [:map [:board/task {:optional true} :any]
+            [:board/plan-text {:optional true} :any]
+            [:board/plan-attempts {:optional true} :int]]
+   :output [:map [:board/design-decision :keyword]
+            [:board/design-findings {:optional true} :any]]}
+  (fn [{:keys [conn run-id] :as ctx} {:keys [board/task board/plan-text] :as data}]
+    (safely conn run-id :design-review data
+      (fn []
+        (let [t (tasks/get-task conn task)
+              attempts (or (:board/plan-attempts data) 1)
+              spent? (>= attempts (long (:max-design-attempts (plan-phase-cfg))))
+              chat (fn [pass content]
+                     (let [r (try (llm/chat (:llm-adapter (wf/role-ctx ctx :critic))
+                                            (:llm-config (wf/role-ctx ctx :critic))
+                                            [{:role "user" :content content}])
+                                  (catch Throwable _ nil))]
+                       (try (journal/record-side-call!
+                             conn run-id {:kind (keyword (str "plan-" (name pass)))
+                                          :role :critic
+                                          :model (:model (:llm-config (wf/role-ctx ctx :critic)))
+                                          :usage (:usage r)})
+                            (catch Throwable _ nil))
+                       (:content r)))
+              reviewed (when (seq (str plan-text))
+                         (try (judge/review-plan
+                               {:chat chat
+                                :requirement (str (or (:contract t) (:body t) (:title t)))
+                                :plan plan-text})
+                              (catch Throwable _ nil)))
+              blocking (when reviewed
+                         (judge/blocking-findings (str "FINDINGS:\n" (:findings reviewed))))
+              decision (cond
+                         (str/blank? (str plan-text)) :ok
+                         (nil? reviewed) :ok
+                         (and (= :complete (:verdict reviewed)) (not blocking)) :ok
+                         spent? :ok
+                         :else :revise)]
+          (journal/note! conn run-id :design-review
+                         {:data {:task task :attempt attempts
+                                 :verdict (some-> reviewed :verdict)
+                                 :decision decision
+                                 :candidates (judge/for-the-record :reply-chars
+                                                                   (some-> reviewed :candidates))
+                                 :findings (judge/for-the-record :reply-chars
+                                                                 (some-> reviewed :findings))}})
+          (assoc data :board/design-decision decision
+                 :board/design-findings (when (= :revise decision)
+                                          (:findings reviewed)))))
+      (fn [d] (assoc d :board/design-decision :ok)))))
+
+(cell/defcell :board/approve
+  {:doc "The plan's gate before construction. HEADLESS the critic already was
+        the gate, so this is pass-through and only records the plan as the
+        task's contract. ATTENDED (:approval :mode :block) the plan also goes
+        to the person, on the same queue ask_human uses, and construction waits
+        for them (karamazov-vale).
+
+        'Unattended self-modification is fine as long as the up-front contract
+        is clear': the critic makes the contract clear, and persisting it makes
+        it the contract construction and the diff critic both read."
+   :effects [:db]
+   :requires [:conn :run-id]
+   :input  [:map [:board/task {:optional true} :any]
+            [:board/plan-text {:optional true} :any]]
+   :output [:map [:board/approve-decision :keyword]]}
+  (fn [{:keys [conn run-id]} {:keys [board/task board/plan-text] :as data}]
+    (when (seq (str plan-text))
+      (try (tasks/update! conn task {:plan (str plan-text)}) (catch Throwable _ nil)))
+    (let [{:keys [mode wait-ms on-timeout]} (approval/policy)
+          decision
+          (if (or (not= :block mode) (str/blank? (str plan-text)))
+            :go
+            (let [id (approval/request!
+                      {:run-id run-id :kind :plan
+                       :details (str "Plan for task " task)
+                       :questions [{:question (str "Approve this plan?\n\n" plan-text)
+                                    :options ["approve" "request changes"]}]})
+                  ans (approval/await! id wait-ms {:decision (or on-timeout :deny)})]
+              (if (contains? #{:approve :allow} (some-> (:decision ans) keyword))
+                :go :rework)))]
+      (journal/note! conn run-id :plan-approval
+                     {:data {:task task :mode mode :decision decision}})
+      (assoc data :board/approve-decision decision))))
 
 (cell/defcell :board/work
   {:doc "Run the implementor loop on the claimed task, on its own branch, until

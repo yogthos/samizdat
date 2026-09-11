@@ -221,6 +221,70 @@
                                              WHERE kind LIKE 'critic-%'"])))
             "and it is billed for one call, not two")))))
 
+(deftest a-trivial-task-skips-the-plan-phase
+  ;; karamazov-vale. The triage heuristic keeps the phase off obviously-small
+  ;; tasks — a short title with no list — so it is not a tax on the common case.
+  ;; This is also why every existing board test still passes unchanged: their
+  ;; task titles are short.
+  (with-redefs [llm/chat ships-its-task]
+    (let [conn (db/open! ":memory:")]
+      (tasks/create! conn {:title "the handler"})
+      (run-board conn {})
+      (let [notes (journal/notes conn
+                                  (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+                                  :triage)]
+        (is (seq notes))
+        (is (every? #(= "skip" (name (:decision %))) notes)
+            "a one-line task is one change; planning it is the tax triage avoids")
+        (is (empty? (db/fetch conn ["SELECT id FROM events WHERE kind = 'design'"]))
+            "and the design step never ran")))))
+
+(deftest a-substantial-task-plans-and-the-plan-critic-reviews-it
+  ;; The phase engages on a task that names several parts. The design step runs
+  ;; the owner under the design brief to declare a plan; the plan critic reviews
+  ;; it against the requirement BEFORE construction — the whole point, since
+  ;; every other gate fires after the budget is spent.
+  (let [calls (atom [])]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        ;; the plan critic (pass 1 or verify) — it carries the plan prompt
+                        (str/includes? content "reviewing this PLAN")
+                        (do (swap! calls conj :plan-review)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :plan-verify)
+                            {:content "No issues found." :finish-reason "stop"})
+                        ;; the design owner: declare a plan and stop
+                        (str/includes? content "PLANNING this task")
+                        (do (swap! calls conj :design)
+                            {:content (str "```tool-call\n{\"name\":\"plan\",\"args\":"
+                                           "{\"files\":[\"src/x.clj\"],\"tests\":[\"test/x_test.clj\"],"
+                                           "\"goal\":\"do the thing and cover the second part too\"}}\n```")
+                             :finish-reason "stop"})
+                        ;; the diff critic
+                        (judge-call? messages)
+                        (do (swap! calls conj :diff-critic)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "storage and handlers"
+                             :body "Add the storage layer AND the handlers AND the templates. Three parts."})
+        (run-board conn {})
+        (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))]
+          (testing "triage chose to plan, and design + plan-critic ran before work"
+            (is (= "plan" (name (:decision (journal/last-note conn rid :triage)))))
+            (is (some #{:design} @calls))
+            (is (some #{:plan-review} @calls))
+            (is (< (.indexOf @calls :plan-review) (or (some (fn [[i x]] (when (= x :diff-critic) i))
+                                                            (map-indexed vector @calls)) 999))
+                "the plan critic ran BEFORE the diff critic"))
+          (testing "the approved plan is persisted as the task's contract"
+            (let [t (first (db/fetch conn ["SELECT plan FROM tasks WHERE plan IS NOT NULL"]))]
+              (is (some? t))
+              (is (str/includes? (str (:plan t)) "second part")))))))))
+
 (deftest the-board-works-its-own-tree-and-the-backlog-not-role-housekeeping
   ;; A role branch (supervisor, reviewer) creates run-scoped tasks for its own
   ;; bookkeeping — the task tool practically requires it. Those are not feature

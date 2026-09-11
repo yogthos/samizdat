@@ -721,7 +721,21 @@
   rather than as \"no support\", which are different facts."
   ["ALTER TABLE knowledge ADD COLUMN supported_by TEXT"])
 
+(def v27
+  "THE APPROVED PLAN, as the task's contract (karamazov-vale).
+
+  A task claimed under the plan phase has an implementation plan the critic —
+  and, when attended, a human — signed off on before construction. Persisting
+  it on the task makes it the contract that construction is judged against and
+  that the post-construction diff critic reads, so what was planned and what is
+  reviewed cannot drift apart. It also survives a resume: a run that planned,
+  crashed, and resumed does not re-plan from nothing.
+
+  Nullable: a trivial task the triage skipped has no plan, and a pre-v27 row
+  has none either. Absent is not the same as empty."
+  ["ALTER TABLE tasks ADD COLUMN plan TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26])
+   v25 v26 v27])

@@ -272,6 +272,25 @@
       :answer (str answer)
       :preamble (preamble)})))
 
+(defn plan-prompt
+  "The critic's user message when it is judging a PLAN rather than a diff
+  (karamazov-vale). Same shape as critic-prompt — the requirement, then the
+  artifact under review — but the artifact is the plan the owner intends to
+  carry out, and the question is whether executing it WOULD satisfy the
+  requirement rather than whether a finished diff did.
+
+  This is the whole point of the plan phase: the diff critic asks the question
+  after the budget is spent, and this asks it before. The reader is judging
+  intent against intent, so it has no evidence block — there is nothing done
+  yet to be deterministic about, and handing it an empty one would invite it
+  to invent findings from nothing."
+  [{:keys [requirement plan]}]
+  (let [budget (gates/threshold :context-budget)]
+    (prompt/render
+     "judge-plan"
+     {:requirement (one-line requirement (:judge-rules-chars budget))
+      :plan (str plan)})))
+
 (defn blocking-findings
   "The findings a review blocks on. Returns the whole findings text when any
   finding carries a blocking severity, else nil.
@@ -470,11 +489,12 @@
   the argument is the one `usable` makes: a fourth would forget the second
   pass, and a critic quietly running one is indistinguishable from one running
   two until you read its findings."
-  [{:keys [chat requirement evidence diff answer transcript]}]
-  (let [reply (chat :review
-                    (critic-prompt {:requirement requirement :evidence evidence
-                                    :diff diff :answer answer
-                                    :transcript transcript}))
+  [{:keys [chat requirement evidence diff answer transcript prompt-fn pass1]
+    :or {prompt-fn critic-prompt}}]
+  (let [reply (chat (or pass1 :review)
+                    (prompt-fn {:requirement requirement :evidence evidence
+                                :diff diff :answer answer
+                                :transcript transcript}))
         verdict (if reply (parse-verdict reply) :complete)
         candidates (when reply (findings reply))
         verified (if (and candidates (gates/threshold :judge-verify?))
@@ -486,6 +506,30 @@
                      :candidates candidates})
                    candidates)]
     {:verdict verdict :candidates candidates :findings verified}))
+
+(defn review-plan
+  "Judge a PLAN against a requirement, both passes, against an injected `chat`.
+
+  karamazov-vale, the pre-construction critic. It is `review` with a different
+  pass-1 prompt: the same two-pass verify/dedupe machinery, so a plan finding
+  the plan does not support is dropped exactly as a diff finding is. The
+  candidate/finding split, the fail-open pass 1 and fail-safe pass 2, and the
+  side-call accounting all come for free.
+
+  The `pass1` label is :plan-review, not :review, so a run's side_calls can
+  tell a plan critic apart from a diff critic and price each — the plan phase
+  has to be able to show it is cheap, and a cost nothing counts is the bill
+  moved out of view (karamazov-2rqb).
+
+  `plan` is the artifact — the files the owner will change, the tests it will
+  add, and the approach in prose. No evidence block: nothing has been built to
+  be deterministic about."
+  [{:keys [chat requirement plan]}]
+  (review {:chat chat
+           :requirement requirement
+           :diff plan
+           :prompt-fn (fn [_] (plan-prompt {:requirement requirement :plan plan}))
+           :pass1 :plan-review}))
 
 (defn critique-message
   "The single consolidated note injected back into the branch when the judge
