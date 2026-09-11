@@ -307,12 +307,24 @@
 (def ^:private memory-tables
   "The tables a run's LEARNING lives in, as opposed to its record.
 
-  `knowledge` only, for now, and the restraint is the point: `runs`, `turns`,
-  `events` and the rest are what THIS run did, and carrying them forward would
-  hand the next run a history it did not live. What crosses the boundary is
-  what the harness came to believe, which is exactly the thing the epic is
-  about (karamazov-ei6t)."
-  ["knowledge"])
+  `knowledge` is the learning. `runs` comes with it because the learning
+  POINTS AT it and nothing else: a memory's run_id, and the run ids in its
+  supported_by set (karamazov-ei6t.5), are its provenance, and provenance
+  that resolves to nothing is a citation nobody can check.
+
+  IT WAS knowledge ALONE, and that cost the opening block its first live run.
+  loop/learned-block asks knowledge/last-run-before for the run that ended
+  before this one started, and with no runs rows carried there was no such
+  run — so `learned-since` was never called and the block never rendered on
+  sweep6's remembers-1, the one run in the whole sweep that could have shown
+  it. The carried memories were still recallable (recall fired 3 times against
+  0), which is the only reason the run had anything to work with at all.
+
+  STILL NOT turns, events, or the rest: those are what a previous run DID,
+  and handing the next run a transcript it did not live is a different thing
+  from handing it what the harness came to believe. runs rows are small,
+  terminal, and reconcile-orphans! ignores them because none is running."
+  ["runs" "knowledge"])
 
 (defn- copy-table!
   "Copy every row of `table` from `from` to `to`, replacing on id collision.

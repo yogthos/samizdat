@@ -184,6 +184,32 @@
     (testing "no cut means nothing to report, not everything"
       (is (empty? (knowledge/learned-since c nil))))))
 
+(deftest the-opening-block-cuts-at-the-previous-run-START-not-its-end
+  ;; THE BUG THAT COST THE BLOCK ITS FIRST LIVE RUN (karamazov-ei6t.9 follow-up).
+  ;; distil-project!/distil-session! write during a run's TEARDOWN, and
+  ;; finish-run! stamps ended_at after that — so a memory's created_at is a
+  ;; hair BEFORE its own run's ended_at, and cutting on ended_at excludes
+  ;; every memory the run wrote. Measured on sweep6: learned-since returned 0
+  ;; while the store held the run's learnings, so the block never rendered on
+  ;; the one run in the sweep that could have shown it.
+  (let [c @conn
+        r1 (runs/start-run! c {:problem "a" :provider "x" :model "m"
+                               :max-turns 5 :beam-width 1})]
+    ;; the memory is written DURING run 1, then run 1 ends — the real order
+    (knowledge/remember! c {:content "the test command is jolt -M:test"
+                            :kind "semantic" :run-id r1})
+    (runs/finish-run! c r1 :completed "d")
+    (let [r2 (runs/start-run! c {:problem "b" :provider "x" :model "m"
+                                 :max-turns 5 :beam-width 1})
+          prev (knowledge/last-run-before c r2)]
+      (is (some? (:started_at prev))
+          "last-run-before returns started_at, which is what the caller cuts on")
+      (is (= 1 (count (knowledge/learned-since c (:started_at prev))))
+          "the previous run's OWN memory is included — the whole point")
+      (is (empty? (knowledge/learned-since c (:ended_at prev)))
+          "and the ended_at cut is what silently dropped it, pinned so a
+           refactor cannot quietly reintroduce the bug"))))
+
 (deftest recent-limits
   (dotimes [_ 3] (knowledge/remember! @conn {:content "row"}))
   (is (= 2 (count (knowledge/recent @conn 2)))))

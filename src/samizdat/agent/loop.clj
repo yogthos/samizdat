@@ -233,7 +233,7 @@
   The prose is userspace like every other block's."
   [conn run-id]
   (when-let [prev (knowledge/last-run-before conn run-id)]
-    (when-let [rows (seq (knowledge/learned-since conn (:ended_at prev)))]
+    (when-let [rows (seq (knowledge/learned-since conn (:started_at prev)))]
       (prompt/render "learned-since"
                      {:run (str (:id prev))
                       :memories (str/join "\n"

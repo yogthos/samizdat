@@ -963,11 +963,23 @@
   "The most recent run that ENDED before `run-id` started, or nil.
 
   What 'since' means for `learned-since` at the start of a run: not a wall
-  clock the caller has to invent, but the boundary the previous run left."
+  clock the caller has to invent, but the boundary the previous run left.
+
+  RETURNS ITS STARTED_AT, and the caller cuts on THAT rather than on
+  `ended_at`, which is the fix for a bug that cost the opening block its first
+  live chance. distil-project! and distil-session! write during a run's
+  TEARDOWN, and finish-run! stamps ended_at after that teardown — so a
+  memory's created_at is a millisecond or two BEFORE its own run's ended_at,
+  and `created_at > ended_at` excludes every one of them. Cutting at the
+  previous run's START includes everything that run learned, which is exactly
+  what the block is for, and it excludes older runs' learnings because those
+  were created before this run began. Measured on sweep6: with the ended_at
+  cut, learned-since returned 0 even though the store held the run's
+  memories."
   [conn run-id]
   (let [me (first (db/fetch conn ["SELECT started_at FROM runs WHERE id = ?" run-id]))]
     (when-let [t (:started_at me)]
-      (first (db/fetch conn ["SELECT id, ended_at FROM runs
+      (first (db/fetch conn ["SELECT id, started_at, ended_at FROM runs
                                WHERE ended_at IS NOT NULL AND ended_at <= ?
                                ORDER BY ended_at DESC LIMIT 1" t])))))
 
