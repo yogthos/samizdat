@@ -57,7 +57,7 @@
    "learned-since"
    "judge-user" "juvenile-grace" "kernel-write-refused" "last-call"
    "ledger" "manual-group" "mechanics-streak" "memory-stale-completion"
-   "memory-tool" "memory-unverified" "milestone" "mutation-refused"
+   "memory-tool" "memory-unverified" "metrics-findings" "milestone" "mutation-refused"
    "no-call-exhausted" "no-call-imitation" "no-call-reason" "no-call-withheld"
    "no-edits" "over-budget" "orienting" "outside-role-surface" "oversight-pass"
    "parked" "parse-error-causes" "parse-error-repaired" "plan-not-landed"

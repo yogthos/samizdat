@@ -1538,6 +1538,49 @@
         is not split into rubble. Re-tune it against measured runs; that is
         what it is data for."}
 
+ :code-quality
+ {:value {:cc-fn-limit 10
+          :verbosity-max 0.21
+          :verbosity-block 0.40
+          :erosion-max 0.48
+          :erosion-block 0.68
+          :clone-min-forms 5
+          :decision-heads ["if" "if-not" "if-let" "if-some" "when" "when-not"
+                           "when-let" "when-some" "when-first" "cond" "condp"
+                           "case" "and" "or" "while" "for" "doseq"]}
+  :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-dq1r.2"]
+  :doc "Code-quality acceptance limits, checked on the code a run CHANGED
+        (samizdat.metrics, wired into the diff critics). The three heuristics
+        are SlopCodeBench's, which separate established repos from LLM-slop:
+
+          erosion  — the fraction of the changed mass held by functions whose
+                     cyclomatic complexity is over :cc-fn-limit, where
+                     mass(f) = cc(f) * sqrt(sloc(f)). Established repos measured
+                     0.31 +/- 0.17, agents 0.68 +/- 0.20; :erosion-max 0.48 is
+                     the human mean+1sd (an advisory finding over it) and
+                     :erosion-block 0.68 the agent level (a blocking finding).
+          verbosity — duplicated / unnecessarily-verbose lines over LOC. Repos
+                     0.15 +/- 0.06, agents 0.33; :verbosity-max 0.21 is the
+                     advisory line, :verbosity-block 0.40 (vibe-coded level)
+                     the blocking one. CLONE-ONLY here: the paper unions
+                     ast-grep-flagged lines with clone lines and ast-grep is
+                     not reachable in-process, so this is the duplication half
+                     alone (see samizdat.metrics).
+
+        ADVISORY vs BLOCKING is the distance over the line, not a hard gate on
+        the number itself — the article's own caveat is that once you optimize
+        for such a measure it stops measuring anything, so only the egregious
+        (agent/vibe level) case refuses; a marginal breach rides along as a
+        medium finding for the model to weigh. Excess per-function complexity
+        is a [low] pointer at the hotspots, since erosion already prices it.
+
+        :decision-heads is what counts as a branch for cyclomatic complexity,
+        and :clone-min-forms the smallest run of lines that counts as a clone —
+        both here so the measure can be retuned without a rebuild. Every number
+        is a starting point from the paper, not a finding; re-tune against
+        measured runs (karamazov-dq1r.2)."}
+
  :webfetch
  {:value {:timeout-ms 30000
           :max-timeout-ms 120000
@@ -2822,7 +2865,7 @@
            ;; so a mark that survives on the branch does not re-fire every
            ;; boundary while it is busy complying.
            (let [last-fired (->> (:gate-history branch)
-                                 (filter #(= :repopulate (:gate %)))
+                                 (filter (fn [g] (= :repopulate (:gate g))))
                                  (map :turn)
                                  (reduce max -1000))]
              (> due last-fired)))
@@ -2850,7 +2893,7 @@
          spending on a branch that confirmed its own tooling. Silent once the
          run is winding down, because a new line that late cannot finish."
    :when (let [last-fired (->> (:gate-history branch)
-                               (filter #(= :branch-out (:gate %)))
+                               (filter (fn [g] (= :branch-out (:gate g))))
                                (map :turn)
                                (reduce max -1000))]
            ;; Not while the branch is still acting on the last ask.
@@ -2882,7 +2925,7 @@
          budget against it (dirge PR 738)."
    :when (let [used (/ (double (state/turn-count branch)) (max 1 max-turns))
                notified (:notified-fractions branch #{})]
-           (boolean (some #(and (>= used %) (not (contains? notified %)))
+           (boolean (some (fn [frac] (and (>= used frac) (not (contains? notified frac))))
                           (threshold :turn-budget-notices))))
    :message-suffix "**Turn budget**: you have used {{turn-count}} of {{max-turns}} turns. Land what you can verify rather than opening a new line of attack.{% if goal %} You are working on: {{goal}}{% endif %}"
    ;; Says what it MEASURES. The rule reads :settle-called :turn-budget,
@@ -3018,7 +3061,7 @@
                       (when-let [earlier (seq (butlast (:abandoned branch)))]
                         (str "\n\nApproaches you have already tried and abandoned"
                              " — do not retry these:\n"
-                             (str/join "\n" (map #(str "- " %) earlier)))))
+                             (str/join "\n" (map (fn [x] (str "- " x)) earlier)))))
    :prediction "the branch retracts, decomposes, or changes technique"
    :window 3}
 
@@ -3188,7 +3231,7 @@
                         (str "\n\nYou are working on: " g))
                       (when-let [owed (seq (state/unwritten branch))]
                         (str "\n\nYou declared these and have not written them:\n"
-                             (clojure.string/join "\n" (map #(str "  - " %) owed)))))
+                             (clojure.string/join "\n" (map (fn [x] (str "  - " x)) owed)))))
    :prediction "the branch writes or edits a file"
    :window 3}
 

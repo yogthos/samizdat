@@ -37,6 +37,7 @@
             [clojure.string :as str]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
+            [samizdat.agent.files :as files]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.judge :as judge]
@@ -46,6 +47,7 @@
             [samizdat.agent.state :as state]
             [samizdat.agent.tools :as tools]
             [samizdat.llm.client :as llm]
+            [samizdat.metrics :as metrics]
             [samizdat.prompt :as prompt]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
@@ -824,7 +826,19 @@
                         (nil? reviewed) :complete
                         :else (:verdict reviewed))
           candidates (:candidates reviewed)
-          verified (:findings reviewed)
+          ;; The changed code's quality, merged into the critic's findings so a
+          ;; breach is weighed like any other: past the block ceiling it is a
+          ;; blocking finding, marginal it rides along as advisory. Fail-safe —
+          ;; a metric error is nil, never a wedged review.
+          qf (when landed?
+               (try (metrics/review
+                     (files/read-sources root (gitdiff/changed-files root (:board/baseline data)))
+                     (gates/threshold :code-quality))
+                    (catch Throwable _ nil)))
+          quality (when (seq qf) (prompt/render "metrics-findings" {:findings qf}))
+          verified (not-empty (str/join "\n\n"
+                                        (remove str/blank?
+                                                [(str (:findings reviewed)) (str quality)])))
           blocking (when verified (try (judge/blocking-findings
                                         (str "FINDINGS:\n" verified))
                                        (catch Throwable _ nil)))

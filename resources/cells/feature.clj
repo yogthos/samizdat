@@ -22,9 +22,12 @@
             [clojure.string :as str]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
+            [samizdat.agent.files :as files]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.judge :as judge]
             [samizdat.agent.loop :as turn]
+            [samizdat.metrics :as metrics]
             [samizdat.agent.state :as state]
             [samizdat.agent.tools :as tools]
             [samizdat.cancel :as cancel]
@@ -342,11 +345,21 @@
                                      :evidence (judge/evidence rows)
                                      :diff diff
                                      :answer answer})
-                      blocking (when findings
-                                 (judge/blocking-findings (str "FINDINGS:\n" findings)))]
+                      ;; The changed code's quality, weighed beside the judge's
+                      ;; own findings: a breach past the block ceiling is a
+                      ;; blocking finding, a marginal one an advisory. Fail-safe
+                      ;; — a metric error is nil, never a wedged critic.
+                      qf (try (metrics/review
+                               (files/read-sources root (gitdiff/changed-files root git-baseline))
+                               (gates/threshold :code-quality))
+                              (catch Throwable _ nil))
+                      quality (when (seq qf) (prompt/render "metrics-findings" {:findings qf}))
+                      all (str/join "\n\n" (remove str/blank? [(str findings) (str quality)]))
+                      blocking (when (seq all)
+                                 (judge/blocking-findings (str "FINDINGS:\n" all)))]
                   {:decision (if (and (= :complete verdict) (not blocking)) :ship :revise)
                    :verdict verdict
-                   :findings (judge/for-the-record :reply-chars findings)}))
+                   :findings (judge/for-the-record :reply-chars all)}))
               decision (:decision judged)]
           (journal/note! conn run-id :critique
                          {:data {:decision decision :deterministic (boolean det)

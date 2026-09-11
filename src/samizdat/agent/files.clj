@@ -507,6 +507,24 @@
           sort
           vec))))
 
+(defn read-sources
+  "The Clojure sources among `paths` (root-relative), as {path source}.
+
+  For the code-quality gate, which measures the code a run changed:
+  `gitdiff/changed-files` hands the paths, this reads the Clojure ones. Confined
+  to `root` through the same `resolve-under-root` every read comes through — a
+  path that escapes it is skipped — and best-effort per file, so a deleted or
+  unreadable entry is omitted rather than fatal. Non-Clojure paths are dropped
+  (the metrics read Clojure forms)."
+  [root paths]
+  (into {}
+        (keep (fn [p]
+                (when (clojure-file? p)
+                  (when-let [abs (resolve-under-root root p)]
+                    (when-let [c (try (slurp abs) (catch Throwable _ nil))]
+                      [p c])))))
+        (or paths [])))
+
 (defn grep-page
   "The window of `hits` from `offset`, at most `limit` of them, as
   {:hits :from :total :next}. `next` is the offset to ask for to continue, or

@@ -1,0 +1,2 @@
+{% for f in findings %}- [{{f.severity}}] {% if f.erosion %}Erosion {{f.value}} is over {{f.limit}}: too much of the change sits in a few large, complex functions. Split the largest ones before shipping.{% endif %}{% if f.verbosity %}Verbosity {{f.value}} is over {{f.limit}}: a large fraction of the changed lines are duplicated blocks. Factor the repetition out.{% endif %}{% if f.complexity %}{{f.count}} function(s) exceed cyclomatic complexity {{f.limit}}: {{f.fns}}. Simpler branching reads better and erodes less.{% endif %}
+{% endfor %}
