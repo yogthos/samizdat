@@ -455,10 +455,10 @@
         building it. A bounded worker loop (gates.edn :board-design-turns) under
         the design brief, whose product is the plan the branch declares.
 
-        Fail-open on a missing plan: if the owner spends its small budget
-        without declaring one, construction still proceeds — forcing a plan the
-        owner could not produce would wedge, and the diff critic is still
-        downstream."
+        On a missing plan the plan critic sends the owner back once to declare
+        one (see :board/design-review); if it still cannot, construction
+        proceeds rather than wedging on a plan the owner could not produce, and
+        the diff critic is still downstream."
    :effects [:net :db]
    :requires [:config :conn :run-id]
    :input  [:map [:board/task {:optional true} :any]
@@ -475,8 +475,8 @@
               findings (:board/design-findings data)
               prob (cond-> (str (or (:body t) (:title t)))
                      (not (str/blank? (str findings)))
-                     (str "\n\nA review of your last plan sent this back. "
-                          "Address it:\n" findings))
+                     (str "\n\nA review of your last planning step sent this "
+                          "back. Address it:\n" findings))
               suffix (prompt/prompt "design-brief")
               ictx (let [rc (wf/role-ctx ctx :implementor)
                          cap (gates/threshold :board-design-turns)]
@@ -515,7 +515,9 @@
         Bounded by :plan-phase :max-design-attempts, and FAIL-OPEN past it:
         a plan the critic keeps refusing routes to construction anyway rather
         than wedging the task — the diff critic remains downstream. A missing
-        plan (design produced none) is :ok for the same reason."
+        plan (design produced none) is sent back ONCE to declare one, then
+        fails open for the same reason: a plan the owner cannot produce must
+        not wedge, but one it skipped is worth asking for."
    :effects [:net :db]
    :requires [:conn :run-id]
    :input  [:map [:board/task {:optional true} :any]
@@ -549,12 +551,30 @@
                               (catch Throwable _ nil)))
               blocking (when reviewed
                          (judge/blocking-findings (str "FINDINGS:\n" (:findings reviewed))))
+              no-plan? (str/blank? (str plan-text))
+              ;; A blank plan is not a clean plan: the owner skipped the step,
+              ;; which the two-pass critic then rubber-stamps because there is
+              ;; nothing to find fault with. Send it back ONCE to actually
+              ;; declare one, then fail open like every other exit here — a
+              ;; plan the owner cannot produce must not wedge the task, but a
+              ;; plan it simply jumped past is worth asking for. Measured on
+              ;; sweep8's remembers arm: design ran, declared nothing, and the
+              ;; whole pre-construction gate no-op'd on go.
               decision (cond
-                         (str/blank? (str plan-text)) :ok
+                         (and no-plan? (not spent?)) :revise
+                         no-plan? :ok
                          (nil? reviewed) :ok
                          (and (= :complete (:verdict reviewed)) (not blocking)) :ok
                          spent? :ok
-                         :else :revise)]
+                         :else :revise)
+              findings (cond
+                         (and no-plan? (= :revise decision))
+                         (str "You did not produce a plan. End your planning step "
+                              "with a `plan` call that names the files this change "
+                              "touches, the tests that pin it, and a one- or "
+                              "two-sentence goal stating how it meets the WHOLE ask.")
+                         (= :revise decision) (:findings reviewed)
+                         :else nil)]
           (journal/note! conn run-id :design-review
                          {:data {:task task :attempt attempts
                                  :verdict (some-> reviewed :verdict)
@@ -564,8 +584,7 @@
                                  :findings (judge/for-the-record :reply-chars
                                                                  (some-> reviewed :findings))}})
           (assoc data :board/design-decision decision
-                 :board/design-findings (when (= :revise decision)
-                                          (:findings reviewed)))))
+                 :board/design-findings findings)))
       (fn [d] (assoc d :board/design-decision :ok)))))
 
 (cell/defcell :board/approve

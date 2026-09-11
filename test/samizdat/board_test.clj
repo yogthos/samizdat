@@ -283,7 +283,48 @@
           (testing "the approved plan is persisted as the task's contract"
             (let [t (first (db/fetch conn ["SELECT plan FROM tasks WHERE plan IS NOT NULL"]))]
               (is (some? t))
-              (is (str/includes? (str (:plan t)) "second part")))))))))
+              (is (str/includes? (str (:plan t)) "second part"))))
+          (testing "the plan-critic pass is priced under its own kind"
+            ;; review-plan passes bare :review/:verify and the cell owns the
+            ;; plan- prefix, like the diff critic — so the record reads
+            ;; plan-review, not the double-prefixed plan-plan-review sweep8
+            ;; recorded. (Pass 1 is clean here, so verify is skipped and costs
+            ;; nothing, exactly as the diff critic's critic-verify is.)
+            (let [kinds (set (map :kind (db/fetch conn ["SELECT kind FROM side_calls"])))]
+              (is (contains? kinds "plan-review"))
+              (is (not (contains? kinds "plan-plan-review"))))))))))
+
+(deftest a-design-step-that-declares-no-plan-is-sent-back-once-then-fails-open
+  ;; sweep8's remembers arm: the owner skipped the plan step, so design-review
+  ;; had nothing to review and the pre-construction gate no-op'd straight to
+  ;; :go. A blank plan now routes to :revise once — the owner is asked to
+  ;; declare one — then fails open at :max-design-attempts rather than wedging
+  ;; on a plan it could not produce. The diff critic stays downstream.
+  (with-redefs [llm/chat
+                (fn [a c messages & rest]
+                  (if (judge-call? messages)
+                    {:content "VERDICT: COMPLETE" :finish-reason "stop"}
+                    ;; ships-its-task never declares a plan, so every design
+                    ;; attempt ends with state/plan nil.
+                    (apply ships-its-task a c messages rest)))]
+    (let [conn (db/open! ":memory:")]
+      (tasks/create! conn {:title "storage and handlers"
+                           :body "Add the storage layer AND the handlers AND the templates. Three parts."})
+      (run-board conn {})
+      (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+            reviews (journal/notes conn rid :design-review)
+            designs (journal/notes conn rid :design)]
+        (testing "the owner is sent back once to declare a plan, then it fails open"
+          (is (= ["revise" "ok"] (mapv #(name (:decision %)) reviews))
+              "first attempt revises the blank plan, the second fails open"))
+        (testing "design ran twice and declared nothing either time"
+          (is (= 2 (count designs)))
+          (is (every? #(false? (:declared %)) designs)))
+        (testing "the plan critic never ran on a blank plan — nothing to price"
+          (let [kinds (set (map :kind (db/fetch conn ["SELECT kind FROM side_calls"])))]
+            (is (not (contains? kinds "plan-review")))))
+        (testing "fail-open held: construction still ran and the task closed"
+          (is (= "done" (:status (first (db/fetch conn ["SELECT status FROM tasks"]))))))))))
 
 (deftest the-board-works-its-own-tree-and-the-backlog-not-role-housekeeping
   ;; A role branch (supervisor, reviewer) creates run-scoped tasks for its own

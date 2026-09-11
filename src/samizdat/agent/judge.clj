@@ -516,10 +516,13 @@
   candidate/finding split, the fail-open pass 1 and fail-safe pass 2, and the
   side-call accounting all come for free.
 
-  The `pass1` label is :plan-review, not :review, so a run's side_calls can
-  tell a plan critic apart from a diff critic and price each — the plan phase
-  has to be able to show it is cheap, and a cost nothing counts is the bill
-  moved out of view (karamazov-2rqb).
+  It passes the SAME bare pass names as `review` — :review then :verify — and
+  leaves the plan/diff distinction to the caller, exactly as the diff critic
+  does. board/design-review prefixes `plan-` and board/review prefixes
+  `critic-`, so a run's side_calls tell a plan critic apart from a diff critic
+  and price each — the plan phase has to be able to show it is cheap, and a
+  cost nothing counts is the bill moved out of view (karamazov-2rqb). Overriding
+  pass1 here as well double-prefixed it to `plan-plan-review` in the record.
 
   `plan` is the artifact — the files the owner will change, the tests it will
   add, and the approach in prose. No evidence block: nothing has been built to
@@ -528,8 +531,7 @@
   (review {:chat chat
            :requirement requirement
            :diff plan
-           :prompt-fn (fn [_] (plan-prompt {:requirement requirement :plan plan}))
-           :pass1 :plan-review}))
+           :prompt-fn (fn [_] (plan-prompt {:requirement requirement :plan plan}))}))
 
 (defn critique-message
   "The single consolidated note injected back into the branch when the judge
