@@ -308,6 +308,30 @@
   :doc "How often `done` may be refused before the branch is told to give up.
         A cost ceiling because each refusal spends another model turn."}
 
+ :max-give-up-blocks
+ {:value 3 :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-ylte.1"]
+  :doc "How often `give_up` may be refused before it is accepted anyway.
+
+        THE RELIEF IS THE POINT, and without it the give_up rungs are a trap.
+        :max-done-blocks reads 'how often `done` may be refused before the
+        branch is told to give up' — giving up IS the escape hatch from a
+        refused done, so gating it with no ceiling leaves a stuck branch
+        refused at both exits, spending its whole budget being told no. That
+        is the quiet spin the rungs exist to stop, rebuilt one door along.
+
+        Found by team-test/supervisor-retries-a-worker-that-gave-up, whose
+        workers said `stuck`, were refused, and never gave up — so the
+        supervisor had nothing to retry.
+
+        Fail-open on the same reasoning cells/critic.clj gives for the
+        finalization judge: bounded so it cannot block forever, because a
+        backstop that can wedge the loop is worse than no backstop. What the
+        branch cannot do is end CHEAPLY: three refusals, each carrying a
+        message naming what an account is, and the record then shows an
+        abandonment whose reason never came — which is a finding rather than
+        a silence."}
+
  :turn-budget-notices
  {:value [0.6 0.85] :kind :threshold :capability-tunable? false
   :provenance ["dirge PR 738"]
@@ -752,6 +776,41 @@
 
         Never scaled UP for a struggling run: a run in trouble spending longer
         per check is how a turn budget disappears into one command."}
+
+ :judge-verify?
+ {:value true :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-ylte.1" "dirge code_review.rs" "roborev"]
+  :doc "Whether a review runs its second pass: the judge re-reads its own
+        candidate findings against the diff and drops what the diff does not
+        support.
+
+        ON, because one pass is what a single-shot judge FIRST thought. The
+        review on run dbe64eea-successor emitted five findings, of which two
+        were style opinions and one was a bullet it argued itself out of and
+        left in anyway. dirge and roborev have both run two passes from the
+        start; this is the port.
+
+        It costs a second model call per review that found anything — and
+        NOTHING on a clean review, which skips it. Off is a legitimate stance
+        for a project that would rather pay one call and read the noise."}
+
+ :review-severities
+ {:value ["critical" "high" "medium" "low"] :kind :threshold
+  :capability-tunable? false
+  :provenance ["karamazov-ylte.1" "dirge code_review.rs" "dirge-uz95"]
+  :doc "EVERY severity a finding may carry, blocking or not — the vocabulary
+        prompts/judge.md asks for, written down where the reader can see it.
+
+        This is the parse protocol, not policy in its own right: a finding is
+        one SEGMENT of a findings block, and a segment starts at each line
+        carrying one of these tags. The verify pass needs that granularity to
+        attribute VERIFIED / FALSE_POSITIVE per finding rather than per block
+        — without it one drop clears a whole block, including findings the
+        judge explicitly kept (dirge-uz95). So it travels with the template:
+        change the tags judge.md asks for and change this in the same edit.
+
+        :review-blocking-severities below is the SUBSET that blocks a ship,
+        which is a genuine project judgement and stays separate."}
 
  :review-blocking-severities
  {:value ["critical" "high"] :kind :threshold :capability-tunable? false
@@ -1404,12 +1463,175 @@
         writes vaguer memories, which is the failure mode this whole schema
         exists to avoid."}
 
+ :plan-phase
+ {:value {:enabled true
+          :skip-under-words 40
+          :rfc-min-words 120
+          :rfc-when-listy true
+          :max-design-attempts 2
+          :design-turns 10}
+  :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-vale" "AI-DLC" "karamazov-dq1r"]
+  :doc "The pre-construction plan phase: an implementation plan produced and
+        critiqued BEFORE any code, mirroring the post-construction diff critic
+        at the elaboration boundary.
+
+        WHY IT EXISTS. Every gate the implementer had fired AFTER construction —
+        the diff critic, the ship gate, the line budget — so a run spent its
+        whole budget building the wrong or incomplete thing and learned so only
+        at review. Four recordings on four tasks produced zero splits, and one
+        shipped 89-146 turns with a requirement silently dropped. This asks
+        'would this plan satisfy the requirement' while the answer is still
+        cheap to act on.
+
+        :enabled false takes the whole phase out, which is the control arm for
+        measuring whether it pays (an arena A/B, like :memory?).
+
+        TRIAGE IS THREE-WAY (karamazov-dq1r). :skip-under-words is the floor: a
+        task shorter than this that names no list is obviously one small change,
+        and planning it is the tax the heuristic exists to avoid. Above the
+        floor a task gets a lightweight plan (Goal/Files/Tests). A task that is
+        multi-part gets a full RFC instead — a document with a mermaid
+        call-graph, a work-item breakdown and acceptance criteria, which then
+        decomposes into child tasks and becomes the contract the end-of-phase
+        critic validates the whole diff against. :rfc-when-listy makes an
+        explicit bulleted/numbered list trigger the RFC tier (a list is several
+        things wearing one title); :rfc-min-words makes a long statement trigger
+        it regardless. Reserving the RFC's cost for work that decomposes is the
+        point — an RFC per ordinary task does not pay.
+
+        :design-turns caps the owner's planning exploration: it reads the code
+        and declares a plan, it does not build. :max-design-attempts bounds the
+        plan-critic loop so a plan the critic keeps refusing cannot spin — the
+        same bound the diff critic has.
+
+        WHO APPROVES is not here: it is :approval :mode. Unattended (:refuse),
+        the critic is the gate and construction proceeds on a clear contract.
+        Attended (:block), the plan also goes to the person, on the same queue
+        ask_human uses."}
+
+ :board-design-turns
+ {:value 10 :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-vale"]
+  :doc "The owner's turn cap while PLANNING, distinct from :board-owner-turns
+        which caps construction. Small: reading enough code to name the files
+        and tests a change needs is not the change itself. Never wider than the
+        run's own cap, like the owner cap."}
+
+ :task-line-budget
+ {:value 500 :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-5ot9" "karamazov-fn68"]
+  :doc "How many lines of change one task is expected to fit in, added plus
+        deleted, before it should have been split.
+
+        WHY A NUMBER AT ALL. prompts/task-claimed.md already asks the right
+        question — is this ONE thing, or several wearing one title — and gives
+        no way to answer it. Measured across four live recordings on four
+        tasks: zero splits, zero calls to `task` or `split`, including on a
+        task whose own statement said 'Three changes to the feel of the flight,
+        and they interact' and numbered them. A judgement call with no
+        criterion is reliably answered 'one thing'.
+
+        A LINE BUDGET IS CHECKABLE FROM BOTH ENDS, which is why it is this and
+        not something more principled. Up front the model can estimate it; in
+        flight the harness can MEASURE it (gitdiff/changed-lines), so the
+        second half does not depend on the model agreeing with itself.
+
+        ADDED PLUS DELETED, not net: a change that rewrites two hundred lines
+        into two hundred different ones is not small, and net would score it
+        zero.
+
+        500 is a starting point, not a finding. The run this came from spent
+        120 turns and landed a nine-file plan of which the named files were
+        never written — so the number wants to be small enough to catch that
+        before the budget is gone, and large enough that an ordinary feature
+        is not split into rubble. Re-tune it against measured runs; that is
+        what it is data for."}
+
+ :code-quality
+ {:value {:cc-fn-limit 10
+          :verbosity-max 0.21
+          :verbosity-block 0.40
+          :erosion-max 0.48
+          :erosion-block 0.68
+          :clone-min-forms 5
+          :decision-heads ["if" "if-not" "if-let" "if-some" "when" "when-not"
+                           "when-let" "when-some" "when-first" "cond" "condp"
+                           "case" "and" "or" "while" "for" "doseq"]}
+  :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-dq1r.2"]
+  :doc "Code-quality acceptance limits, checked on the code a run CHANGED
+        (samizdat.metrics, wired into the diff critics). The three heuristics
+        are SlopCodeBench's, which separate established repos from LLM-slop:
+
+          erosion  — the fraction of the changed mass held by functions whose
+                     cyclomatic complexity is over :cc-fn-limit, where
+                     mass(f) = cc(f) * sqrt(sloc(f)). Established repos measured
+                     0.31 +/- 0.17, agents 0.68 +/- 0.20; :erosion-max 0.48 is
+                     the human mean+1sd (an advisory finding over it) and
+                     :erosion-block 0.68 the agent level (a blocking finding).
+          verbosity — duplicated / unnecessarily-verbose lines over LOC. Repos
+                     0.15 +/- 0.06, agents 0.33; :verbosity-max 0.21 is the
+                     advisory line, :verbosity-block 0.40 (vibe-coded level)
+                     the blocking one. CLONE-ONLY here: the paper unions
+                     ast-grep-flagged lines with clone lines and ast-grep is
+                     not reachable in-process, so this is the duplication half
+                     alone (see samizdat.metrics).
+
+        ADVISORY vs BLOCKING is the distance over the line, not a hard gate on
+        the number itself — the article's own caveat is that once you optimize
+        for such a measure it stops measuring anything, so only the egregious
+        (agent/vibe level) case refuses; a marginal breach rides along as a
+        medium finding for the model to weigh. Excess per-function complexity
+        is a [low] pointer at the hotspots, since erosion already prices it.
+
+        :decision-heads is what counts as a branch for cyclomatic complexity,
+        and :clone-min-forms the smallest run of lines that counts as a clone —
+        both here so the measure can be retuned without a rebuild. Every number
+        is a starting point from the paper, not a finding; re-tune against
+        measured runs (karamazov-dq1r.2)."}
+
+ :webfetch
+ {:value {:timeout-ms 30000
+          :max-timeout-ms 120000
+          :max-chars 60000
+          :user-agent "samizdat"}
+  :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-fn68.2" "opencode webfetch.ts"]
+  :doc "What one `webfetch` may spend. opencode's numbers, converted to this
+        harness's units: 30 s default and 120 s ceiling on the request, and a
+        cap on what comes back.
+
+        :max-chars is in CHARACTERS rather than opencode's 5 MB of bytes,
+        because the reader is a context window and not a disk — 60k characters
+        is roughly 15k tokens, which is already a large fraction of a turn.
+        The truncation is SAID in the result, never silent, for the reason
+        grep and read_file page: a model cannot tell a cut answer from a
+        complete one unless the tool tells it.
+
+        The CONFINEMENT is not here. Which hosts may be reached is mechanism
+        in samizdat.agent.webfetch, in src/, because a guard the agent can
+        retune at runtime is not a guard — the same argument db's
+        required-columns makes."}
+
  :memory
  {:value
   {:kind-salience {:working 0.3 :episodic 0.45 :procedural 0.5
                    :semantic 0.6 :identity 0.75 :overview 0.95
                    :note 0.5}
    :default-confidence 0.6
+   ;; WHEN TWO MEMORIES ARE JUDGED TO CONTRADICT (karamazov-ei6t.8). Both
+   ;; numbers make the test NARROWER as they rise, and narrow is the safe
+   ;; direction: a wide contradiction detector fires on every refinement of an
+   ;; existing memory, which is most of what a store learns, and a detector
+   ;; that refuses refinements is worse than none.
+   ;;
+   ;; :contradiction-min-word ignores short words before comparing subjects, so
+   ;; two memories sharing only "the" and "this" are not about the same thing.
+   ;; :contradiction-min-shared is how many substantive words they must share
+   ;; before their disagreement counts as being about one subject.
+   :contradiction-min-word 4
+   :contradiction-min-shared 2
    :use-reinforcement 0.05
    :recent-use-bonus 0.15
    :recent-use-window-runs 3
@@ -1500,6 +1722,30 @@
         own — distill! is right that turning an episode into a rule is a
         judgement — it hands over the episodes that have earned the
         question."}
+
+ :retirement
+ {:value {:min-runs 3 :limit 5}
+  :provenance ["karamazov-ylte.3" "2609.09153v1"]
+  :kind :policy :capability-tunable? false
+  :doc "WHEN A GATE HAS EARNED THE QUESTION OF BEING DELETED, mirroring
+        :memory :graduation-min-runs for episodes.
+
+        journal/retirement-candidates surfaces gates that fired in at least
+        :min-runs DISTINCT runs and were never once met. Distinct runs, not
+        firings, on corroborate!'s argument — a gate that fired forty times in
+        one bad afternoon is one observation. met-late does not count as never
+        met: a gate whose advice works and whose window is wrong is a window
+        to widen, not a gate to delete, which is why gate-tally keeps that
+        column separate in the first place.
+
+        The precedent this generalises is :reflection, deleted by hand on
+        '69 firings and 0 met across two models, five task shapes and two
+        harness generations'. The supervisor could only ever ADD before this;
+        two of the four accepted edits in 2609.09153v1's evolution run were
+        deletions, and a loop that cannot prune is half a loop.
+
+        The store surfaces and the supervisor judges — it never retires a gate
+        itself (karamazov-ylte.3)."}
 
  :drift
  {:value {:window-runs 10 :top-names 3}
@@ -2175,6 +2421,13 @@
    ;; two halves are one decision and belong in one editable place.
    :verdict-line-regex "(?i)\\bVERDICT\\b"
    :findings-regex "(?is)FINDINGS:\\s*(.+)$"
+   ;; What a second-pass reply says when it cleared every candidate. Paired
+   ;; with prompts/judge-verify.md, which asks for exactly this phrase, and
+   ;; load-bearing: it is the one signal that separates "the judge checked and
+   ;; found nothing" from "the judge produced nothing parseable", and those
+   ;; two must not be treated alike — the first clears the findings, the
+   ;; second keeps them.
+   :verify-clean-regex "(?i)\\bno issues found\\b"
    ;; Ordered, first match wins, and each entry is a verdict with the words
    ;; that must ALL appear on the verdict line for it to apply. The order IS
    ;; the precedence rule: negative before abstain before positive, because
@@ -2278,16 +2531,97 @@
     ;; (:completeness-* in wordlists.edn); this rung is just the decision.
     {:name :completeness
      :when (unfinished-claim? answer)
+     ;; THE MESSAGE IS THE ONLY INSTRUCTION THE MODEL GETS HERE, and the
+     ;; earlier wording offered "restate the answer as what IS done" as a bare
+     ;; alternative — which is the omission the critic later fails the round
+     ;; for. Its other branch, putting the remainder on the board, is the
+     ;; `task` tool, and no recorded run has ever called it (karamazov-5ot9),
+     ;; so in practice this read as: drop it. Measured on run
+     ;; dbe64eea-successor, where the owner met an impossible requirement and
+     ;; shipped an answer that did not mention it.
+     ;;
+     ;; Three options now, and the middle one is the one that was missing: a
+     ;; requirement you COULD NOT meet is a result, said out loud, and the
+     ;; rung no longer refuses it (wordlists :completeness-blocked).
      :message-form (str "One sentence of this answer says, in your own voice,"
                         " that work remains — a first-person plan to do more"
-                        " is not a result. Either do that work now and finish"
-                        " again, or restate the answer as what IS done and put"
-                        " what is left on the board (the task tool), so the"
-                        " record is honest either way.")}]
+                        " is not a result. Three honest endings, and only"
+                        " these:\n"
+                        "  - do that work now and finish again;\n"
+                        "  - if something BLOCKED you, say so in the answer:"
+                        " what you could not do and why, with the error or the"
+                        " evidence. That is a result, not a failure, and it"
+                        " ships;\n"
+                        "  - if it is simply left, put it on the board (the"
+                        " task tool) so it is somebody's next task.\n"
+                        "Do not answer by leaving it out. A requirement that"
+                        " goes unmentioned reads as met, and that is the one"
+                        " ending that is not honest.")}]
    :kind :threshold :capability-tunable? false
   :provenance ["drg-4026 #44"]
    :doc "The lexical ship rungs (drg-4026 #44) — adding a rung is a data
          edit; the evidence computation stays in ship.clj."}
+
+  :give-up-reason-floor
+  {:value 60 :kind :threshold :capability-tunable? false
+   :provenance ["karamazov-ylte.1" "run dbe64eea-successor"]
+   :doc "How many characters an abandonment has to spend accounting for
+         itself. Crude on purpose and tunable because it is crude: the
+         property wanted is 'names what was tried and what blocked it', and
+         no lexical test decides that. A floor plus the engages-problem rung
+         rejects the formulas that carry no account at all — `stuck`,
+         `cannot proceed`, `no reason given` — which is what was actually
+         getting through, since nothing checked at all."}
+
+  :give-up-gates
+  ;; karamazov-ylte.1. `done` faces four lexical rungs, a test-verification
+  ;; rung and a focused verify. `give_up` faced NOTHING — five lines, an
+  ;; optional `reason`, and "no reason given" as its default — so the harness
+  ;; accepted an abandonment with no account of it whatever. Of the four ways
+  ;; a branch can end, this was the only one with no gate on it, which made it
+  ;; the cheapest, and a loop teaches by what it makes cheap.
+  ;;
+  ;; The account asked for is the same one the completeness refusal names as
+  ;; an honest ending: what you could not do, and what blocked you. A branch
+  ;; that genuinely cannot proceed can always say that; a branch that has
+  ;; merely stopped cannot, and that difference is the whole point of the rung.
+  ;;
+  ;; Same shape as :ship-gates — vector order is cond order, the forms see the
+  ;; symbols ship.clj binds (reason, problem, floor), and adding a rung is a
+  ;; data edit.
+  {:value
+   [{:name :reason-exists
+     :when (str/blank? (str reason))
+     ;; Shows the CALL, on base/missing's reasoning that a bare argument name
+     ;; teaches nothing.
+     :message-form (str "`give_up` needs a `reason`, and abandoning is the one"
+                        " ending that has to explain itself — nobody after you"
+                        " can reconstruct what stopped you.\n\n"
+                        "```tool-call\n"
+                        "{\"name\": \"give_up\", \"args\": {\"reason\":"
+                        " \"<what you were trying, what you tried, and what"
+                        " blocked it>\"}}\n"
+                        "```")}
+    {:name :reason-is-an-account
+     :when (< (count (str/trim (str reason))) floor)
+     :message-form (str "That is a verdict, not an account. Say what you were"
+                        " trying to do, what you TRIED, and what blocked it —"
+                        " the error, the command, the thing that would not"
+                        " work. If something genuinely cannot be done here,"
+                        " that is a finding and it is worth recording; if you"
+                        " cannot name what blocked you, you are not blocked"
+                        " yet and there is another approach to try.")}
+    {:name :reason-engages-problem
+     :when (and (not (str/blank? (str problem)))
+                (not (engages-problem? problem reason)))
+     :message-form (str "This reason shares no substantive term with what you"
+                        " were asked to do, so it does not say what was"
+                        " abandoned. Name the actual work and the actual"
+                        " obstacle.")}]
+   :kind :threshold :capability-tunable? false
+   :provenance ["karamazov-ylte.1" "run dbe64eea-successor"]
+   :doc "The lexical give_up rungs. Adding a rung is a data edit; the
+         evidence computation stays in ship.clj, exactly as :ship-gates."}
 
   :tool-vocab
   ;; Tier 1a: the tool vocabularies the gates and their settlers read — data
@@ -2335,6 +2669,12 @@
    :storm            #{"done" "give_up"}
    :mechanics-streak #{"done" "give_up"}
    :safe-state       #{"thesis" "done" "give_up"}
+   ;; SPLIT IT, or SAY WHY IT IS ONE. `task` and `split` are the first; a
+   ;; `thesis` is the second, because "this is one coherent change and here is
+   ;; why" is exactly what a thesis registers. Without this entry the gate
+   ;; could only ever expire unmet, which is the shape :reflection was deleted
+   ;; for — 69 firings and 0 met across two models and five task shapes.
+   :over-budget      #{"task" "split" "thesis"}
    :done-blocked     #{"done" "give_up"}
    :turn-budget      #{"done" "give_up"}
    :wind-down        #{"done"}
@@ -2535,7 +2875,7 @@
            ;; so a mark that survives on the branch does not re-fire every
            ;; boundary while it is busy complying.
            (let [last-fired (->> (:gate-history branch)
-                                 (filter #(= :repopulate (:gate %)))
+                                 (filter (fn [g] (= :repopulate (:gate g))))
                                  (map :turn)
                                  (reduce max -1000))]
              (> due last-fired)))
@@ -2563,7 +2903,7 @@
          spending on a branch that confirmed its own tooling. Silent once the
          run is winding down, because a new line that late cannot finish."
    :when (let [last-fired (->> (:gate-history branch)
-                               (filter #(= :branch-out (:gate %)))
+                               (filter (fn [g] (= :branch-out (:gate g))))
                                (map :turn)
                                (reduce max -1000))]
            ;; Not while the branch is still acting on the last ask.
@@ -2595,7 +2935,7 @@
          budget against it (dirge PR 738)."
    :when (let [used (/ (double (state/turn-count branch)) (max 1 max-turns))
                notified (:notified-fractions branch #{})]
-           (boolean (some #(and (>= used %) (not (contains? notified %)))
+           (boolean (some (fn [frac] (and (>= used frac) (not (contains? notified frac))))
                           (threshold :turn-budget-notices))))
    :message-suffix "**Turn budget**: you have used {{turn-count}} of {{max-turns}} turns. Land what you can verify rather than opening a new line of attack.{% if goal %} You are working on: {{goal}}{% endif %}"
    ;; Says what it MEASURES. The rule reads :settle-called :turn-budget,
@@ -2641,9 +2981,15 @@
   {:gate :done-blocked
    :priority 1
    :budget :max-done-blocks
-   :doc "done was called without the evidence it requires. The message says
-         which gate is unmet, because 'not yet' with no reason produces
-         another identical attempt."
+   :doc "A terminal call was refused — `done` without the evidence it
+         requires, or `give_up` without an account of what blocked it. The
+         message says which rung is unmet, because 'not yet' with no reason
+         produces another identical attempt.
+
+         BOTH calls, which is why :settle-called lists both: a refused
+         give_up that drew no steer and spent no budget would let a branch
+         retry the same empty reason until its turns ran out
+         (karamazov-ylte.1)."
    :when (some? done-block)
    :message-form (str done-block
                       (when-let [g (state/stated-goal branch)]
@@ -2725,7 +3071,7 @@
                       (when-let [earlier (seq (butlast (:abandoned branch)))]
                         (str "\n\nApproaches you have already tried and abandoned"
                              " — do not retry these:\n"
-                             (str/join "\n" (map #(str "- " %) earlier)))))
+                             (str/join "\n" (map (fn [x] (str "- " x)) earlier)))))
    :prediction "the branch retracts, decomposes, or changes technique"
    :window 3}
 
@@ -2895,8 +3241,47 @@
                         (str "\n\nYou are working on: " g))
                       (when-let [owed (seq (state/unwritten branch))]
                         (str "\n\nYou declared these and have not written them:\n"
-                             (clojure.string/join "\n" (map #(str "  - " %) owed)))))
+                             (clojure.string/join "\n" (map (fn [x] (str "  - " x)) owed)))))
    :prediction "the branch writes or edits a file"
+   :window 3}
+
+  {:gate :over-budget
+   :priority 10.45
+   :budget :max-no-edit-nudges
+   :provenance ["karamazov-5ot9" "run dbe64eea-successor"]
+   :doc "THE TASK IS BIGGER THAN ONE TASK, and now there is evidence rather
+         than a judgement. The branch has written more than
+         :task-line-budget lines against the task it holds, which is the
+         measurable form of the question prompts/task-claimed.md already asks
+         at claim time and cannot answer: is this ONE thing, or several
+         wearing one title.
+
+         MEASURED, not estimated: gitdiff/changed-lines on the turns that
+         actually wrote, added plus deleted, untracked files included. So this
+         does not depend on the model agreeing with its own up-front estimate,
+         which is the half that was missing — four live recordings on four
+         tasks produced zero splits, including on a task whose own statement
+         said 'Three changes to the feel of the flight, and they interact'.
+
+         SITS BELOW :no-edits on purpose. no-edits says you are working and it
+         is not landing; this says it IS landing and there is more of it than
+         one task should hold. When both are true, the branch that has written
+         nothing recently needs the more specific steer first.
+
+         A SUGGESTION, like every gate here. Splitting a task the model
+         genuinely believes is one thing would be worse than not asking — and
+         the ship gate, the critic and the turn budget all remain downstream
+         of it. What it buys is that the question gets asked WHEN THE EVIDENCE
+         EXISTS rather than only at claim time, when nobody can answer it."
+   :when (and (state/active? branch)
+              (number? (:lines-written branch))
+              (> (:lines-written branch) (threshold :task-line-budget)))
+   :message-form (str (prompt "over-budget")
+                      "\n\nThis task has written "
+                      (:lines-written branch)
+                      " lines, against a budget of "
+                      (threshold :task-line-budget) ".")
+   :prediction "the branch splits the task or says why it is one change"
    :window 3}
 
   {:gate :studying

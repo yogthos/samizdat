@@ -85,6 +85,12 @@
     :summary "A manifest's own instructions: `:prompt \"name\"` at the top names resources/prompts/<name>.md, appended to the base system prompt for every branch the run opens. This is how a manifest declares what its graph is FOR — review.edn is the same loop framed as a code review — so a new task shape is a manifest plus a prompt rather than a code path. Read from the LOADED definition, so an edit to the manifest reframes the next run."}
    {:name samizdat.userspace/self-hosting?
     :summary "Whether the project under work IS a samizdat checkout. What the system prompt gates its sections about cells, manifests and src-vs-resources on: all of it is load-bearing here and standing instruction about the wrong codebase anywhere else."}
+   {:name samizdat.agent.webfetch/fetch
+    :summary "Read a named URL. HTML is converted to text unless you ask for `html`; http is upgraded to https; the result is capped and says so when it cuts. Its confinement is the part to know about: a host on this machine or its private network is REFUSED, and a redirect into one is refused too — checking only the address you gave would be no check at all. Budgets are gates.edn :webfetch; the host rules are mechanism in src/, because a guard the agent can retune is not a guard."}
+
+   {:name samizdat.agent.files/glob-project
+    :summary "Every project file whose PATH matches a glob, sorted, relative to the root — `**/*.clj`, `deps.edn`, `test/**/*_test.clj`. Not limited to Clojure sources the way grep-project is: matching a name costs nothing, and a model looking for a png or a markdown file is asking a reasonable question a source-only glob would answer with silence. Hidden directories are skipped, so cache and VCS noise never matches. `:paths` scopes it. This is the find-by-name half of search; `grep-project` is the find-by-content half."}
+
    {:name samizdat.agent.files/reference-roots
     :summary "The READ-ONLY roots a project declared beside its own (.samizdat/config.edn :run :reference-paths). read_file and grep resolve against them; writes stay confined to the root."}
    {:name samizdat.config/file-config
@@ -213,6 +219,8 @@
     :summary "Every part the per-turn context block can carry, in reading order. A branch holds what each cost last turn as :context-sizes; `introspect` renders both, so a cap in gates.edn :context-budget can be retuned against a measurement."}
    {:name samizdat.store.journal/gate-tally
     :summary "Fired / met / met-late / unmet per gate for a run — whether the steering is being obeyed, per steer."}
+   {:name samizdat.store.journal/retirement-candidates
+    :summary "Gates that fired across several runs and were never once met — deletion candidates. It surfaces them; deciding is yours."}
    {:name samizdat.agent.telemetry/failure-exemplars
     :summary "The concrete failures behind the rates over any set of turn rows — parse errors, provider failures, tool failures, each with the turn and branch to fetch."}
    {:name samizdat.session/render
@@ -267,4 +275,36 @@
    {:name samizdat.export/verdicts
     :summary "Every judgement the harness made — gate firings, critic scores, reprieves, finalization verdicts, board reviews, critiques — from every run, each labelled by what happened next (gates.edn :export :verdicts). The outcome is the label; a judge trained on its own verdicts alone imitates its guesses."}
    {:name samizdat.export/write-verdicts!
-    :summary "Write verdicts as JSONL, one judgement per line: jolt export <db> [out.jsonl] --verdicts."}]}]
+    :summary "Write verdicts as JSONL, one judgement per line: jolt export <db> [out.jsonl] --verdicts."}]}
+ {:group "Validating a change to the harness itself"
+  :entries
+  [{:name samizdat.replay/record
+    :summary "Freeze a finished run as a replay case: the model's side of the conversation, per branch, in order."}
+   {:name samizdat.replay/complete-fn
+    :summary "Serve a recorded case back in place of the provider, so the same loop runs on fixed input and costs nothing."}
+   {:name samizdat.battery/check
+    :summary "Run a case's named expectations against a finished run — per target, so a failure says WHICH behaviour broke."}
+   {:name samizdat.battery/vocabulary
+    :summary "Every assertion a battery case may use. The set is closed; an unknown one throws rather than passing."}
+   {:name samizdat.battery/accept?
+    :summary "Whether a candidate may commit given the retained baseline. Ties are accepted, deliberately."}
+   {:name samizdat.battery/regressions
+    :summary "The targets that passed before an edit and fail after — only the flips, so an old failure cannot freeze every edit."}
+   {:name samizdat.procedure/load-graph
+    :summary "A procedural graph as queryable facts: (procedure, relation, procedure) triplets over the agent's own tools."}
+   {:name samizdat.procedure/neighbourhood
+    :summary "What may follow the action you just took, out to h hops, with each transition's condition, guidance and pitfalls."}
+   {:name samizdat.procedure/check
+    :summary "A procedural graph's structural findings: traps, dangling edges, non-tool nodes, ambiguous and dead transitions."}]}
+
+ {:group "Code quality"
+  :entries
+  [{:name samizdat.metrics/report
+    :summary "The three SlopCodeBench heuristics over a corpus of source: cyclomatic complexity, erosion, clone-only verbosity."}
+   {:name samizdat.metrics/cyclomatic
+    :summary "Cyclomatic complexity of a form: 1 + its decision points, counting inline lambdas but not nested defns."}
+   {:name samizdat.metrics/erosion
+    :summary "The fraction of a change's mass held by functions over the complexity limit — mass(f) = cc * sqrt(sloc)."}
+   {:name samizdat.metrics/review
+    :summary "Structured code-quality findings for the changed sources, or none — what the diff critics merge into their verdict."}]}
+]

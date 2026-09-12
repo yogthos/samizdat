@@ -22,6 +22,7 @@ These are design documents, not a change log. Past defects live in
 | [011](RFC-011-board-workflow.md) | Board workflow | Owned tasks worked one at a time, a critic on each task's own diff |
 | [012](RFC-012-implementer-and-supervisor.md) | Implementer and supervisor | Two streams: who owns the task, who owns the loop, and the one pattern every supervisory mechanism follows |
 | [013](RFC-013-cancellation.md) | Concurrency | One task tree and one event flow; mycelium is the machine, ebb is the scheduler |
+| [014](RFC-014-validation-and-procedure.md) | Validation and procedure | Whether a change to the loop may go live, and what may follow what |
 
 ## How to read a layer boundary
 

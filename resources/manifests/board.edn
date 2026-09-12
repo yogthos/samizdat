@@ -22,24 +22,59 @@
  ;; is told which key, instead of a nil surfacing several cells later.
  [:map [:branch :map] [:turn :int]]
 
- :cells {:start  :board/plan
-         :next   :board/next
-         :work   :board/work
-         :review :board/review
-         :finish :board/finish}
+ :cells {:start   :board/plan
+         :next    :board/next
+         ;; THE PLAN PHASE (karamazov-vale), between claiming a task and
+         ;; building it — the one place the implementer had no gate. triage
+         ;; decides plan-or-skip cheaply; design produces an implementation
+         ;; plan; design-review is the plan critic; approve is the human gate
+         ;; when attended and the critic alone when not.
+         :triage  :board/triage
+         :design  :board/design
+         :dcritic :board/design-review
+         :approve :board/approve
+         :decompose :board/decompose
+         :epic-review :board/epic-review
+         :work    :board/work
+         :review  :board/review
+         :finish  :board/finish}
 
  :edges {:start  :next
-         :next   {:task  :work
-                  :empty :finish}
+         :next   {:task        :triage
+                  :epic-review :epic-review
+                  :empty       :finish}
+         :epic-review :next
+         :triage {:plan :design
+                  :rfc  :design
+                  :skip :work}
+         :design :dcritic
+         :dcritic {:ok     :approve
+                   :revise :design}
+         :approve {:go        :work
+                   :decompose :decompose
+                   :rework    :design}
+         :decompose {:decomposed :next
+                     :single     :work}
          :work   :review
          :review {:pass    :next
                   :revise  :work
                   :give-up :next}
          :finish :end}
 
- :dispatches {:next   [[:task  {:board/verdict :task}]
+ :dispatches {:next    [[:task        {:board/verdict :task}]
+                       [:epic-review {:board/verdict :epic-review}]
                        [:empty _]]
-              :review [[:pass    {:board/decision :pass}]
+              :triage  [[:plan {:board/plan-decision :plan}]
+                        [:rfc  {:board/plan-decision :rfc}]
+                        [:skip _]]
+              :dcritic [[:revise {:board/design-decision :revise}]
+                        [:ok     _]]
+              :approve [[:rework    {:board/approve-decision :rework}]
+                        [:decompose {:board/approve-decision :decompose}]
+                        [:go        _]]
+              :decompose [[:decomposed {:board/decompose-decision :decomposed}]
+                          [:single     _]]
+              :review  [[:pass    {:board/decision :pass}]
                        [:revise  {:board/decision :revise}]
                        [:give-up _]]}
 

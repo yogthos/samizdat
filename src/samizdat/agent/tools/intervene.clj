@@ -26,9 +26,11 @@
   hold the words."
   (:require [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.claims :as claims]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
-            [samizdat.store.interventions :as interventions]))
+            [samizdat.store.interventions :as interventions]
+            [samizdat.store.journal :as journal]))
 
 (defn- msg [ctx] (prompt/render "intervene-tool" ctx))
 
@@ -43,6 +45,21 @@
   [kind text]
   (if (contains? #{"message" "fork"} kind) (or text "") {:text text}))
 
+(defn- claim-conflicts
+  "Where this directive's text contradicts what the run has already done.
+
+  Reads the run's own turns, so it costs one query and no model call. Empty
+  when there is no conn or run-id — a directive submitted outside a run is not
+  one this check can judge, and a check that guesses is worse than one that
+  abstains."
+  [conn run-id text]
+  (if-not (and conn run-id (seq (str text)))
+    []
+    (try (claims/contradicted-by-record (str text)
+                                        (journal/turns conn run-id)
+                                        (keys (methods base/run-tool)))
+         (catch Throwable _ []))))
+
 (defmethod base/run-tool "intervene" [{:keys [branch conn run-id] :as ctx}]
   (let [kind (some-> (base/arg ctx :kind) str str/trim not-empty)
         target (some-> (base/arg ctx :branch) str str/trim not-empty)
@@ -56,6 +73,28 @@
       ;; the first time — the eval-syntax lesson (karamazov-7d4).
       (not (contains? interventions/kinds kind))
       (base/malformed branch (msg {:unknown kind :kinds (described)}))
+
+      ;; A DIRECTIVE THAT CONTRADICTS THE RUN'S OWN RECORD (karamazov-ei6t.3).
+      ;; This is where karamazov-ko5b landed: the supervisor had ONE failing
+      ;; require at its own turn 2 and wrote a standing directive saying
+      ;; requires fail and should not be retried, while its own turns 5 and
+      ;; 12-14 required four namespaces successfully. The evidence that
+      ;; refutes it was already in the journal and nothing consulted it.
+      ;;
+      ;; REFUSED, not warned. A directive is what the implementer is told to
+      ;; do, and a false one costs turns in the direction of not trying the
+      ;; thing that works. The refusal cites the count, because "this may be
+      ;; wrong" with no evidence produces the same directive again.
+      ;;
+      ;; Mechanical and narrow: only a claim that a TOOL does not work, over a
+      ;; record showing that tool working in this very run. Everything else
+      ;; passes, including every steering directive, which is most of them.
+      (seq (claim-conflicts conn run-id text))
+      (let [c (first (claim-conflicts conn run-id text))]
+        (base/refusal branch (msg {:contradicted true
+                                   :tool (:tool c)
+                                   :worked (:worked c)
+                                   :text text})))
 
       :else
       (try

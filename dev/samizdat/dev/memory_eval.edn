@@ -1,0 +1,32 @@
+;; Ground truth for karamazov-ei6t.14 — questions whose answers real runs
+;; actually wrote into memory.
+;;
+;; DERIVED FROM PRESERVED RECORDINGS, not invented. Every :expect below is a
+;; substring of a memory that a live arena run wrote by itself, which is what
+;; makes this better than a synthetic corpus: a fixture somebody wrote for
+;; recall to rank measures how well recall ranks that person's prose.
+;;
+;; :ask is phrased as a question an implementor would actually ask on a fresh
+;; checkout — the situation memory exists for — and deliberately NOT in the
+;; memory's own words, or the test measures string equality rather than
+;; retrieval.
+;;
+;; SUBSTRING, not a judge. This scores RETRIEVAL; grading it with a model
+;; would fold the model's reading into the number the retrieval is being
+;; measured by.
+
+{:subject "endless-flight"
+ :source "sweep5 recordings, 2026-09-10"
+ :cases
+ [{:ask "how do I run the test suite"
+   :expect "jolt -M:test"}
+  {:ask "how do I take a screenshot of the game"
+   :expect "RAYLIB_APP_SHOT"}
+  {:ask "how far does the ground get drawn"
+   :expect "terrain-half"}
+  {:ask "where do I register a new test namespace"
+   :expect "test_runner"}
+  {:ask "what do I have to call before eval"
+   :expect "plan"}
+  {:ask "where do colours come from"
+   :expect "palette"}]}

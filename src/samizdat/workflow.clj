@@ -299,7 +299,7 @@
 (defn run!
   "Run one branch to completion under the stored loop definition.
   Returns {:status :answer :branch :run-id (:residual)}."
-  [{:keys [conn config llm-adapter llm-config problem max-turns]}]
+  [{:keys [conn config llm-adapter llm-config problem max-turns complete]}]
   (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
         loop-nm (active-loop-name config)
         {:keys [version compiled definition]} (load-loop! conn loop-nm)
@@ -334,6 +334,9 @@
         _ (repl/ensure-project-roots! root)
         ctx {:conn conn :run-id run-id :config config
              :llm-adapter llm-adapter :llm-config llm-config
+             ;; The injected model call, when the caller supplied one — the
+             ;; same named-or-dropped hazard as the beam's ctx above.
+             :complete complete
              :root root
              ;; A run-start git baseline: what this run changed, for a
              ;; finalization critic AND — the part this used to miss — for the

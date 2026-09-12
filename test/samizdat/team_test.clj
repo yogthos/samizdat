@@ -127,10 +127,23 @@
                     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
                                    prob "\"}}\n```")
                      :finish-reason "stop"}
-                    ;; first sighting: give up, so the supervisor must re-task it
+                    ;; first sighting: give up, so the supervisor must re-task it.
+                    ;;
+                    ;; THE REASON HAS TO BE A REAL ACCOUNT. It said "stuck",
+                    ;; which `give_up` now refuses (karamazov-ylte.1): of the
+                    ;; four ways a branch can end that was the only ungated
+                    ;; one, so it was the cheapest, and a loop teaches by what
+                    ;; it makes cheap. The invariant this test pins is
+                    ;; unchanged — a worker that gives up is re-tasked on its
+                    ;; own retry branch — but what it takes to give up is not,
+                    ;; and a stub that cannot get past the gate never reaches
+                    ;; the supervisor this test is about.
                     (do (swap! seen conj prob)
-                        {:content (str "```tool-call\n{\"name\":\"give_up\","
-                                       "\"args\":{\"reason\":\"stuck\"}}\n```")
+                        {:content (str "```tool-call\n{\"name\":\"give_up\",\"args\":"
+                                       "{\"reason\":\"I could not build " prob
+                                       " — the module it needs is not on the "
+                                       "path and nothing I tried put it there.\"}}"
+                                       "\n```")
                          :finish-reason "stop"}))))]
     (with-redefs [llm/chat flaky]
       (let [conn (db/open! ":memory:")

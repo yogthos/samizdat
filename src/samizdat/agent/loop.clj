@@ -40,6 +40,7 @@
             [samizdat.agent.arbiter :as arbiter]
             [samizdat.agent.files :as files]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.infer :as infer]
             [samizdat.config :as config]
             [samizdat.agent.phases :as phases]
@@ -224,6 +225,20 @@
                                        (assoc f :branches (str/join ", " (:branches f))))
                                      files)})))))
 
+(defn- learned-block
+  "What the previous run learned about this project, rendered — or nil.
+
+  nil on a first run, an empty store, or a store that learned nothing since,
+  so the block simply does not appear rather than announcing its own absence.
+  The prose is userspace like every other block's."
+  [conn run-id]
+  (when-let [prev (knowledge/last-run-before conn run-id)]
+    (when-let [rows (seq (knowledge/learned-since conn (:started_at prev)))]
+      (prompt/render "learned-since"
+                     {:run (str (:id prev))
+                      :memories (str/join "\n"
+                                          (map #(str "- " (:content %)) rows))}))))
+
 (defn- context-block
   "What the harness adds to the branch's view before its next turn: the
   failures most like what it just tried, and — when sharing is on — the
@@ -297,6 +312,21 @@
                    ;; last-claim, recent when blank. nil on an empty store, so
                    ;; the remove drops it.
                    [:memories (knowledge/breadcrumb-index conn last-claim)]
+                   ;; WHAT THE LAST RUN LEARNED, once (karamazov-ei6t.9).
+                   ;; The breadcrumb index above answers a question the model
+                   ;; thought to ask, ranked against its own last claim; this
+                   ;; answers the one it does not know to ask, and nothing did
+                   ;; before — distil-project! spends every run producing
+                   ;; exactly this and no run had ever opened with it.
+                   ;;
+                   ;; ONCE, on the same reasoning and by the same mechanism as
+                   ;; the shared-artifact dedup beside it: the block re-renders
+                   ;; every turn, so a part that is news on turn 1 is a
+                   ;; standing tax by turn 40. Ported from lemmalog's context
+                   ;; assembler, which opens with a "new in memory since last
+                   ;; turn" section for the same reason.
+                   [:learned (when-not (:learned-shown? branch)
+                               (learned-block conn run-id))]
                    ;; Unread mail from other branches on this run, a bounded
                    ;; preview; nil when the inbox is empty. Surfacing does not
                    ;; consume — the message tool's inbox action marks read.
@@ -317,6 +347,7 @@
        ;; branch was last shown, and a row per turn per part would cost more
        ;; than the question is worth.
        :branch (-> branch
+                   (assoc :learned-shown? true)
                    (update :shared-served (fnil into #{}) (map :id fresh))
                    (assoc :context-sizes
                           (mapv (fn [[k v]] [k (count v)]) parts)))})))
@@ -342,7 +373,14 @@
                     (fn [c]
                       (assoc c :reasoning-effort
                              (thinking/effort-for branch (:reasoning-effort c) off))))]
-    ((infer/complete-fn ctx) (infer/of-branch branch))))
+    ;; AN INJECTED `complete` WINS. RFC-004 already says the model call is
+    ;; "the ONE effect, as an injectable value" and that a test or a probe
+    ;; passes its own — but this call site hardcoded the constructor, so the
+    ;; only way to substitute one was with-redefs. Deterministic replay
+    ;; (samizdat.replay) needs it as a first-class seam rather than a test
+    ;; hack, because the validation gate runs it in production
+    ;; (karamazov-ylte.4). Absent from ctx, nothing changes.
+    ((or (:complete ctx) (infer/complete-fn ctx)) (infer/of-branch branch))))
 
 (defn- settle-predictions!
   "Close out any prediction whose window has passed or whose expectation the
@@ -1012,6 +1050,16 @@
       ;; the green cursor still points into a turn log the journal can
       ;; replay up to.
       (let [coverage (state/snapshot-covers? branch)
+            ;; HOW MUCH THIS TASK HAS WRITTEN, measured rather than estimated
+            ;; (karamazov-5ot9). Only on a turn that actually wrote a file:
+            ;; the budget cannot move on a read, and a git call per turn on a
+            ;; run that is exploring would be paid a hundred times to learn
+            ;; nothing. Carried on the branch so the gate's :when stays pure —
+            ;; the same shape state/unwritten and plan-stale? use.
+            branch (if (contains? (gates/tool-vocab :file-write) (str tool))
+                     (assoc branch :lines-written
+                            (gitdiff/changed-lines (:root ctx) (:git-baseline ctx)))
+                     branch)
             decision (arbiter/decide
                       {:branch branch
                        :max-turns max-turns

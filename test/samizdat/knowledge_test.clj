@@ -70,6 +70,146 @@
       (is (= ["fred likes fish"]
              (mapv :content (knowledge/recall @conn "fred")))))))
 
+(deftest a-recall-records-what-it-was-asked-and-what-came-back
+  ;; karamazov-ei6t.2. Recall was called exactly TWICE in each of three live
+  ;; runs of 167, 203 and 219 turns, while 30-35 memories were written per run.
+  ;; Nothing recorded what it returned, so "recall is unused because nobody
+  ;; knows about it" and "recall is unused because it never returns anything
+  ;; useful" left identical traces — and they need opposite fixes.
+  (let [c @conn
+        rid (runs/start-run! c {:problem "p" :provider "x" :model "m"
+                                :max-turns 5 :beam-width 1})]
+    (knowledge/remember! c {:content "jolt -M:test is the test command here"
+                            :kind "semantic"})
+    (testing "a hit records the ids, so the NEXT turn can be read against them"
+      (tools/run-tool {:tool-name "recall" :conn c :run-id rid :turn 7
+                       :branch {:id "B1"} :args {:query "test command"}})
+      (let [n (journal/last-note c rid :recall)]
+        (is (= "test command" (:query n)))
+        (is (= 1 (:returned n)))
+        (is (= 1 (count (:ids n))) "the ids are the half a count cannot answer")
+        (is (= 7 (:turn n)))))
+    (testing "and a MISS records itself too — an empty store and a bad query
+              call for opposite actions, and both look like silence otherwise"
+      (tools/run-tool {:tool-name "recall" :conn c :run-id rid :turn 8
+                       :branch {:id "B1"} :args {:query "zzzz-no-such-thing"}})
+      (let [n (journal/last-note c rid :recall)]
+        (is (= 0 (:returned n)))
+        (is (pos? (:live n)) "the store was not empty, so this was a missed query")))))
+
+(deftest the-update-policy-has-a-fourth-arm
+  ;; karamazov-ei6t.8, ported from lemmalog's AgentMemory. The value is not the
+  ;; four outcomes — samizdat's distill! already did three of them informally —
+  ;; it is that they are ONE named deterministic policy, and that the fourth
+  ;; exists at all. There was no way to say "these two cannot both be true".
+  (testing "the three arms samizdat already had, now named"
+    (is (= :add (:action (memory/update-policy {:content "anything"} nil))))
+    (is (= :noop (:action (memory/update-policy {:content "the same words"}
+                                                {:content "the same words"}))))
+    (is (= :update (:action (memory/update-policy
+                             {:content "jolt -M:test runs the suite and is green"}
+                             {:content "jolt -M:test runs the suite"})))))
+  (testing "and the one it did not: a claim against its own negation"
+    ;; karamazov-ko5b's shape. The supervisor wrote that requires FAIL while
+    ;; its own turns showed them loading.
+    (let [d (memory/update-policy
+             {:content "require of flight.main fails on the source roots"}
+             {:id "k-1" :content "require of flight.main loaded on the source roots"})]
+      (is (= :escalate (:action d)))
+      (is (= :contradicts (:reason d)))
+      (is (str/includes? (:held d) "loaded")
+          "the escalation carries what is already believed, or nobody can judge it")))
+  (testing "narrow on purpose — a wide detector would refuse every refinement,
+            which is most of what a store learns"
+    (is (not= :escalate (:action (memory/update-policy
+                                  {:content "the render namespace is pure"}
+                                  {:content "the terrain namespace is pure"})))
+        "different subjects are not a contradiction")
+    (is (not= :escalate (:action (memory/update-policy
+                                  {:content "python3 is not on the allow list"}
+                                  {:content "python3 is not on the allow list, use eval"})))
+        "agreeing negatives are not a contradiction")))
+
+(deftest an-escalated-finding-is-recorded-rather-than-landing
+  (let [c @conn
+        rid (runs/start-run! c {:problem "p" :provider "x" :model "m"
+                                :max-turns 5 :beam-width 1})]
+    (knowledge/distill! c [{:kind :parse-error :severity :bad
+                            :detail "require of flight.main loaded fine"
+                            :evidence {}}]
+                        {:run-id rid})
+    (let [out (knowledge/distill! c [{:kind :parse-error :severity :bad
+                                      :detail "require of flight.main fails always"
+                                      :evidence {}}]
+                                  {:run-id rid})]
+      (is (true? (:escalated? (first out))))
+      (let [n (journal/last-note c rid :memory-escalation)]
+        (is (some? n) "oversight reads notes; an escalation nothing records is a silence")
+        (is (str/includes? (str (:proposed n)) "fails always"))
+        (is (str/includes? (str (:held n)) "loaded fine"))))))
+
+(deftest a-memory-can-say-which-runs-support-it
+  ;; karamazov-ei6t.5. corroborations says a memory was seen three times and
+  ;; cannot say BY WHAT — which is the question a confidently false standing
+  ;; claim needs asked of it.
+  (let [c @conn
+        r1 (runs/start-run! c {:problem "p" :provider "x" :model "m" :max-turns 5 :beam-width 1})
+        r2 (runs/start-run! c {:problem "q" :provider "x" :model "m" :max-turns 5 :beam-width 1})
+        id (knowledge/remember! c {:content "jolt -M:test is the test command" :run-id r1})]
+    (testing "a fresh memory records no support yet, which is not the same as none"
+      (is (false? (:recorded? (knowledge/support c id)))))
+    (knowledge/corroborate! c id r2)
+    (let [sup (knowledge/support c id)]
+      (is (true? (:recorded? sup)))
+      (is (= [r2] (:runs sup)) "the run that confirmed it, by name")
+      (is (= 2 (:corroborations sup))))
+    (testing "the same run twice does not inflate the set"
+      (knowledge/corroborate! c id r2)
+      (is (= [r2] (:runs (knowledge/support c id)))))))
+
+(deftest a-run-can-open-with-what-the-last-one-learned
+  ;; karamazov-ei6t.9, lemmalog's change-log. recall answers a question the
+  ;; model thought to ask; this answers the one it does not know to ask.
+  (let [c @conn]
+    (knowledge/remember! c {:content "jolt -M:test is the test command here"
+                            :kind "semantic"})
+    (Thread/sleep 5)
+    (let [cut (db/now)]
+      (Thread/sleep 5)
+      (knowledge/remember! c {:content "python3 is not on the allow list"
+                              :kind "semantic"})
+      (let [new (knowledge/learned-since c cut)]
+        (is (= 1 (count new)) "only what is new since the cut")
+        (is (str/includes? (:content (first new)) "python3"))))
+    (testing "no cut means nothing to report, not everything"
+      (is (empty? (knowledge/learned-since c nil))))))
+
+(deftest the-opening-block-cuts-at-the-previous-run-START-not-its-end
+  ;; THE BUG THAT COST THE BLOCK ITS FIRST LIVE RUN (karamazov-ei6t.9 follow-up).
+  ;; distil-project!/distil-session! write during a run's TEARDOWN, and
+  ;; finish-run! stamps ended_at after that — so a memory's created_at is a
+  ;; hair BEFORE its own run's ended_at, and cutting on ended_at excludes
+  ;; every memory the run wrote. Measured on sweep6: learned-since returned 0
+  ;; while the store held the run's learnings, so the block never rendered on
+  ;; the one run in the sweep that could have shown it.
+  (let [c @conn
+        r1 (runs/start-run! c {:problem "a" :provider "x" :model "m"
+                               :max-turns 5 :beam-width 1})]
+    ;; the memory is written DURING run 1, then run 1 ends — the real order
+    (knowledge/remember! c {:content "the test command is jolt -M:test"
+                            :kind "semantic" :run-id r1})
+    (runs/finish-run! c r1 :completed "d")
+    (let [r2 (runs/start-run! c {:problem "b" :provider "x" :model "m"
+                                 :max-turns 5 :beam-width 1})
+          prev (knowledge/last-run-before c r2)]
+      (is (some? (:started_at prev))
+          "last-run-before returns started_at, which is what the caller cuts on")
+      (is (= 1 (count (knowledge/learned-since c (:started_at prev))))
+          "the previous run's OWN memory is included — the whole point")
+      (is (empty? (knowledge/learned-since c (:ended_at prev)))
+          "and the ended_at cut is what silently dropped it, pinned so a
+           refactor cannot quietly reintroduce the bug"))))
+
 (deftest recent-limits
   (dotimes [_ 3] (knowledge/remember! @conn {:content "row"}))
   (is (= 2 (count (knowledge/recent @conn 2)))))

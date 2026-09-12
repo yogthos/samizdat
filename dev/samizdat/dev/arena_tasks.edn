@@ -1,0 +1,229 @@
+;; Sweep tasks for karamazov-ylte.1, against endless-flight @ e4afef0.
+;;
+;; GRADED ON PURPOSE. The first live smoke run showed that a trivial task
+;; produces ZERO supervisor edits — 42 turns, 55 factory userspace rows, none
+;; project-authored — because oversight/worth-a-look? fires on unmet gates,
+;; idle turns, crashes, the soft cap or nobody-shipping, and a task that ships
+;; cleanly trips none of them. Task difficulty is therefore a design parameter
+;; for ylte.7's signal in a way it is not for the outcome metrics, and these
+;; three climb deliberately.
+;;
+;; EVERY DEFECT NAMED HERE IS VERIFIED, not inferred: shot.png at e4afef0 shows
+;; the ground ending in a hard line against bare sky, trees standing past that
+;; edge with nothing under them, and the bird and its rings riding far above
+;; the canopy.
+;;
+;; A REQUIREMENT THE ENVIRONMENT CANNOT MEET IS A TRAP, and this task set laid
+;; two. The visual exercise below asked for a screenshot, and an arena child is
+;; spawned from a tool, so it has no macOS window server and raylib answers
+;; `SYSTEM: Failed to initialize platform` — measured at turn 81 of run
+;; dbe64eea-successor, and already recorded from the 2026-08-29 campaign. The
+;; same bullet named `scripts/png_hist.py`, and `python3` is not on the shell
+;; allow list, so the tool the task told the agent to use was refused at turn
+;; 77. The owner met both walls, dropped the requirement without saying so, and
+;; the critic failed the round for it — which is a real defect in the harness
+;; (fixed: wordlists :completeness-blocked) but was ALSO the rig asking for the
+;; impossible and then measuring the answer. The requirement stays, because
+;; karamazov-ksl is right that an exercise is the point; what changed is that
+;; it now names the wall and says that reporting it is the answer.
+
+{:subject {:repo "/Users/yogthos/src/raylib-examples/endless-flight"
+           :sha "e4afef0"
+           :verify-cmd "jolt -M:test"
+           :baseline-suite "63 tests, 1221 assertions, 0 failures"}
+
+ ;; Appended to every task. This is the "make it complex enough" half: it is
+ ;; what forces multi-file work, a real seam, and an end-to-end exercise rather
+ ;; than a constant edit plus a green suite (karamazov-ksl).
+ :standing-requirements
+ "Hold to the project's existing discipline while you do this:
+
+  - The pure/impure split is the point of this codebase. flight.terrain,
+    flight.mechanics, flight.render and flight.game are pure and fully
+    testable with no raylib and no Box3D; flight.draw is the only namespace
+    that may call rl/. New logic goes on the pure side with tests, and
+    flight.draw only calls it. A calculation that lands in flight.draw is
+    untestable by construction and is the wrong answer.
+  - Add tests for every pure function you add, in the matching test namespace,
+    and add that namespace to test/flight/test_runner.clj if it is new.
+  - The whole suite must be green when you are done: `jolt -M:test`, currently
+    63 tests and 1221 assertions.
+  - If a change makes an EXISTING test wrong, do not delete it and do not
+    quietly weaken it. Decide what the invariant should now be, rewrite the
+    test to pin THAT, and say in one line why the old one no longer holds.
+  - Exercise it, do not just unit-test it. `jolt -M:run` with
+    RAYLIB_APP_AUTO_QUIT_MS set writes a screenshot on flight.draw/shot-at-frame.
+    Use it to confirm the change is actually visible, and say what you saw.
+    THIS MAY BE IMPOSSIBLE HERE, and if it is, saying so IS the answer: a run
+    started from a background process has no window server, raylib reports
+    `SYSTEM: Failed to initialize platform`, and no frame can ever be drawn.
+    If you hit that, say in your answer what you tried and what it printed.
+    Do not leave the requirement unmentioned — an unmentioned requirement
+    reads as met.
+  - Do not change the deps.edn paths or the native library wiring."
+
+ :tasks
+ ;; PER-TASK BUDGETS, RESIZED AGAINST THE FIRST SWEEP'S ONE RECORDING
+ ;; (run dbe64eea, horizon-fade, 2026-09-10). Read that run before changing
+ ;; any of these, because every number below is answering something it did.
+ ;;
+ ;; :max-turns is PER BRANCH, never the run's total. On a board round it is
+ ;; the OWNER's cap — gates.edn :board-owner-turns (150) takes the min of the
+ ;; two — and the feature loop multiplies it by every revision and every task
+ ;; in a round. It is also what the steering gates key off
+ ;; (:wind-down-fraction 0.85, :last-call-window 2, :turn-budget-notices
+ ;; [0.6 0.85]), so a cap tight for the task puts the branch into wind-down
+ ;; while it is still working and the gate profile measures the cap instead of
+ ;; the loop.
+ ;;
+ ;; WHAT 60 COST. The owner spent all 60 turns in 25 minutes and called `done`
+ ;; on turns 59 AND 60 — it believed it was finished and the cap took the last
+ ;; word. The run then opened revision 1 and started again from nothing.
+ ;;
+ ;; WHAT 120 THEN SHOWED, on the first unwedged run (2026-09-10, 13:18). The
+ ;; owner finished its attempt at turn 89 and SHIPPED — `ship-verify` ran, the
+ ;; suite was green — so the cap was never reached and raising it further buys
+ ;; nothing. One attempt measures at ~90 turns, ~40 minutes, ~1.5M tokens.
+ ;; These sit just above that, with headroom and no slack.
+ ;;
+ ;; :timeout-ms is the RIG's clock and it is MEANT NEVER TO FIRE — the loop
+ ;; is supposed to end the run, by shipping or by exhausting its turn budget,
+ ;; and a :timeout row is the rig admitting it could not tell which. So the
+ ;; clock is sized to sit ABOVE where the turn budget lands, with headroom for
+ ;; contention, rather than to be tight.
+ ;;
+ ;; SIZED FROM MEASURED PACE, not argued (sweep6). The one horizon-fade run
+ ;; that ended by the loop rather than the clock — amnesiac-1 — ran 238 turns
+ ;; in 82.6 min, which is ~0.35 min/turn on a quiet box. The turn budget is
+ ;; roughly 2 x :max-turns (two board attempts) plus ~40 turns of supervisor,
+ ;; so ~240 for a 100-turn cap. At 0.35 that is 84 min; but the same task's
+ ;; empty-store runs timed out at exactly 105 min under load ~5-6, which puts
+ ;; the contended pace nearer 0.44 min/turn — so 105 was landing right ON the
+ ;; turn-budget wall, and which one won was a coin flip. The clock has to
+ ;; clear it: ~0.6 min/turn (a conservative contended pace) x the turn budget,
+ ;; which is where the numbers below now sit. Re-measure and re-size when the
+ ;; turn budget or the box changes; that is what the :ended-by and :load
+ ;; stamps on every row are for.
+ ;;
+ ;; THE EARLIER MISTAKE this replaces: sizing the clock to FIT the revisions,
+ ;; which at 8 hard revisions x ~45 min each no clock this side of six hours
+ ;; could satisfy, so :ended-by was guaranteed :clock and the last attempt
+ ;; thrown away half-done. That was fixed to 1 hard revision; this is the
+ ;; other half — the clock now clears the budget instead of chasing it.
+ ;;
+ ;; :stall-ms is the one that was missing from the first sweep, when 33 of 64
+ ;; minutes were a wedge. Set well above the slowest legitimate quiet period,
+ ;; which is a provider call — :llm :max-response-ms is 600000 and the retry
+ ;; ladder can spend that more than once on one turn. On the unwedged run the
+ ;; longest idle was 46 seconds.
+ ;;
+ ;; :max-revisions-hard closes the loop, and it is the only real lever on
+ ;; spend. :feature/route is deliberately supervisor-driven with NO numeric
+ ;; abandon — it keeps solving until a supervisor says STOP — so an unattended
+ ;; run has no ending of its own. Each revision is a full attempt: ~1.5M
+ ;; tokens. 1 means two attempts, which is what the clock can hold, and it is
+ ;; what makes a run end because the LOOP decided rather than because the rig
+ ;; killed it. It is below the soft cap of 6, so the deterministic strategy
+ ;; escalation will not fire; that is a deliberate trade of exploration for
+ ;; spend, and it is the thing to raise first if the runs come back thin.
+ ;;
+ ;; :token-budget is deliberately ABSENT and that is a finding, not an
+ ;; oversight: it is checked only at :beam/round-open, and a non-iterating
+ ;; manifest (feature, team, decompose) has one round for the whole job, so
+ ;; setting one here would look like a spend ceiling and be none.
+ ;;
+ ;; Runs are compared WITHIN a task, never across, so unequal budgets cost
+ ;; nothing.
+ [{:id :horizon-fade
+   :difficulty :medium
+   :max-turns 100
+   :timeout-ms 8400000
+   :stall-ms 1200000
+   :max-revisions-hard 1
+   :provokes "no existing test to break; the hard part is inventing the pure
+              seam, since draw_test.clj only smoke-tests that rl/ names resolve"
+   :problem
+   "The world visibly ends. flight.draw/draw-terrain! draws a
+    (2*terrain-half+1) square of ground columns — terrain-half is 7 at
+    terrain-step 14.0, so ground exists only within about 105 metres of the
+    bird — and past that the sky starts in a hard horizontal line. Worse,
+    draw-trees! uses tree-radius 190.0, so trees keep being drawn for another
+    85 metres beyond where the ground stops and stand silhouetted against
+    bare sky with nothing underneath them. shot.png in the repo shows both.
+
+    Make the terrain fade out into the distance so a player never sees it end.
+    Blend ground and trees toward the sky colour as they recede, so the far
+    edge dissolves into the horizon instead of terminating at one, and make
+    sure nothing is ever drawn standing past the ground it should be sitting
+    on. Keep the near field looking exactly as it does now — this should read
+    as depth, not as a haze over the whole scene."}
+
+  {:id :low-course
+   :difficulty :hard
+   :max-turns 110
+   :timeout-ms 9300000
+   :stall-ms 1200000
+   :max-revisions-hard 1
+   :provokes "collides head-on with ring_course_test/consecutive-rings-clear-terrain
+              and ring-zero-above-its-own-ground, which pin
+              (>= clearance game/ring-clearance). The agent must decide the
+              invariant has CHANGED and re-pin it, not delete it."
+   :problem
+   "The flight is too safe and too high to be interesting. flight.game holds
+    ring-clearance at 22.0 metres of air over the worst ground in the corridor,
+    while flight.terrain/tree-height is 9.0 — so the ring course always floats
+    well above the forest and the bird rides above it, as shot.png shows.
+
+    Bring the whole thing down into the trees. Lower the bird's flight so it
+    travels through the forest canopy rather than over it, and place the rings
+    down among the trees so that threading one means flying between trunks.
+    The course must still be flyable: a player who lines up on a ring and holds
+    a reasonable line should be able to make it without an unavoidable
+    collision, and the rings must still be reachable one after another. PLAN.md
+    asks for exactly this — rings placed so they are reasonable to reach but
+    carry a real chance of hitting an obstacle, so it is not too easy.
+
+    Two tests in test/flight/ring_course_test.clj currently assert the old
+    clearance. They are asserting the behaviour you are deliberately changing;
+    work out what the course must now guarantee instead and pin that."}
+
+  {:id :fast-low-endless
+   :difficulty :hardest
+   :max-turns 120
+   :timeout-ms 10200000
+   :stall-ms 1200000
+   :max-revisions-hard 1
+   :provokes "three coupled changes that interact — speed shortens the reaction
+              window that the lowered course just narrowed, and both make the
+              draw-distance edge more visible per second of flight. Touches
+              mechanics, game, terrain, render and draw."
+   :problem
+   "Three changes to the feel of the flight, and they interact — do them
+    together and reconcile them, do not treat them as three separate edits.
+
+    1. Speed it up. flight.mechanics currently flies at base-speed 16.0 with
+       max-speed 46.0 and boost-speed 40.0. The flight should feel considerably
+       faster than it does now.
+
+    2. Drop into the trees. Lower the bird's flight so it travels through the
+       forest rather than above it, and put the rings down among the trees so
+       threading one means flying between trunks — see ring-clearance 22.0 in
+       flight.game against tree-height 9.0 in flight.terrain. The course must
+       stay flyable: reachable ring to ring, with a real chance of hitting
+       something, which is what PLAN.md asks for.
+
+    3. Make the horizon endless. Ground is only drawn within about 105 metres
+       (terrain-half 7 at terrain-step 14.0) and ends in a hard line against
+       the sky, while trees are drawn out to 190 metres and stand past that
+       edge with nothing under them. Fade the distance into the sky so the
+       player never sees the world end.
+
+    Now reconcile them. Flying faster through a lower, tighter course shortens
+    the time a player has to react to each ring, and it eats the visible ground
+    ahead faster than it did before — a draw distance that was adequate at
+    16 units per second may not be at the new speed. Judge whether ring
+    spacing, draw distance or the camera need to move with the speed, decide,
+    and say what you decided and why.
+
+    Tests in test/flight/ring_course_test.clj assert the clearance you are
+    changing. Re-pin them to what the course must now guarantee."}]}

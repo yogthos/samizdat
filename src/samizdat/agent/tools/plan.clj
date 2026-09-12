@@ -32,6 +32,11 @@
         files (coerce :files)
         tests (coerce :tests)
         goal (some-> (base/arg ctx :goal) str not-empty)
+        ;; An RFC is free prose (Purpose/Model/Work items/Acceptance, with a
+        ;; mermaid call-graph), not a path — the design-rfc step asks for it,
+        ;; the diff critic reads it as the contract. Optional: an ordinary
+        ;; lightweight plan carries none.
+        rfc (some-> (base/arg ctx :rfc) str not-empty)
         ;; A declared entry is a PATH, and a path has no whitespace. Run
         ;; e1b765e7's owner declared "test/flight/ghost_test.clj — ghost HUD
         ;; text (GHOST <score>), …": declare-plan folds :tests into the files
@@ -50,9 +55,9 @@
       (base/malformed branch (msg {:needs-files true}))
 
       :else
-      (let [b (state/declare-plan branch {:files files :tests tests :goal goal})]
+      (let [b (state/declare-plan branch {:files files :tests tests :goal goal :rfc rfc})]
         (assoc (base/ok branch (msg {:declared true
                                      :files (clojure.string/join ", "
                                                                  (:files (state/plan b)))
-                                     :goal goal}))
+                                     :goal goal :rfc (boolean rfc)}))
                :branch b)))))

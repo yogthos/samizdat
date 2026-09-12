@@ -142,6 +142,51 @@
               to the supervisor, and now there is exactly one to hand it to"
       (is (worth-a-look? {:unmet-gates 0 :idle-turns 0 :errors nil :at-cap? true} floors)))))
 
+(deftest a-green-round-the-reviewer-sent-back-is-worth-a-look
+  ;; karamazov-ylte.1, run dbe64eea-successor. The owner shipped: 89 turns, a
+  ;; real diff, ship-verify green. The board critic then failed the round
+  ;; [high] for a requirement the answer never mentioned, and the round went
+  ;; to revise. THE SUPERVISOR NEVER SAW IT — 18 of its 30 passes were quiet,
+  ;; and this moment tripped none of the six triggers: gates were met, turns
+  ;; were not idle, nothing crashed, the soft cap was far off, something DID
+  ;; ship so nothing-shipped? was false, and no mutation was refused.
+  ;;
+  ;; The docstring's premise is that "a healthy run that is shipping gets no
+  ;; supervision, which is correct" — and it is, as long as shipping means
+  ;; shipping something whole. A confidently wrong ship looks identical to a
+  ;; healthy one from every counter the stream reads.
+  ;;
+  ;; The signal is narrow on purpose: the work passed its OWN tests and a
+  ;; reviewer refused it anyway. That is the first trigger's own subject — the
+  ;; harness's words failing to convey something — rather than an ordinary
+  ;; revise, where the tests were red and the loop is simply still working.
+  (let [floors {:unmet-floor 2 :idle-floor 25}
+        healthy {:unmet-gates 0 :idle-turns 0 :errors nil}]
+    (testing "green work sent back buys a pass"
+      (is (worth-a-look?
+           (assoc healthy :sent-back-green? true) floors)))
+    (testing "an ordinary revise on red tests does NOT — the loop is working"
+      (is (not (worth-a-look?
+                (assoc healthy :sent-back-green? false) floors))))
+    (testing "and the cheap default is untouched"
+      (is (not (worth-a-look? healthy floors))))))
+
+(deftest sent-back-green-reads-the-round-the-loop-already-writes
+  (cells/load-cells!)
+  (let [f @(ns-resolve 'cells.oversight 'sent-back-green?)]
+    (testing "the two facts are both on the :route note the feature loop
+              journals every round — nothing new has to be recorded"
+      (is (true? (f {:decision "revise" :tests-passed true})))
+      (is (true? (f {:decision :revise :tests-passed true}))
+          "the note round-trips through JSON, so the decision comes back a
+           string; reading only the keyword would make this silently never
+           fire, which is the shape of karamazov-u5uy"))
+    (testing "and it is neither of the things it must not be"
+      (is (false? (f {:decision "revise" :tests-passed false}))
+          "red tests sent back is the loop working, not a blind spot")
+      (is (false? (f {:decision "ship" :tests-passed true})))
+      (is (false? (f nil))))))
+
 ;; --- what the stage used to see, the stream now sees (RFC-012 F1/F4) --------
 
 (defn- reasoning-over
@@ -585,3 +630,79 @@
     (is (= (:timeout-ms (gates/threshold :oversight))
            (get-in @seen [:llm-config :timeout-ms]))
         "gates.edn :oversight :timeout-ms reaches the pass's provider calls")))
+
+;; --- rejection memory (karamazov-ylte.2) ------------------------------------
+
+(deftest a-refused-mutation-reaches-the-supervisor
+  ;; Step 4 of the Procedural Graph paper's Algorithm 1: a candidate the gate
+  ;; turned down is kept and handed back as negative evidence, so the refiner
+  ;; stops re-proposing equivalent edits.
+  ;;
+  ;; samizdat had the storage and no retrieval. mutation.clj:193 journals
+  ;; :mutation-rolled-back with {:reason :attempt} — and its comment cites
+  ;; karamazov-mpd for exactly this reason, that the reason alone lets the next
+  ;; run re-derive the same edit — while the only readers were three tests in
+  ;; mutation_test. gather read :route, :implement-round, :stage-error and
+  ;; :self-graded, and not this. Same shape as karamazov-u5uy: a supervisory
+  ;; signal is only as real as the channel it arrives on.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :mutation-rolled-back
+                   {:data {:reason "soak did not terminate within the time budget"
+                           :attempt {"cells/loop.clj" "(ns cells.loop) ;; edited"}}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (= 1 (count (:oversight/refused gather)))
+          "gather carries the run's refused mutations")
+      (is (str/includes? (str prob) "REFUSED")
+          "and the brief names them, so a pass after a compaction still knows")
+      (is (str/includes? (str prob) "soak did not terminate")
+          "with the reason the protocol gave"))))
+
+(deftest a-refused-mutation-is-worth-a-model-call
+  ;; A refusal means the supervisor tried to change the harness and the
+  ;; protocol said no. That is precisely a moment where the next pass will
+  ;; re-derive the same edit unless something tells it not to, so it earns a
+  ;; look on its own — the run need not also be stalling.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :mutation-rolled-back
+                   {:data {:reason "validate: unreachable cells" :attempt {}}})
+    (let [g ((:handler (cell/get-cell! :oversight/gather)) {:conn conn :run-id rid :config {}} {})]
+      (is (true? (:oversight/worth-a-look? g))))))
+
+(deftest a-committed-mutation-is-not-a-refusal-and-buys-nothing
+  ;; The negative half only. An edit that went through is not evidence about
+  ;; what not to try, and a supervisor woken every time its own change landed
+  ;; would be paying a model call to be told it succeeded.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :mutation-committed {:data {:cells ["loop"]}})
+    (let [g ((:handler (cell/get-cell! :oversight/gather)) {:conn conn :run-id rid :config {}} {})]
+      (is (empty? (:oversight/refused g)))
+      (is (false? (:oversight/worth-a-look? g))))))
+
+(deftest dead-gates-reach-the-supervisor-as-deletion-candidates
+  ;; The mirror of the graduation block: :candidates asks whether to PROMOTE
+  ;; an episode to a rule, this asks whether to DELETE a gate that nothing
+  ;; obeys. Before it the supervisor could only ever add, and gates.edn's own
+  ;; record of deleting :reflection shows the evidence was always there and
+  ;; only a person ever read it.
+  (let [conn (db/open! ":memory:")]
+    (doseq [r ["r1" "r2" "r3"]]
+      (let [rid (runs/start-run! conn {:problem "p" :run-id r})]
+        (runs/open-branch! conn rid {:branch-id "B1"})
+        (let [id (journal/record-gate! conn rid {:branch-id "B1" :turn 1 :gate :deadwood
+                                                 :prediction "p" :window 2})]
+          (journal/settle-gate! conn id :unmet 2))))
+    (let [rid (runs/start-run! conn {:problem "p"})
+          ;; something to make the pass worth a look at all
+          _ (journal/note! conn rid :stage-error {:data {:stage "s" :error "boom"}})
+          {:keys [prob]} (reasoning-over conn rid)]
+      (is (str/includes? (str prob) "never met")
+          "the brief carries the retirement block")
+      (is (str/includes? (str prob) "deadwood")
+          "and names the gate")
+      (is (str/includes? (str prob) "Nothing here is retired for you")
+          "surfacing, not acting — the graduation block's discipline"))))

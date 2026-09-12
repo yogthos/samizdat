@@ -70,6 +70,9 @@
 (def ^:private completeness-second-person
   (util/generation-cache lexicon/gen
                          #(lexicon/wordlist :completeness-second-person)))
+(def ^:private completeness-blocked
+  (util/generation-cache lexicon/gen
+                         #(lexicon/wordlist :completeness-blocked)))
 
 (defn- word-starting-with?
   "Whether `needle` occurs in `haystack` at the START of a word.
@@ -106,24 +109,50 @@
 (defn unfinished-claim?
   "Whether the answer says, in the model's own first-person voice, that work
   remains (dirge completeness_gate.rs, karamazov-g86). Fires only when ONE
-  SENTENCE holds all three: a first-person forward marker, a concrete work
-  verb (exact token, so 'latest' cannot read as 'test'), and no
-  second-person address — advice to the reader is a legitimate ending, a
-  plan to keep working is not. The conjunction IS the control: a run that
-  edits real files, verifies, claims nothing false, and stops halfway is the
-  most ordinary bad ending an autonomous run has, and this is its one
-  lexical tell. The lists are wordlists.edn data; dirge's warning against
-  widening them travels with the lists."
+  SENTENCE holds a first-person forward marker and a concrete work verb
+  (exact token, so 'latest' cannot read as 'test') and NEITHER exemption:
+  second-person address — advice to the reader is a legitimate ending — nor
+  a stated limit. The conjunction IS the control: a run that edits real
+  files, verifies, claims nothing false, and stops halfway is the most
+  ordinary bad ending an autonomous run has, and this is its one lexical
+  tell. The lists are wordlists.edn data; dirge's warning against widening
+  them travels with the lists.
+
+  WHY A LIMIT IS NOT A PLAN, which is the second exemption and the one with
+  a measurement behind it. \"I still need to implement the CLI\" is work the
+  run chose to leave. \"I have not been able to test the visual output: the
+  host has no window server\" is what the run FOUND — the same voice, the
+  same verb, the opposite meaning, and the second is a result.
+
+  The exemption is anchored on FIRST-PERSON inability, and that anchor is
+  load-bearing: a third-person obstacle reads identically in a limit and in a
+  plan (\"I will fix the parser that fails to handle escapes\" names an
+  obstacle and IS an abandoned intention), so keying on one would switch the
+  rung off for the shape it exists to catch.
+
+  Measured on run dbe64eea-successor of the arena sweep, against its real
+  problem text: the owner was asked to exercise its change on screen, the
+  host had no window server, and the two most natural ways to say so were
+  both refused here while an answer that never mentioned the requirement
+  shipped. The critic then failed the round for precisely that — \"the
+  requirement is silently dropped rather than met or escalated as a
+  blocker\". A gate that refuses the honest answer and passes the silent one
+  does not merely fail to catch omission; it selects for it.
+
+  The exemption is per SENTENCE, not per answer, so an honest limit in one
+  sentence cannot license an abandoned plan in the next."
   [answer]
   (let [fwd (completeness-forward)
         verbs (completeness-work-verbs)
-        second-p (completeness-second-person)]
+        second-p (completeness-second-person)
+        blocked (completeness-blocked)]
     (boolean
      (some (fn [sentence]
              (let [s (str " " (str/lower-case (str/trim sentence)) " ")]
                (and (some #(word-starting-with? s %) fwd)
                     (some #(word-starting-with? s %) verbs)
-                    (not-any? #(word-starting-with? s %) second-p))))
+                    (not-any? #(word-starting-with? s %) second-p)
+                    (not-any? #(word-starting-with? s %) blocked))))
            (str/split (str answer) #"[.!?\n]+")))))
 
 (defn answer-tokens
@@ -289,6 +318,56 @@
             (let [m (:message rung)]
               (if (fn? m) (m evidence) m))))
         (ship-gates)))
+
+;; --- the give_up rungs ------------------------------------------------------
+
+(defn- compile-give-up-form
+  "Like compile-rung-form, with the symbols a give_up rung sees. Its own
+  bindings rather than a shared set, because a rung that could reference
+  `answer` here would compile and always read nil."
+  [form]
+  (binding [*ns* (the-ns 'samizdat.agent.tools.ship)]
+    (eval `(fn [~'ctx]
+             (let [~'reason  (get ~'ctx :reason)
+                   ~'problem (get ~'ctx :problem)
+                   ~'floor   (get ~'ctx :floor)]
+               ~form)))))
+
+(def give-up-gates
+  "The lexical give_up rungs, compiled from gates.edn :give-up-gates.
+  Memoized against the config generation like `ship-gates`, so retuning them
+  is the data edit gates.edn promises."
+  (util/generation-cache
+   gates/gen
+   #(mapv (fn [rung]
+            (assoc rung
+                   :when (compile-give-up-form (:when rung))
+                   :message (if (:message-form rung)
+                              (compile-give-up-form (:message-form rung))
+                              (:message rung))))
+          (gates/threshold :give-up-gates))))
+
+(defn give-up-block
+  "The first give_up rung that fires, or nil.
+
+  ABANDONING IS THE ONE ENDING THAT HAS TO EXPLAIN ITSELF, and until
+  karamazov-ylte.1 it was the only one with no gate at all: `done` faces four
+  lexical rungs plus verification, and `give_up` took an optional string and
+  defaulted it to \"no reason given\". Of the four ways a branch can end that
+  made this the cheapest, and a loop teaches by what it makes cheap.
+
+  Lexical and model-free, like the ship rungs beside it. The bar is not
+  'convince a judge' — it is that the branch spent a sentence naming what it
+  tried and what stopped it, which a branch that is genuinely blocked can
+  always do and a branch that has merely stopped cannot."
+  [reason problem]
+  (let [ctx {:reason reason :problem problem
+             :floor (gates/threshold :give-up-reason-floor)}]
+    (some (fn [rung]
+            (when ((:when rung) ctx)
+              (let [m (:message rung)]
+                (if (fn? m) (m ctx) m))))
+          (give-up-gates))))
 
 ;; --- shipping ---------------------------------------------------------------
 
@@ -508,10 +587,40 @@
                           :tier :slow})))))
 
 (defmethod base/run-tool "give_up" [{:keys [branch] :as ctx}]
-  (let [reason (or (base/arg ctx :reason) "no reason given")]
-    {:branch (assoc branch :status :abandoned :inactive-reason reason)
-     :category :neutral :progress? false :gave-up? true
-     :result (str "Gave up: " reason)}))
+  ;; The rungs are in gates.edn; see `give-up-block` for why this ending has
+  ;; any at all. An ADVISORY branch is exempt for the same reason it is exempt
+  ;; from the ship rungs (karamazov-t86): a reviewer or supervisor loop
+  ;; reporting that it cannot reach a verdict is delivering that verdict, and
+  ;; holding it to a contract about project work would strand it.
+  (let [reason (str (base/arg ctx :reason))
+        blocks (or (:give-up-blocks branch) 0)
+        ;; BOUNDED, and the bound is not optional. :max-done-blocks is "how
+        ;; often `done` may be refused before the branch is told to give up",
+        ;; so giving up IS the escape hatch from a refused done — gating it
+        ;; with no ceiling leaves a stuck branch refused at both exits and
+        ;; spending its budget being told no, which is the quiet spin these
+        ;; rungs exist to stop, rebuilt one door along. Fail-open on
+        ;; cells/critic.clj's reasoning: a backstop that can wedge the loop is
+        ;; worse than no backstop.
+        relieved? (>= blocks (gates/threshold :max-give-up-blocks))
+        block (when-not (or (:advisory? branch) relieved?)
+                (give-up-block reason (:problem branch)))]
+    (if block
+      ;; :done-block, NOT a key of its own, and the existing wiring says this
+      ;; is right: gates.edn's :settle-called already lists `give_up` in the
+      ;; :done-blocked gate's vocabulary, so that gate was always meant to
+      ;; cover both terminal calls. A key nothing reads would mean a refused
+      ;; give_up drew no steer and spent no :max-done-blocks budget.
+      (base/fail (assoc branch :give-up-blocks (inc blocks))
+                 (str "`give_up` refused.\n\n" block)
+                 :done-block block)
+      {:branch (assoc branch :status :abandoned :inactive-reason reason)
+       :category :neutral :progress? false :gave-up? true
+       ;; What the branch could not do is end CHEAPLY. When the ceiling
+       ;; relieves it the abandonment still lands, and the record carries the
+       ;; fact that the account never came — a finding rather than a silence.
+       :gave-up-unaccounted? (boolean (and relieved? (seq (str reason))))
+       :result (str "Gave up: " reason)})))
 
 ;; --- forking ----------------------------------------------------------------
 

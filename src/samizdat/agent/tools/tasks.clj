@@ -4,6 +4,7 @@
 (ns samizdat.agent.tools.tasks
   "The task board tool: task create/list/show/update/claim/close."
   (:require
+            [samizdat.agent.gates :as gates]
             [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.state :as state]
@@ -63,7 +64,12 @@
    branch "user"
    (str "[harness] " (prompt/render "task-claimed"
                        {:id (:id t) :title (:title t) :body (:body t)
-                        :contract (:contract t) :tests (:tests t)}))
+                        :contract (:contract t) :tests (:tests t)
+                        ;; The same number the :over-budget gate measures
+                        ;; against, so the question asked at claim time and
+                        ;; the answer measured in flight cannot drift apart
+                        ;; (karamazov-5ot9).
+                        :budget (gates/threshold :task-line-budget)}))
    {:pinned? true :task-id (:id t)}))
 
 (defn- take-task

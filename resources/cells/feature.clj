@@ -22,9 +22,12 @@
             [clojure.string :as str]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
+            [samizdat.agent.files :as files]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.judge :as judge]
             [samizdat.agent.loop :as turn]
+            [samizdat.metrics :as metrics]
             [samizdat.agent.state :as state]
             [samizdat.agent.tools :as tools]
             [samizdat.cancel :as cancel]
@@ -314,23 +317,49 @@
               (if det
                 {:decision :revise}
                 (let [diff (gitdiff/diff root git-baseline)
-                      evidence (judge/evidence rows)
                       ;; THE REQUIREMENT is the feature the run was asked
                       ;; for. This passed the pre-requirement keys (:rules,
                       ;; the answer as :transcript), so the judge's
                       ;; requirement section rendered empty (karamazov-iev2).
-                      prompt (judge/critic-prompt {:requirement (:problem branch)
-                                                   :evidence evidence
-                                                   :diff diff
-                                                   :answer answer})
-                      reply (try (:content (llm/chat llm-adapter llm-config
-                                                     [{:role "user" :content prompt}]))
-                                 (catch Throwable _ nil))
-                      verdict (if reply (judge/parse-verdict reply) :complete)
-                      blocking (when reply (judge/blocking-findings reply))]
+                      ;;
+                      ;; BOTH PASSES, through judge/review, which is also why
+                      ;; the prompt is no longer built here: a caller that
+                      ;; assembles its own review is a caller that can forget
+                      ;; the verify pass, and this cell and :board/review had
+                      ;; already drifted once over the requirement slot.
+                      chat (fn [pass content]
+                             (let [r (try (llm/chat llm-adapter llm-config
+                                                    [{:role "user" :content content}])
+                                          (catch Throwable _ nil))]
+                               (try (journal/record-side-call!
+                                     conn run-id {:branch-id (:id branch)
+                                                  :kind (keyword (str "critic-" (name pass)))
+                                                  :role :critic
+                                                  :model (:model llm-config)
+                                                  :usage (:usage r)})
+                                    (catch Throwable _ nil))
+                               (:content r)))
+                      {:keys [verdict findings]}
+                      (judge/review {:chat chat
+                                     :requirement (:problem branch)
+                                     :evidence (judge/evidence rows)
+                                     :diff diff
+                                     :answer answer})
+                      ;; The changed code's quality, weighed beside the judge's
+                      ;; own findings: a breach past the block ceiling is a
+                      ;; blocking finding, a marginal one an advisory. Fail-safe
+                      ;; — a metric error is nil, never a wedged critic.
+                      qf (try (metrics/review
+                               (files/read-sources root (gitdiff/changed-files root git-baseline))
+                               (gates/threshold :code-quality))
+                              (catch Throwable _ nil))
+                      quality (when (seq qf) (prompt/render "metrics-findings" {:findings qf}))
+                      all (str/join "\n\n" (remove str/blank? [(str findings) (str quality)]))
+                      blocking (when (seq all)
+                                 (judge/blocking-findings (str "FINDINGS:\n" all)))]
                   {:decision (if (and (= :complete verdict) (not blocking)) :ship :revise)
                    :verdict verdict
-                   :findings (judge/for-the-record :reply-chars (judge/findings reply))}))
+                   :findings (judge/for-the-record :reply-chars all)}))
               decision (:decision judged)]
           (journal/note! conn run-id :critique
                          {:data {:decision decision :deterministic (boolean det)

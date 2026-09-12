@@ -121,7 +121,8 @@
   was tried and rejected: db/now has millisecond precision, so a claim in the
   same millisecond as the create it raced passed the guard. A field-scoped
   write cannot clobber what it never names."
-  [conn id {:keys [title body type status priority parent-id run-id contract tests]}]
+  [conn id {:keys [title body type status priority parent-id run-id contract tests
+                   plan plan-kind]}]
   (let [t (get-task conn id)]
     (when-not t
       (throw (ex-info (str "no task " id) {:id id})))
@@ -148,6 +149,12 @@
                  priority (assoc :priority priority)
                  parent-id (assoc :parent_id parent-id)
                  run-id (assoc :run_id run-id)
+                 ;; The approved implementation plan, persisted as the
+                 ;; task's contract (karamazov-vale).
+                 plan (assoc :plan plan)
+                 ;; "rfc" when the plan is a full RFC that decomposed into
+                 ;; children (karamazov-dq1r).
+                 plan-kind (assoc :plan_kind plan-kind)
                  contract (assoc :contract contract)
                  tests (assoc :tests tests))]
       (db/with-writer

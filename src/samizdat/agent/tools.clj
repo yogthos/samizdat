@@ -51,6 +51,7 @@
             [samizdat.agent.tools.files]
             [samizdat.agent.tools.intervene]
             [samizdat.agent.tools.plan]
+            [samizdat.agent.tools.webfetch]
             [samizdat.agent.tools.websearch]
             [samizdat.agent.tools.digest]
             [samizdat.agent.tools.shell]

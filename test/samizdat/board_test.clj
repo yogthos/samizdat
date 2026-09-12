@@ -140,6 +140,299 @@
         (is (= "done" (:status (tasks/get-task conn id)))
             "and it closed once the critic was satisfied")))))
 
+(deftest the-critic-verifies-its-own-findings-before-they-reach-the-owner
+  ;; PASS 2, running in the real board — not judge/verified-findings called
+  ;; directly. That distinction is the point: an earlier test in this epic was
+  ;; named for a real loop and only ever called the function underneath it,
+  ;; and a 684,076-token bill was how that came out. The stub answers pass 1
+  ;; and pass 2 DIFFERENTLY, so a board that never made the second call would
+  ;; fail here rather than pass quietly.
+  (let [calls (atom [])
+        speculative "- [high] The retry loop leaks a connection on the error path."]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        ;; pass 2 carries the candidates and the verify contract
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :verify)
+                            {:content (str speculative
+                                           " FALSE_POSITIVE — no such path in the diff.")
+                             :finish-reason "stop"})
+
+                        (judge-call? messages)
+                        (do (swap! calls conj :review)
+                            {:content (str "VERDICT: INCOMPLETE\n\nFINDINGS:\n" speculative)
+                             :finish-reason "stop"})
+
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "the handler"})
+        (run-board conn {})
+        (testing "the board made both calls, in order"
+          (is (= [:review :verify] (take 2 @calls))))
+        (testing "both passes are counted as money the run spent"
+          ;; sweep5 run 2 carried six real findings and one side_calls row, for
+          ;; a reflection — the judge's calls were invisible, so nothing could
+          ;; say whether verify had run or what it costs (karamazov-2rqb).
+          ;; The board reviews once per ATTEMPT, so a task that is sent back
+          ;; and re-reviewed bills two pairs — which is the cost of the second
+          ;; pass made visible, and the number to read when deciding whether
+          ;; :judge-verify? earns it.
+          (let [rows (db/fetch conn ["SELECT kind, role FROM side_calls
+                                       WHERE kind LIKE 'critic-%'"])
+                by-kind (frequencies (map :kind rows))]
+            (is (pos? (get by-kind "critic-review" 0)))
+            (is (= (get by-kind "critic-review") (get by-kind "critic-verify"))
+                "every review that found something is paired with its verify")
+            (is (every? #(= "critic" (:role %)) rows))))
+        (testing "and the finding the second pass rejected never reached the record"
+          (let [note (journal/last-note conn
+                                        (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+                                        :board-review)]
+            (is (some? note))
+            (is (str/includes? (str (:candidates note)) "leaks a connection")
+                "pass 1 said it, and the record keeps that it was considered")
+            (is (not (str/includes? (str (:findings note)) "leaks a connection"))
+                "pass 2 rejected it, so it is not what the owner is told to fix")))))))
+
+(deftest a-clean-review-does-not-pay-for-a-second-pass
+  ;; The verify call is skipped when pass 1 found nothing, so the common case
+  ;; — a review that passes — costs exactly one model call, as it did before.
+  (let [calls (atom [])]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :verify)
+                            {:content "No issues found." :finish-reason "stop"})
+                        (judge-call? messages)
+                        (do (swap! calls conj :review)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "the handler"})
+        (run-board conn {})
+        (is (= [:review] (distinct @calls))
+            "a clean review never reaches the verify pass")
+        (is (= ["critic-review"]
+               (mapv :kind (db/fetch conn ["SELECT kind FROM side_calls
+                                             WHERE kind LIKE 'critic-%'"])))
+            "and it is billed for one call, not two")))))
+
+(deftest a-trivial-task-skips-the-plan-phase
+  ;; karamazov-vale. The triage heuristic keeps the phase off obviously-small
+  ;; tasks — a short title with no list — so it is not a tax on the common case.
+  ;; This is also why every existing board test still passes unchanged: their
+  ;; task titles are short.
+  (with-redefs [llm/chat ships-its-task]
+    (let [conn (db/open! ":memory:")]
+      (tasks/create! conn {:title "the handler"})
+      (run-board conn {})
+      (let [notes (journal/notes conn
+                                  (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+                                  :triage)]
+        (is (seq notes))
+        (is (every? #(= "skip" (name (:decision %))) notes)
+            "a one-line task is one change; planning it is the tax triage avoids")
+        (is (empty? (db/fetch conn ["SELECT id FROM events WHERE kind = 'design'"]))
+            "and the design step never ran")))))
+
+(deftest a-substantial-task-plans-and-the-plan-critic-reviews-it
+  ;; The phase engages on a task that names several parts. The design step runs
+  ;; the owner under the design brief to declare a plan; the plan critic reviews
+  ;; it against the requirement BEFORE construction — the whole point, since
+  ;; every other gate fires after the budget is spent.
+  (let [calls (atom [])]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        ;; the plan critic (pass 1 or verify) — it carries the plan prompt
+                        (str/includes? content "reviewing this PLAN")
+                        (do (swap! calls conj :plan-review)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :plan-verify)
+                            {:content "No issues found." :finish-reason "stop"})
+                        ;; the design owner: declare a plan and stop
+                        (str/includes? content "PLANNING this task")
+                        (do (swap! calls conj :design)
+                            {:content (str "```tool-call\n{\"name\":\"plan\",\"args\":"
+                                           "{\"files\":[\"src/x.clj\"],\"tests\":[\"test/x_test.clj\"],"
+                                           "\"goal\":\"do the thing and cover the second part too\"}}\n```")
+                             :finish-reason "stop"})
+                        ;; the diff critic
+                        (judge-call? messages)
+                        (do (swap! calls conj :diff-critic)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        (tasks/create! conn {:title "storage and handlers"
+                             :body "Add the storage layer AND the handlers AND the templates. Three parts."})
+        (run-board conn {})
+        (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))]
+          (testing "triage chose to plan, and design + plan-critic ran before work"
+            (is (= "plan" (name (:decision (journal/last-note conn rid :triage)))))
+            (is (some #{:design} @calls))
+            (is (some #{:plan-review} @calls))
+            (is (< (.indexOf @calls :plan-review) (or (some (fn [[i x]] (when (= x :diff-critic) i))
+                                                            (map-indexed vector @calls)) 999))
+                "the plan critic ran BEFORE the diff critic"))
+          (testing "the approved plan is persisted as the task's contract"
+            (let [t (first (db/fetch conn ["SELECT plan FROM tasks WHERE plan IS NOT NULL"]))]
+              (is (some? t))
+              (is (str/includes? (str (:plan t)) "second part"))))
+          (testing "the plan-critic pass is priced under its own kind"
+            ;; review-plan passes bare :review/:verify and the cell owns the
+            ;; plan- prefix, like the diff critic — so the record reads
+            ;; plan-review, not the double-prefixed plan-plan-review sweep8
+            ;; recorded. (Pass 1 is clean here, so verify is skipped and costs
+            ;; nothing, exactly as the diff critic's critic-verify is.)
+            (let [kinds (set (map :kind (db/fetch conn ["SELECT kind FROM side_calls"])))]
+              (is (contains? kinds "plan-review"))
+              (is (not (contains? kinds "plan-plan-review"))))))))))
+
+(deftest a-design-step-that-declares-no-plan-is-sent-back-once-then-fails-open
+  ;; sweep8's remembers arm: the owner skipped the plan step, so design-review
+  ;; had nothing to review and the pre-construction gate no-op'd straight to
+  ;; :go. A blank plan now routes to :revise once — the owner is asked to
+  ;; declare one — then fails open at :max-design-attempts rather than wedging
+  ;; on a plan it could not produce. The diff critic stays downstream.
+  (with-redefs [llm/chat
+                (fn [a c messages & rest]
+                  (if (judge-call? messages)
+                    {:content "VERDICT: COMPLETE" :finish-reason "stop"}
+                    ;; ships-its-task never declares a plan, so every design
+                    ;; attempt ends with state/plan nil.
+                    (apply ships-its-task a c messages rest)))]
+    (let [conn (db/open! ":memory:")]
+      (tasks/create! conn {:title "storage and handlers"
+                           :body "Add the storage layer AND the handlers AND the templates. Three parts."})
+      (run-board conn {})
+      (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))
+            reviews (journal/notes conn rid :design-review)
+            designs (journal/notes conn rid :design)]
+        (testing "the owner is sent back once to declare a plan, then it fails open"
+          (is (= ["revise" "ok"] (mapv #(name (:decision %)) reviews))
+              "first attempt revises the blank plan, the second fails open"))
+        (testing "design ran twice and declared nothing either time"
+          (is (= 2 (count designs)))
+          (is (every? #(false? (:declared %)) designs)))
+        (testing "the plan critic never ran on a blank plan — nothing to price"
+          (let [kinds (set (map :kind (db/fetch conn ["SELECT kind FROM side_calls"])))]
+            (is (not (contains? kinds "plan-review")))))
+        (testing "fail-open held: construction still ran and the task closed"
+          (is (= "done" (:status (first (db/fetch conn ["SELECT status FROM tasks"]))))))))))
+
+(deftest triage-is-three-way-by-size
+  ;; karamazov-dq1r: trivial skips, a multi-part task gets an RFC, an ordinary
+  ;; single-change task gets the lightweight plan in between.
+  (let [multipart? @(ns-resolve 'cells.board 'multipart?)
+        looks-trivial? @(ns-resolve 'cells.board 'looks-trivial?)]
+    (is (looks-trivial? {:title "fix the typo in the readme"})
+        "short and no list — skip")
+    (is (not (multipart? {:body "rename cfg to config across the ns"}))
+        "an ordinary single change is not RFC-worthy")
+    (is (multipart? {:body "Add these:\n- storage\n- handlers\n- templates"})
+        "an explicit list is several things wearing one title — RFC")
+    (is (multipart? {:body (apply str (repeat 130 "word "))})
+        "a long statement is too big for one plan — RFC")))
+
+(deftest an-rfc-child-does-not-open-its-own-rfc
+  ;; A task decomposed from an RFC (its parent epic carries the plan) must not
+  ;; recurse into another RFC — it gets a lightweight plan or skip.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rfc-child? @(ns-resolve 'cells.board 'rfc-child?)
+        epic (tasks/create! conn {:title "the feature" :type "feature"})
+        child (tasks/create! conn {:title "storage and the handlers and templates"
+                                   :parent-id epic})]
+    (tasks/update! conn epic {:plan "# RFC\n## Work items\n- storage\n- handlers"})
+    (is (rfc-child? conn (tasks/get-task conn child))
+        "its parent carries a persisted RFC")
+    (is (not (rfc-child? conn (tasks/get-task conn epic)))
+        "the epic itself is not a child")))
+
+(deftest a-multipart-task-writes-an-rfc-the-critic-reviews-and-it-persists
+  ;; The RFC tier end to end: triage routes to :rfc, the owner writes an RFC
+  ;; through the plan tool's :rfc field, the plan critic reviews it, and the
+  ;; RFC is persisted as the task's contract (tasks.plan).
+  (let [calls (atom [])
+        rfc "# RFC: haze\n## Purpose\nfade the horizon.\n## Model\n```mermaid\nflowchart TD\n  a-->b\n```\n## Work items\n- pure flight.haze with tests\n- draw-terrain! blends toward sky\n## Acceptance criteria\ntests pass; keep complexity in the gates."]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        (str/includes? content "reviewing this PLAN")
+                        (do (swap! calls conj :plan-review)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :plan-verify)
+                            {:content "No issues found." :finish-reason "stop"})
+                        ;; the RFC design owner: declare a plan carrying the rfc
+                        (str/includes? content "as an RFC")
+                        (do (swap! calls conj :design-rfc)
+                            {:content (str "```tool-call\n{\"name\":\"plan\",\"args\":"
+                                           "{\"files\":[\"src/flight/haze.clj\"],"
+                                           "\"tests\":[\"test/flight/haze_test.clj\"],"
+                                           "\"goal\":\"fade the horizon and cover both parts\","
+                                           "\"rfc\":" (pr-str rfc) "}}\n```")
+                             :finish-reason "stop"})
+                        (judge-call? messages)
+                        (do (swap! calls conj :diff-critic)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        ;; The board opens the epic from the run's problem itself, so it is a
+        ;; proper feature root and its decompose children are in the tree.
+        (run-board conn {:problem "Three parts to the flight's feel:\n- distance fade\n- tree clip\n- horizon blend"})
+        (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))]
+          (testing "triage routed to the RFC tier and the RFC design step ran"
+            (is (some #(= "rfc" (name (:decision %))) (journal/notes conn rid :triage))
+                "the epic triaged to the RFC tier (children triage to plan)")
+            (is (some #{:design-rfc} @calls))
+            (is (some #(true? (:rfc %)) (journal/notes conn rid :design))
+                "the epic's design step ran in RFC mode")
+            (is (some #{:plan-review} @calls) "the plan critic reviewed the RFC"))
+          (testing "the RFC is persisted as the epic's contract, stamped rfc"
+            (let [t (first (db/fetch conn ["SELECT id, plan, plan_kind FROM tasks WHERE plan IS NOT NULL"]))]
+              (is (some? t))
+              (is (= "rfc" (:plan_kind t)))
+              (is (str/includes? (str (:plan t)) "Work items"))
+              (is (str/includes? (str (:plan t)) "mermaid"))
+              (testing "and it decomposed into child tasks under the epic"
+                (is (<= 2 (count (db/fetch conn ["SELECT id FROM tasks WHERE parent_id = ?"
+                                                 (:id t)])))
+                    "the two work items became children"))
+              (testing "the end-of-phase critic validated the whole change and closed the epic"
+                (is (some? (journal/last-note conn rid :epic-review))
+                    "epic-review ran once the children landed")
+                (is (= "done" (:status (tasks/get-task conn (:id t))))
+                    "and the epic closed, not by closable-parents! but through the RFC critic")))))))))
+
+(deftest rfc-work-items-parses-the-breakdown-section
+  (let [work-items @(ns-resolve 'cells.board 'rfc-work-items)]
+    (is (= ["build storage" "build handlers" "wire templates"]
+           (work-items (str "# RFC\n## Purpose\np\n## Work items\n"
+                            "- build storage\n- build handlers\n* wire templates\n"
+                            "## Acceptance\ntests pass\n- not a work item"))))
+    (is (= [] (work-items "# RFC\n## Purpose\nno breakdown here")))))
+
+(deftest an-rfc-epic-hands-its-children-the-rfc-for-context
+  (cells/load-cells!)
+  (let [epic-rfc @(ns-resolve 'cells.board 'epic-rfc)
+        conn (db/open! ":memory:")
+        epic (tasks/create! conn {:title "feature" :type "feature"})
+        child (tasks/create! conn {:title "a part" :parent-id epic})
+        loose (tasks/create! conn {:title "unparented"})]
+    (tasks/update! conn epic {:plan "# RFC\n## Model\nthe design" :plan-kind "rfc"})
+    (is (str/includes? (str (epic-rfc conn (tasks/get-task conn child))) "the design")
+        "a child of an rfc epic gets the epic's RFC")
+    (is (nil? (epic-rfc conn (tasks/get-task conn loose)))
+        "a task with no rfc parent gets none")))
+
 (deftest the-board-works-its-own-tree-and-the-backlog-not-role-housekeeping
   ;; A role branch (supervisor, reviewer) creates run-scoped tasks for its own
   ;; bookkeeping — the task tool practically requires it. Those are not feature

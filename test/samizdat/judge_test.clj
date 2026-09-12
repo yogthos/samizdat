@@ -52,6 +52,180 @@
   (is (str/includes? (judge/critique-message :incomplete "- add a test") "add a test"))
   (is (str/includes? (judge/critique-message :abstain nil) "could not be confirmed")))
 
+(deftest a-judge-reply-is-read-past-its-reasoning
+  ;; MEASURED on run dbe64eea-successor of the arena sweep. GLM-5.3 cannot be
+  ;; told not to think, so the critic's reply arrived with its scratchpad
+  ;; inline. :findings-regex is "(?is)FINDINGS:\\s*(.+)$" — greedy from the
+  ;; FIRST `FINDINGS:`, which was inside the <think> block. So the stored
+  ;; findings began mid-thought, carried `</think>`, and were appended to the
+  ;; retry's problem text: the next owner was handed the critic's musings as
+  ;; part of its task, including a bullet reasoning its way to "Not a finding."
+  ;;
+  ;; message/strip-think-blocks already exists and select.clj already uses it
+  ;; for exactly this ("<think>…</think>\ncritic" on the first live selection
+  ;; it ever made). The judge path simply never called it. Stripping happens
+  ;; HERE rather than at the call sites because there are three critics —
+  ;; :board/review, :feature/critique and cells/critic.clj — and a fourth
+  ;; would forget.
+  (let [reply (str "<think>\n"
+                   "Let me list what I might flag.\n"
+                   "FINDINGS:\n"
+                   "- Maybe note: can't verify the counts — not a finding, or "
+                   "[low]? I'll skip it. Actually, plausible. Not a finding.\n"
+                   "First line: `VERDICT: INCOMPLETE`.</think>\n"
+                   "VERDICT: INCOMPLETE\n\n"
+                   "FINDINGS:\n\n"
+                   "- [high] The required visual exercise was never done.")]
+    (testing "the findings are the judge's, not its scratchpad"
+      (let [f (judge/findings reply)]
+        (is (some? f))
+        (is (not (str/includes? f "</think>"))
+            "the reasoning terminator leaked into the retry's task text")
+        (is (not (str/includes? f "Not a finding"))
+            "a bullet the judge talked itself OUT of is not a finding")
+        (is (str/includes? f "[high] The required visual exercise"))))
+    (testing "and the verdict comes from the verdict line, not the scratchpad"
+      (is (= :incomplete (judge/parse-verdict reply)))))
+  (testing "a scratchpad that contradicts the verdict cannot decide it"
+    ;; parse-verdict scans for the first line matching the verdict regex, so
+    ;; before stripping, a rehearsal line inside <think> could win.
+    (let [reply (str "<think>I'll say VERDICT: COMPLETE... no, on reflection "
+                     "the tests never ran.</think>\nVERDICT: INCOMPLETE\n\n"
+                     "FINDINGS:\n- [high] no test was run")]
+      (is (= :incomplete (judge/parse-verdict reply)))))
+  (testing "a reply that is ALL reasoning fails open rather than being parsed"
+    ;; An unterminated block is a truncated judge call: everything is
+    ;; rehearsal and none of it is a verdict. :complete is the fail-open
+    ;; default a judge that cannot answer must land on — it must never be
+    ;; able to wedge the loop.
+    (let [reply "<think>VERDICT: INCOMPLETE and here is why the tests are bad"]
+      (is (= :complete (judge/parse-verdict reply)))
+      (is (nil? (judge/findings reply)))))
+  (testing "an ordinary reply with no reasoning is untouched"
+    (let [reply "VERDICT: COMPLETE\n\nFINDINGS:\n- [low] a nit"]
+      (is (= :complete (judge/parse-verdict reply)))
+      (is (str/includes? (judge/findings reply) "[low] a nit")))))
+
+(deftest findings-split-into-one-segment-per-finding
+  ;; Ported from dirge's split_on_severity_lines. A new segment starts at each
+  ;; severity-labelled line, which samizdat's format already gives us — one
+  ;; finding per line, each prefixed with its severity tag — so the verify
+  ;; pass gets per-finding granularity without a format migration.
+  (let [text (str "- [high] The visual exercise was never done.\n"
+                  "  It said so in the task and the answer omits it.\n"
+                  "- [low] Colour duplication between palette and draw.\n"
+                  "- [medium] The answer's fade band contradicts the diff.")]
+    (is (= 3 (count (judge/finding-segments text))))
+    (is (str/includes? (first (judge/finding-segments text))
+                       "It said so in the task")
+        "a finding's continuation lines stay with it"))
+  (testing "preamble before the first severity line is its own segment, so a
+            summary line is never glued onto a finding"
+    (let [segs (judge/finding-segments "A one-line summary.\n- [high] a real one")]
+      (is (= 2 (count segs)))
+      (is (str/includes? (second segs) "[high]"))))
+  (is (empty? (judge/finding-segments "")))
+  (is (empty? (judge/finding-segments nil))))
+
+(deftest the-verify-pass-drops-only-what-it-explicitly-calls-a-false-positive
+  ;; Pass 2, ported from dirge (roborev's VerifyDedupePreamble). The judge
+  ;; re-reads each candidate against the diff and marks it VERIFIED or
+  ;; FALSE_POSITIVE. Every rule below is one dirge learned from a live
+  ;; misfire, so they are pinned rather than assumed.
+  (let [candidates (str "- [high] A real defect.\n"
+                        "- [low] A speculative one.\n")]
+    (testing "a FALSE_POSITIVE segment is dropped and the rest survive"
+      (let [reply (str "- [high] A real defect. VERIFIED.\n"
+                       "- [low] A speculative one. FALSE_POSITIVE — not in the diff.\n")
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? out "A real defect"))
+        (is (not (str/includes? out "A speculative one")))))
+    (testing "a segment carrying BOTH markers is kept — fail closed, because
+              clearing a possibly-real blocking finding is the worse error"
+      (let [reply "- [high] A real defect. VERIFIED, though arguably FALSE_POSITIVE.\n"
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? out "A real defect"))))
+    (testing "UNVERIFIED must not read as a VERIFIED marker (dirge's own note).
+              ONE candidate here on purpose: with two, the ambiguity rule below
+              would keep them both and the assertion would pass without the
+              UNVERIFIED guard doing anything — which is how it read on the
+              first run of this test."
+      (let [one "- [high] A real defect.\n"
+            reply "- [high] A real defect. FALSE_POSITIVE — UNVERIFIED speculation.\n"
+            out (judge/verified-findings {:reply reply :candidates one})]
+        (is (nil? out) "the UNVERIFIED substring was hiding the drop")))
+    (testing "prose about false positives is not the structured token"
+      (let [reply (str "- [high] A real defect. VERIFIED: this guards against "
+                       "false positives downstream.\n")
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? out "A real defect"))))
+    (testing "a clean pass clears everything"
+      (is (nil? (judge/verified-findings
+                 {:reply "No issues found." :candidates candidates}))))
+    (testing "FAIL-SAFE: an unparseable verify keeps the pass-1 candidates
+              rather than silently dropping real work"
+      (doseq [reply [nil "" "Hmm, hard to say."]]
+        (is (str/includes? (str (judge/verified-findings
+                                 {:reply reply :candidates candidates}))
+                           "A real defect")
+            (str "kept on: " (pr-str reply)))))
+    (testing "and a verify that drops SOME but re-emits nothing parseable is
+              ambiguous, so the candidates stand"
+      (let [reply "- [low] A speculative one. FALSE_POSITIVE.\n"
+            out (judge/verified-findings {:reply reply :candidates candidates})]
+        (is (str/includes? (str out) "A real defect")
+            "one explicit drop does not account for two candidates")))))
+
+(deftest duplicate-findings-are-merged-mechanically
+  ;; dirge's dedupe_findings: a cheap order-preserving backstop to the LLM's
+  ;; consolidation, keyed on severity plus the head of the finding normalised
+  ;; to alphanumerics.
+  (let [text (str "- [high] The fade band contradicts the diff.\n"
+                  "- [high] The fade band contradicts the diff!\n"
+                  "- [low] Colour duplication.\n")
+        out (judge/finding-segments (judge/dedupe-findings text))]
+    (is (= 2 (count out)))
+    (is (str/includes? (first out) "fade band"))
+    (is (str/includes? (second out) "Colour duplication"))))
+
+(deftest the-verify-prompt-carries-the-candidates-and-the-diff
+  (let [p (judge/verify-prompt {:candidates "- [high] A real defect."
+                                :diff "diff --git a/src/x.clj"})]
+    (is (str/includes? p "A real defect"))
+    (is (str/includes? p "diff --git a/src/x.clj"))
+    (is (or (str/includes? p "FALSE_POSITIVE") (str/includes? p "VERIFIED"))
+        "the verdict contract has to be in the instructions the judge reads")))
+
+(deftest a-review-names-which-pass-each-call-is
+  ;; MEASURED as a gap on sweep5 run 2: the critique note carried six real
+  ;; findings and side_calls held one row, a reflection. Both judge calls were
+  ;; invisible — no count, no tokens — so the record could not say whether the
+  ;; verify pass had run at all, nor what the second pass costs. That is the
+  ;; hole karamazov-2rqb names: a call the run paid for that nothing sums.
+  ;;
+  ;; So `chat` takes the pass as its first argument. The cell that owns the
+  ;; provider records the side call under that kind, and a reader can then see
+  ;; two rows per review that found something and one per clean review.
+  (let [seen (atom [])
+        chat (fn [pass _content]
+               (swap! seen conj pass)
+               (if (= :review pass)
+                 "VERDICT: INCOMPLETE\n\nFINDINGS:\n- [high] A real defect."
+                 "- [high] A real defect. VERIFIED."))
+        out (judge/review {:chat chat :requirement "r" :diff "d"
+                           :evidence "e" :answer "a"})]
+    (is (= [:review :verify] @seen)
+        "both passes, each naming itself")
+    (is (= :incomplete (:verdict out)))
+    (is (str/includes? (:findings out) "A real defect")))
+  (testing "a clean review never makes the second call, so it costs one row"
+    (let [seen (atom [])
+          chat (fn [pass _] (swap! seen conj pass) "VERDICT: COMPLETE")
+          out (judge/review {:chat chat :requirement "r" :diff "d"
+                             :evidence "e" :answer "a"})]
+      (is (= [:review] @seen))
+      (is (nil? (:findings out))))))
+
 (deftest evidence-block-is-deterministic-facts
   (let [e (judge/evidence [{:tool_name "edit_file" :args {:path "a.clj"} :category "success"}
                            {:tool_name "shell" :args {:command "jolt -M:test"} :category "failure"}

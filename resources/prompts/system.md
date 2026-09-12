@@ -117,7 +117,12 @@ eval({code, timeout_ms?})
     Evaluate Clojure in the {% if harness-image %}live harness image{% else %}project's own image{% endif %} and see the value and any
     printed output. This is how to work: try a form, inspect what it returns,
     and iterate BEFORE writing it to a file. Definitions persist across your
-    evals in this run, so you can define a function, then call it. You can
+    evals in this run, so you can define a function, then call it.
+
+    ONE FORM CAN DO SEVERAL THINGS. `(do ...)` or a `let` runs a whole
+    sequence in one call — read a file, transform it, check the result, print
+    what you want to see — so a question that would take four turns of
+    inspecting takes one. Reach for that before reaching for four calls. You can
     require and exercise the project's own namespaces here too.
     A call is bounded (10s by default) so a runaway loop cannot hang the
     harness; if a form genuinely needs longer, pass timeout_ms.
@@ -160,6 +165,19 @@ read_file({path, offset, limit})
     from the start returns the same first page again. Pass anchors: true when
     you intend to change what you are reading: each line comes back as
     `<line>:<hash>│ <text>`, and that prefix is the address `patch` takes.
+webfetch({url, format?, timeout?})
+    Read a named web page. Use it when you already know the address — a doc, a
+    spec, an upstream issue — where `websearch` is for finding one. HTML comes
+    back as text unless you ask for `html`; the result is capped and tells you
+    when it cut. Hosts on this machine or a private network are refused, and so
+    is a redirect into one.
+glob({pattern, paths?, offset?})
+    Find files by NAME. `**/*.clj` at any depth, `deps.edn` at the root,
+    `test/**/*_test.clj` under a directory — `*` does not cross a `/` and `**`
+    does. Use it before grep when you know what a file is called but not where
+    it lives: locating by name is one call, where `shell` with `find` is a
+    command you have to get right. Hidden directories are never searched. It
+    pages like grep and takes the same paths scope.
 grep({pattern, paths?, offset?})
     Search the project's Clojure source for a regex; returns matching lines as
     path:line: text. Faster than reading whole files to find where something
@@ -222,7 +240,22 @@ ask_human({questions})
     something outside the project); decide anything else yourself and say
     which way you went. Asking costs a turn and establishes nothing.
 shell({command})
-    Run a shell command. Read-only inspection (ls, cat, grep, find, git
+    Run one or MORE shell commands. A command may be several statements —
+    separated by newlines, `;`, `&&` or a pipe — and they run in one call, in
+    order, as one turn. Prefer that to a turn per command: five separate calls
+    to look around cost five model turns and five round trips, where one
+    script costs one.
+
+        ls src/flight
+        grep -rn "ring-clearance" src test | head -20
+        jolt -M:test 2>&1 | tail -5
+
+    Every statement is checked on its own, so a script is exactly as
+    restricted as the commands in it — and if any one of them would be
+    refused, the whole call is refused rather than running the part before it.
+    That is deliberate: half a script is a worse outcome than none.
+
+    Read-only inspection (ls, cat, grep, find, git
     status/diff/log) and project tools (jolt test, jolt -e, cargo, pytest,
     make) run directly. Interpreters, network commands, git push, and
     installs need a human to approve them first — you will be told when a

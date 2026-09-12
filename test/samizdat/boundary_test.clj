@@ -161,6 +161,11 @@
    "read_digest" {:reach :host-bytes
                   :also "files/resolve-for-read like read_file; outbound HTTP to the reader's provider"}
    "grep"        {:reach :host-bytes}
+   ;; NAMES ONLY, never contents — glob answers which paths exist and reads
+   ;; none of them. Still :host-bytes: a path IS a fact about the machine, and
+   ;; a tree's layout can carry a customer name or an unreleased product as
+   ;; readily as a file's body can.
+   "glob"        {:reach :host-bytes}
    "lsp"         {:reach :host-bytes}
    "skill"       {:reach :host-bytes}
    "write_file"  {:reach :host-bytes}
@@ -180,6 +185,18 @@
    ;; the redaction boundary like every other tool result.
    "websearch"   {:reach :spawns-process
                   :also "outbound HTTP only; query is model text, no local read"}
+   ;; EGRESS WITH A MODEL-COMPOSED DESTINATION, which websearch above is not:
+   ;; there the query is model text but the endpoint is fixed, and here the
+   ;; URL itself comes from the model. That is the whole risk — without a
+   ;; check it reaches loopback, link-local (169.254.169.254 is the cloud
+   ;; metadata endpoint) or anything on the private network the harness sits
+   ;; in. webfetch/allowed? refuses those and re-checks the redirect, because
+   ;; a public URL that 302s inward defeats a check made only before the
+   ;; request. The response is third-party text entering model space and
+   ;; crosses the redaction boundary like any other tool result; nothing
+   ;; renders or executes it.
+   "webfetch"    {:reach :spawns-process
+                  :also "outbound HTTP with a model-supplied URL; webfetch/allowed? refuses loopback, link-local and RFC1918, and re-checks the redirect target"}
    "doc"         {:reach :in-process     :also "reads the live image, same as eval"}
    "complete"    {:reach :in-process     :also "reads the live image, same as eval"}
 

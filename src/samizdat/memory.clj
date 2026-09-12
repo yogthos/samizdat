@@ -32,7 +32,9 @@
   reads it through the lexicon at call time. Nothing here decides WHEN to
   remember or what to do about a recalled memory — that is the loop's business
   (RFC-001)."
-  (:require [samizdat.lexicon :as lexicon]))
+  (:require [clojure.set :as set]
+            [clojure.string :as str]
+            [samizdat.lexicon :as lexicon]))
 
 (defn policy
   "The memory model's constants, from gates.edn."
@@ -157,6 +159,75 @@
   ([salience p]
    (max (:decay-floor p)
         (- (double (or salience (base-salience :note p))) (:disuse-decay p)))))
+
+(defn contradicts?
+  "Whether `a` and `b` say opposite things about the same subject.
+
+  LEXICAL AND DELIBERATELY NARROW. It looks for one claim asserting that
+  something works and another asserting the same thing does not, over the same
+  substantive words. It cannot judge meaning and does not try: a wide
+  contradiction detector that fires on disagreement in general would refuse
+  every refinement of an existing memory, which is most of what a store
+  learns.
+
+  The shape it exists for is karamazov-ko5b, one door along. The supervisor
+  wrote `require of any flight.* namespace fails` while its own turns showed
+  requires returning :loaded — a claim and its negation over the same subject,
+  in the same run, with nothing in the path to notice."
+  [a b]
+  (let [p (policy)
+        neg (lexicon/wordlist :negation-markers)
+        min-word (long (:contradiction-min-word p))
+        min-shared (long (:contradiction-min-shared p))
+        words (fn [t] (into #{} (comp (map str/lower-case)
+                                      (remove #(< (count %) min-word)))
+                            (str/split (str t) #"[^A-Za-z0-9_.*/-]+")))
+        negated? (fn [t] (let [l (str/lower-case (str t))]
+                           (boolean (some #(str/includes? l (str % " ")) neg))))
+        wa (words a) wb (words b)
+        shared (set/intersection wa wb)]
+    (boolean (and (>= (count shared) min-shared)
+                  (not= (negated? a) (negated? b))))))
+
+(defn update-policy
+  "What to do with a new observation, given the memory it matches. PURE.
+
+  Ported from lemmalog's AgentMemory, whose value is not the four outcomes but
+  that they are ONE named deterministic policy rather than the same decisions
+  made differently by each writer:
+
+    no matching memory                  -> :add
+    the same thing, said again          -> :noop   (corroborate, do not duplicate)
+    the same subject, refined           -> :update (restate, carry the record)
+    the same subject, CONTRADICTED      -> :escalate
+
+  THE FOURTH ARM IS THE ONE SAMIZDAT DID NOT HAVE. distill! already implements
+  the first three informally and says why — a recurring finding is the same
+  knowledge confirmed, so it corroborates rather than duplicating. What no
+  writer had was a way to say `these two cannot both be true, somebody decide`.
+  An ambiguous memory simply landed, and landing quietly is how a claim that
+  should have been questioned became standing.
+
+  It is also where lemmalog's entity-resolution discipline lands for us: a
+  local with two canonicals derives a conflict INSTEAD OF MERGING. Here the
+  pattern key is the canonical spelling and the conflict is two memories
+  claiming it while contradicting each other — escalate, never overwrite,
+  because overwriting picks a winner no evidence chose.
+
+  Deterministic first: escalation is what the rules could not decide, not the
+  default."
+  [{:keys [content]} existing]
+  (cond
+    (nil? existing) {:action :add :reason :no-match}
+
+    (= (str/trim (str content)) (str/trim (str (:content existing))))
+    {:action :noop :reason :identical :id (:id existing)}
+
+    (contradicts? content (:content existing))
+    {:action :escalate :reason :contradicts :id (:id existing)
+     :held (:content existing)}
+
+    :else {:action :update :reason :refines :id (:id existing)}))
 
 (defn rank
   "Memories, most worth reading first. TIES KEEP THE CALLER'S ORDER: sort-by
