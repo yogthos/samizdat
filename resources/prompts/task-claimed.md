@@ -7,6 +7,13 @@ CONTRACT — what the work must satisfy:
 {% endif %}{% if tests %}
 TESTS — what defines delivery:
 {{tests}}
+{% endif %}{% if rfc %}
+This task was decomposed from an approved RFC. Build within it — its Model and
+call-graph are the agreed design, and the whole change is validated against it
+at the end. Do not re-decide the approach; implement your part of it.
+
+RFC:
+{{rfc}}
 {% endif %}
 {% if surface %}{{surface}}
 

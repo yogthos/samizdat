@@ -648,11 +648,15 @@
   to satisfy a counter. Whether the diff is real is the ship gate's question
   and it asks git; this ledger only answers whether the branch went where it
   said it would go."
-  [branch {:keys [files tests goal]}]
+  [branch {:keys [files tests goal rfc]}]
   (let [files (vec (distinct (map norm-path (remove nil? (concat files tests)))))]
     (assoc branch :repl-plan {:files files
                               :tests (vec (map norm-path (remove nil? tests)))
-                              :goal (some-> goal str not-empty)}
+                              :goal (some-> goal str not-empty)
+                              ;; The RFC document, when the design-rfc step
+                              ;; produced one — free prose, not a path, so it is
+                              ;; not folded into :files. nil for a lightweight plan.
+                              :rfc (some-> rfc str not-empty)}
                   :repl-written (or (:repl-written branch) #{}))))
 
 (defn plan

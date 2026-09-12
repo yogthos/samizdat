@@ -155,7 +155,11 @@
   (doseq [t (tasks/board conn {:run-id run-id})
           :let [kids (tasks/children-of conn (:id t))]
           :when (and (seq kids) (not-any? open? kids) (open? t)
-                     (not (delegated? kids)))]
+                     (not (delegated? kids))
+                     ;; An RFC epic is NOT auto-closed when its children land —
+                     ;; the end-of-phase critic (:board/epic-review) validates
+                     ;; the whole diff against the RFC first (karamazov-dq1r).
+                     (not= "rfc" (:plan_kind t)))]
     (tasks/close! conn (:id t))))
 
 (defn- unblock-assembled!
@@ -178,6 +182,22 @@
     (journal/note! conn run-id :board-unblock
                    {:data {:task (:id t) :pieces (count kids)}})
     (tasks/update! conn (:id t) {:status "open"})))
+
+(defn- ready-rfc-epics
+  "RFC epics whose children have all closed: the whole change is built and
+  waiting to be validated against the RFC by the end-of-phase critic
+  (karamazov-dq1r). Still open (epic-review closes it, not closable-parents!),
+  in this run's tree, with children and none of them open."
+  [conn run-id]
+  (->> (tasks/board conn {:run-id run-id})
+       (filter #(= "rfc" (:plan_kind %)))
+       (filter open?)
+       ;; the same scoping workable uses: the run's own tree, or the unclaimed
+       ;; backlog (run_id nil).
+       (filter #(or (nil? (:run_id %)) (board-tree? conn run-id %)))
+       (filter (fn [t] (let [kids (tasks/children-of conn (:id t))]
+                         (and (seq kids) (not-any? open? kids)))))
+       vec))
 
 (cell/defcell :board/plan
   {:doc "Make sure the board has work. An existing board is left alone — a
@@ -287,6 +307,8 @@
                      [:board/outcome :any] [:board/decision :any]
                      [:board/answer :any] [:board/baseline :any]
                      [:branch :map]]
+             :epic-review [:map [:board/verdict :keyword] [:board/task :any]
+                           [:board/branch-id :any] [:branch :map]]
              :empty [:map [:board/verdict :keyword]]}]}
   (fn [{:keys [conn run-id root]} {:keys [branch] :as data}]
     (release-stale-claims! conn run-id)
@@ -296,15 +318,32 @@
     ;; honest record of work still to do — which means the board would hand it
     ;; straight back to this same loop, forever. What this run has already
     ;; failed at is not workable BY THIS RUN.
-    (let [tried (set (map :task (:board/left data)))
+    (let [ready-epic (first (ready-rfc-epics conn run-id))
+          tried (set (map :task (:board/left data)))
           worked (or (:board/worked data) 0)
           queue (when (< worked (max-tasks))
                   (remove #(contains? tried (:id %)) (workable conn run-id)))]
-    (if-let [t (first queue)]
+    (cond
+      ;; An RFC epic whose children have all landed goes to the end-of-phase
+      ;; critic to be validated against its RFC, before any other work.
+      ready-epic
+      (let [bid (state/branch-id-for worked (or (:board/round data) 0)
+                                     (str "epic-" (:title ready-epic)))]
+        (journal/note! conn run-id :board-task
+                       {:branch-id bid
+                        :data {:task (:id ready-epic)
+                               :title (str "epic-review: " (:title ready-epic))}})
+        (assoc data :board/task (:id ready-epic) :board/branch-id bid
+               :board/verdict :epic-review
+               :branch (assoc branch :task {:id (:id ready-epic)
+                                            :title (:title ready-epic)})))
+
+      (first queue)
       ;; Round-scoped, like the fan-out's W<i>v<rev>: the feature loop runs the
       ;; board again on a revise round, and a second T0 would append this
       ;; round's turns to the last round's branch.
-      (let [n worked
+      (let [t (first queue)
+            n worked
             round (or (:board/round data) 0)
             ;; The id NAMES THE TASK. It used to be the owner index alone, so
             ;; every task that owner ever worked shared one id — run 8710067f
@@ -351,7 +390,8 @@
                :board/baseline (gitdiff/baseline root)
                :board/verdict :task
                :branch (assoc branch :task {:id (:id t) :title (:title t)})))
-      (assoc data :board/verdict :empty)))))
+
+      :else (assoc data :board/verdict :empty)))))
 
 (defn surface-block
   "THE SURFACE a task sits in: the overarching goal and the sibling parts, one
@@ -411,6 +451,14 @@
 
 (defn- plan-phase-cfg [] (gates/threshold :plan-phase))
 
+(defn- list-marker?
+  "Whether the text carries a bulleted or numbered list — a line starting with
+  -, *, + or a number followed by . or ). The shape of 'several things wearing
+  one title'. The earlier regex only matched numbered lists, so a dash-bulleted
+  task read as one change (karamazov-dq1r)."
+  [text]
+  (boolean (re-find #"(?m)^\s*(?:[-*+]\s|\d+[.)]\s)" text)))
+
 (defn- looks-trivial?
   "The triage heuristic: whether a task is obviously one small change and the
   plan phase can be skipped (karamazov-vale).
@@ -429,16 +477,68 @@
   [task]
   (let [text (str (:body task) " " (:contract task) " " (:title task))
         words (count (re-seq #"\S+" text))
-        listy? (or (re-find #"(?m)^\s*[-*\d]+[.)]\s" text)
+        listy? (or (list-marker? text)
                    (<= 2 (count (re-seq #"(?i)\band\b" text))))]
     (and (< words (long (:skip-under-words (plan-phase-cfg))))
          (not listy?))))
 
+(defn- multipart?
+  "The RFC tier of triage: whether a task is big or plural enough to warrant a
+  full RFC + task breakdown rather than a single lightweight plan. An explicit
+  bulleted/numbered list is several things wearing one title (the shape
+  task-claimed.md warns about); a statement over :rfc-min-words is too big for
+  one plan to hold. Prose 'and's alone do NOT trigger it — that signal already
+  decides trivial-vs-plan in looks-trivial?, and reusing it here would RFC
+  every ordinary two-clause task."
+  [task]
+  (let [cfg (plan-phase-cfg)
+        text (str (:body task) " " (:contract task) " " (:title task))
+        words (count (re-seq #"\S+" text))]
+    (or (and (:rfc-when-listy cfg) (list-marker? text))
+        (>= words (long (:rfc-min-words cfg))))))
+
+(defn- rfc-child?
+  "Whether this task was derived from an RFC — its parent epic carries a
+  persisted plan (the RFC). Such a task must NOT open its own RFC: the epic's
+  RFC already covers it, and a recursive RFC per child would never terminate."
+  [conn task]
+  (boolean (when-let [pid (:parent_id task)]
+             (not (str/blank? (str (:plan (tasks/get-task conn pid))))))))
+
+(defn- epic-rfc
+  "The RFC of this task's parent epic, when the parent was RFC-planned — the
+  design a child builds within, so its change coheres with the whole rather
+  than the child re-deciding the approach. nil when the task is not an RFC
+  child (karamazov-dq1r makes tasks.plan a READ, not only a write)."
+  [conn task]
+  (when-let [pid (:parent_id task)]
+    (let [p (tasks/get-task conn pid)]
+      (when (= "rfc" (:plan_kind p)) (:plan p)))))
+
+(defn- rfc-work-items
+  "The concrete tasks an RFC breaks into: the bullet lines under its
+  '## Work items' heading, marker stripped. Empty when the RFC names none —
+  then the epic is worked as one task rather than decomposed."
+  [rfc]
+  (let [lines (str/split-lines (str rfc))
+        section (->> lines
+                     (drop-while #(not (re-find #"(?i)^#+\s*work items\b" %)))
+                     rest
+                     (take-while #(not (re-find #"^#+\s" %))))]
+    (into []
+          (comp (map str/trim)
+                (filter #(re-find #"^[-*+]\s" %))
+                (map #(str/replace % #"^[-*+]\s+" ""))
+                (remove str/blank?))
+          section)))
+
 (cell/defcell :board/triage
-  {:doc "Decide whether this claimed task gets a plan phase or goes straight to
-        construction. Cheap and deterministic — see looks-trivial?. :skip when
-        the phase is disabled or the task is obviously one small change; :plan
-        otherwise."
+  {:doc "Decide how this claimed task enters construction: :skip straight to
+        work, :plan for a lightweight Goal/Files/Tests plan, or :rfc for a full
+        RFC + task breakdown (karamazov-dq1r). Cheap and deterministic — see
+        looks-trivial? and multipart?. :skip when the phase is disabled or the
+        task is obviously one small change; :rfc when it is multi-part and not
+        already a child derived from an RFC; :plan otherwise."
    :effects [:db]
    :requires [:conn :run-id]
    :input  [:map [:board/task {:optional true} :any]]
@@ -448,6 +548,8 @@
           decision (cond
                      (not (:enabled (plan-phase-cfg))) :skip
                      (looks-trivial? t) :skip
+                     (rfc-child? conn t) :plan
+                     (multipart? t) :rfc
                      :else :plan)]
       (journal/note! conn run-id :triage {:data {:task task :decision decision}})
       (assoc data :board/plan-decision decision))))
@@ -472,6 +574,10 @@
     (safely conn run-id :design data
       (fn []
         (let [attempt (or (:board/plan-attempts data) 0)
+              ;; RFC mode when triage said so: a fuller brief and the RFC
+              ;; document itself becomes the plan-text the critic reviews and
+              ;; the epic persists. Otherwise the lightweight Goal/Files/Tests.
+              rfc? (= :rfc (:board/plan-decision data))
               t (tasks/get-task conn task)
               did (str "design-" branch-id (when (pos? attempt) (str "r" attempt)))
               findings (:board/design-findings data)
@@ -479,7 +585,7 @@
                      (not (str/blank? (str findings)))
                      (str "\n\nA review of your last planning step sent this "
                           "back. Address it:\n" findings))
-              suffix (prompt/prompt "design-brief")
+              suffix (prompt/prompt (if rfc? "rfc-brief" "design-brief"))
               ictx (let [rc (wf/role-ctx ctx :implementor)
                          cap (gates/threshold :board-design-turns)]
                      (cond-> rc
@@ -496,14 +602,20 @@
               ;; {:done-branch}/{:branches}. state/plan reads what the owner
               ;; declared with the `plan` tool.
               plan (some-> (:branch out) state/plan)
-              plan-text (when plan
-                          (str "Goal: " (:goal plan)
-                               "\nFiles: " (str/join ", " (:files plan))
-                               "\nTests: " (str/join ", " (:tests plan))))]
+              plan-text (if rfc?
+                          ;; the RFC IS the plan-text; nil (no RFC declared)
+                          ;; falls to the design-review re-prompt like any blank.
+                          (:rfc plan)
+                          (when plan
+                            (str "Goal: " (:goal plan)
+                                 "\nFiles: " (str/join ", " (:files plan))
+                                 "\nTests: " (str/join ", " (:tests plan)))))]
           (journal/note! conn run-id :design
                          {:data {:task task :attempt (inc attempt)
+                                 :rfc (boolean rfc?)
                                  :declared (boolean plan-text)}})
           (assoc data :board/plan-text plan-text
+                 :board/plan-decision (:board/plan-decision data)
                  :board/plan-attempts (inc attempt))))
       (fn [d] (assoc d :board/plan-text nil
                      :board/plan-attempts (inc (or (:board/plan-attempts d) 0)))))))
@@ -602,26 +714,166 @@
    :effects [:db]
    :requires [:conn :run-id]
    :input  [:map [:board/task {:optional true} :any]
-            [:board/plan-text {:optional true} :any]]
+            [:board/plan-text {:optional true} :any]
+            [:board/plan-decision {:optional true} :any]]
    :output [:map [:board/approve-decision :keyword]]}
-  (fn [{:keys [conn run-id]} {:keys [board/task board/plan-text] :as data}]
+  (fn [{:keys [conn run-id]} {:keys [board/task board/plan-text board/plan-decision] :as data}]
     (when (seq (str plan-text))
-      (try (tasks/update! conn task {:plan (str plan-text)}) (catch Throwable _ nil)))
+      ;; An RFC is stamped plan_kind "rfc" so decompose and the epic-review can
+      ;; tell it from a lightweight plan without sniffing the text.
+      (try (tasks/update! conn task (cond-> {:plan (str plan-text)}
+                                      (= :rfc plan-decision) (assoc :plan-kind "rfc")))
+           (catch Throwable _ nil)))
     (let [{:keys [mode wait-ms on-timeout]} (approval/policy)
-          decision
+          approved?
           (if (or (not= :block mode) (str/blank? (str plan-text)))
-            :go
+            true
             (let [id (approval/request!
                       {:run-id run-id :kind :plan
                        :details (str "Plan for task " task)
                        :questions [{:question (str "Approve this plan?\n\n" plan-text)
                                     :options ["approve" "request changes"]}]})
                   ans (approval/await! id wait-ms {:decision (or on-timeout :deny)})]
-              (if (contains? #{:approve :allow} (some-> (:decision ans) keyword))
-                :go :rework)))]
+              (contains? #{:approve :allow} (some-> (:decision ans) keyword))))
+          ;; An approved RFC goes to DECOMPOSE (break into child tasks) rather
+          ;; than straight to construction; a lightweight plan goes to :work.
+          decision (cond
+                     (not approved?) :rework
+                     (= :rfc plan-decision) :decompose
+                     :else :go)]
       (journal/note! conn run-id :plan-approval
                      {:data {:task task :mode mode :decision decision}})
       (assoc data :board/approve-decision decision))))
+
+(cell/defcell :board/decompose
+  {:doc "Break an approved RFC into the concrete child tasks it named, under the
+        epic (karamazov-dq1r). The RFC's '## Work items' bullets each become an
+        open task parented to the epic; the board then works them in turn (they
+        skip their own RFC — rfc-child?). The epic's own claim is released so it
+        is a container, not workable, and it stays open until its children close
+        and the end-of-phase critic has validated the whole diff against the RFC.
+
+        :single when the RFC named no work items — then there is nothing to
+        decompose and the epic is worked as one task, the RFC its contract.
+        Fail-open to :single, so a decompose that throws still builds something."
+   :effects [:db]
+   :requires [:conn :run-id]
+   :input  [:map [:board/task {:optional true} :any]
+            [:board/plan-text {:optional true} :any]
+            [:board/branch-id {:optional true} :any]
+            [:board/baseline {:optional true} :any]]
+   :output [:map [:board/decompose-decision :keyword]]}
+  (fn [{:keys [conn run-id]} {:keys [board/task board/plan-text board/branch-id
+                                     board/baseline] :as data}]
+    (safely conn run-id :decompose data
+      (fn []
+        (let [t (tasks/get-task conn task)
+              rfc (or (not-empty (str plan-text)) (:plan t))
+              items (rfc-work-items rfc)
+              created (when (seq items)
+                        (doall (keep (fn [item]
+                                       (try (tasks/create!
+                                             conn {:title (title-of item) :body item
+                                                   :contract item :parent-id task
+                                                   :run-id run-id})
+                                            (catch Throwable _ nil)))
+                                     items)))
+              decomposed? (boolean (seq created))]
+          (when decomposed?
+            ;; the epic is a container now — release its claim so the board
+            ;; works the children rather than the epic itself.
+            (try (tasks/release! conn task branch-id) (catch Throwable _ nil))
+            ;; Remember the pre-construction baseline: the end-of-phase critic
+            ;; validates the WHOLE change (all children) against the RFC, so it
+            ;; diffs from here, not from any one child's baseline.
+            (journal/note! conn run-id :epic-baseline
+                           {:data {:task task :baseline (str baseline)}}))
+          (journal/note! conn run-id :decompose
+                         {:data {:task task :items (count items)
+                                 :created (count (or created []))
+                                 :decision (if decomposed? "decomposed" "single")}})
+          (assoc data :board/decompose-decision (if decomposed? :decomposed :single))))
+      (fn [d] (assoc d :board/decompose-decision :single)))))
+
+(cell/defcell :board/epic-review
+  {:doc "The END-OF-PHASE critic (karamazov-dq1r): once an RFC epic's children
+        have all landed, validate the WHOLE change against the RFC — the same
+        two-pass judge the diff critic uses, with the RFC as the requirement and
+        the diff from the epic's pre-construction baseline, plus the code-quality
+        metrics over everything the epic touched. This is what makes the RFC the
+        acceptance contract, not just a plan.
+
+        Pass → close the epic. A blocking gap → one fix task under the epic
+        carrying the findings, which the board works before the epic is ready
+        again; bounded by :board-review-attempts, and FAIL-OPEN past it (a plan
+        the critic keeps refusing must not hold the run open forever). A broken
+        critic closes the epic rather than wedging."
+   :effects [:net :db]
+   :requires [:conn :run-id :root]
+   :input  [:map [:board/task {:optional true} :any]]
+   :output [:map [:board/epic-decision :keyword]]}
+  (fn [{:keys [conn run-id root] :as ctx} {:keys [board/task] :as data}]
+    (safely conn run-id :epic-review data
+      (fn []
+        (let [t (tasks/get-task conn task)
+              rfc (str (:plan t))
+              baseline (->> (journal/notes conn run-id :epic-baseline)
+                            (filter #(= task (:task %)))
+                            last :baseline not-empty)
+              diff (gitdiff/diff root baseline)
+              rows (map (fn [r] (update r :args
+                                        #(try (json/read-str (str %) :key-fn keyword)
+                                              (catch Throwable _ {}))))
+                        (journal/turns conn run-id))
+              {:keys [llm-adapter llm-config]} (wf/role-ctx ctx :critic)
+              chat (fn [pass content]
+                     (let [r (try (llm/chat llm-adapter llm-config
+                                            [{:role "user" :content content}])
+                                  (catch Throwable _ nil))]
+                       (try (journal/record-side-call!
+                             conn run-id {:kind (keyword (str "epic-" (name pass)))
+                                          :role :critic :model (:model llm-config)
+                                          :usage (:usage r)})
+                            (catch Throwable _ nil))
+                       (:content r)))
+              reviewed (try (judge/review
+                             {:chat chat :requirement rfc
+                              :evidence (judge/evidence rows) :diff diff
+                              :answer "All of the RFC's work items were implemented."})
+                            (catch Throwable _ nil))
+              qf (try (metrics/review
+                       (files/read-sources root (gitdiff/changed-files root baseline))
+                       (gates/threshold :code-quality))
+                      (catch Throwable _ nil))
+              quality (when (seq qf) (prompt/render "metrics-findings" {:findings qf}))
+              all (not-empty (str/join "\n\n"
+                                       (remove str/blank?
+                                               [(str (:findings reviewed)) (str quality)])))
+              blocking (when all (try (judge/blocking-findings (str "FINDINGS:\n" all))
+                                      (catch Throwable _ nil)))
+              attempt (inc (count (filter #(= task (:task %))
+                                          (journal/notes conn run-id :epic-review))))
+              spent? (>= attempt (max-review-attempts))
+              pass? (or (nil? reviewed)
+                        (and (= :complete (:verdict reviewed)) (not blocking)))
+              decision (if (or pass? spent?) :pass :revise)]
+          (when (= :pass decision) (tasks/close! conn task))
+          (when (= :revise decision)
+            (try (tasks/create!
+                  conn {:title (title-of (str "RFC gaps: " (:title t)))
+                        :body (str "The change does not yet satisfy the RFC. "
+                                   "Address these before it is accepted:\n" all)
+                        :contract (str "Close the gaps the RFC critic found:\n" all)
+                        :parent-id task :run-id run-id})
+                 (catch Throwable _ nil)))
+          (journal/note! conn run-id :epic-review
+                         {:data {:task task :attempt attempt :decision (name decision)
+                                 :verdict (some-> reviewed :verdict)
+                                 :findings (judge/for-the-record :reply-chars all)}})
+          (assoc data :board/epic-decision decision)))
+      (fn [d]
+        (try (tasks/close! conn task) (catch Throwable _ nil))
+        (assoc d :board/epic-decision :pass)))))
 
 (cell/defcell :board/work
   {:doc "Run the implementor loop on the claimed task, on its own branch, until
@@ -698,6 +950,11 @@
                                                  {:id task :title (:title t)
                                                   :contract (:contract t)
                                                   :tests (:tests t)
+                                                  ;; The RFC this task was
+                                                  ;; decomposed from, when its
+                                                  ;; epic was RFC-planned — the
+                                                  ;; design to build within.
+                                                  :rfc (epic-rfc conn t)
                                                   ;; WHERE THIS FITS. The
                                                   ;; parent holds the surface;
                                                   ;; the child gets its own

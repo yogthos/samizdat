@@ -57,22 +57,68 @@ strategy implemented the round.
 ## Model
 
 ```
-plan ──> next ──────────────> finish        (:empty — board clear, or only
-          │  ^                               tasks this run gave up on, or
-   (:task)│  │(:pass | :give-up)             the runaway guard)
-          v  │
-         work ──> review
-           ^         │
-           └─────────┘ (:revise, findings appended, same owner)
+plan ─> next ──────────────────────────> finish   (:empty — board clear, or only
+         │ ^ ^                                      tasks this run gave up on, or
+  (:task)│ │ │(:epic-review)                        the runaway guard)
+         v │ └──────────> epic-review ──> next      (RFC epic, children all done:
+      triage                                         validate whole diff vs the RFC;
+      │ │ └─(:skip)──────────────────> work ─> review   pass closes it, a gap
+      │ │                                ^        │      spawns a fix child)
+      │ │(:plan|:rfc, mode-aware)        └────────┘ (:revise, same owner)
+      v v
+    design ─> dcritic ─(:ok)─> approve ─(:go)───────> work
+                ^  │(:revise)     │(:decompose)
+                └──┘              v
+                              decompose ─(:decomposed)─> next   (children on the board)
+                                        ─(:single)─────> work   (RFC named no items)
 ```
+
+The pre-construction PLAN PHASE (`triage`→`design`→`dcritic`→`approve`, and for a
+multi-part task `decompose` and later `epic-review`) sits between claiming a task
+and building it — the one place the implementer had no gate (karamazov-vale,
+karamazov-dq1r). See "The plan phase" below.
 
 | node | cell | what it decides |
 |---|---|---|
 | `plan` | `:board/plan` | Ensure the board has work. An existing board is left alone (a revise round works what is open). Else `config :run :subtasks` if the caller supplied a split, else **one** task from the run's problem — never an invented split. On a nested revise round with an empty board, the review findings themselves become a task. |
-| `next` | `:board/next` | Claim the next **workable** task — open, a **leaf** (no open children), oldest first — to a fresh branch `T<n>` (`T<n>v<round>` nested), pin its statement, and stamp `gitdiff/baseline` for it. `:empty` when nothing is workable *by this run*: tasks it already gave up on are excluded (they stay open for the next run, but re-claiming them here is the loop that never ends), and the `:board-max-tasks` runaway guard counts. Also closes any parent whose children are all done. |
+| `next` | `:board/next` | Claim the next **workable** task — open, a **leaf** (no open children), oldest first — to a fresh branch `T<n>` (`T<n>v<round>` nested), pin its statement, and stamp `gitdiff/baseline` for it. Before that, if an RFC epic's children have all landed it routes to `epic-review` (`:epic-review`) — the whole change is validated before anything else. `:empty` when nothing is workable *by this run*: tasks it already gave up on are excluded, and the `:board-max-tasks` runaway guard counts. Closes any non-RFC parent whose children are all done (an RFC epic closes only through `epic-review`). |
+| `triage` | `:board/triage` | Decide how the task enters construction (karamazov-vale, karamazov-dq1r). Deterministic, no model call: `:skip` (phase off, or short and no list) straight to `work`; `:rfc` (multi-part — an explicit list, or over `:rfc-min-words`, and not already an RFC child) to the RFC tier; `:plan` (ordinary) to a lightweight plan. |
+| `design` | `:board/design` | A bounded owner sub-loop (`:board-design-turns`) that reads code and declares a plan without building. Mode-aware: under the RFC brief it declares a full RFC (a mermaid call-graph, work items, acceptance criteria) which becomes the plan text; under the lightweight brief, a Goal/Files/Tests. |
+| `dcritic` | `:board/design-review` | The PLAN critic — `judge/review-plan`, the same two-pass verify the diff critic uses, on the plan against the requirement. `:ok` to `approve`; `:revise` back to `design`, bounded by `:max-design-attempts`, fail-open. A blank plan is sent back once, then fails open. |
+| `approve` | `:board/approve` | The gate before construction. Headless the critic already decided, so this persists the plan as the task's contract (`tasks.plan`) and passes through; attended (`:approval :mode :block`) it also asks the person. `:go` to `work` for a lightweight plan, `:decompose` for an RFC (stamped `plan_kind` "rfc"), `:rework` back to `design`. |
+| `decompose` | `:board/decompose` | Break an approved RFC into the child tasks its "## Work items" named, under the epic, and release the epic's claim so the board works the children (they skip their own RFC). `:decomposed` to `next`; `:single` to `work` when the RFC named no items. Records the epic's pre-construction baseline for `epic-review`. |
+| `epic-review` | `:board/epic-review` | The END-OF-PHASE critic: once an RFC epic's children have all landed, validate the whole diff (from the epic baseline) against the RFC — `judge/review` with the RFC as the requirement, plus the code-quality metrics over everything touched. `:pass` closes the epic; a blocking gap spawns one fix child under it, bounded by `:board-review-attempts` and fail-open. This is what makes the RFC the acceptance contract. |
 | `work` | `:board/work` | Run the implementor sub-loop (`worker` manifest, `:implementor` role model) on the claimed task until a terminal verdict. A re-attempt runs on `<bid>r<attempt>` with the critic's findings appended to the task's problem. |
 | `review` | `:board/review` | The critic on **this task's diff**: deterministic checks first, then the judge (`judge/critic-prompt` over the diff since `:board/baseline`). `:pass` closes the task; `:revise` sends it back to the same owner with the findings; `:give-up` (owner never landed, or `:board-review-attempts` spent) **releases** the task back to the board open. Fail-open: a judge that errors or throws ships — a broken gate must not end the run. |
 | `finish` | `:board/finish` | Nested (the default — the board as the feature loop's implement stage) it only summarizes: what landed and what is left goes UP, to the supervisor, whose job is to figure out why a task did not land and adjust the loop — another round with the findings, a strategy SWITCH, an `EXTEND: <n>` budget raise. Standalone, `:completed` only when something landed **and** nothing is left; anything else ends `:abandoned`, honestly — but a standalone board has no supervisor, which is exactly why the feature loop is the default. |
+
+### The plan phase and the RFC tier
+
+Every gate the implementer had fired *after* construction. The plan phase puts a
+critic at the elaboration boundary, and triage keeps it off work that does not
+need it (karamazov-vale). Triage is three-way (karamazov-dq1r): a trivial task
+skips it; an ordinary single change gets a lightweight Goal/Files/Tests plan; a
+multi-part task — an explicit list, or over `:rfc-min-words` — gets a full **RFC**
+instead.
+
+The RFC is a design document with a mermaid call-graph, a work-item breakdown and
+acceptance criteria (prompts/rfc-brief.md). It is persisted on the epic
+(`tasks.plan`, `plan_kind` "rfc"), **decomposed** into child tasks the board works
+in turn, and — the point — validated at the end: when the children have all
+landed, `epic-review` judges the whole diff against the RFC before the epic may
+close. `tasks.plan` was write-only before this; now construction reads it (a
+child is handed its epic's RFC to build within) and `epic-review` reads it as the
+contract. A child derived from an RFC does not open its own RFC (`rfc-child?`), so
+the recursion terminates.
+
+### The code-quality gate
+
+`:board/review` and `:feature/critique` — and `epic-review` — measure the changed
+code with `samizdat.metrics` (cyclomatic complexity, erosion, clone-only
+verbosity; SlopCodeBench) and merge the result into the critic's findings. A
+breach past the advisory ceiling rides along as a `[medium]`; past the block
+ceiling it is a `[high]` and refuses the ship, like any blocking finding. The
+limits are gates.edn `:code-quality`; the prose is prompts/metrics-findings.md.
 
 ### The data seam
 

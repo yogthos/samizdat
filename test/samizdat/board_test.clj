@@ -326,6 +326,113 @@
         (testing "fail-open held: construction still ran and the task closed"
           (is (= "done" (:status (first (db/fetch conn ["SELECT status FROM tasks"]))))))))))
 
+(deftest triage-is-three-way-by-size
+  ;; karamazov-dq1r: trivial skips, a multi-part task gets an RFC, an ordinary
+  ;; single-change task gets the lightweight plan in between.
+  (let [multipart? @(ns-resolve 'cells.board 'multipart?)
+        looks-trivial? @(ns-resolve 'cells.board 'looks-trivial?)]
+    (is (looks-trivial? {:title "fix the typo in the readme"})
+        "short and no list — skip")
+    (is (not (multipart? {:body "rename cfg to config across the ns"}))
+        "an ordinary single change is not RFC-worthy")
+    (is (multipart? {:body "Add these:\n- storage\n- handlers\n- templates"})
+        "an explicit list is several things wearing one title — RFC")
+    (is (multipart? {:body (apply str (repeat 130 "word "))})
+        "a long statement is too big for one plan — RFC")))
+
+(deftest an-rfc-child-does-not-open-its-own-rfc
+  ;; A task decomposed from an RFC (its parent epic carries the plan) must not
+  ;; recurse into another RFC — it gets a lightweight plan or skip.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rfc-child? @(ns-resolve 'cells.board 'rfc-child?)
+        epic (tasks/create! conn {:title "the feature" :type "feature"})
+        child (tasks/create! conn {:title "storage and the handlers and templates"
+                                   :parent-id epic})]
+    (tasks/update! conn epic {:plan "# RFC\n## Work items\n- storage\n- handlers"})
+    (is (rfc-child? conn (tasks/get-task conn child))
+        "its parent carries a persisted RFC")
+    (is (not (rfc-child? conn (tasks/get-task conn epic)))
+        "the epic itself is not a child")))
+
+(deftest a-multipart-task-writes-an-rfc-the-critic-reviews-and-it-persists
+  ;; The RFC tier end to end: triage routes to :rfc, the owner writes an RFC
+  ;; through the plan tool's :rfc field, the plan critic reviews it, and the
+  ;; RFC is persisted as the task's contract (tasks.plan).
+  (let [calls (atom [])
+        rfc "# RFC: haze\n## Purpose\nfade the horizon.\n## Model\n```mermaid\nflowchart TD\n  a-->b\n```\n## Work items\n- pure flight.haze with tests\n- draw-terrain! blends toward sky\n## Acceptance criteria\ntests pass; keep complexity in the gates."]
+    (with-redefs [llm/chat
+                  (fn [a c messages & rest]
+                    (let [content (str/join " " (map :content messages))]
+                      (cond
+                        (str/includes? content "reviewing this PLAN")
+                        (do (swap! calls conj :plan-review)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        (str/includes? content "candidate findings")
+                        (do (swap! calls conj :plan-verify)
+                            {:content "No issues found." :finish-reason "stop"})
+                        ;; the RFC design owner: declare a plan carrying the rfc
+                        (str/includes? content "as an RFC")
+                        (do (swap! calls conj :design-rfc)
+                            {:content (str "```tool-call\n{\"name\":\"plan\",\"args\":"
+                                           "{\"files\":[\"src/flight/haze.clj\"],"
+                                           "\"tests\":[\"test/flight/haze_test.clj\"],"
+                                           "\"goal\":\"fade the horizon and cover both parts\","
+                                           "\"rfc\":" (pr-str rfc) "}}\n```")
+                             :finish-reason "stop"})
+                        (judge-call? messages)
+                        (do (swap! calls conj :diff-critic)
+                            {:content "VERDICT: COMPLETE" :finish-reason "stop"})
+                        :else (apply ships-its-task a c messages rest))))]
+      (let [conn (db/open! ":memory:")]
+        ;; The board opens the epic from the run's problem itself, so it is a
+        ;; proper feature root and its decompose children are in the tree.
+        (run-board conn {:problem "Three parts to the flight's feel:\n- distance fade\n- tree clip\n- horizon blend"})
+        (let [rid (:id (first (db/fetch conn ["SELECT id FROM runs"])))]
+          (testing "triage routed to the RFC tier and the RFC design step ran"
+            (is (some #(= "rfc" (name (:decision %))) (journal/notes conn rid :triage))
+                "the epic triaged to the RFC tier (children triage to plan)")
+            (is (some #{:design-rfc} @calls))
+            (is (some #(true? (:rfc %)) (journal/notes conn rid :design))
+                "the epic's design step ran in RFC mode")
+            (is (some #{:plan-review} @calls) "the plan critic reviewed the RFC"))
+          (testing "the RFC is persisted as the epic's contract, stamped rfc"
+            (let [t (first (db/fetch conn ["SELECT id, plan, plan_kind FROM tasks WHERE plan IS NOT NULL"]))]
+              (is (some? t))
+              (is (= "rfc" (:plan_kind t)))
+              (is (str/includes? (str (:plan t)) "Work items"))
+              (is (str/includes? (str (:plan t)) "mermaid"))
+              (testing "and it decomposed into child tasks under the epic"
+                (is (<= 2 (count (db/fetch conn ["SELECT id FROM tasks WHERE parent_id = ?"
+                                                 (:id t)])))
+                    "the two work items became children"))
+              (testing "the end-of-phase critic validated the whole change and closed the epic"
+                (is (some? (journal/last-note conn rid :epic-review))
+                    "epic-review ran once the children landed")
+                (is (= "done" (:status (tasks/get-task conn (:id t))))
+                    "and the epic closed, not by closable-parents! but through the RFC critic")))))))))
+
+(deftest rfc-work-items-parses-the-breakdown-section
+  (let [work-items @(ns-resolve 'cells.board 'rfc-work-items)]
+    (is (= ["build storage" "build handlers" "wire templates"]
+           (work-items (str "# RFC\n## Purpose\np\n## Work items\n"
+                            "- build storage\n- build handlers\n* wire templates\n"
+                            "## Acceptance\ntests pass\n- not a work item"))))
+    (is (= [] (work-items "# RFC\n## Purpose\nno breakdown here")))))
+
+(deftest an-rfc-epic-hands-its-children-the-rfc-for-context
+  (cells/load-cells!)
+  (let [epic-rfc @(ns-resolve 'cells.board 'epic-rfc)
+        conn (db/open! ":memory:")
+        epic (tasks/create! conn {:title "feature" :type "feature"})
+        child (tasks/create! conn {:title "a part" :parent-id epic})
+        loose (tasks/create! conn {:title "unparented"})]
+    (tasks/update! conn epic {:plan "# RFC\n## Model\nthe design" :plan-kind "rfc"})
+    (is (str/includes? (str (epic-rfc conn (tasks/get-task conn child))) "the design")
+        "a child of an rfc epic gets the epic's RFC")
+    (is (nil? (epic-rfc conn (tasks/get-task conn loose)))
+        "a task with no rfc parent gets none")))
+
 (deftest the-board-works-its-own-tree-and-the-backlog-not-role-housekeeping
   ;; A role branch (supervisor, reviewer) creates run-scoped tasks for its own
   ;; bookkeeping — the task tool practically requires it. Those are not feature

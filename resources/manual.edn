@@ -296,4 +296,15 @@
     :summary "What may follow the action you just took, out to h hops, with each transition's condition, guidance and pitfalls."}
    {:name samizdat.procedure/check
     :summary "A procedural graph's structural findings: traps, dangling edges, non-tool nodes, ambiguous and dead transitions."}]}
+
+ {:group "Code quality"
+  :entries
+  [{:name samizdat.metrics/report
+    :summary "The three SlopCodeBench heuristics over a corpus of source: cyclomatic complexity, erosion, clone-only verbosity."}
+   {:name samizdat.metrics/cyclomatic
+    :summary "Cyclomatic complexity of a form: 1 + its decision points, counting inline lambdas but not nested defns."}
+   {:name samizdat.metrics/erosion
+    :summary "The fraction of a change's mass held by functions over the complexity limit — mass(f) = cc * sqrt(sloc)."}
+   {:name samizdat.metrics/review
+    :summary "Structured code-quality findings for the changed sources, or none — what the diff critics merge into their verdict."}]}
 ]

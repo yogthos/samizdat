@@ -735,7 +735,18 @@
   has none either. Absent is not the same as empty."
   ["ALTER TABLE tasks ADD COLUMN plan TEXT"])
 
+(def v28
+  "WHAT KIND of plan a task carries (karamazov-dq1r): \"rfc\" when the plan is a
+  full RFC that decomposed into child tasks, otherwise unset for a lightweight
+  Goal/Files/Tests plan.
+
+  It is what tells the board an epic was RFC-planned without sniffing the plan
+  text — so a decomposed epic's children skip their own RFC, and the
+  end-of-phase critic knows to validate the whole diff against the RFC. Nullable
+  for the same reason plan is: a skipped or lightweight-planned task has none."
+  ["ALTER TABLE tasks ADD COLUMN plan_kind TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27])
+   v25 v26 v27 v28])

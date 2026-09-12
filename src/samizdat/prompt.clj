@@ -64,7 +64,7 @@
    "plan-tool" "planner" "policy-tool" "probe-candidates"
    "probe-steer" "problem" "progress-stalled" "prologue-cap"
    "prompt-tool" "read-too-large" "repl-needs-a-plan" "repopulate"
-   "residual-report" "retirement" "retry-diagnosis" "review"
+   "residual-report" "retirement" "retry-diagnosis" "review" "rfc-brief"
    "roles/implementor" "roles/reviewer" "roles/supervisor" "run-health"
    "run-start-timeout" "safe-state" "session-block" "shared-artifacts"
    "shared-tree" "shell-refused" "split-decision" "split-tool"
