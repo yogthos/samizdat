@@ -155,7 +155,7 @@
   turns and the suffix, not the rendered prompt — so a resume that omitted
   the suffix dropped the workflow's framing at the crash: a review run came
   back building features."
-  [problem prompt-suffix role turns]
+  [problem prompt-suffix role orient turns]
   (reduce (fn [msgs t]
             (cond-> msgs
               (seq (:assistant_text t))
@@ -168,7 +168,7 @@
                      :content (if (clojure.string/starts-with? (str (:tool_name t)) "__")
                                 (:result t)
                                 (message/frame-result (:tool_name t) (:result t)))})))
-          (branch-loop/initial-messages problem prompt-suffix role)
+          (branch-loop/initial-messages problem prompt-suffix role orient)
           turns))
 
 (defn- rebuild-branch
@@ -194,6 +194,12 @@
         ;; is what every rebuild used before and what the beam's own branches
         ;; opened on (karamazov-kgvg).
         suffix (if-some [s (:prompt_suffix branch-row)] s prompt-suffix)
+        ;; The opening block the run recorded (v31, karamazov-fp21.3) — for a
+        ;; branch that opened on the RUN's problem. A branch with a problem
+        ;; of its own was opened by a cell that handed initial-messages no
+        ;; block, and the rebuild must not hand it one either.
+        orient (when (clojure.string/blank? (str (:problem branch-row)))
+                 (:opening_context run))
         branch-turns (get turns branch-id [])
         ;; The phase is rebuilt from the banked sketch artifacts: a sketch on
         ;; record means the branch left explore, and its turn is the phase
@@ -210,6 +216,7 @@
                                     :messages (messages-from-turns problem
                                                                    suffix
                                                                    role
+                                                                   orient
                                                                    branch-turns)})
                  (assoc :status (keyword (:status branch-row))
                         :role role

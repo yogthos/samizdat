@@ -318,8 +318,18 @@
                           :why (if summary "summary rejected" "summarizer produced nothing")})
                   data)
               (let [kept (distil! conn run-id summary (:distil p))
+                    ;; Which role carries the marker: the operator's word
+                    ;; (gates.edn :fold-role "system"/"user"), else what the
+                    ;; startup probe learned about this endpoint's template
+                    ;; (llm-config :fold-role), else the system role it always
+                    ;; had. See samizdat.agent.compaction/apply-summary.
+                    role (let [pol (gates/threshold :fold-role)]
+                           (if (or (nil? pol) (= :auto pol))
+                             (or (:fold-role llm-config) "system")
+                             (name pol)))
                     out (cmp/apply-summary msgs [s e]
-                                           (prompt/prompt "compaction-marker") summary)
+                                           (prompt/prompt "compaction-marker") summary
+                                           role)
                     after (cmp/estimate-tokens out (:chars-per-token p))]
                 (if (>= after (:compaction/before data))
                   (do (note! conn run-id data {:action "no-progress"

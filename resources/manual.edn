@@ -160,6 +160,28 @@
    {:name samizdat.prompt/render
     :summary "Render a prompt resource through selmer. Every harness message the model sees comes through here."}]}
 
+ {:group "The endpoint: what was asked of it, and how a call is shaped"
+  :entries
+  [{:name samizdat.llm.client/probe-llama-cpp
+    :summary "Ask an endpoint once whether it is a llama.cpp server, how many KV slots it has and which model it loaded — the identity every local-only knob keys on."}
+   {:name samizdat.llm.client/probe-fold-role
+    :summary "Ask a llama.cpp server once whether its chat template takes a system message after a user turn — the shape of every compaction fold. The answer is llm-config :fold-role; gates.edn :fold-role decides what the fold does with it."}
+   {:name samizdat.llm.client/fold-role-from-status
+    :summary "Read the fold-role probe's answer from a status and body, pure: system, user, or nil for inconclusive."}
+   {:name samizdat.llm.grammar/fence-grammar
+    :summary "The GBNF under which a llama.cpp reply's tool calls are well-formed fences naming only the listed tools — required (the force) or optional (the restriction). Cache-safe: applied at sampling, never in the prompt. gates.edn :local-grammar says when it is sent."}
+   {:name samizdat.llm.grammar/no-substring-rules
+    :summary "GBNF rules for the strings that do not contain a pattern — the KMP automaton, written out so the grammar is unambiguous."}]}
+
+ {:group "The opening: what the problem already names"
+  :entries
+  [{:name samizdat.agent.orient/problem-names
+    :summary "The names a problem statement points at — backticked spans, paths, dotted or hyphenated identifiers — distinct and capped, from gates.edn :orient-inject :name-patterns."}
+   {:name samizdat.agent.orient/definitions
+    :summary "Where each name is defined under the root: path, line and a snippet, by a bounded walk and the :definition-patterns. A named file is shown from its top."}
+   {:name samizdat.agent.orient/block
+    :summary "The rendered opening block for a problem under a root, with the names taken and those found — computed once per run by the driver, kept on the run row, off with :orient-inject :enabled? false (the arena's control arm)."}]}
+
  {:group "Reading and writing Clojure"
   :entries
   [{:name samizdat.lisp/diagnose

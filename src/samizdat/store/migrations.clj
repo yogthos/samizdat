@@ -795,7 +795,20 @@
    "ALTER TABLE turns ADD COLUMN prefix_change TEXT"
    "ALTER TABLE turns ADD COLUMN forced_tool TEXT"])
 
+(def v31
+  "WHAT THE OPENING CARRIED beside the problem (karamazov-fp21.3).
+
+  The first user turn may now carry a block saying where the names the
+  problem mentions are defined (samizdat.agent.orient). It is computed from
+  the tree at run start, and a resume that recomputed it would reopen every
+  branch on a different first message than the one it ran under — a prefix
+  rewrite, and a history the journal cannot explain. So the driver keeps the
+  rendered block on the run row and the rebuild reads it back. NULL means
+  the opening was the problem alone: the policy was off, nothing was named,
+  or nothing was found."
+  ["ALTER TABLE runs ADD COLUMN opening_context TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30])
+   v25 v26 v27 v28 v29 v30 v31])

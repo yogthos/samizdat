@@ -255,16 +255,23 @@
   system guidance appended for that workflow — which is how a manifest injects
   its own instructions at the start (a review workflow adds review guidance on
   top of the base prompt, keeping the whole tool surface). nil/blank leaves the
-  base prompt untouched."
-  ([problem] (initial-messages problem nil nil))
-  ([problem prompt-suffix] (initial-messages problem prompt-suffix nil))
-  ([problem prompt-suffix role]
+  base prompt untouched.
+
+  `orient` is the opening block that says where the names the problem
+  mentions are defined (samizdat.agent.orient, karamazov-fp21.3), rendered
+  by the driver once per run and kept on the run row; nil/blank leaves the
+  problem turn exactly as it was."
+  ([problem] (initial-messages problem nil nil nil))
+  ([problem prompt-suffix] (initial-messages problem prompt-suffix nil nil))
+  ([problem prompt-suffix role] (initial-messages problem prompt-suffix role nil))
+  ([problem prompt-suffix role orient]
    [{:role "system" :content (cond-> (system-prompt-for role)
                                (not (str/blank? prompt-suffix))
                                (str "\n\n" prompt-suffix))}
     ;; The opening user turn is prose the model reads and a project may want
     ;; worded differently — prompts/problem.md, not a `str` here.
-    {:role "user" :content (prompt/render "problem" {:problem problem})}]))
+    {:role "user" :content (prompt/render "problem" {:problem problem
+                                                     :orient (not-empty (str orient))})}]))
 
 (defn- shared-tree
   "The other branches' work on this run's tree, for the context block.

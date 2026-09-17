@@ -1,0 +1,166 @@
+;; samizdat - a self-hosting agentic harness
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+(ns samizdat.grammar-test
+  "The fence grammar for llama.cpp (karamazov-fp21.1): the automaton that keeps
+  the opener out of the prefix, the grammar text itself, and the two seams it
+  crosses — the adapter that sends it only to an endpoint that samples under
+  one, and the inference step that builds it only when policy says to."
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
+            [samizdat.agent.gates :as gates]
+            [samizdat.agent.infer :as infer]
+            [samizdat.agent.state :as state]
+            [samizdat.llm.adapter :as adapter]
+            [samizdat.llm.grammar :as grammar]
+            [samizdat.llm.registry :as registry]))
+
+;; --- the automaton ----------------------------------------------------------
+
+(deftest the-opener-automaton-rejects-the-opener-however-it-is-approached
+  (let [p grammar/opener
+        n (count p)
+        walk (fn [s]
+               (reduce (fn [k c]
+                         (let [t (grammar/next-state p k c)]
+                           (if (= t n) (reduced n) t)))
+                       0 s))]
+    (is (< (walk "text ```tool-cal") n) "one short of the opener is still prefix")
+    (is (= n (walk "text ```tool-call\n")))
+    (is (= n (walk "````tool-call\n"))
+        "an extra backtick in front does not hide the opener — the overlap KMP exists for")
+    (is (< (walk "``tool-call\n```tool-cal") n))
+    (is (= n (walk "``` ```tool-call\n")))
+    (is (< (walk "```tool-call") n) "without the newline it is not yet the opener")))
+
+(deftest the-no-substring-rules-have-one-state-per-character-and-no-accepting-one
+  (let [rules (grammar/no-substring-rules "p" grammar/opener)]
+    (is (= (count grammar/opener) (count rules)))
+    (is (every? #(str/ends-with? % ")?") rules) "every state may end the text")
+    (is (not-any? #(str/includes? % (str "p" (count grammar/opener))) rules)
+        "no rule reaches the completed pattern")
+    (is (= "p0 ::= ( [^\\n\\-`aclot] p0 | \"\\n\" p0 | \"-\" p0 | \"`\" p1 | \"a\" p0 | \"c\" p0 | \"l\" p0 | \"o\" p0 | \"t\" p0 )?"
+           (first rules))
+        "every character of the alphabet has its own transition; everything else stays in p0")))
+
+;; --- the grammar ------------------------------------------------------------
+
+(deftest the-fence-grammar-names-the-tools-and-the-force-is-the-plus
+  (let [g (grammar/fence-grammar {:tools ["done" "give_up"] :require? true})]
+    (is (str/includes? g "root ::= think? ( prefix call )+ prefix"))
+    (is (str/includes? g "name ::= \"\\\"done\\\"\" | \"\\\"give_up\\\"\""))
+    (is (str/includes? g "call ::= \"```tool-call\\n\" ws \"{\" ws \"\\\"name\\\"\" ws \":\" ws name ws \",\" ws \"\\\"args\\\"\" ws \":\" ws object ws \"}\" ws \"```\""))
+    (is (str/includes? g "think ::= \"<think>\" t0 \"</think>\""))
+    (is (str/includes? g "string ::= \"\\\"\" ( [^\"\\\\\\x7F\\x00-\\x1F] | \"\\\\\" ( [\"\\\\bfnrt/] | \"u\" [0-9a-fA-F]{4} ) )* \"\\\"\"")
+        "the JSON string rule is the one the 3B probe ran under")
+    (is (str/includes? g "t0 ::= ( [^/<>hiknt] t0 | \"/\" t0 | \"<\" t1 |")
+        "the think body excludes only its own closer"))
+  (testing "restrict: a fence is optional, and only the listed names may appear"
+    (let [g (grammar/fence-grammar {:tools ["read_file"] :require? false})]
+      (is (str/includes? g "root ::= think? ( prefix call )* prefix"))
+      (is (str/includes? g "name ::= \"\\\"read_file\\\"\""))))
+  (testing "no tools, no grammar — an empty list is a grammar no reply satisfies"
+    (is (nil? (grammar/fence-grammar {:tools [] :require? true})))))
+
+;; --- the adapter seam -------------------------------------------------------
+
+(deftest a-grammar-reaches-a-llama-cpp-endpoint-and-nobody-else
+  (let [done-spec {:name "done" :description "Finish."
+                   :parameters {:type "object" :properties {} :required []}}
+        req {:messages [{:role "user" :content "x"}]
+             :force-tool done-spec
+             :grammar "root ::= \"x\""}]
+    (testing "on :local the grammar replaces the tools+tool_choice fallback"
+      (let [body (adapter/chat-body (registry/adapter-for :local)
+                                    {:base-url "http://127.0.0.1:8080/v1" :model "m"} req)]
+        (is (= "root ::= \"x\"" (:grammar body)))
+        (is (nil? (:tools body)) "no tools array, so the template rewrites no prefix")
+        (is (nil? (:tool_choice body)))))
+    (testing "a probed llama.cpp server under another id gets it too"
+      (let [body (adapter/chat-body (registry/adapter-for :openai)
+                                    {:base-url "http://h/v1" :model "m" :api-key "k" :llama-cpp? true}
+                                    req)]
+        (is (= "root ::= \"x\"" (:grammar body)))
+        (is (nil? (:tool_choice body)))))
+    (testing "a hosted provider never sees the field, and forces as before"
+      (let [body (adapter/chat-body (registry/adapter-for :glm)
+                                    {:base-url "https://open.bigmodel.cn/api/coding/paas/v4"
+                                     :model "glm-5.3" :api-key "k"}
+                                    req)]
+        (is (nil? (:grammar body)) "a strict server 422s the whole request over an unknown key")
+        (is (= {:type "function" :function {:name "done"}} (:tool_choice body)))))))
+
+;; --- the inference step -----------------------------------------------------
+
+(def ^:private done-spec
+  {:name "done" :description "Finish."
+   :parameters {:type "object" :properties {} :required []}})
+
+(defn- capturing
+  "A stub `llm/chat` that records the opts it was called with."
+  [seen]
+  (fn [_ _ _ opts]
+    (swap! seen conj opts)
+    {:content "```tool-call\n{\"name\": \"done\", \"args\": {}}\n```" :finish-reason "stop"}))
+
+(defn- policy-with [m]
+  (let [orig gates/threshold]
+    (fn [k] (if (= k :local-grammar) m (orig k)))))
+
+(deftest a-forced-turn-on-llama-cpp-is-forced-by-grammar-not-by-the-prompt
+  (let [seen (atom [])
+        ctx {:llm-adapter ::adapter
+             :llm-config {:provider :local :base-url "http://127.0.0.1:8080/v1" :model "m"}}
+        tape {:id "B1"
+              :messages [{:role "system" :content "sys"} {:role "user" :content "go"}]
+              :turns []
+              :force-tool done-spec}]
+    (with-redefs [samizdat.llm.client/chat (capturing seen)]
+      ((infer/complete-fn ctx {:journal? false}) tape))
+    (let [opts (first @seen)]
+      (is (string? (:grammar opts)))
+      (is (str/includes? (:grammar opts) "name ::= \"\\\"done\\\"\""))
+      (is (str/includes? (:grammar opts) "( prefix call )+") "a force demands the call")
+      (is (= done-spec (:force-tool opts))
+          "the force is still named, so the adapter and the journal see the same thing"))
+    (testing "on a hosted provider nothing changes"
+      (reset! seen [])
+      (with-redefs [samizdat.llm.client/chat (capturing seen)]
+        ((infer/complete-fn (assoc ctx :llm-config {:provider :glm :model "glm-5.3"})
+                            {:journal? false})
+         tape))
+      (is (nil? (:grammar (first @seen)))))
+    (testing "the policy can hand the force back to native tool_choice"
+      (reset! seen [])
+      (with-redefs [gates/threshold (policy-with {:force :native :restrict-after-refusal? false})
+                    samizdat.llm.client/chat (capturing seen)]
+        ((infer/complete-fn ctx {:journal? false}) tape))
+      (is (nil? (:grammar (first @seen)))))))
+
+(deftest a-refusal-restricts-the-next-decision-only-when-policy-says-so
+  (let [b (state/record-outcome (state/new-branch {:id "B1" :problem "p"})
+                                {:category :mechanics :policy-refusal? true :tool "eval"})]
+    (is (= "eval" (:refused-tool b)))
+    (is (= "eval" (:refused-tool (infer/of-branch b))) "the tape carries it")
+    (is (nil? (:refused-tool (infer/into-branch b {:messages []})))
+        "and one model call spends it")
+    (is (nil? (:refused-tool (state/record-outcome b {:category :success :tool "read_file"})))
+        "a call that ran clears it")
+    (let [seen (atom [])
+          ctx {:llm-adapter ::a :llm-config {:provider :local :model "m"}}
+          tape (assoc (infer/of-branch b)
+                      :messages [{:role "system" :content "s"} {:role "user" :content "go"}])]
+      (testing "off by default: a merely refused branch is not constrained"
+        (with-redefs [samizdat.llm.client/chat (capturing seen)]
+          ((infer/complete-fn ctx {:journal? false}) tape))
+        (is (nil? (:grammar (first @seen)))))
+      (testing "on: every other tool may be called, this one cannot"
+        (reset! seen [])
+        (with-redefs [gates/threshold (policy-with {:force :grammar :restrict-after-refusal? true})
+                      samizdat.llm.client/chat (capturing seen)]
+          ((infer/complete-fn ctx {:journal? false}) tape))
+        (let [g (:grammar (first @seen))]
+          (is (string? g))
+          (is (str/includes? g "( prefix call )* prefix") "a fence is optional — nothing is forced")
+          (is (not (str/includes? g "\"\\\"eval\\\"\"")) "the refused tool is off the list")
+          (is (str/includes? g "\"\\\"read_file\\\"\"") "the rest of the registry stays"))))))

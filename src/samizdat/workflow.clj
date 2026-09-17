@@ -50,8 +50,10 @@
             [samizdat.config :as config]
             [samizdat.manifests :as manifests]
             [samizdat.llm.registry :as registry]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
+            [samizdat.agent.orient :as orient]
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
             [samizdat.session :as session]
@@ -314,24 +316,36 @@
             (throw (ex-info (str "'" loop-nm "' cannot be turn-sliced, so it"
                                  " cannot be a run's loop")
                             {:loop loop-nm :turn-sliceable? false})))
+        ;; The project root the file tools are confined to, and the shell tool
+        ;; runs in. Configurable so a run can target another checkout.
+        root (or (get-in config [:run :root]) (System/getProperty "user.dir"))
+        ;; What the problem already names, found once per run and kept on the
+        ;; row (samizdat.agent.orient, karamazov-fp21.3) — the beam does the
+        ;; same, and a resume reads it back.
+        orient (orient/block root problem (gates/threshold :orient-inject))
         run-id (runs/start-run! conn {:problem problem
                                       :provider (:provider llm-config)
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width 1
                                       :prompt-digest (branch-loop/prompt-digest
-                                                      (workflow-prompt definition))})
+                                                      (workflow-prompt definition))
+                                      :opening-context (:block orient)})
         ;; Per segment, beside the digest (karamazov-o4wm.4). Best effort.
         _ (try (journal/note! conn run-id :prompt-manifest
                               {:data (branch-loop/prompt-manifest
                                       (workflow-prompt definition))})
                (catch Throwable _ nil))
+        _ (when orient
+            (try (journal/note! conn run-id :orient-inject
+                                {:data {:names (:names orient)
+                                        :found (:found orient)
+                                        :chars (count (str (:block orient)))}})
+                 (catch Throwable _ nil)))
         branch (state/new-branch {:id "B1" :problem problem
                                   :messages (branch-loop/initial-messages
-                                             problem (workflow-prompt definition))})
-        ;; The project root the file tools are confined to, and the shell tool
-        ;; runs in. Configurable so a run can target another checkout.
-        root (or (get-in config [:run :root]) (System/getProperty "user.dir"))
+                                             problem (workflow-prompt definition)
+                                             nil (:block orient))})
         ;; Make the project's own namespaces requirable from `eval` before any
         ;; branch takes a turn. The system prompt's whole first section is
         ;; REPL-first against the project under work, and without this that

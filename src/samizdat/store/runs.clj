@@ -45,7 +45,7 @@
 (defn start-run!
   "Open a run and return its id."
   [conn {:keys [problem provider model max-turns beam-width prompt-digest
-                token-budget]}]
+                token-budget opening-context]}]
   (let [id (str (random-uuid))]
     ;; The retention sweep (provenance R2-11), on run START rather than at
     ;; finish: a client tailing a just-finished run still reads its
@@ -71,15 +71,17 @@
       (db/execute! conn
                      ["INSERT INTO runs (id, problem, status, provider, model, max_turns,
                                          beam_width, prompt_digest, started_at,
-                                         token_budget)
-                       VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)"
+                                         token_budget, opening_context)
+                       VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)"
                       ;; The columns are NOT NULL DEFAULT '', and a DEFAULT does
                       ;; not apply to an explicitly-inserted NULL, so these
                       ;; coerce rather than relying on the schema. token_budget
                       ;; is the exception: NULL there means unbounded.
                       id problem (if provider (name provider) "") (or model "")
                       (or max-turns 0) (or beam-width 1) (or prompt-digest "")
-                      (db/now) token-budget]))
+                      ;; opening_context is nullable like token_budget: NULL
+                      ;; means the opening carried nothing beyond the problem.
+                      (db/now) token-budget opening-context]))
     (journal/note! conn id :run-started {:data {:problem problem :model model}})
     id))
 

@@ -116,7 +116,9 @@
             [samizdat.files-test]
             [samizdat.edit-test]
             [samizdat.eval-mode-test]
+            [samizdat.grammar-test]
             [samizdat.grep-test]
+            [samizdat.orient-test]
             [samizdat.hashline-test]
             [samizdat.control-test]
             [samizdat.util-test]
@@ -302,7 +304,9 @@
     samizdat.files-test
     samizdat.edit-test
     samizdat.eval-mode-test
+    samizdat.grammar-test
     samizdat.grep-test
+    samizdat.orient-test
     samizdat.hashline-test
     samizdat.control-test
     samizdat.util-test

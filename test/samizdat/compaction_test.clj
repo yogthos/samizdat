@@ -392,3 +392,59 @@
                     [:branch :messages])]
     (is (str/starts-with? (:content (nth out 0)) "[shell] ran `jolt -M:test`")
         "the command, not the frame's opening tag")))
+
+;; --- the fold's role (karamazov-fp21.2) --------------------------------------
+
+(deftest a-fold-can-stand-as-a-user-turn-where-the-template-refuses-a-system-one
+  ;; Qwen3.5's chat template enforces "System message must be at the
+  ;; beginning" and 500s the next call on any system role mid-conversation.
+  ;; The fold marker IS one. The role is a parameter, and a later fold finds
+  ;; the marker whichever role carried it.
+  (let [msgs (convo 12)
+        out (cmp/apply-summary msgs [2 8] "MARKER:" "the summary" "user")]
+    (is (= "user" (:role (nth out 2))))
+    (is (= "MARKER:the summary" (:content (nth out 2))))
+    (is (:compaction? (nth out 2))))
+  (testing "the default is still a system message"
+    (is (= "system" (:role (nth (cmp/apply-summary (convo 12) [2 8] "M:" "s") 2)))))
+  (testing "a later fold finds a user-role marker as it finds a system one"
+    (let [msgs [{:role "user" :content "a"}
+                {:role "user" :content "MARKER:first"}
+                {:role "user" :content "b"}]]
+      (is (= [1 "first"] (cmp/find-previous-summary msgs "MARKER:")))))
+  (testing "an assistant turn is never mistaken for a marker"
+    (is (nil? (cmp/find-previous-summary
+               [{:role "assistant" :content "MARKER:no"}] "MARKER:")))))
+
+(deftest the-fold-cell-takes-its-role-from-the-probe-unless-policy-overrides
+  ;; gates.edn :fold-role :auto reads what the startup probe learned about
+  ;; the endpoint's template (llm-config :fold-role); an explicit "system" or
+  ;; "user" is the operator's word over the probe's.
+  (cells/load-cells!)
+  (let [big (apply str (repeat 3000 "x"))
+        msgs (into [{:role "system" :content "sys"} {:role "user" :content "go"}]
+                   (mapcat (fn [i] [{:role "assistant" :content (str "call " i)}
+                                    {:role "user" :content big}])
+                           (range 8)))
+        data {:compaction/tier :fold :compaction/before 999999
+              :branch {:messages msgs}}
+        fold (fn [llm-config]
+               (with-redefs [samizdat.store.journal/note! (fn [& _] nil)
+                             samizdat.llm.client/chat
+                             (fn [& _] {:content "## Active Task\nFinish it.\n## Goal\nShip.\n## Completed Actions\nRead a.\n## Active State\nGreen."})
+                             samizdat.agent.compaction/validate-summary (fn [& _] true)
+                             samizdat.store.knowledge/distil-session! (fn [& _] 0)]
+                 (let [out ((:handler (cell/get-cell! :compaction/fold))
+                            {:conn ::conn :run-id "r1"
+                             :llm-adapter ::adapter :llm-config llm-config}
+                            data)]
+                   (some #(when (:compaction? %) (:role %))
+                         (get-in out [:branch :messages])))))]
+    (testing "no probe result and :auto — the system role, as before"
+      (is (= "system" (fold {:context-window 128000}))))
+    (testing "the probe said the template refuses a mid-conversation system role"
+      (is (= "user" (fold {:context-window 128000 :fold-role "user"}))))
+    (testing "an explicit policy value wins over the probe"
+      (with-redefs [gates/threshold (let [orig gates/threshold]
+                                      (fn [k] (if (= k :fold-role) "system" (orig k))))]
+        (is (= "system" (fold {:context-window 128000 :fold-role "user"})))))))

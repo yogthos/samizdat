@@ -56,8 +56,11 @@
   (:require [clojure.tools.logging :as log]
             [samizdat.agent.gates :as gates]
             [samizdat.cancel :as cancel]
+            [samizdat.agent.tools.base :as tools]
+            [samizdat.llm.adapter.openai :as openai]
             [samizdat.llm.client :as llm]
             [samizdat.llm.fence :as fence]
+            [samizdat.llm.grammar :as grammar]
             [samizdat.llm.message :as message]
             [samizdat.store.journal :as journal]
             [samizdat.tape :as tape]))
@@ -82,7 +85,10 @@
    ;; branch (karamazov-d41).
    :squeeze (:context-squeeze branch)
    :prefill (:prefill branch)
-   :force-tool (:force-tool branch)})
+   :force-tool (:force-tool branch)
+   ;; The tool the harness just refused, if any — what a llama.cpp endpoint
+   ;; may be asked to leave off the next decision (state/record-outcome).
+   :refused-tool (:refused-tool branch)})
 
 (defn into-branch
   "Write a tape's messages back onto `branch` and clear the per-turn knobs.
@@ -94,7 +100,7 @@
   [branch tape]
   (-> branch
       (assoc :messages (:messages tape))
-      (dissoc :prefill :force-tool)))
+      (dissoc :prefill :force-tool :refused-tool)))
 
 (defn squeezed-budget
   "The compaction budget after this tape's overflow squeeze (karamazov-d41).
@@ -216,6 +222,28 @@
          (not (:periodic signals))
          (or (nil? parsed) (= "__parse_error__" (:name parsed))))))
 
+(defn- grammar-for
+  "The GBNF this call is sampled under on a llama.cpp endpoint, or nil
+  (karamazov-fp21.1; samizdat.llm.grammar).
+
+  Two occasions, both decided by gates.edn :local-grammar: a gate FORCING a
+  tool (`:force :grammar` — the alternative is the tools+tool_choice
+  fallback, which rewrites the prefix), and the decision after a harness
+  refusal (`:restrict-after-refusal?` — the refused name is left off the
+  list for that one call). Nothing for any other endpoint: a hosted provider
+  is forced the way it always was, and the adapter would drop the field
+  anyway."
+  [{:keys [llm-config]} {:keys [force-tool refused-tool]}]
+  (when (openai/llama-cpp-endpoint? (:provider llm-config) llm-config)
+    (let [{:keys [force restrict-after-refusal?]} (gates/threshold :local-grammar)]
+      (cond
+        (and force-tool (= :grammar force))
+        (grammar/fence-grammar {:tools [(:name force-tool)] :require? true})
+
+        (and refused-tool restrict-after-refusal?)
+        (grammar/fence-grammar {:tools (remove #{(str refused-tool)} (tools/tool-names))
+                                :require? false})))))
+
 (defn complete-fn
   "ctx -> (fn [tape] -> {:ok true :response r} | {:ok false :error s}).
 
@@ -239,8 +267,10 @@
      ;; The fingerprint of what this call sends, taken once: a retry below
      ;; re-renders the same tape. It rides the response beside :prefilled,
      ;; because that is the value the loop already threads from the call to
-     ;; the journal (karamazov-o4wm.1).
-     (let [wire (wire-fingerprint (message/prepare (render tape)))]
+     ;; the journal (karamazov-o4wm.1). The grammar is decided once for the
+     ;; same reason: a retry of a forced turn is still forced.
+     (let [wire (wire-fingerprint (message/prepare (render tape)))
+           grammar (grammar-for ctx tape)]
      (loop [attempt 1]
        (let [base (or (:max-tokens (:llm-config ctx))
                       ;; No configured cap: the FIRST attempt keeps the
@@ -264,6 +294,10 @@
                                         ;; native tool_choice, honoured on every
                                         ;; OpenAI-compatible provider (GLM included).
                                         force-tool (assoc :force-tool force-tool)
+                                        ;; A sampling-time grammar for a llama.cpp
+                                        ;; endpoint (grammar-for): the cache-safe
+                                        ;; force, and the one that can ban.
+                                        grammar (assoc :grammar grammar)
                                         ;; The stable conversation key an endpoint
                                         ;; pins its prefix cache to. Only the local
                                         ;; adapter emits it; see LR-5.
