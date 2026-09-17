@@ -511,6 +511,58 @@
       ;; against an endpoint that is merely slow to boot.
       nil)))
 
+(def ^:private fold-role-refusal-re
+  ;; wordlists.edn :fold-role-refusal — how a template words its refusal of a
+  ;; system message that is not first. Data, because the wording is the
+  ;; template author's (karamazov-fp21.2).
+  (util/generation-cache lexicon/gen
+                         #(re-pattern (lexicon/wordlist :fold-role-refusal))))
+
+(defn fold-role-from-status
+  "Which role a compaction fold may carry on this endpoint, from the answer to
+  the fold-shaped probe: `\"system\"` when the endpoint accepted a system
+  message that sits after a user turn, `\"user\"` when it refused the request
+  and the refusal is about system messages, nil when the answer says nothing
+  either way (unreachable, still loading, an error about something else).
+
+  Qwen3.5's Jinja template enforces \"System message must be at the
+  beginning\" and answers a mid-conversation system role with a 500 — the
+  fold marker is exactly that (karamazov-fp21.2). Pure, so the reading is
+  testable without a server."
+  [status body]
+  (cond
+    (nil? status) nil
+    (<= 200 status 299) "system"
+    (and (<= 400 status 599) (re-find (fold-role-refusal-re) (str body))) "user"
+    :else nil))
+
+(defn probe-fold-role
+  "Ask a chat endpoint, once, whether its template accepts a system message
+  after a user turn — the shape every compaction fold has — and answer with
+  the role a fold may carry there (see `fold-role-from-status`).
+
+  One request of one token. Only worth asking a llama.cpp server, whose
+  template is whatever the model shipped; hosted providers accept the shape.
+  Unreachable is nil, not a reason not to start."
+  [config]
+  (try
+    (let [url (str (str/replace (str (:base-url config)) #"/$" "") "/chat/completions")
+          resp (http/post url {:headers {"Content-Type" "application/json"}
+                               :body (json/write-str
+                                      {:model (:model config)
+                                       :max_tokens 1
+                                       :messages [{:role "system" :content "probe"}
+                                                  {:role "user" :content "probe"}
+                                                  {:role "assistant" :content "probe"}
+                                                  {:role "system" :content "probe"}
+                                                  {:role "user" :content "probe"}]})
+                               :socket-timeout 30000
+                               :conn-timeout (:conn-timeout-ms config
+                                                               default-conn-timeout-ms)
+                               :throw-exceptions false})]
+      (fold-role-from-status (:status resp) (:body resp)))
+    (catch Throwable _ nil)))
+
 (defn list-models
   "Model ids the endpoint advertises, or [] when it has no such endpoint."
   [adapter config]

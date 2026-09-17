@@ -47,10 +47,12 @@
                  :prefill "```tool-call\n"
                  :force-tool {:name "done"})
         t (infer/of-branch b)]
-    (is (= #{:id :messages :turns :prefill :force-tool :squeeze} (set (keys t)))
+    (is (= #{:id :messages :turns :prefill :force-tool :refused-tool :squeeze} (set (keys t)))
         "nothing else about a branch can change what the model is sent —
          :squeeze is on the list because the overflow squeeze legitimately
-         changes how much history the wire sees (karamazov-d41)")
+         changes how much history the wire sees (karamazov-d41), and
+         :refused-tool because a llama.cpp endpoint may sample the next
+         decision without the tool the harness just refused (karamazov-fp21.1)")
     (is (= "B1" (:id t)))
     (is (= "```tool-call\n" (:prefill t)))))
 

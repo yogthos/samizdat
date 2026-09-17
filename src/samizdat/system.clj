@@ -141,6 +141,16 @@
              (log/info "endpoint identified as llama.cpp:"
                        (:total-slots probed) "KV slots — prefix caching on"
                        (when-let [m (:model-id probed)] (str "— serving " m))))
+         ;; And whether its chat template takes a system message after a user
+         ;; turn — the shape of every compaction fold. Qwen3.5's template 500s
+         ;; on it (karamazov-fp21.2); asked once here so the fold cell knows
+         ;; which role to carry before the first fold, not after the first
+         ;; fatal call. gates.edn :fold-role decides what to do with the answer.
+         fold-role (when probed (llm-client/probe-fold-role (:llm cfg)))
+         cfg (cond-> cfg fold-role (assoc-in [:llm :fold-role] fold-role))
+         _ (when probed
+             (log/info "compaction fold marker role:"
+                       (or fold-role "system (probe inconclusive)")))
          ;; Which config files were read, so a surprising value is traceable
          ;; to its layer rather than to a guess about which file won.
          _ (doseq [{:keys [layer path present?]} (config/config-sources

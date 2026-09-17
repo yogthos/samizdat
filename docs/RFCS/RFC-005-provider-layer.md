@@ -76,6 +76,8 @@ can quietly diverge from the retry and timeout discipline.
 |---|---|
 | `(chat adapter config messages [opts])` | The call. `opts`: `:max-tokens :temperature :max-retries :prefill :force-tool :cache-key`. **Throws** `ex-info` with `:provider` and `:attempts` when every attempt failed; the loop is bounded in attempts and each attempt in wall clock, so a stuck provider costs a known amount rather than the run. |
 | `(list-models adapter config)` | Startup validation. |
+| `(probe-llama-cpp config)` | Startup identity: `{:llama-cpp? true :total-slots n :model-id s}` or nil. Every local-only knob keys on it. |
+| `(probe-fold-role config)` | Startup, llama.cpp only: whether the template takes a system message after a user turn. `"system"`, `"user"` or nil; the fold cell reads it through gates.edn `:fold-role` (karamazov-fp21.2). |
 | `(classify adapter status body)` | `:retry` or `:fatal`. Anything unrecognised is fatal — retrying an error nobody understands spends budget to learn nothing. |
 | `(retry-after-ms headers)` | What the provider asked for, **unclamped**. |
 
@@ -183,6 +185,20 @@ no-call, a truncation, or a runaway ends the request mid-fence — the withholdi
 form the ladder was built on (message-only recovery went 0-for-42 on a weak local
 model and could not lift a strong one out of a 24-turn no-call loop), kept as the
 second rung.
+
+### Grammar force on llama.cpp
+
+`chat` `opts` may carry `:grammar`, a GBNF string. The OpenAI-family adapter
+sends it as `grammar` only where `llama-cpp-endpoint?` holds and, when it
+does, sends no tools array: a grammar is applied at sampling and leaves the
+prompt byte-identical, where the tools array is rendered into the prefix by
+the chat template and busts the cache. `samizdat.llm.grammar/fence-grammar`
+builds the grammar — every fence outside a think block is a well-formed call
+naming a listed tool, and with `:require? true` the reply cannot end without
+one. `samizdat.agent.infer/grammar-for` decides when one is built, from
+gates.edn `:local-grammar`: the force (`:force :grammar`, default) and the
+one-decision restriction after a harness refusal (`:restrict-after-refusal?`,
+off until measured). Hosted providers are untouched (karamazov-fp21.1).
 
 ### Local prefix cache
 

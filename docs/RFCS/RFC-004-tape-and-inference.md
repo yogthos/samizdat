@@ -175,6 +175,19 @@ prefix ends one ledger position earlier than the newest message. The cost is
 re-prefilling roughly one turn's tail per call; the alternative — every stale
 ledger riding along — grows the context by a full ledger per turn.
 
+### The opening block
+
+A branch's first user turn is `prompts/problem.md`: the problem, and — when
+`gates.edn :orient-inject` is on and the tree has them — a block saying
+where the names the problem mentions are defined (`samizdat.agent.orient`,
+karamazov-fp21.3). The driver computes it once per run from the tree at
+start, stores the rendered text on the run row (`runs.opening_context`,
+v31), journals what it found (`:orient-inject`), and hands it to every fresh
+tape; a resume reads the stored text back rather than recomputing it, so
+the prefix a rebuilt branch opens on is the one it ran under. A branch a
+cell opens on its own problem (board, team, decompose) carries none. It is
+an arena arm: `:enabled? false` is the control.
+
 ## Known gaps
 
 **F1 — the boundary fold has no production caller.** `apply-fold`, `fold-split`,

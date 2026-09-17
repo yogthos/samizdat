@@ -183,7 +183,7 @@
       {}))
 
   (chat-body [this config {:keys [messages max-tokens temperature prefill force-tool
-                                  cache-key reasoning-effort]}]
+                                  cache-key reasoning-effort grammar]}]
    ;; The gate is the protocol method on THIS adapter (provenance R3-14), so the
    ;; answer a caller can query and the answer chat-body acts on are one
    ;; path and cannot drift apart.
@@ -194,11 +194,21 @@
          ;; `max`, which spent 24-31s on sub-1k-token prompts. nil means the
          ;; run stated nothing, and the model does whatever it does by default.
          effort (or reasoning-effort (:reasoning-effort config))
+         ;; A GBNF grammar (samizdat.llm.grammar) forces or restricts the
+         ;; call AT SAMPLING on a llama.cpp endpoint — cache-safe, since it
+         ;; never touches the prompt, and template-free (karamazov-fp21.1).
+         ;; Only such an endpoint sees the field: a strict hosted server 422s
+         ;; the whole request over a key it does not know, and the caller
+         ;; (infer/grammar-for) never builds one for them anyway.
+         grammar* (when (and grammar (llama-cpp-endpoint? provider-id config))
+                    grammar)
          ;; Force a specific finishing tool with native tool_choice — the way
          ;; to make a prefill-less provider (GLM) call `done`/`give_up`. Only
          ;; as a FALLBACK: where a prefill will force the call it is preferred,
-         ;; because tool_choice is incompatible with DeepSeek's thinking mode.
-         forcing? (and force-tool (not use-prefill?))]
+         ;; because tool_choice is incompatible with DeepSeek's thinking mode;
+         ;; and where a grammar forces it, the tools array is not sent either,
+         ;; because the template would render it into the prefix.
+         forcing? (and force-tool (not use-prefill?) (not grammar*))]
     (cond-> {:model (:model config)
              :messages (if use-prefill?
                          ;; `:prefix true` is what makes the provider CONTINUE
@@ -218,6 +228,8 @@
       ;; `reasoning-wire`.
       (some? effort)
       (merge (reasoning-wire provider-id effort))
+
+      grammar* (assoc :grammar grammar*)
 
       ;; Only the forced tool is exposed.
       forcing?

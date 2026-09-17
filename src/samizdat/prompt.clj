@@ -60,7 +60,7 @@
    "memory-tool" "memory-unverified" "metrics-findings" "milestone" "mutation-refused"
    "no-call-exhausted" "no-call-imitation" "no-call-periodic" "no-call-reason"
    "no-call-withheld"
-   "no-edits" "over-budget" "orienting" "outside-role-surface" "oversight-pass"
+   "no-edits" "over-budget" "orient-inject" "orienting" "outside-role-surface" "oversight-pass"
    "parked" "parse-error-causes" "parse-error-repaired" "plan-last-call"
    "plan-not-landed" "plan-tool" "plan-wind-down" "planner"
    "planning-declares-a-plan" "policy-tool" "probe-candidates"

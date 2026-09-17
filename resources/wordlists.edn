@@ -176,6 +176,16 @@
  ;; place by being placeholders and nothing else.
  "(?i)none\\.?|n/?a\\.?|\\[.*\\]"
 
+ :fold-role-refusal
+ ;; How a chat template words its refusal of a system message that is not
+ ;; first — Qwen3.5's Jinja says "System message must be at the beginning"
+ ;; (karamazov-fp21.2). The startup fold-role probe sends exactly that shape
+ ;; and reads a 4xx/5xx body against this PATTERN STRING: a match means the
+ ;; fold must carry the user role; any other error is inconclusive and
+ ;; changes nothing. Case-insensitive on purpose — the wording is the
+ ;; template author's, and one word is the whole signal.
+ "(?i)system"
+
  :context-overflow
  ;; How providers word a context-window overflow (karamazov-d41). A 500
  ;; carrying one of these is DETERMINISTIC — the same oversized prompt fails

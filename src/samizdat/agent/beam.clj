@@ -68,6 +68,7 @@
             [samizdat.agent.handoff :as handoff]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
+            [samizdat.agent.orient :as orient]
             [samizdat.agent.select :as select]
             [samizdat.cancel :as cancel]
             [samizdat.events :as events]
@@ -125,8 +126,12 @@
   `:prompt-suffix` is the run manifest's own `:prompt`, and it applies to a
   FRESH tape only: a child that inherits its parent's conversation inherits
   the system message the suffix is already part of, and appending it again
-  would put the workflow's instructions in the transcript twice."
-  [{:keys [problem prompt-suffix]} parent id thesis turn]
+  would put the workflow's instructions in the transcript twice.
+
+  `:orient` is the run's opening block (samizdat.agent.orient), and it goes
+  where the suffix goes: on a FRESH tape only, since an inheriting child's
+  problem turn already carries it."
+  [{:keys [problem prompt-suffix orient]} parent id thesis turn]
   (let [{:keys [inherit? depth]} (gates/threshold :fork-inherit)]
     (if (and parent inherit?)
       (state/fork-branch parent {:id id :depth depth :turn turn
@@ -134,7 +139,8 @@
       (cond-> (state/new-branch
                {:id id :parent-id (:id parent) :problem problem
                 :created-at-turn turn
-                :messages (branch-loop/initial-messages problem prompt-suffix)})
+                :messages (branch-loop/initial-messages problem prompt-suffix
+                                                        nil orient)})
         thesis (assoc :thesis thesis)))))
 
 (defn- open-branch!
@@ -1051,28 +1057,6 @@
         ;; seeds nobody reads would be dead rows.
         config (cond-> config
                  seed-run (assoc-in [:run :share-artifacts?] true))
-        run-id (runs/start-run! conn {:problem problem
-                                      :provider (:provider llm-config)
-                                      :model (:model llm-config)
-                                      :max-turns max-turns
-                                      :beam-width width
-                                      :token-budget token-budget
-                                      :prompt-digest (branch-loop/prompt-digest
-                                                      prompt-suffix)})
-        ;; WHERE the prompt came from, per segment, beside the digest that
-        ;; says only that it changed (karamazov-o4wm.4). Best effort.
-        _ (try (journal/note! conn run-id :prompt-manifest
-                              {:data (branch-loop/prompt-manifest prompt-suffix)})
-               (catch Throwable _ nil))
-        ;; The tracer's steps can now say which run they belong to; the bus is
-        ;; process-wide and the watcher filters on it.
-        _ (reset! run-id* run-id)
-        ;; Seeded before any branch opens, so the first context block a
-        ;; branch ever sees can already carry inherited lemmas.
-        ;; `quarantine` drops named claims from the inheritance: a row still
-        ;; marked confirmed that the harness has since learned was not.
-        _ (when seed-run (artifacts/seed-from-run! conn run-id seed-run
-                                                   {:quarantine quarantine}))
         ;; Every session ever opened, including forked children, so the
         ;; supervisor can tear them all down regardless of how the run ended.
         ;; The three ctx keys the manifest driver set and this one did not.
@@ -1083,6 +1067,44 @@
         ;; namespace, never closed, shared by every run on the box. That is
         ;; the leak provenance CR1-6 fixed on the other driver only.
         root (or (get-in config [:run :root]) (System/getProperty "user.dir"))
+        ;; What the problem already names, found in the tree before the first
+        ;; turn (samizdat.agent.orient, karamazov-fp21.3). Computed ONCE per
+        ;; run and stored on the row, so a resume reopens on the opening the
+        ;; branches saw rather than on whatever the tree says by then. nil
+        ;; when gates.edn :orient-inject is off or nothing was found.
+        orient (orient/block root problem (gates/threshold :orient-inject))
+        run-id (runs/start-run! conn {:problem problem
+                                      :provider (:provider llm-config)
+                                      :model (:model llm-config)
+                                      :max-turns max-turns
+                                      :beam-width width
+                                      :token-budget token-budget
+                                      :prompt-digest (branch-loop/prompt-digest
+                                                      prompt-suffix)
+                                      :opening-context (:block orient)})
+        ;; WHERE the prompt came from, per segment, beside the digest that
+        ;; says only that it changed (karamazov-o4wm.4). Best effort.
+        _ (try (journal/note! conn run-id :prompt-manifest
+                              {:data (branch-loop/prompt-manifest prompt-suffix)})
+               (catch Throwable _ nil))
+        ;; What the opening block found, so the arena can read the arm off
+        ;; the journal: the names taken from the statement, those located,
+        ;; and the size of what was injected. Best effort, like the manifest.
+        _ (when orient
+            (try (journal/note! conn run-id :orient-inject
+                                {:data {:names (:names orient)
+                                        :found (:found orient)
+                                        :chars (count (str (:block orient)))}})
+                 (catch Throwable _ nil)))
+        ;; The tracer's steps can now say which run they belong to; the bus is
+        ;; process-wide and the watcher filters on it.
+        _ (reset! run-id* run-id)
+        ;; Seeded before any branch opens, so the first context block a
+        ;; branch ever sees can already carry inherited lemmas.
+        ;; `quarantine` drops named claims from the inheritance: a row still
+        ;; marked confirmed that the harness has since learned was not.
+        _ (when seed-run (artifacts/seed-from-run! conn run-id seed-run
+                                                   {:quarantine quarantine}))
         ;; Make the project's own namespaces requirable from `eval` before any
         ;; branch takes a turn. The system prompt's whole first section is
         ;; REPL-first against the project under work, and without this that
@@ -1102,6 +1124,8 @@
              :root root
              ;; What the manifest says this run is FOR — see seed-branch.
              :prompt-suffix prompt-suffix
+             ;; And what the problem already names — see seed-branch.
+             :orient (:block orient)
              ;; The compiled per-turn manifest advance-branch drives, and
              ;; whether it is a per-turn loop at all (which decides the turn
              ;; deadline; see advance-all).

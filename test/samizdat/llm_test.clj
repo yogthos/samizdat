@@ -1659,3 +1659,31 @@
         sig (fence/signals {:content (apply str (repeat 12 passage)) :finish-reason "stop"}
                            {:name "verify" :args {}})]
     (is (false? (:periodic sig)) "a reply that made its call is not scanned")))
+
+;; --- the fold-role probe (karamazov-fp21.2) -----------------------------------
+
+(deftest the-fold-role-probe-reads-the-template-not-the-status-alone
+  ;; ATLAS proxy/agent.go:940 — Qwen3.5's Jinja template rejects a system
+  ;; role mid-conversation with a 500. The probe sends exactly that shape once
+  ;; at startup and reads the answer; anything that is not an answer about
+  ;; system messages is unknown, which the fold treats as the old default.
+  (is (= "system" (client/fold-role-from-status 200 "{}")))
+  (is (= "user" (client/fold-role-from-status
+                 500 "{\"error\":{\"code\":500,\"message\":\"System message must be at the beginning\"}}")))
+  (is (= "user" (client/fold-role-from-status 400 "system role not allowed here")))
+  (is (nil? (client/fold-role-from-status 503 "Loading model")) "an error about something else says nothing")
+  (is (nil? (client/fold-role-from-status nil nil)))
+  (with-redefs [http/post (fn [& _] {:status 200 :body "{\"choices\":[]}"})]
+    (is (= "system" (client/probe-fold-role {:base-url "http://x/v1" :model "m"}))))
+  (with-redefs [http/post (fn [_ {:keys [body]}]
+                            ;; the probe must actually send a system message AFTER a user turn
+                            (let [roles (mapv :role (:messages (json/read-str body :key-fn keyword)))]
+                              (if (and (= "system" (first roles))
+                                       (some #{"system"} (drop 2 roles)))
+                                {:status 500 :body "System message must be at the beginning"}
+                                {:status 200 :body "{}"})))]
+    (is (= "user" (client/probe-fold-role {:base-url "http://x/v1" :model "m"}))
+        "the shape that trips a strict template is the shape sent"))
+  (with-redefs [http/post (fn [& _] (throw (ex-info "connection refused" {})))]
+    (is (nil? (client/probe-fold-role {:base-url "http://x/v1" :model "m"}))
+        "unreachable is unknown, not a reason to change the fold")))

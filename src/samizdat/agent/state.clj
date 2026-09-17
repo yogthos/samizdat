@@ -599,6 +599,15 @@
       (update :consecutive-mechanics-failures (fnil inc 0))
       (and (= :mechanics category) policy-refusal?)
       (update :consecutive-policy-refusals (fnil inc 0))
+      ;; WHICH tool was refused, for the one decision that follows: on a
+      ;; llama.cpp endpoint the next call may be sampled under a grammar
+      ;; that leaves this name off the list (gates.edn :local-grammar
+      ;; :restrict-after-refusal?, karamazov-fp21.1). infer/into-branch
+      ;; clears it after that call; a call that RAN clears it here.
+      (and (= :mechanics category) policy-refusal?)
+      (assoc :refused-tool tool)
+      (contains? #{:failure :success :neutral} category)
+      (dissoc :refused-tool)
       (contains? #{:failure :success :neutral} category)
       (assoc :consecutive-mechanics-failures 0)
       (contains? #{:failure :success :neutral} category)

@@ -2206,6 +2206,131 @@
 
         The turn row, written after the tool, keeps the full text as it
         always has."}
+ :fold-role
+ {:value :auto
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-fp21.2"]
+  :doc "WHICH ROLE CARRIES A COMPACTION FOLD'S MARKER.
+
+        A fold replaces a window of history with one message: the marker
+        (prompts/compaction-marker.md) and the summary. That message was
+        always a system message, and some chat templates refuse one that is
+        not first — Qwen3.5's answers the NEXT call with a 500 (ATLAS
+        proxy/agent.go:940), so the first fold on such a model would be a
+        fatal call on a healthy run.
+
+        :auto     use what the startup probe learned (system/start! asks a
+                  llama.cpp server once, with a fold-shaped request, and
+                  records the answer as llm-config :fold-role). An
+                  inconclusive probe, or a hosted provider, keeps the
+                  system role.
+        \"system\" / \"user\"   the operator's word over the probe's, for an
+                  endpoint the probe cannot ask or answered wrongly.
+
+        Measured before this existed (karamazov-fp21.2): the Qwen3.8
+        campaigns folded 308 times with no 500, so the default template
+        there accepts the shape and nothing changes for it. Not
+        capability-tunable: it describes the endpoint, not the branch."}
+ :local-grammar
+ {:value {:force :grammar :restrict-after-refusal? false}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-fp21.1" "karamazov-4ih"]
+  :doc "HOW A LLAMA.CPP ENDPOINT IS FORCED, AND WHETHER A REFUSAL RESTRICTS
+        THE NEXT DECISION (samizdat.llm.grammar, infer/grammar-for).
+
+        A gate that must land a call — last-call, plan-last-call, the
+        mechanics forces — forces it with a prefill where the provider
+        continues one (DeepSeek /beta) and with native tool_choice
+        elsewhere. On llama.cpp the tools array that tool_choice needs is
+        rendered into the PROMPT by the chat template, so every forced turn
+        rewrote the prefix and re-prefilled the whole context, and a
+        template with no tool-call support could not be forced at all.
+
+        :force  :grammar   send a GBNF grammar under which the reply cannot
+                           end without a well-formed fence naming the forced
+                           tool. Applied at sampling: the prompt is
+                           byte-identical to an unforced turn, so the cache
+                           holds. Reasoning is untouched — the grammar
+                           leaves a <think> block free and constrains only
+                           the fences after it, which is the fence the
+                           parser reads.
+                :native    the tools + tool_choice fallback, as before.
+
+        :restrict-after-refusal?  after the harness refuses a call (a phase
+                           withhold, the shell policy), sample the NEXT
+                           decision under a grammar that leaves the refused
+                           tool off the list — the model may call anything
+                           else or nothing, but not that. ATLAS's per-step
+                           ban after a rejected write, which it credits with
+                           breaking a 9B model's retry-the-same-tool habit.
+                           OFF until measured: it is a second unsettled
+                           change beside the force, and one at a time is the
+                           RFC-010 discipline.
+
+        MEASURED 2026-09-17 on VibeThinker-3B under llama.cpp b10809: 49.4
+        tok/s under the grammar against 49.6 without, and every forced reply
+        ended in a well-formed fence — including replies whose thinking had
+        drafted several. Across the 24 campaign dbs before this existed,
+        no-call and parse-error turns were 6.9% of 6665 (karamazov-fp21.1);
+        the Qwen protocol (karamazov-4ih deferred on exactly that number)
+        is where :force :grammar vs :native is to be read. Not
+        capability-tunable: it describes the endpoint, not the branch."}
+
+ :orient-inject
+ {:value {:enabled? true
+          :max-names 10 :min-chars 4 :max-snippets 3 :snippet-lines 40
+          :max-files 400 :max-file-chars 200000 :max-total-chars 3000000
+          :skip-dirs ["node_modules" "target" "build" "dist" "out" "vendor"]
+          :name-patterns ["`([^`\\n]{2,80})`"
+                          "([\\w./-]+\\.(?:clj|cljc|cljs|edn|py|md|js|ts|go|rs|c|h|json|yml|yaml|toml))\\b"
+                          "\\b([a-z][a-z0-9_]*(?:[-./][a-z0-9_]+)+)\\b"]
+          :definition-patterns ["\\((?:defn-?|def|defmacro|defmulti|defmethod|defprotocol|defrecord|deftype|ns)\\s+{name}(?:\\s|$|\\))"
+                                "^\\s*(?:def|class)\\s+{name}\\b"
+                                "\\b(?:func|function|fn|const|let|var)\\s+{name}\\b"]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-fp21.3"]
+  :doc "THE OPENING BLOCK THAT SAYS WHERE THE NAMES THE PROBLEM MENTIONS ARE
+        DEFINED (samizdat.agent.orient; prompts/orient-inject.md is the
+        prose; problem.md places it after the problem).
+
+        MEASURED BEFORE IT EXISTED (karamazov-fp21.3): across the 24
+        campaign dbs, 108 branches spent 1610 turns in orientation — reading
+        before their first write, patch or plan — and 565 of those turns
+        (35%) read or grepped a name the problem statement had given
+        verbatim. harness-fps T1: 279 orientation turns, 174 on
+        problem-named files. That says the orientation is long and aimed at
+        things the problem named; it does NOT say a snippet replaces the
+        read. So this is an ARENA ARM, not a settled win: :enabled? off is
+        the control, and the :orient-inject note the driver journals per run
+        (names, found, chars) beside turns-to-first-plan and orientation
+        length is how the two arms compare. If the orienting steer alone has
+        already cut the long tails, this does not pay and comes out.
+
+        :max-names / :min-chars   how many names are taken from the
+                                  statement and how short one may be; a
+                                  one-letter name locates nothing.
+        :max-snippets / :snippet-lines   the block's size — three of forty
+                                  lines is about 300 tokens, paid once per
+                                  branch and then cached in the prefix.
+        :max-files / :max-file-chars / :max-total-chars   the walk's bounds,
+                                  so a monorepo costs a bounded read at run
+                                  start and no more.
+        :skip-dirs                visible directories the walk leaves alone;
+                                  hidden ones the glob already skips.
+        :name-patterns            what counts as a name in the statement, in
+                                  order of explicitness: a backticked span,
+                                  a path with a source extension, a dotted
+                                  or hyphenated identifier, underscores
+                                  included — without them the live check
+                                  split test/fps/core_test.clj into two
+                                  names that located nothing. The first
+                                  group is the name.
+        :definition-patterns      what a definition line looks like, per
+                                  language shape; {name} is the name, quoted.
+                                  A name that matches none is silent.
+
+        Not capability-tunable: it is the opening, decided before any
+        branch has a tier."}
 
  :compaction
  {:value

@@ -322,29 +322,45 @@
 
 ;; --- applying it -------------------------------------------------------------
 
+(def ^:private fold-roles
+  "The roles a fold marker may be carried by. A system message is the default;
+  a user message is what a template that refuses a mid-conversation system
+  role gets (karamazov-fp21.2). Never assistant: the model must not read the
+  harness's summary as something it said."
+  #{"system" "user"})
+
 (defn find-previous-summary
   "Index and body of the most recent fold marker, or nil. A second fold
   summarises the previous summary along with what came after it, so the marker
-  has to be findable."
+  has to be findable — under either role a fold may have carried it."
   [messages marker]
   (->> (map-indexed vector messages)
        reverse
        (some (fn [[i m]]
-               (when (and (= "system" (str (:role m)))
+               (when (and (contains? fold-roles (str (:role m)))
                           (str/starts-with? (str (:content m)) marker))
                  [i (subs (str (:content m)) (count marker))])))))
 
 (defn apply-summary
-  "The messages with `[start end)` replaced by one system message carrying the
-  summary.
+  "The messages with `[start end)` replaced by one message carrying the
+  summary — a system message unless `role` says otherwise.
 
   The protected head keeps its place, the summary stands where the folded
   region was, and the tail follows — so the conversation's shape is unchanged
   and the summary sits in chronological position rather than being prepended
-  as a preamble to everything."
-  [messages [start end] marker summary]
-  (if (>= start end)
-    messages
-    (vec (concat (take start messages)
-                 [{:role "system" :content (str marker summary) :compaction? true}]
-                 (drop end messages)))))
+  as a preamble to everything.
+
+  `role` exists because some chat templates (Qwen3.5's, per ATLAS
+  proxy/agent.go:940) reject a system message that is not first and fail the
+  NEXT call with a 500; the cell hands \"user\" there, from the startup
+  probe or from policy (gates.edn :fold-role). Mechanism only: which role is
+  the cell's decision."
+  ([messages window marker summary]
+   (apply-summary messages window marker summary "system"))
+  ([messages [start end] marker summary role]
+   (if (>= start end)
+     messages
+     (vec (concat (take start messages)
+                  [{:role (if (contains? fold-roles (str role)) (str role) "system")
+                    :content (str marker summary) :compaction? true}]
+                  (drop end messages))))))
