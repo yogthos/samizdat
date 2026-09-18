@@ -594,7 +594,8 @@
          wire (:wire response)
          prefix (when wire
                   (assoc (infer/prefix-stats (:last-wire branch) wire)
-                         :forced-tool (:forced response)))]
+                         :forced-tool (:forced response)
+                         :forced-via (:forced-via response)))]
      {:parsed parsed
       :signals signals
       :said said
@@ -686,7 +687,8 @@
                            ;; tokens, and those are the ones worth counting.
                            :usage (:usage response)
                            :prefix (:last-prefix branch)
-                           :forced-tool (:forced-tool (:last-prefix branch))})
+                           :forced-tool (:forced-tool (:last-prefix branch))
+                         :forced-via (:forced-via (:last-prefix branch))})
     (-> branch
         (state/record-outcome {:category :mechanics :progress? false})
         (cond-> runaway? thinking/recovery)
@@ -1003,7 +1005,8 @@
                          ;; What the cache was asked, beside what it answered
                          ;; (karamazov-o4wm.1); absorb-response wrote it.
                          :prefix (:last-prefix branch)
-                         :forced-tool (:forced-tool (:last-prefix branch))})
+                         :forced-tool (:forced-tool (:last-prefix branch))
+                         :forced-via (:forced-via (:last-prefix branch))})
   (when-let [a (:artifact result)]
     (journal/record-artifact! conn run-id
                               (assoc a :branch-id (:id branch) :turn turn))

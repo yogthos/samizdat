@@ -114,7 +114,7 @@
   tool that produced it knows, and a reconstruction would be guessing."
   [conn run-id {:keys [branch-id turn tool-name args result category
                        parse-error auto-repaired assistant-text reasoning-text
-                       usage policy-refusal? prefix forced-tool]}]
+                       usage policy-refusal? prefix forced-tool forced-via]}]
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO turns (run_id, branch_id, turn, tool_name, args, result,
@@ -124,8 +124,8 @@
                                         cache_hit_tokens, cache_miss_tokens,
                                         policy_refusal,
                                         prefix_stable_chars, prefix_chars, prefix_change,
-                                        forced_tool)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                        forced_tool, forced_via)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (str tool-name) (js (or args {}))
                     (str result) (some-> category name) parse-error
                     (if auto-repaired 1 0)
@@ -146,7 +146,10 @@
                     ;; whole prefix was new.
                     (:stable-chars prefix) (:chars prefix)
                     (some-> (:change prefix) name)
-                    (some-> forced-tool str not-empty)]))
+                    (some-> forced-tool str not-empty)
+                    ;; native | grammar (migration v32): which force, since
+                    ;; only one of them moves the prefix.
+                    (some-> forced-via name)]))
   ;; WHERE history changed, beside the row that says it did
   ;; (karamazov-pdes): the message index, its role, its size before and
   ;; after. Only for a rewrite — the tail moving is the normal turn.
@@ -329,16 +332,20 @@
   `policy` is gates.edn :cache-miss: the hit ratio a turn counts under and
   the prompt size it must reach to count at all."
   [conn run-id {:keys [min-prompt-tokens hit-below]}]
-  (let [rows (db/fetch conn ["SELECT prefix_change, forced_tool, count(*) AS n
+  (let [rows (db/fetch conn ["SELECT prefix_change, forced_tool, forced_via, count(*) AS n
                                 FROM turns
                                WHERE run_id = ?
                                  AND prompt_tokens >= ?
                                  AND cache_hit_tokens IS NOT NULL
                                  AND cache_hit_tokens * 1.0 / prompt_tokens < ?
-                               GROUP BY prefix_change, forced_tool"
+                               GROUP BY prefix_change, forced_tool, forced_via"
                               run-id min-prompt-tokens hit-below])
-        cause (fn [{:keys [prefix_change forced_tool]}]
-                (cond (seq forced_tool) :forced
+        ;; A NATIVE force explains a miss on its own; a grammar force
+        ;; (forced_via "grammar", v32) leaves the prefix alone, so a miss on
+        ;; such a turn is whatever its prefix shape says. A pre-v32 row with
+        ;; a forced tool and no via is native, the only force there was.
+        cause (fn [{:keys [prefix_change forced_tool forced_via]}]
+                (cond (and (seq forced_tool) (not= "grammar" forced_via)) :forced
                       (seq prefix_change) (keyword prefix_change)
                       :else :unknown))
         by (reduce (fn [m r] (update m (cause r) (fnil + 0) (:n r))) {} rows)]
@@ -392,7 +399,8 @@
   (db/fetch conn
             ["SELECT id, run_id, branch_id, turn, tool_name, args, result,
                      category, parse_error, auto_repaired, created_at,
-                     prompt_tokens, cache_hit_tokens, prefix_change, forced_tool
+                     prompt_tokens, cache_hit_tokens, prefix_change, forced_tool,
+                     forced_via
                 FROM turns
                WHERE run_id = ? AND branch_id = ?
                ORDER BY turn, id"

@@ -1286,12 +1286,13 @@
                              :result "ok" :category :success
                              :usage {:prompt-tokens 100 :cache-hit-tokens 10}
                              :prefix {:stable-chars 900 :chars 1000 :change :rewritten}
-                             :forced-tool "done"})
+                             :forced-tool "done" :forced-via :grammar})
       (let [t (first (journal/turns c rid))]
         (is (= 900 (:prefix_stable_chars t)))
         (is (= 1000 (:prefix_chars t)))
         (is (= "rewritten" (:prefix_change t)))
-        (is (= "done" (:forced_tool t)))))
+        (is (= "done" (:forced_tool t)))
+        (is (= "grammar" (:forced_via t)) "and how it was forced (v32)")))
     (testing "a turn with no fingerprint stores nulls, not zeros"
       (let [rid (runs/start-run! c {:problem "p2"})]
         (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"

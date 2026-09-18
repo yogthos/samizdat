@@ -14,14 +14,26 @@
   tool_choice can. Prefill, the other cache-safe force, continues a trailing
   assistant message and only DeepSeek's beta endpoint does that.
 
-  WHAT IT GUARANTEES. Every ```tool-call fence OUTSIDE a think block is a
+  WHAT IT GUARANTEES. Every ```tool-call fence AFTER the reasoning is a
   well-formed call whose name is on the list — and, when required, that at
   least one exists, so the reply cannot END without a call (the sampler
   accepts end-of-generation only in an accepting state). The parser takes the
   last fence outside the reasoning (fence/parse-tool-call), which is exactly
-  the fence this constrains. Inside <think>…</think> the text is free: a
-  model drafts fences while reasoning, and pinning those would either make
-  the draft the call or forbid the draft.
+  the fence this constrains.
+
+  THE REASONING IS FREE, and the grammar has to be TOLD it is there. Under a
+  reasoning split (llama.cpp --jinja with a thinking template) the sampled
+  text begins INSIDE the think block — the template put the opener in the
+  prompt — so there is no `<think>` to match on, only the closer at the end.
+  Measured on Ternary-Bonsai-2-27B, 2026-09-18: a grammar that waited for a
+  literal `<think>` read the reasoning as ordinary prefix, and at the first
+  fence the model DRAFTED while thinking it began forcing the draft's name;
+  the model fought it for the whole 4000-token budget and never closed the
+  block. With `:think-close` set, the grammar is free text up to that closer,
+  then the constrained part: 56 tokens, one fence, the forced name. Whether
+  thinking is on for a call is the caller's to say (infer/grammar-for reads
+  the config); a closer for a call that thinks not would leave the reply
+  unable to end.
 
   HOW. 'Text that does not contain the opener' is a regular language whose
   DFA is the KMP automaton of the opener with its accepting state removed —
@@ -41,8 +53,6 @@
   (:require [clojure.string :as str]))
 
 (def opener "```tool-call\n")
-(def think-open "<think>")
-(def think-close "</think>")
 
 ;; --- 'text that does not contain P' as GBNF rules ----------------------------
 
@@ -87,7 +97,12 @@
     (str c)))
 
 (defn- escape-class
-  "One character inside a GBNF `[...]` class."
+  "One character inside a GBNF `[...]` class.
+
+  `-` and `^` are NOT escaped: llama.cpp's grammar parser knows only the
+  escapes \\x \\u \\U \\t \\r \\n \\\\ \\\" \\[ \\], and an older build (PrismML's, at
+  mainline 10687) rejects `\\-` and `\\^` outright where a newer one (10809)
+  let them through. `class-members` places them where they are literal."
   [c]
   (case c
     \newline "\\n"
@@ -95,9 +110,18 @@
     \tab "\\t"
     \\ "\\\\"
     \] "\\]"
-    \^ "\\^"
-    \- "\\-"
     (str c)))
+
+(defn- class-members
+  "The characters of a negated class `[^...]`, ordered so each is literal:
+  `-` last (anywhere else it ranges), `^` never first (after the negating
+  caret a literal one is fine, but last but one keeps it unambiguous)."
+  [chars]
+  (let [plain (remove #{\- \^} chars)]
+    (str/join (map escape-class
+                   (concat plain
+                           (when (some #{\^} chars) [\^])
+                           (when (some #{\-} chars) [\-]))))))
 
 (defn no-substring-rules
   "GBNF rules `<name>0` … `<name>(n-1)` recognising the strings that do not
@@ -107,7 +131,7 @@
   [name p]
   (let [n (count p)
         alphabet (sort (distinct (seq p)))
-        other (str "[^" (str/join (map escape-class alphabet)) "] " name "0")]
+        other (str "[^" (class-members alphabet) "] " name "0")]
     (vec
      (for [k (range n)]
        (let [alts (into [other]
@@ -134,21 +158,25 @@
 
 (defn fence-grammar
   "The GBNF under which a reply's tool calls are well-formed fences naming one
-  of `tools`. `:require? true` demands at least one call outside the
-  reasoning — the force; false leaves the call optional but still constrained
-  — the restriction. nil when there is nothing to allow: an empty list would
-  be a grammar no reply can satisfy."
-  [{:keys [tools require?]}]
-  (let [names (vec (distinct (map str tools)))]
+  of `tools`. `:require? true` demands at least one call after the reasoning
+  — the force; false leaves the call optional but still constrained — the
+  restriction. `:think-close` is the reasoning closer (`</think>`) when the
+  call THINKS: the sampled text is then free up to it and constrained after;
+  nil when it does not, and the whole reply is constrained. nil when there is
+  nothing to allow: an empty list would be a grammar no reply can satisfy."
+  [{:keys [tools require? think-close]}]
+  (let [names (vec (distinct (map str tools)))
+        calls (str "( prefix call )" (if require? "+" "*") " prefix")]
     (when (seq names)
       (str/join
        "\n"
        (concat
-        [(str "root ::= think? ( prefix call )" (if require? "+" "*") " prefix")
-         (str "think ::= " (literal think-open) " t0 " (literal think-close))
-         "prefix ::= p0"]
+        (if (seq think-close)
+          [(str "root ::= t0 " (literal think-close) " " calls)]
+          [(str "root ::= " calls)])
+        ["prefix ::= p0"]
         (no-substring-rules "p" opener)
-        (no-substring-rules "t" think-close)
+        (when (seq think-close) (no-substring-rules "t" think-close))
         [(str "call ::= " (literal opener)
               " ws \"{\" ws \"\\\"name\\\"\" ws \":\" ws name ws \",\" ws"
               " \"\\\"args\\\"\" ws \":\" ws object ws \"}\" ws \"```\"")

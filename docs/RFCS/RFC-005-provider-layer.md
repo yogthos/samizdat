@@ -74,7 +74,7 @@ can quietly diverge from the retry and timeout discipline.
 
 | fn | contract |
 |---|---|
-| `(chat adapter config messages [opts])` | The call. `opts`: `:max-tokens :temperature :max-retries :prefill :force-tool :cache-key`. **Throws** `ex-info` with `:provider` and `:attempts` when every attempt failed; the loop is bounded in attempts and each attempt in wall clock, so a stuck provider costs a known amount rather than the run. |
+| `(chat adapter config messages [opts])` | The call. `opts`: `:max-tokens :temperature :max-retries :prefill :force-tool :cache-key :reasoning-effort :grammar`. **Throws** `ex-info` with `:provider` and `:attempts` when every attempt failed; the loop is bounded in attempts and each attempt in wall clock, so a stuck provider costs a known amount rather than the run. |
 | `(list-models adapter config)` | Startup validation. |
 | `(probe-llama-cpp config)` | Startup identity: `{:llama-cpp? true :total-slots n :model-id s}` or nil. Every local-only knob keys on it. |
 | `(probe-fold-role config)` | Startup, llama.cpp only: whether the template takes a system message after a user turn. `"system"`, `"user"` or nil; the fold cell reads it through gates.edn `:fold-role` (karamazov-fp21.2). |

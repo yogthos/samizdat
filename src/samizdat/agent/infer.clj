@@ -235,14 +235,25 @@
   anyway."
   [{:keys [llm-config]} {:keys [force-tool refused-tool]}]
   (when (openai/llama-cpp-endpoint? (:provider llm-config) llm-config)
-    (let [{:keys [force restrict-after-refusal?]} (gates/threshold :local-grammar)]
+    (let [{:keys [force restrict-after-refusal? think-close]}
+          (gates/threshold :local-grammar)
+          ;; Whether THIS call thinks: the endpoint is configured to (config
+          ;; :llm :thinking?) and the runaway breaker has not turned it off
+          ;; for this branch (the per-call :reasoning-effort is the breaker's
+          ;; off-value then; call-model applied it before this ran). The
+          ;; grammar must know, or it constrains the reasoning.
+          thinks? (and (:thinking? llm-config)
+                       (not= (:reasoning-effort llm-config)
+                             (:off-value (gates/threshold :thinking-budget))))
+          close (when thinks? think-close)]
       (cond
         (and force-tool (= :grammar force))
-        (grammar/fence-grammar {:tools [(:name force-tool)] :require? true})
+        (grammar/fence-grammar {:tools [(:name force-tool)] :require? true
+                                :think-close close})
 
         (and refused-tool restrict-after-refusal?)
         (grammar/fence-grammar {:tools (remove #{(str refused-tool)} (tools/tool-names))
-                                :require? false})))))
+                                :require? false :think-close close})))))
 
 (defn complete-fn
   "ctx -> (fn [tape] -> {:ok true :response r} | {:ok false :error s}).

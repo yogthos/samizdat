@@ -321,10 +321,11 @@
         wire1 (infer/wire-fingerprint (:messages b))
         {b1 :branch} (aloop/absorb-response
                       b {:content reply :finish-reason "stop"
-                         :wire wire1 :forced "done"} 1)]
+                         :wire wire1 :forced "done" :forced-via :grammar} 1)]
     (testing "the first call is :first, and the forced tool is remembered"
       (is (= :first (get-in b1 [:last-prefix :change])))
       (is (= "done" (get-in b1 [:last-prefix :forced-tool])))
+      (is (= :grammar (get-in b1 [:last-prefix :forced-via])) "and how")
       (is (= wire1 (:last-wire b1))))
     (testing "the next call compares against the previous render"
       (let [wire2 (infer/wire-fingerprint
