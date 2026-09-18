@@ -353,7 +353,7 @@
   stuck provider costs a known amount rather than the run."
   ([adapter config messages] (chat adapter config messages nil))
   ([adapter config messages {:keys [max-tokens temperature max-retries prefill force-tool
-                                    cache-key reasoning-effort grammar]}]
+                                    cache-key reasoning-effort grammar reasoning-budget]}]
    (let [request {:messages (message/prepare messages)
                   :max-tokens (or max-tokens (:max-tokens config))
                   :temperature (or temperature (:temperature config))
@@ -381,7 +381,10 @@
                   ;; Bonsai went out over the tools array with no grammar,
                   ;; and the model called edit_file under a "done" force
                   ;; (2026-09-18).
-                  :grammar grammar}
+                  :grammar grammar
+                  ;; A per-call thinking cap for a llama.cpp endpoint
+                  ;; (karamazov-w7n4); every other adapter ignores it.
+                  :reasoning-budget reasoning-budget}
          ;; The read timeout is sized to the budget being asked for: a big
          ;; max-tokens legitimately takes longer than a small one, and a fixed
          ;; bound cut off long generations and re-billed them (see

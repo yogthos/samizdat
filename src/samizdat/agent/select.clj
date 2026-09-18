@@ -31,6 +31,7 @@
             [samizdat.llm.client :as llm]
             [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
+            [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.workflow :as workflow]))
 
@@ -155,7 +156,7 @@
   a reply naming nothing on the menu — because the caller's fallback is the
   factory loop, which is what the run would have used anyway. A run must never
   fail to start because the harness could not decide how to drive it."
-  [{:keys [conn llm-adapter llm-config]} problem]
+  [{:keys [conn run-id llm-adapter llm-config]} problem]
   (try
     (let [p (policy)
           cands (candidates conn)]
@@ -169,19 +170,22 @@
                  ;; is off and every run is chosen for.
                  (>= (count (str/trim (str problem)))
                      (or (:min-problem-chars p) 0)))
-        ;; THE ONE PROVIDER CALL THIS HARNESS CANNOT BILL (karamazov-2rqb.1).
-        ;; Every other side model records a side_calls row so the run's token
-        ;; budget can see it; this one runs from beam/run! BEFORE
-        ;; runs/start-run!, because the choice it makes decides which manifest
-        ;; is compiled and the run row records the width that compile decides.
-        ;; There is no run_id to attribute it to yet. It is one small call per
-        ;; run start, and inventing a nullable-run_id row nothing sums would
-        ;; buy a schema wart rather than a number.
-        (let [reply (:content (llm/chat llm-adapter llm-config
-                                        [{:role "system" :content (prompt/prompt "workflow-select-system")}
-                                         {:role "user"
-                                          :content (build-prompt problem cands
-                                                                 (history-lines conn cands))}]
-                                        {:temperature 0.0}))]
-          (parse-choice reply cands))))
+        ;; BILLED like every other side model (karamazov-2rqb.1) — this used
+        ;; to be the one provider call the harness could not attribute,
+        ;; because it ran before the run row existed. beam/run! now creates
+        ;; the row first and hands the id in (karamazov-5fyo); `run-id` is
+        ;; nil only for a caller that has none, and the call still answers.
+        (let [answer (llm/chat llm-adapter llm-config
+                               [{:role "system" :content (prompt/prompt "workflow-select-system")}
+                                {:role "user"
+                                 :content (build-prompt problem cands
+                                                        (history-lines conn cands))}]
+                               {:temperature 0.0})]
+          (when (and conn run-id answer)
+            (try (journal/record-side-call! conn run-id
+                                            {:kind :workflow-selection
+                                             :model (:model llm-config)
+                                             :usage (:usage answer)})
+                 (catch Throwable _ nil)))
+          (parse-choice (:content answer) cands))))
     (catch Throwable _ nil)))

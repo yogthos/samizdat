@@ -320,6 +320,17 @@
                        run-id branch-id]))
   (journal/note! conn run-id :branch-reopened {:branch-id branch-id}))
 
+(defn set-shape!
+  "The width the run actually opens at and the digest of the prompt its
+  branches open on, written once the loop is compiled (karamazov-5fyo). The
+  row is created BEFORE the selection call and the compile that decide
+  these, so the caller of POST /v1/runs has an id at once; until this
+  lands the row carries the requested width and no digest."
+  [conn run-id {:keys [beam-width prompt-digest]}]
+  (db/with-writer
+    (db/execute! conn ["UPDATE runs SET beam_width = ?, prompt_digest = ? WHERE id = ?"
+                       (or beam-width 1) (or prompt-digest "") run-id])))
+
 (defn set-thesis!
   "The branch's current structural plan. Overwriting is allowed — committing to
   a different route is a legitimate move — and the change is journalled."

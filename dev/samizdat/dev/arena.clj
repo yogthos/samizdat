@@ -52,12 +52,14 @@
             [clojure.string :as str]
             [samizdat.agent.acceptance :as acceptance]
             [samizdat.agent.beam :as beam]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.verify :as verify]
             [samizdat.server :as server]
             [samizdat.session :as session]
             [samizdat.stats :as stats]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
+            [samizdat.userspace :as userspace]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.store.runs :as runs]
             [samizdat.system :as system]))
@@ -727,7 +729,10 @@
                                         ;; tests asking.
                                         (:user-context in)
                                         (assoc :user-context (:user-context in)))
-                                 :http {:port (:http-port in)}})
+                                 :http {:port (:http-port in)}
+                                 ;; The sweep's provider, when it named one
+                                 ;; (ARENA_LLM); overrides beat both files.
+                                 :llm (or (:llm in) {})})
                  (try
                    (session/reset!)
                    (when-let [f (:setup in)] (eval f))
@@ -862,6 +867,15 @@
                           :acceptance acceptance
                           :user-context user-context
                           :http-port http-port
+                          ;; The provider this SWEEP runs on, over the
+                          ;; subject's own config (endless-flight pins :glm
+                          ;; in its committed .samizdat/config.edn). A
+                          ;; sweep about a local-endpoint knob has to say
+                          ;; so, and an arm's :setup runs too late — the
+                          ;; adapter is built at system/start!. ARENA_LLM
+                          ;; is an EDN map merged as the :llm override,
+                          ;; e.g. ARENA_LLM='{:provider :local}'.
+                          :llm (some-> (System/getenv "ARENA_LLM") edn/read-string)
                           :setup (:setup arm)}))
       (let [pb (doto (ProcessBuilder.
                       ^java.util.List
@@ -1263,6 +1277,39 @@
           (recur (inc i) (rest todo)))
         (rows out)))))
 
+(defn flip-gate!
+  "Set one gates.edn value for the CHILD's project — an arm's :setup form.
+
+  `(flip-gate! [:local-grammar :force] :native)` reads the project's current
+  gates body, changes that path under the entry's :value, appends it as a new
+  userspace version with the arm's name as the rationale, and reloads. The
+  child's database is the worktree's and dies with it, so nothing leaks
+  into a real project. nil when no project is bound, like save!."
+  [path v]
+  (let [body (edn/read-string (userspace/body! :policy "gates"))
+        [k & ks] path
+        body' (assoc-in body (into [k :value] ks) v)]
+    (when (userspace/save! :policy "gates" (pr-str body')
+                           (str "arena arm: " (pr-str path) " = " (pr-str v)))
+      (gates/reload-config!)
+      true)))
+
+(defn arms
+  "The arms a sweep runs: `ARENA_ARMS=<name>` picks a set from
+  dev/samizdat/dev/arena_arms.edn; unset is the one baseline arm. Named
+  sets rather than forms on the command line, so a sweep's arms are on
+  record beside its tasks."
+  []
+  (if-let [nm (System/getenv "ARENA_ARMS")]
+    (let [sets (edn/read-string (slurp (str (System/getProperty "user.dir")
+                                            "/dev/samizdat/dev/arena_arms.edn")))
+          chosen (get sets (keyword nm))]
+      (when-not chosen
+        (throw (ex-info (str "ARENA_ARMS=" nm " names no arm set")
+                        {:known (keys sets)})))
+      chosen)
+    [{:name :baseline}]))
+
 (defn -main
   "Run a sweep as its OWN PROCESS. `jolt -A:dev -m samizdat.dev.arena <out> [n]`.
 
@@ -1284,7 +1331,7 @@
   the same failure as the one that deleted its worktrees, one clock later."
   [& [out n & task-ids]]
   (let [tmp (System/getProperty "java.io.tmpdir")
-        rows (sweep-tasks! {:arms [{:name :baseline}]
+        rows (sweep-tasks! {:arms (arms)
                             :n (if n (parse-long (str n)) 3)
                             :task-ids (mapv keyword task-ids)
                             :out (or out "arena-rows.edn")

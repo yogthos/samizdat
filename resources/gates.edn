@@ -225,18 +225,21 @@
 
  :run-start-deadline-ms
  {:value 120000 :kind :threshold :capability-tunable? true
-  :provenance ["karamazov-iev2"]
+  :provenance ["karamazov-iev2" "karamazov-5fyo"]
   :doc "How long POST /v1/runs waits for the run row to exist before answering
         503. The run itself is not stopped by this — it goes on in the
         background either way — so the deadline only decides whether the
         caller gets the run id or a refusal it then has to reconcile with a
         run that started.
 
-        The row is created AFTER the workflow-selection model call, which on
-        GLM-5.3 with thinking took 28 s live (2026-09-07, karamazov-iev2), so
-        the 30 s literal this replaces answered 503 to a run that then ran.
-        Two minutes covers a slow selection call under load without letting a
-        client hang forever on a provider that never answers."}
+        The row used to be created AFTER the workflow-selection model call,
+        which on GLM-5.3 with thinking took 28 s live (2026-09-07,
+        karamazov-iev2), so the 30 s literal this replaces answered 503 to a
+        run that then ran. Since karamazov-5fyo the row comes first and the
+        caller is answered before that call is made, so this now bounds only
+        the work before the row — the opening-context walk and the insert —
+        and is generous for it. Kept, because a client must never hang on a
+        server that cannot open a database."}
 
  :git-snapshot-ttl-ms
  {:value 3000 :kind :threshold :capability-tunable? true
@@ -2352,6 +2355,35 @@
 
         Not capability-tunable: it is the opening, decided before any
         branch has a tier."}
+
+ :local-reasoning-budget
+ {:value {:turn nil :forced nil}
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-w7n4" "karamazov-fp21.4"]
+  :doc "HOW MUCH A CALL MAY THINK on a llama.cpp endpoint, in tokens, per
+        occasion — sent as reasoning_budget_tokens, which the server honours
+        by injecting the end-of-thinking tag at the cut (PrismML fork
+        server-common.cpp:1354; mainline since). nil leaves the server's own
+        --reasoning-budget in force (dev/bonsai-server.sh sets 2048); 0 is
+        no thinking; -1 is unrestricted.
+
+        :turn     an ordinary branch turn
+        :forced   a turn a gate forces a tool on (last-call, plan-last-call,
+                  the mechanics forces) — the model is being told what to
+                  call, and how much it deliberates first is a cost with
+                  no measured return.
+
+        Only sent where the call thinks at all (config :llm :thinking?),
+        and only to a llama.cpp endpoint; hosted providers have no such
+        field and their effort levels are :reasoning-effort.
+
+        MEASURED 2026-09-18 on Ternary-Bonsai-2-27B at 15 tok/s: a small
+        coding task thought 1200-1340 tokens unrestricted; a 1024 cap gave
+        760-860 and a still-correct answer in 85 s against 104-117 s; the
+        first live turn under no cap thought ~6000 tokens and timed out.
+        Both values nil until karamazov-fp21.4 has read the grammar arm —
+        one unsettled change at a time (RFC-010). A cost ceiling, so the
+        capability tier may never raise it."}
 
  :compaction
  {:value

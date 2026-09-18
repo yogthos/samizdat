@@ -255,6 +255,19 @@
         (grammar/fence-grammar {:tools (remove #{(str refused-tool)} (tools/tool-names))
                                 :require? false :think-close close})))))
 
+(defn- reasoning-budget-for
+  "The per-call thinking cap for this call on a llama.cpp endpoint, or nil
+  for the server's own default (karamazov-w7n4). gates.edn
+  :local-reasoning-budget names one per occasion: `:forced` when a gate
+  forces a tool, `:turn` otherwise. Only where the call thinks at all — a
+  call with thinking off has nothing to cap, and sending a cap for it would
+  be a knob on the wire that changes nothing."
+  [{:keys [llm-config]} {:keys [force-tool]}]
+  (when (and (openai/llama-cpp-endpoint? (:provider llm-config) llm-config)
+             (:thinking? llm-config))
+    (let [{:keys [turn forced]} (gates/threshold :local-reasoning-budget)]
+      (if force-tool forced turn))))
+
 (defn complete-fn
   "ctx -> (fn [tape] -> {:ok true :response r} | {:ok false :error s}).
 
@@ -281,7 +294,8 @@
      ;; the journal (karamazov-o4wm.1). The grammar is decided once for the
      ;; same reason: a retry of a forced turn is still forced.
      (let [wire (wire-fingerprint (message/prepare (render tape)))
-           grammar (grammar-for ctx tape)]
+           grammar (grammar-for ctx tape)
+           reasoning-budget (reasoning-budget-for ctx tape)]
      (loop [attempt 1]
        (let [base (or (:max-tokens (:llm-config ctx))
                       ;; No configured cap: the FIRST attempt keeps the
@@ -309,6 +323,9 @@
                                         ;; endpoint (grammar-for): the cache-safe
                                         ;; force, and the one that can ban.
                                         grammar (assoc :grammar grammar)
+                                        ;; A per-call thinking cap on llama.cpp
+                                        ;; (reasoning-budget-for).
+                                        reasoning-budget (assoc :reasoning-budget reasoning-budget)
                                         ;; The stable conversation key an endpoint
                                         ;; pins its prefix cache to. Only the local
                                         ;; adapter emits it; see LR-5.

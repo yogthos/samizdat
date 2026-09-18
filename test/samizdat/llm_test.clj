@@ -1687,3 +1687,27 @@
   (with-redefs [http/post (fn [& _] (throw (ex-info "connection refused" {})))]
     (is (nil? (client/probe-fold-role {:base-url "http://x/v1" :model "m"}))
         "unreachable is unknown, not a reason to change the fold")))
+
+
+;; --- the per-call reasoning budget (karamazov-w7n4) ---------------------------
+
+(deftest a-reasoning-budget-reaches-a-llama-cpp-endpoint-and-nobody-else
+  (let [local (registry/adapter-for :local)
+        cfg {:base-url "http://127.0.0.1:8080/v1" :model "m" :thinking? true}
+        req {:messages [{:role "user" :content "x"}] :reasoning-budget 512}]
+    (is (= 512 (:reasoning_budget_tokens (adapter/chat-body local cfg req))))
+    (is (= 0 (:reasoning_budget_tokens (adapter/chat-body local cfg (assoc req :reasoning-budget 0))))
+        "0 is a real value — no thinking — not an absence")
+    (is (nil? (:reasoning_budget_tokens (adapter/chat-body local cfg (dissoc req :reasoning-budget))))
+        "nil leaves the server's own default in force")
+    (doseq [p [:deepseek :glm :openai]]
+      (is (nil? (:reasoning_budget_tokens
+                 (adapter/chat-body (registry/adapter-for p) (assoc cfg :api-key "k") req)))
+          (str (name p) " has no such field")))
+    (testing "the client forwards it by name, like every other knob"
+      (let [sent (atom nil)]
+        (with-redefs [http/post (fn [_ {:keys [body]}]
+                                  (reset! sent (json/read-str body :key-fn keyword))
+                                  {:status 200 :body "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}"})]
+          (client/chat local cfg [{:role "user" :content "x"}] {:max-tokens 10 :reasoning-budget 256}))
+        (is (= 256 (:reasoning_budget_tokens @sent)))))))

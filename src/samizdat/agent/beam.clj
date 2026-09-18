@@ -1005,60 +1005,12 @@
         ;; Tokens the whole run may spend; nil is unbounded. Enforced by
         ;; :beam/round-open against the journal, sized against below.
         token-budget (or token-budget (get-in config [:run :token-budget]))
-        ;; Which loop drives this run, compiled to its per-turn slice. Before
-        ;; on-start, and so before POST /v1/runs returns, because the run row
-        ;; records the width this decides and a compile failure must refuse
-        ;; the request rather than surface as a dead run. It costs one cell
-        ;; load and one manifest compile — well under the open-branch! cost
-        ;; the comment below is about.
-        ;; A run that named no workflow gets one chosen for it from the
-        ;; catalogue (samizdat.agent.select). Before the compile, because the
-        ;; choice decides which manifest is compiled; after nothing else,
-        ;; because it is one small model call and a run must not fail to start
-        ;; over it — `pick!` answers nil on every uncertainty and the
-        ;; precedence in `active-loop-name` falls back to the factory loop.
-        selected (select/pick! {:conn conn :llm-adapter llm-adapter
-                                :llm-config llm-config}
-                               problem)
-        loop-nm (workflow/active-loop-name config selected)
-        ;; THE IMPLEMENTER'S STREAM (RFC-012). Every cell that completes is
-        ;; published as a step, onto the same bus the journal already uses.
-        ;; The id is an atom because this compile happens BEFORE the run row
-        ;; exists — the row records a width this compile decides — and
-        ;; :on-trace is only accepted here.
-        run-id* (atom nil)
-        {loop-version :version turn-wf :compiled iterating? :iterating?
-         loop-def :definition}
-        (workflow/compile-turn-loop conn loop-nm
-                                    {:on-trace (events/tracer run-id*)})
-        ;; The manifest's OWN instructions, appended to the base system prompt
-        ;; of every branch this run opens. Read from the loaded definition
-        ;; rather than the file, so an agent's edit to the manifest is what
-        ;; frames the run.
-        prompt-suffix (workflow/workflow-prompt loop-def)
-        ;; A non-iterating manifest (team, feature, decompose) is a whole-run
-        ;; workflow: one "turn" is the branch's entire job, and it fans out
-        ;; internally. Running five of those concurrently would multiply the
-        ;; whole job rather than explore five lines of one, so the beam is
-        ;; width 1 there regardless of what was asked for.
         requested-width (or beam-width (get-in config [:run :beam-width]) 5)
-        forced-width (if iterating? requested-width 1)
-        ;; ...and no wider than the provider can serve under the deadline,
-        ;; or the token budget could pay for at the cap (gates.edn
-        ;; :beam-contention; Tier 2 of karamazov-41a).
-        contention (lexicon/policy :beam-contention)
-        {width :width bound :bound}
-        (contended-width forced-width contention
-                         {:deadline-ms (turn-deadline-ms)
-                          :max-turns max-turns
-                          :token-budget token-budget})
         ;; Seeding forces sharing on for this run regardless of the config
         ;; flag: seeds enter through the shared log's context blocks, and
         ;; seeds nobody reads would be dead rows.
         config (cond-> config
                  seed-run (assoc-in [:run :share-artifacts?] true))
-        ;; Every session ever opened, including forked children, so the
-        ;; supervisor can tear them all down regardless of how the run ended.
         ;; The three ctx keys the manifest driver set and this one did not.
         ;; Every consumer defends with `(or root ".")` or a nil check, so the
         ;; omission was silent: `:run :root` was documented and ignored, every
@@ -1073,15 +1025,83 @@
         ;; branches saw rather than on whatever the tree says by then. nil
         ;; when gates.edn :orient-inject is off or nothing was found.
         orient (orient/block root problem (gates/threshold :orient-inject))
+        ;; THE ROW FIRST, then the caller, then everything that costs a model
+        ;; call (karamazov-5fyo). api.control/start-run! blocks until on-start
+        ;; fires, so this line is how long POST /v1/runs takes. It used to
+        ;; come after the selection call and the compile below: on Bonsai the
+        ;; selection call took 9 s once and 36 s once, a client with a short
+        ;; timeout got nothing back, re-posted, and two runs shared the GPU.
+        ;; The row carries the REQUESTED width and no prompt digest until
+        ;; set-shape! below writes what the compile decided; the response
+        ;; already reports the requested width, so nothing a caller reads
+        ;; changes. And open-branch! spawns a Prolog session per branch, so
+        ;; on-start after THAT made the endpoint cost the whole beam's
+        ;; startup: 47ms idle, 21095ms under load at width 1 (vf-36o). A
+        ;; caller that fetches run-detail immediately sees zero branches for
+        ;; a moment; the journal poller handles that, and it is the honest
+        ;; picture — the branches genuinely do not exist yet.
         run-id (runs/start-run! conn {:problem problem
                                       :provider (:provider llm-config)
                                       :model (:model llm-config)
                                       :max-turns max-turns
-                                      :beam-width width
+                                      :beam-width requested-width
                                       :token-budget token-budget
-                                      :prompt-digest (branch-loop/prompt-digest
-                                                      prompt-suffix)
                                       :opening-context (:block orient)})
+        ;; THE IMPLEMENTER'S STREAM (RFC-012). Every cell that completes is
+        ;; published as a step, onto the same bus the journal already uses.
+        ;; An atom because the tracer is built once and read per step.
+        run-id* (atom run-id)
+        _ (when on-start (on-start run-id))
+        ;; A run that named no workflow gets one chosen for it from the
+        ;; catalogue (samizdat.agent.select), billed to the run now that the
+        ;; row exists (karamazov-2rqb.1). Before the compile, because the
+        ;; choice decides which manifest is compiled; a run must not fail to
+        ;; start over it — `pick!` answers nil on every uncertainty and the
+        ;; precedence in `active-loop-name` falls back to the factory loop.
+        selected (select/pick! {:conn conn :run-id run-id
+                                :llm-adapter llm-adapter :llm-config llm-config}
+                               problem)
+        loop-nm (workflow/active-loop-name config selected)
+        ;; Which loop drives this run, compiled to its per-turn slice. A
+        ;; manifest that will not compile can no longer refuse the request —
+        ;; the caller already has the id — so it ends the run on the record
+        ;; instead: a failed row with the reason, never a 'running' row
+        ;; nobody will finish.
+        {loop-version :version turn-wf :compiled iterating? :iterating?
+         loop-def :definition}
+        (try (workflow/compile-turn-loop conn loop-nm
+                                         {:on-trace (events/tracer run-id*)})
+             (catch Throwable e
+               (try (journal/note! conn run-id :run-failed
+                                   {:data {:error (ex-message e) :loop loop-nm
+                                           :where "compile-turn-loop"}})
+                    (runs/finish-run! conn run-id :failed nil)
+                    (catch Throwable _ nil))
+               (throw e)))
+        ;; The manifest's OWN instructions, appended to the base system prompt
+        ;; of every branch this run opens. Read from the loaded definition
+        ;; rather than the file, so an agent's edit to the manifest is what
+        ;; frames the run.
+        prompt-suffix (workflow/workflow-prompt loop-def)
+        ;; A non-iterating manifest (team, feature, decompose) is a whole-run
+        ;; workflow: one "turn" is the branch's entire job, and it fans out
+        ;; internally. Running five of those concurrently would multiply the
+        ;; whole job rather than explore five lines of one, so the beam is
+        ;; width 1 there regardless of what was asked for.
+        forced-width (if iterating? requested-width 1)
+        ;; ...and no wider than the provider can serve under the deadline,
+        ;; or the token budget could pay for at the cap (gates.edn
+        ;; :beam-contention; Tier 2 of karamazov-41a).
+        contention (lexicon/policy :beam-contention)
+        {width :width bound :bound}
+        (contended-width forced-width contention
+                         {:deadline-ms (turn-deadline-ms)
+                          :max-turns max-turns
+                          :token-budget token-budget})
+        ;; What the compile decided, onto the row that was created before it.
+        _ (runs/set-shape! conn run-id {:beam-width width
+                                        :prompt-digest (branch-loop/prompt-digest
+                                                        prompt-suffix)})
         ;; WHERE the prompt came from, per segment, beside the digest that
         ;; says only that it changed (karamazov-o4wm.4). Best effort.
         _ (try (journal/note! conn run-id :prompt-manifest
@@ -1096,9 +1116,6 @@
                                         :found (:found orient)
                                         :chars (count (str (:block orient)))}})
                  (catch Throwable _ nil)))
-        ;; The tracer's steps can now say which run they belong to; the bus is
-        ;; process-wide and the watcher filters on it.
-        _ (reset! run-id* run-id)
         ;; Seeded before any branch opens, so the first context block a
         ;; branch ever sees can already carry inherited lemmas.
         ;; `quarantine` drops named claims from the inheritance: a row still
@@ -1143,18 +1160,6 @@
              ;; its own turn (karamazov-blt.18, RFC-013).
              :cancelling (atom {})
              :abort abort}]
-    ;; Before the branches, not after. api.control/start-run! blocks until this
-    ;; fires, so this line is how long POST /v1/runs takes — and open-branch!
-    ;; spawns a Prolog session per branch, so putting it after made the endpoint
-    ;; cost the whole beam's startup: 47ms idle, 21095ms under load at width 1,
-    ;; proportionally worse wider. A client bound tighter than that reported a
-    ;; failure for a run already committed and running (vf-36o).
-    ;;
-    ;; The run row exists by here, which is what the id addresses. A caller that
-    ;; fetches run-detail immediately sees zero branches for a moment; the
-    ;; journal poller handles that, and it is the honest picture — the branches
-    ;; genuinely do not exist yet.
-    (when on-start (on-start run-id))
     ;; Which loop drove this run, durably: an agent reading a surprising run
     ;; back needs to know which version of itself produced it.
     (journal/note! conn run-id :loop-workflow

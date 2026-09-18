@@ -138,11 +138,13 @@
                           (approval/abandon! rid))
                         {:status :error :error (ex-message e)})))))
         _ (reset! cancel* (:cancel started))
-        ;; How long the request waits for the run row before answering 503.
-        ;; gates.edn :run-start-deadline-ms: the selection model call runs
-        ;; BEFORE the row exists, and on GLM-5.3 with thinking it took 28 s
-        ;; live (2026-09-07), so a 30 s literal here answered 503 to a run
-        ;; that then started anyway.
+        ;; How long the request waits for the run row before answering 503
+        ;; (gates.edn :run-start-deadline-ms). The selection model call used
+        ;; to run BEFORE the row existed — 28 s on GLM-5.3 with thinking, up
+        ;; to 36 s on a local thinking model — and a client that gave up
+        ;; re-posted a run that had started anyway (karamazov-5fyo). beam/run!
+        ;; now creates the row and fires on-start before that call, so the
+        ;; wait here is the insert and the opening-context walk.
         start-deadline (lexicon/policy :run-start-deadline-ms)
         run-id (deref promised start-deadline nil)]
     (if run-id

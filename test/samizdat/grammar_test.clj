@@ -229,3 +229,30 @@
       (testing "and the reply says the turn was forced, and how, for the journal (v32)"
         (is (= "done" (:forced reply)))
         (is (= :grammar (:forced-via reply)))))))
+
+
+;; --- the per-call reasoning budget's occasion (karamazov-w7n4) ---------------
+
+(deftest the-thinking-cap-follows-the-occasion-and-is-off-by-default
+  (let [seen (atom [])
+        ctx {:llm-adapter ::a :llm-config {:provider :local :model "m" :thinking? true}}
+        tape {:id "B1" :messages [{:role "system" :content "s"} {:role "user" :content "go"}] :turns []}
+        forced (assoc tape :force-tool done-spec)
+        call (fn [ctx tape]
+               (reset! seen [])
+               (with-redefs [samizdat.llm.client/chat (capturing seen)]
+                 ((infer/complete-fn ctx {:journal? false}) tape))
+               (:reasoning-budget (first @seen)))]
+    (testing "nil and nil until somebody measures: the server's default stands"
+      (is (nil? (call ctx tape)))
+      (is (nil? (call ctx forced))))
+    (testing "policy names a cap per occasion"
+      (with-redefs [gates/threshold (let [orig gates/threshold]
+                                      (fn [k] (if (= k :local-reasoning-budget)
+                                                {:turn 2048 :forced 0}
+                                                (orig k))))]
+        (is (= 2048 (call ctx tape)))
+        (is (= 0 (call ctx forced)) "a forced turn may be told to think not at all")
+        (testing "but never for a call that does not think, or a hosted provider"
+          (is (nil? (call (assoc-in ctx [:llm-config :thinking?] false) forced)))
+          (is (nil? (call (assoc ctx :llm-config {:provider :glm :model "glm-5.3" :thinking? true}) forced))))))))
