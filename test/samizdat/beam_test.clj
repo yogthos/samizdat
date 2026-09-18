@@ -13,6 +13,7 @@
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [mycelium.cell :as cell]
             [samizdat.agent.beam :as beam]
+            [samizdat.agent.select :as select]
             [samizdat.agent.state :as state]
             [samizdat.cells :as cells]
             [samizdat.llm.client :as llm]
@@ -519,4 +520,55 @@
         (is (= 4220 (beam/spent-tokens {:conn c :run-id rid :token-budget 1000})))
         (is (nil? (beam/spent-tokens {:conn c :run-id rid :token-budget nil}))
             "a run with no budget still pays for no query"))
+      (finally (db/close c)))))
+
+
+;; --- the run row comes first (karamazov-5fyo, karamazov-2rqb.1) -------------
+
+(deftest the-run-row-and-the-caller-come-before-the-selection-call
+  ;; POST /v1/runs returns when on-start fires. The row used to be created
+  ;; AFTER the workflow-selection model call, so a client with a short
+  ;; timeout got nothing back for a run that then started anyway: on Bonsai
+  ;; the call took 9 s once and 36 s once (2026-09-18), curl -m 10 re-posted,
+  ;; and two runs shared the GPU. Now the row exists and the caller has its
+  ;; id before selection is asked anything.
+  (let [c (db/open! ":memory:")
+        order (atom [])
+        started (atom nil)]
+    (try
+      (with-redefs [select/pick! (fn [{:keys [conn run-id]} _problem]
+                                   (swap! order conj [:select run-id
+                                                      (some? (runs/get-run conn run-id))])
+                                   nil)
+                    beam/run-rounds (fn [_ctx _branches _turn]
+                                      {:status :completed :branches []})
+                    llm/chat (fn [& _] {:content "" :finish-reason "stop"})]
+        (beam/run! {:conn c :config {:run {:width 1}} :llm-adapter :a
+                    :llm-config {:max-tokens 100} :problem "a problem long enough to select for"
+                    :max-turns 3 :beam-width 2
+                    :on-start (fn [rid] (swap! order conj [:on-start rid]) (reset! started rid))}))
+      (is (= [:on-start :select] (mapv first @order)) "the caller is answered, then selection runs")
+      (is (= @started (second (second @order))) "selection is told the run it is choosing for")
+      (is (true? (nth (second @order) 2)) "and the row exists by then")
+      (testing "the row records the width the compile decided, not only the request"
+        (is (= 2 (:beam_width (runs/get-run c @started)))))
+      (finally (db/close c)))))
+
+(deftest a-loop-that-does-not-compile-is-a-failed-run-not-a-running-row
+  ;; With the row created first, a manifest that will not compile can no
+  ;; longer refuse the request; it ends the run instead, on the record, with
+  ;; the reason, rather than leaving a 'running' row nobody will finish.
+  (let [c (db/open! ":memory:")
+        started (atom nil)]
+    (try
+      (with-redefs [workflow/compile-turn-loop (fn [& _] (throw (ex-info "manifest will not compile" {})))
+                    llm/chat (fn [& _] {:content "" :finish-reason "stop"})]
+        (is (thrown-with-msg?
+             Exception #"manifest will not compile"
+             (beam/run! {:conn c :config {:run {:loop "loop"}} :llm-adapter :a
+                         :llm-config {:max-tokens 100} :problem "p" :max-turns 3
+                         :on-start (fn [rid] (reset! started rid))}))))
+      (is (some? @started) "the caller still got the id")
+      (is (= "failed" (:status (runs/get-run c @started))))
+      (is (some? (journal/last-note c @started :run-failed)) "and the journal says why")
       (finally (db/close c)))))

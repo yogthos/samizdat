@@ -5,7 +5,10 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.select :as select]
+            [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
+            [samizdat.store.runs :as runs]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.lexicon :as lexicon]
             [samizdat.workflow :as workflow]))
@@ -187,3 +190,24 @@
       (is (= 4 (:failed r))))
     (testing "and it is one row, not five"
       (is (= 1 (count (filter #(= "procedural" (:kind %)) (knowledge/recent conn 20))))))))
+
+
+(deftest the-selection-call-is-billed-to-the-run-it-chooses-for
+  ;; The one provider call the harness could not bill (karamazov-2rqb.1):
+  ;; it ran before the run row existed. Now the row comes first and the
+  ;; call records a side_calls row like every other side model.
+  (let [c (db/open! ":memory:")]
+    (try
+      (let [rid (runs/start-run! c {:problem "p"})]
+        (with-redefs [llm/chat (fn [& _] {:content "loop" :finish-reason "stop"
+                                          :usage {:prompt-tokens 40 :completion-tokens 3}})]
+          (select/pick! {:conn c :run-id rid :llm-adapter :fake :llm-config {:model "m"}}
+                        (apply str (repeat 200 "a problem "))))
+        (let [u (journal/run-usage c rid)]
+          (is (= 1 (:side-calls u)))
+          (is (= 43 (:total-tokens u)) "the run's bill includes it")))
+      (testing "without a run id it still answers, unbilled, as before"
+        (with-redefs [llm/chat (fn [& _] {:content "loop" :finish-reason "stop"})]
+          (is (= "loop" (select/pick! {:conn c :llm-adapter :fake :llm-config {}}
+                                      (apply str (repeat 200 "a problem ")))))))
+      (finally (db/close c)))))

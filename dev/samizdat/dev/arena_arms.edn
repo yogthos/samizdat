@@ -1,0 +1,25 @@
+;; Arm sets for samizdat.dev.arena, picked by ARENA_ARMS=<name>. An arm is a
+;; name and an optional :setup form evaluated in the child after the project
+;; is bound and before beam/run!; flip-gate! rewrites one gates.edn value for
+;; that child only. The first arm of each pair is the shipped default.
+;;
+;; karamazov-fp21.4, one factor per sweep so the pairs read cleanly:
+;;
+;;   ARENA_LLM='{:provider :local}' ARENA_ARMS=fp21-force \
+;;     jolt -A:dev -m samizdat.dev.arena rows-force.edn 1 fast-low-endless
+;;   ARENA_LLM='{:provider :local}' ARENA_ARMS=fp21-orient \
+;;     jolt -A:dev -m samizdat.dev.arena rows-orient.edn 1 fast-low-endless
+;;
+;; ARENA_LLM overrides the subject's own provider (endless-flight pins :glm);
+;; the grammar arm is a llama.cpp knob, so the sweep must run on one. Then
+;; dev/arena-readout.sh over the recordings.
+
+{:fp21-force
+ [{:name :grammar-force}
+  {:name :native-force
+   :setup (samizdat.dev.arena/flip-gate! [:local-grammar :force] :native)}]
+
+ :fp21-orient
+ [{:name :orient-on}
+  {:name :orient-off
+   :setup (samizdat.dev.arena/flip-gate! [:orient-inject :enabled?] false)}]}

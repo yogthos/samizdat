@@ -118,12 +118,22 @@
   Gated on the endpoint being llama.cpp, so every hosted provider's body is
   byte-identical to what it was. The cache design is llm-repl's `llama-wire`;
   only the seam differs."
-  [provider-id config cache-key]
+  [provider-id config cache-key reasoning-budget]
   (if-not (llama-cpp-endpoint? provider-id config)
     {}
     (cond-> {}
       (not (:thinking? config))
       (assoc :chat_template_kwargs {:enable_thinking false})
+
+      ;; A per-CALL cap on thinking, in tokens: llama.cpp injects the
+      ;; end-of-thinking tag at the cut (server-common.cpp:1354,
+      ;; `reasoning_budget_tokens`; 0 = none, -1 = the server's own
+      ;; --reasoning-budget). Only when a caller stated one — nil leaves the
+      ;; server's default in force — and only here, since no hosted API has
+      ;; the field (karamazov-w7n4). Which occasion gets what budget is
+      ;; gates.edn :local-reasoning-budget.
+      (some? reasoning-budget)
+      (assoc :reasoning_budget_tokens (long reasoning-budget))
 
       (some? cache-key)
       (assoc :cache_prompt true)
@@ -183,7 +193,7 @@
       {}))
 
   (chat-body [this config {:keys [messages max-tokens temperature prefill force-tool
-                                  cache-key reasoning-effort grammar]}]
+                                  cache-key reasoning-effort grammar reasoning-budget]}]
    ;; The gate is the protocol method on THIS adapter (provenance R3-14), so the
    ;; answer a caller can query and the answer chat-body acts on are one
    ;; path and cannot drift apart.
@@ -249,7 +259,7 @@
       ;; Local llama-server prefix-cache reuse. Merged LAST and only for
       ;; :local, so no hosted provider's body changes.
       :always
-      (merge (local-cache-wire provider-id config cache-key)))))
+      (merge (local-cache-wire provider-id config cache-key reasoning-budget)))))
 
   (prefill-support? [_ config] (supports-prefill? provider-id config))
 
