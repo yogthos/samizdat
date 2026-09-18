@@ -814,10 +814,10 @@
   `forced_tool` (v30) was read off the request's native tool_choice, so a
   turn forced by a llama.cpp grammar recorded no force at all: the first
   grammar-forced turn on Bonsai 2 (2026-09-18) sat in the journal as an
-  ordinary done. `forced_via` is native | grammar. The two are different
-  findings on the cache — a native force rewrites the prefix and a grammar
-  leaves it byte-identical — and journal/cache-misses attributes a miss to
-  the force only for native. NULL on an unforced turn and on every row from
+  ordinary done. `forced_via` is native | grammar | prefill. They are
+  different findings on the cache — a native force rewrites the prefix, a
+  grammar or a prefill leaves it byte-identical — and journal/cache-misses
+  attributes a miss to the force only for native. NULL on an unforced turn and on every row from
   before this column, which was native or nothing."
   ["ALTER TABLE turns ADD COLUMN forced_via TEXT"])
 

@@ -116,6 +116,7 @@
             [samizdat.files-test]
             [samizdat.edit-test]
             [samizdat.eval-mode-test]
+            [samizdat.features-test]
             [samizdat.grammar-test]
             [samizdat.grep-test]
             [samizdat.orient-test]
@@ -304,6 +305,7 @@
     samizdat.files-test
     samizdat.edit-test
     samizdat.eval-mode-test
+    samizdat.features-test
     samizdat.grammar-test
     samizdat.grep-test
     samizdat.orient-test

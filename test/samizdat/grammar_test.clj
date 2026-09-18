@@ -15,6 +15,7 @@
             [samizdat.agent.gates :as gates]
             [samizdat.agent.infer :as infer]
             [samizdat.agent.state :as state]
+            [samizdat.config]
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.client]
             [samizdat.llm.grammar :as grammar]
@@ -90,22 +91,27 @@
         req {:messages [{:role "user" :content "x"}]
              :force-tool done-spec
              :grammar "root ::= \"x\""}]
-    (testing "on :local the grammar replaces the tools+tool_choice fallback"
+    (testing "on an endpoint whose features say :grammar, the grammar replaces the tools+tool_choice fallback"
       (let [body (adapter/chat-body (registry/adapter-for :local)
-                                    {:base-url "http://127.0.0.1:8080/v1" :model "m"} req)]
+                                    {:base-url "http://127.0.0.1:8080/v1" :model "m"
+                                     :features #{:grammar :native-tool-choice}} req)]
         (is (= "root ::= \"x\"" (:grammar body)))
         (is (nil? (:tools body)) "no tools array, so the template rewrites no prefix")
         (is (nil? (:tool_choice body)))))
-    (testing "a probed llama.cpp server under another id gets it too"
+    (testing "a probed llama.cpp server under another id gets it too — the probe adds the feature"
       (let [body (adapter/chat-body (registry/adapter-for :openai)
-                                    {:base-url "http://h/v1" :model "m" :api-key "k" :llama-cpp? true}
+                                    (samizdat.config/apply-discovery
+                                     {:base-url "http://h/v1" :model "m" :api-key "k"
+                                      :features (samizdat.config/features-of :openai)}
+                                     {:llama-cpp? true :total-slots 1})
                                     req)]
         (is (= "root ::= \"x\"" (:grammar body)))
         (is (nil? (:tool_choice body)))))
     (testing "a hosted provider never sees the field, and forces as before"
       (let [body (adapter/chat-body (registry/adapter-for :glm)
                                     {:base-url "https://open.bigmodel.cn/api/coding/paas/v4"
-                                     :model "glm-5.3" :api-key "k"}
+                                     :model "glm-5.3" :api-key "k"
+                                     :features (samizdat.config/features-of :glm)}
                                     req)]
         (is (nil? (:grammar body)) "a strict server 422s the whole request over an unknown key")
         (is (= {:type "function" :function {:name "done"}} (:tool_choice body)))))))
@@ -123,14 +129,21 @@
     (swap! seen conj opts)
     {:content "```tool-call\n{\"name\": \"done\", \"args\": {}}\n```" :finish-reason "stop"}))
 
-(defn- policy-with [m]
-  (let [orig gates/threshold]
-    (fn [k] (if (= k :local-grammar) m (orig k)))))
+(defn- policy-with
+  "gates/threshold with :local-grammar (or, when `k` says, :force-mechanism) replaced."
+  ([m] (policy-with :local-grammar m))
+  ([k m]
+   (let [orig gates/threshold]
+     (fn [key] (if (= key k) m (orig key))))))
+
+(def ^:private local-cfg
+  "A llama.cpp endpoint as the probe leaves it: every local feature declared."
+  {:provider :local :base-url "http://127.0.0.1:8080/v1" :model "m"
+   :features (into (samizdat.config/features-of :local) samizdat.config/llama-cpp-features)})
 
 (deftest a-forced-turn-on-llama-cpp-is-forced-by-grammar-not-by-the-prompt
   (let [seen (atom [])
-        ctx {:llm-adapter ::adapter
-             :llm-config {:provider :local :base-url "http://127.0.0.1:8080/v1" :model "m"}}
+        ctx {:llm-adapter ::adapter :llm-config local-cfg}
         tape {:id "B1"
               :messages [{:role "system" :content "sys"} {:role "user" :content "go"}]
               :turns []
@@ -144,7 +157,7 @@
       (is (= done-spec (:force-tool opts))
           "the force is still named, so the adapter and the journal see the same thing"))
     (testing "a call that thinks gets the closer; the breaker's off-value takes it away"
-      (let [thinking (assoc ctx :llm-config {:provider :local :model "m" :thinking? true})]
+      (let [thinking (assoc ctx :llm-config (assoc local-cfg :thinking? true))]
         (reset! seen [])
         (with-redefs [samizdat.llm.client/chat (capturing seen)]
           ((infer/complete-fn thinking {:journal? false}) tape))
@@ -166,10 +179,11 @@
       (is (nil? (:grammar (first @seen)))))
     (testing "the policy can hand the force back to native tool_choice"
       (reset! seen [])
-      (with-redefs [gates/threshold (policy-with {:force :native :restrict-after-refusal? false})
+      (with-redefs [gates/threshold (policy-with :force-mechanism {:named [:native :grammar :prefill] :fence [:prefill :grammar]})
                     samizdat.llm.client/chat (capturing seen)]
         ((infer/complete-fn ctx {:journal? false}) tape))
-      (is (nil? (:grammar (first @seen)))))))
+      (is (nil? (:grammar (first @seen))))
+      (is (= done-spec (:force-tool (first @seen)))))))
 
 (deftest a-refusal-restricts-the-next-decision-only-when-policy-says-so
   (let [b (state/record-outcome (state/new-branch {:id "B1" :problem "p"})
@@ -181,7 +195,7 @@
     (is (nil? (:refused-tool (state/record-outcome b {:category :success :tool "read_file"})))
         "a call that ran clears it")
     (let [seen (atom [])
-          ctx {:llm-adapter ::a :llm-config {:provider :local :model "m"}}
+          ctx {:llm-adapter ::a :llm-config local-cfg}
           tape (assoc (infer/of-branch b)
                       :messages [{:role "system" :content "s"} {:role "user" :content "go"}])]
       (testing "off by default: a merely refused branch is not constrained"
@@ -193,7 +207,7 @@
         ;; The registry is pinned: which tool groups a test process has
         ;; loaded is an accident of require order, and an empty registry
         ;; minus one name is no grammar at all.
-        (with-redefs [gates/threshold (policy-with {:force :grammar :restrict-after-refusal? true})
+        (with-redefs [gates/threshold (policy-with {:restrict-after-refusal? true :think-close "</think>"})
                       samizdat.agent.tools.base/tool-names (fn [] ["eval" "read_file" "done"])
                       samizdat.llm.client/chat (capturing seen)]
           ((infer/complete-fn ctx {:journal? false}) tape))
@@ -213,7 +227,7 @@
   ;; under a "done" force (2026-09-18).
   (let [sent (atom nil)
         local (registry/adapter-for :local)
-        cfg {:base-url "http://127.0.0.1:8080/v1" :model "m"}]
+        cfg local-cfg]
     (let [reply (with-redefs [jolt.http-client/post
                               (fn [_ {:keys [body]}]
                                 (reset! sent (clojure.data.json/read-str body :key-fn keyword))
@@ -235,7 +249,7 @@
 
 (deftest the-thinking-cap-follows-the-occasion-and-is-off-by-default
   (let [seen (atom [])
-        ctx {:llm-adapter ::a :llm-config {:provider :local :model "m" :thinking? true}}
+        ctx {:llm-adapter ::a :llm-config (assoc local-cfg :thinking? true)}
         tape {:id "B1" :messages [{:role "system" :content "s"} {:role "user" :content "go"}] :turns []}
         forced (assoc tape :force-tool done-spec)
         call (fn [ctx tape]
@@ -255,4 +269,5 @@
         (is (= 0 (call ctx forced)) "a forced turn may be told to think not at all")
         (testing "but never for a call that does not think, or a hosted provider"
           (is (nil? (call (assoc-in ctx [:llm-config :thinking?] false) forced)))
-          (is (nil? (call (assoc ctx :llm-config {:provider :glm :model "glm-5.3" :thinking? true}) forced))))))))
+          (is (nil? (call (assoc ctx :llm-config {:provider :glm :model "glm-5.3" :thinking? true
+                                                  :features (samizdat.config/features-of :glm)}) forced))))))))

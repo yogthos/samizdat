@@ -29,7 +29,8 @@
 
   `defonce` so reloading this namespace from a connected editor does not drop
   the handles to a server that is still listening."
-  (:require [clojure.tools.logging :as log]
+  (:require [clojure.string :as str]
+            [clojure.tools.logging :as log]
             ;; installs the java.time.* host shim tools.logging's timestamp
             ;; formatter resolves against; must load before the first log call
             [jolt.time]
@@ -136,11 +137,16 @@
          ;; Merged into the LLM config so it reaches chat-body the way every
          ;; other endpoint fact does, and so a test can set it directly.
          probed (llm-client/probe-llama-cpp (:llm cfg))
-         cfg (cond-> cfg probed (update :llm merge probed))
+         ;; What the endpoint can do: the preset's declared set plus what
+         ;; the probe found (config/apply-discovery). Everything downstream
+         ;; reads :llm :features rather than guessing from a URL or an id.
+         cfg (update cfg :llm config/apply-discovery probed)
          _ (when probed
              (log/info "endpoint identified as llama.cpp:"
                        (:total-slots probed) "KV slots — prefix caching on"
                        (when-let [m (:model-id probed)] (str "— serving " m))))
+         _ (log/info "provider" (get-in cfg [:llm :provider]) "features:"
+                     (str/join " " (map name (sort (get-in cfg [:llm :features])))))
          ;; And whether its chat template takes a system message after a user
          ;; turn — the shape of every compaction fold. Qwen3.5's template 500s
          ;; on it (karamazov-fp21.2); asked once here so the fold cell knows

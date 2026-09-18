@@ -132,6 +132,38 @@ A reply with neither content nor reasoning is an **error**, not an empty answer:
 it usually means the model spent its whole budget thinking, and reporting it as
 a successful empty turn would send the loop round again with nothing.
 
+### Provider features
+
+What an endpoint can do is data on the config, not a predicate in code:
+`:llm :features`, a set of keywords. Each preset in `samizdat.config`
+declares what the provider was measured to do; `system/start!` adds what
+the `/props` probe discovers (`config/apply-discovery`, `llama-cpp-features`
+for a llama.cpp server); a config file that names `:features` names them
+all; and one URL rule edits the result after every layer (DeepSeek off
+`/beta` loses `:prefill`, because that request is a 400). `config/supports?`
+is the question a cell, a gate or an adapter asks.
+
+| feature | means |
+|---|---|
+| `:prefill` | a trailing assistant message is continued (DeepSeek /beta, llama.cpp --jinja) |
+| `:native-tool-choice` | tools + `tool_choice {type function}` |
+| `:grammar` | a GBNF `grammar` applied at sampling (llama.cpp) |
+| `:cache-prompt` | `cache_prompt` / `id_slot` prefix reuse (llama.cpp) |
+| `:reasoning-budget` | `reasoning_budget_tokens` per call (llama.cpp) |
+| `:thinking-toggle` | thinking can be turned off on request |
+| `:reasoning-effort` | a top-level `reasoning_effort` is honoured |
+
+The adapter emits only the knobs a feature allows, so a hosted body is
+byte-identical to what it was and a llama-server under any provider id gets
+its knobs once identified. Which knob FORCES a steered turn is decided once,
+in `samizdat.agent.infer/force-mechanism`, from gates.edn `:force-mechanism`
+— an ordered preference per occasion (`:named` for a gate naming a
+forceable tool, `:fence` for a bare fence and the no-call clamp) — against
+the features; exactly one mechanism's knobs go out. Why it is data: the
+no-call clamp is a bare-fence prefill, and while the adapter guessed that
+llama.cpp could not prefill, eight no-call turns in a row on Bonsai got a
+clamp that did nothing (2026-09-18).
+
 ### Prefill and forced tools
 
 Tool calls here are fenced JSON in free text, so the model can always answer in
@@ -189,16 +221,19 @@ second rung.
 ### Grammar force on llama.cpp
 
 `chat` `opts` may carry `:grammar`, a GBNF string. The OpenAI-family adapter
-sends it as `grammar` only where `llama-cpp-endpoint?` holds and, when it
+sends it as `grammar` only where the features say `:grammar` and, when it
 does, sends no tools array: a grammar is applied at sampling and leaves the
 prompt byte-identical, where the tools array is rendered into the prefix by
 the chat template and busts the cache. `samizdat.llm.grammar/fence-grammar`
-builds the grammar — every fence outside a think block is a well-formed call
+builds the grammar — every fence after the reasoning is a well-formed call
 naming a listed tool, and with `:require? true` the reply cannot end without
-one. `samizdat.agent.infer/grammar-for` decides when one is built, from
-gates.edn `:local-grammar`: the force (`:force :grammar`, default) and the
-one-decision restriction after a harness refusal (`:restrict-after-refusal?`,
-off until measured). Hosted providers are untouched (karamazov-fp21.1).
+one; `:think-close` tells it where the reasoning ends when the call thinks.
+`force-mechanism` chooses it (above); gates.edn `:local-grammar` keeps the
+grammar's own knobs: `:think-close`, and the one-decision restriction after a
+harness refusal (`:restrict-after-refusal?`, off until measured). Its
+failure mode is measured too: a model that resists the forced call cannot
+end, and on Bonsai a forced plan came back as one passage repeated 36 times
+to the token cap (karamazov-fp21.1).
 
 ### Local prefix cache
 

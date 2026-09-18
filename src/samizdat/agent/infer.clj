@@ -57,7 +57,7 @@
             [samizdat.agent.gates :as gates]
             [samizdat.cancel :as cancel]
             [samizdat.agent.tools.base :as tools]
-            [samizdat.llm.adapter.openai :as openai]
+            [samizdat.config :as config]
             [samizdat.llm.client :as llm]
             [samizdat.llm.fence :as fence]
             [samizdat.llm.grammar :as grammar]
@@ -222,38 +222,74 @@
          (not (:periodic signals))
          (or (nil? parsed) (= "__parse_error__" (:name parsed))))))
 
-(defn- grammar-for
-  "The GBNF this call is sampled under on a llama.cpp endpoint, or nil
-  (karamazov-fp21.1; samizdat.llm.grammar).
+(defn- restriction-grammar
+  "The grammar that leaves the tool the harness just refused off the next
+  decision, or nil: gates.edn :local-grammar :restrict-after-refusal?
+  (karamazov-fp21.1), only on an endpoint whose features include :grammar."
+  [{:keys [llm-config]} {:keys [refused-tool]} think-close]
+  (let [{:keys [restrict-after-refusal?]} (gates/threshold :local-grammar)]
+    (when (and refused-tool restrict-after-refusal?
+               (config/supports? llm-config :grammar))
+      (grammar/fence-grammar {:tools (remove #{(str refused-tool)} (tools/tool-names))
+                              :require? false :think-close think-close}))))
 
-  Two occasions, both decided by gates.edn :local-grammar: a gate FORCING a
-  tool (`:force :grammar` — the alternative is the tools+tool_choice
-  fallback, which rewrites the prefix), and the decision after a harness
-  refusal (`:restrict-after-refusal?` — the refused name is left off the
-  list for that one call). Nothing for any other endpoint: a hosted provider
-  is forced the way it always was, and the adapter would drop the field
-  anyway."
-  [{:keys [llm-config]} {:keys [force-tool refused-tool]}]
-  (when (openai/llama-cpp-endpoint? (:provider llm-config) llm-config)
-    (let [{:keys [force restrict-after-refusal? think-close]}
-          (gates/threshold :local-grammar)
-          ;; Whether THIS call thinks: the endpoint is configured to (config
-          ;; :llm :thinking?) and the runaway breaker has not turned it off
-          ;; for this branch (the per-call :reasoning-effort is the breaker's
-          ;; off-value then; call-model applied it before this ran). The
-          ;; grammar must know, or it constrains the reasoning.
-          thinks? (and (:thinking? llm-config)
-                       (not= (:reasoning-effort llm-config)
-                             (:off-value (gates/threshold :thinking-budget))))
-          close (when thinks? think-close)]
-      (cond
-        (and force-tool (= :grammar force))
-        (grammar/fence-grammar {:tools [(:name force-tool)] :require? true
-                                :think-close close})
+(defn force-mechanism
+  "HOW this call is forced, if a gate asked for a force: the knobs to hand
+  the client, chosen ONCE here from gates.edn :force-mechanism's order
+  against what the endpoint's features say it can do (samizdat.config).
 
-        (and refused-tool restrict-after-refusal?)
-        (grammar/fence-grammar {:tools (remove #{(str refused-tool)} (tools/tool-names))
-                                :require? false :think-close close})))))
+  Two occasions. A gate that names a forceable tool sets both a prefill with
+  the name and a :force-tool spec — the NAMED force (:named order). A gate
+  that merely forecloses prose, and the no-call clamp, set a bare fence
+  prefill — the FENCE force (:fence order). The mechanisms:
+
+    :prefill  the trailing assistant message the endpoint continues; the
+              model starts inside the fence and cannot answer in prose
+    :grammar  a sampling grammar under which the reply cannot end without a
+              well-formed fence naming the tool (or, for a fence force, any
+              registered tool); the reasoning stays free (:think-close)
+    :native   tools + tool_choice naming the tool — a named force only
+
+  Exactly one mechanism's knobs go out: a prefill beside a grammar would
+  skip the reasoning the grammar leaves free, and a tools array beside
+  either rewrites the prefix for nothing. A provider with none of the
+  ordered mechanisms is steered by words alone, which is what a bare steer
+  on GLM always was — and what the no-call clamp on llama.cpp was by
+  ACCIDENT until features said it could prefill (karamazov-srw9). The
+  :force-tool spec still travels with a prefill so the journal can name the
+  forced tool (client/chat records :forced and :forced-via)."
+  [{:keys [llm-config] :as ctx} {:keys [prefill force-tool] :as tape}]
+  (let [{:keys [named fence]} (gates/threshold :force-mechanism)
+        {:keys [think-close]} (gates/threshold :local-grammar)
+        ;; Whether THIS call thinks: configured to, and the runaway breaker
+        ;; has not turned it off for this branch (the per-call
+        ;; :reasoning-effort is the breaker's off-value then; call-model
+        ;; applied it before this ran). A grammar must know, or it
+        ;; constrains the reasoning (samizdat.llm.grammar).
+        thinks? (and (:thinking? llm-config)
+                     (not= (:reasoning-effort llm-config)
+                           (:off-value (gates/threshold :thinking-budget))))
+        close (when thinks? think-close)
+        can? #(config/supports? llm-config %)
+        occasion (cond force-tool :named
+                       (seq prefill) :fence)
+        chosen (when occasion
+                 (some (fn [m]
+                         (case m
+                           :prefill (when (can? :prefill) m)
+                           :grammar (when (can? :grammar) m)
+                           :native  (when (and (= :named occasion) (can? :native-tool-choice)) m)
+                           nil))
+                       (if (= :named occasion) named fence)))
+        restriction (when-not chosen (restriction-grammar ctx tape close))]
+    (case chosen
+      :prefill {:prefill prefill :force-tool force-tool}
+      :grammar {:grammar (grammar/fence-grammar
+                          {:tools (if force-tool [(:name force-tool)] (tools/tool-names))
+                           :require? true :think-close close})
+                :force-tool force-tool}
+      :native  {:force-tool force-tool}
+      (cond-> {} restriction (assoc :grammar restriction)))))
 
 (defn- reasoning-budget-for
   "The per-call thinking cap for this call on a llama.cpp endpoint, or nil
@@ -263,7 +299,7 @@
   call with thinking off has nothing to cap, and sending a cap for it would
   be a knob on the wire that changes nothing."
   [{:keys [llm-config]} {:keys [force-tool]}]
-  (when (and (openai/llama-cpp-endpoint? (:provider llm-config) llm-config)
+  (when (and (config/supports? llm-config :reasoning-budget)
              (:thinking? llm-config))
     (let [{:keys [turn forced]} (gates/threshold :local-reasoning-budget)]
       (if force-tool forced turn))))
@@ -294,7 +330,10 @@
      ;; the journal (karamazov-o4wm.1). The grammar is decided once for the
      ;; same reason: a retry of a forced turn is still forced.
      (let [wire (wire-fingerprint (message/prepare (render tape)))
-           grammar (grammar-for ctx tape)
+           ;; Which force goes out, if any — decided once, here, from the
+           ;; endpoint's features and policy (force-mechanism).
+           {:keys [grammar] forced-prefill :prefill forced-tool :force-tool}
+           (force-mechanism ctx tape)
            reasoning-budget (reasoning-budget-for ctx tape)]
      (loop [attempt 1]
        (let [base (or (:max-tokens (:llm-config ctx))
@@ -310,18 +349,12 @@
                                       (render tape)
                                       (cond-> {}
                                         budget (assoc :max-tokens budget)
-                                        ;; Set by the previous turn's steer. The
-                                        ;; adapter drops it if the provider cannot
-                                        ;; continue a trailing assistant message,
-                                        ;; so this is a hint, never a requirement.
-                                        prefill (assoc :prefill prefill)
-                                        ;; A gate forcing a specific tool: sent as a
-                                        ;; native tool_choice, honoured on every
-                                        ;; OpenAI-compatible provider (GLM included).
-                                        force-tool (assoc :force-tool force-tool)
-                                        ;; A sampling-time grammar for a llama.cpp
-                                        ;; endpoint (grammar-for): the cache-safe
-                                        ;; force, and the one that can ban.
+                                        ;; The one force mechanism force-mechanism
+                                        ;; chose for this call: a prefill the
+                                        ;; endpoint continues, a sampling grammar,
+                                        ;; or a native tool_choice — never two.
+                                        forced-prefill (assoc :prefill forced-prefill)
+                                        forced-tool (assoc :force-tool forced-tool)
                                         grammar (assoc :grammar grammar)
                                         ;; A per-call thinking cap on llama.cpp
                                         ;; (reasoning-budget-for).
@@ -345,7 +378,7 @@
                   ;; dropped), so a GLM reply is not parsed as if it began
                   ;; mid-fence — see absorb (karamazov-0r8s).
                   (truncated-without-call? (:response r)
-                                           (get (:response r) :prefilled prefill)))
+                                           (get (:response r) :prefilled forced-prefill)))
            (do ;; A cancel that landed during the call is honoured before the
                ;; note and the re-ask, not after: no journal write past a
                ;; forfeit (RFC-013).
