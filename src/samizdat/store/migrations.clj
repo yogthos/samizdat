@@ -808,7 +808,20 @@
   or nothing was found."
   ["ALTER TABLE runs ADD COLUMN opening_context TEXT"])
 
+(def v32
+  "HOW a turn was forced, beside which tool (karamazov-fp21.1).
+
+  `forced_tool` (v30) was read off the request's native tool_choice, so a
+  turn forced by a llama.cpp grammar recorded no force at all: the first
+  grammar-forced turn on Bonsai 2 (2026-09-18) sat in the journal as an
+  ordinary done. `forced_via` is native | grammar. The two are different
+  findings on the cache — a native force rewrites the prefix and a grammar
+  leaves it byte-identical — and journal/cache-misses attributes a miss to
+  the force only for native. NULL on an unforced turn and on every row from
+  before this column, which was native or nothing."
+  ["ALTER TABLE turns ADD COLUMN forced_via TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30 v31])
+   v25 v26 v27 v28 v29 v30 v31 v32])

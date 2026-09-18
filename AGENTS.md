@@ -139,6 +139,40 @@ the `:test` alias adds, hence `-A:dev:test`. Reload edited namespaces one at
 a time with `:reload`; `:reload-all` on the runner currently dies inside
 `jolt.time` (karamazov-cc3a).
 
+## The local model for testing
+
+Ternary Bonsai 2 27B on the PrismML fork of llama.cpp is the default local
+model (2026-09-18). One script starts it with the vendor's flags:
+
+```bash
+dev/bonsai-server.sh                  # :8080, waits for /health, prints /props
+kill "$(lsof -ti TCP:8080)"           # stop
+BONSAI_REASONING_BUDGET=-1 dev/bonsai-server.sh   # unrestricted thinking
+```
+
+The stock `llama-server` cannot load the PQ2_0 ternary format; the script
+points at `/Users/yogthos/src/llama.cpp-prism-ml/build/bin/llama-server`
+(override with `BONSAI_LLAMA_SERVER`). It serves 4 slots of 32K each, KV not
+unified so every branch keeps its own prefix cache, thinking on but capped
+at 2048 tokens a turn, the vendor's sampling, and the vision projector.
+
+The machine-wide config (`~/.config/samizdat/config.edn`) names `:local`
+with the knobs sized for it: `:thinking? true`, `:gen-floor-tps 15`,
+`:max-tokens 8192`, `:read-timeout-overhead-ms 120000`, `:max-response-ms
+870000`. A file that names a provider beats `HARNESS_PROVIDER`, so a project
+that wants GLM says so in its own `.samizdat/config.edn`, as endless-flight
+does.
+
+What was measured on this M1 Max, and what it costs a run: decode is 20
+tok/s on short replies and 14-17 on long ones; prefill is 135 tok/s, so the
+8.8k-token opening prompt is 65 s before the first token and a compaction
+fold re-prefills the window; two generations at once drop to ~6 tok/s EACH
+(measured with two runs; a beam wider than 1 does the same by construction),
+so test at width 1. The template refuses a mid-conversation system role, which is
+why the startup probe puts the fold marker in a user turn. `POST /v1/runs`
+blocks on the workflow-selection call, 9-36 s here; a client that times out
+and re-posts gets two runs.
+
 ## Git
 
 - Commit only when asked. Never push without being asked.

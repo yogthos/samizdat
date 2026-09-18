@@ -302,7 +302,17 @@
                           ;; force. GLM busts its prefix cache on this with
                           ;; the bytes unchanged (karamazov-8jz), which is
                           ;; why the turn row keeps it (karamazov-o4wm.1).
-                          :forced (get-in body [:tool_choice :function :name])
+                          :forced (or (get-in body [:tool_choice :function :name])
+                                      (when (and (:grammar body) (:force-tool request))
+                                        (:name (:force-tool request))))
+                          ;; HOW it was forced, because the two are different
+                          ;; findings on the cache: a native tool_choice
+                          ;; rewrites the prefix, a grammar (llama.cpp only,
+                          ;; samizdat.llm.grammar) leaves it byte-identical
+                          ;; (karamazov-fp21.1). nil when nothing forced.
+                          :forced-via (cond
+                                        (get-in body [:tool_choice :function :name]) :native
+                                        (and (:grammar body) (:force-tool request)) :grammar)
                           :elapsed-ms elapsed}}))
           {:outcome :fatal
            :error (str (adapter/display-name adapter)
@@ -343,7 +353,7 @@
   stuck provider costs a known amount rather than the run."
   ([adapter config messages] (chat adapter config messages nil))
   ([adapter config messages {:keys [max-tokens temperature max-retries prefill force-tool
-                                    cache-key reasoning-effort]}]
+                                    cache-key reasoning-effort grammar]}]
    (let [request {:messages (message/prepare messages)
                   :max-tokens (or max-tokens (:max-tokens config))
                   :temperature (or temperature (:temperature config))
@@ -363,7 +373,15 @@
                   ;; This call's reasoning effort, overriding the run default
                   ;; in config. Lets a cheap side call ask for less thinking
                   ;; than the run is configured for; nil defers to config.
-                  :reasoning-effort reasoning-effort}
+                  :reasoning-effort reasoning-effort
+                  ;; A sampling grammar for a llama.cpp endpoint
+                  ;; (samizdat.llm.grammar); every other adapter ignores it.
+                  ;; This map is built by NAME, so a knob not listed here is
+                  ;; dropped on the floor: the first live forced turn on
+                  ;; Bonsai went out over the tools array with no grammar,
+                  ;; and the model called edit_file under a "done" force
+                  ;; (2026-09-18).
+                  :grammar grammar}
          ;; The read timeout is sized to the budget being asked for: a big
          ;; max-tokens legitimately takes longer than a small one, and a fixed
          ;; bound cut off long generations and re-billed them (see

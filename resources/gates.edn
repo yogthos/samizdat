@@ -2232,7 +2232,7 @@
         there accepts the shape and nothing changes for it. Not
         capability-tunable: it describes the endpoint, not the branch."}
  :local-grammar
- {:value {:force :grammar :restrict-after-refusal? false}
+ {:value {:force :grammar :restrict-after-refusal? false :think-close "</think>"}
   :kind :policy :capability-tunable? false
   :provenance ["karamazov-fp21.1" "karamazov-4ih"]
   :doc "HOW A LLAMA.CPP ENDPOINT IS FORCED, AND WHETHER A REFUSAL RESTRICTS
@@ -2265,12 +2265,33 @@
                            breaking a 9B model's retry-the-same-tool habit.
                            OFF until measured: it is a second unsettled
                            change beside the force, and one at a time is the
-                           RFC-010 discipline.
+                           RFC-010 discipline. EVIDENCE AGAINST, 2026-09-18:
+                           Bonsai 2 27B, asked for done with done off the
+                           list, wrote eighteen fences of the allowed name
+                           each followed by "No." — a weak model notices the
+                           sampler putting a tool it did not choose in its
+                           mouth, and fights it.
+
+        :think-close       the reasoning closer, for a call that THINKS
+                           (config :llm :thinking? and the breaker not
+                           fired). Under a reasoning split the sampled text
+                           starts inside the think block, so the grammar is
+                           free text up to this string and constrained
+                           after; without it the reasoning itself was
+                           constrained and the model fought its own drafts
+                           to the token cap (samizdat.llm.grammar). The
+                           string is the model family's; every local family
+                           measured so far closes with </think>.
 
         MEASURED 2026-09-17 on VibeThinker-3B under llama.cpp b10809: 49.4
         tok/s under the grammar against 49.6 without, and every forced reply
         ended in a well-formed fence — including replies whose thinking had
-        drafted several. Across the 24 campaign dbs before this existed,
+        drafted several. And 2026-09-18 on Ternary-Bonsai-2-27B under the
+        PrismML fork (mainline 10687): thinking off, 56 tokens to a forced
+        fence at 17-20 tok/s either way; thinking on, the same once the
+        grammar was told where the reasoning ends (:think-close). The native
+        fallback also works there (259 tokens, finish tool_calls) at the
+        cost of the tools array in the prefix. Across the 24 campaign dbs before this existed,
         no-call and parse-error turns were 6.9% of 6665 (karamazov-fp21.1);
         the Qwen protocol (karamazov-4ih deferred on exactly that number)
         is where :force :grammar vs :native is to be read. Not
