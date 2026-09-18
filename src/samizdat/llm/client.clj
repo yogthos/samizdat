@@ -303,16 +303,18 @@
                           ;; the bytes unchanged (karamazov-8jz), which is
                           ;; why the turn row keeps it (karamazov-o4wm.1).
                           :forced (or (get-in body [:tool_choice :function :name])
-                                      (when (and (:grammar body) (:force-tool request))
+                                      (when (or (:grammar body) use-prefill?)
                                         (:name (:force-tool request))))
-                          ;; HOW it was forced, because the two are different
+                          ;; HOW it was forced, because they are different
                           ;; findings on the cache: a native tool_choice
-                          ;; rewrites the prefix, a grammar (llama.cpp only,
-                          ;; samizdat.llm.grammar) leaves it byte-identical
-                          ;; (karamazov-fp21.1). nil when nothing forced.
+                          ;; rewrites the prefix, a grammar or a prefill
+                          ;; leaves it byte-identical (karamazov-fp21.1). A
+                          ;; bare-fence prefill is a force with no name — the
+                          ;; no-call clamp. nil when nothing forced.
                           :forced-via (cond
                                         (get-in body [:tool_choice :function :name]) :native
-                                        (and (:grammar body) (:force-tool request)) :grammar)
+                                        (:grammar body) :grammar
+                                        use-prefill? :prefill)
                           :elapsed-ms elapsed}}))
           {:outcome :fatal
            :error (str (adapter/display-name adapter)

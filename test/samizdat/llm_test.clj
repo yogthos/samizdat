@@ -28,6 +28,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is are]]
             [jolt.http-client :as http]
+            [samizdat.config :as config]
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.adapter.openai :as openai]
             [samizdat.llm.client :as client]
@@ -693,7 +694,8 @@
       ;; prefill can force the call it must be preferred.
       (let [ds (registry/adapter-for :deepseek)
             body (adapter/chat-body ds {:base-url "https://api.deepseek.com/beta"
-                                        :model "deepseek-v4-flash" :api-key "k"}
+                                        :model "deepseek-v4-flash" :api-key "k"
+                                        :features (config/features-of :deepseek)}
                                     {:messages [{:role "user" :content "x"}]
                                      :prefill "```tool-call\n{\"name\": \"done\""
                                      :force-tool done-spec})]
@@ -720,7 +722,11 @@
   ;; slots table, because a slot count is a property of how the server was
   ;; launched and a guessed index evicts somebody else's warm prefix.
   (let [local (registry/adapter-for :local)
-        cfg {:base-url "http://127.0.0.1:8080/v1" :model "local-model"}
+        ;; As the startup probe leaves a llama.cpp config: the local preset's
+        ;; features plus what /props discovered (config/apply-discovery).
+        cfg (config/apply-discovery {:base-url "http://127.0.0.1:8080/v1" :model "local-model"
+                                     :features (config/features-of :local)}
+                                    {:llama-cpp? true :total-slots 4})
         opts {:messages [{:role "user" :content "x"}] :cache-key "B1"}]
     (testing "the local endpoint asks for prefix reuse"
       (is (true? (:cache_prompt (adapter/chat-body local cfg opts)))))
@@ -736,9 +742,10 @@
       (is (nil? (:cache_prompt (adapter/chat-body local cfg (dissoc opts :cache-key))))))
     (testing "every hosted provider's body is byte-identical with or without the key"
       (doseq [p [:deepseek :glm :openai]]
-        (let [a (registry/adapter-for p)]
-          (is (= (adapter/chat-body a (assoc cfg :api-key "k") (dissoc opts :cache-key))
-                 (adapter/chat-body a (assoc cfg :api-key "k") opts))
+        (let [a (registry/adapter-for p)
+              hosted (assoc cfg :api-key "k" :features (config/features-of p))]
+          (is (= (adapter/chat-body a hosted (dissoc opts :cache-key))
+                 (adapter/chat-body a hosted opts))
               (str (name p) " must ignore a knob it has nowhere to put")))))
     (testing "Ollama ignores it too"
       (let [a (registry/adapter-for :ollama)]
@@ -828,20 +835,24 @@
       ;; some providers continue a trailing assistant turn. OpenAI does not,
       ;; and asking it to would either be ignored or rejected, so the
       ;; capability is declared rather than assumed.
-      (let [beta {:base-url "https://api.deepseek.com/beta"}
-            v1   {:base-url "https://api.deepseek.com/v1"}]
+      ;; The capability is DECLARED in config :llm :features (samizdat.config)
+      ;; and read from there, not from the URL or the id. On /v1 DeepSeek
+      ;; REJECTS the request — "prefix is only available when using beta
+      ;; api" — so load-config drops :prefill for a config pointed there
+      ;; (features-test); the adapter simply reads what is left.
+      (let [beta (:llm (config/load-config {:llm {:provider :deepseek}}))
+            v1   (:llm (config/load-config {:llm {:provider :deepseek
+                                                  :base-url "https://api.deepseek.com/v1"}}))]
         (is (adapter/prefill-support? (registry/adapter-for :deepseek) beta))
-        ;; Not a property of the provider alone. On /v1 DeepSeek REJECTS the
-        ;; request — "prefix is only available when using beta api" — so a
-        ;; misconfigured endpoint would fail every steered turn. Checked here
-        ;; so it degrades to today's behaviour instead.
         (is (not (adapter/prefill-support? (registry/adapter-for :deepseek) v1)))
-        (is (not (adapter/prefill-support? (registry/adapter-for :openai) beta)))
+        (is (not (adapter/prefill-support? (registry/adapter-for :openai)
+                                           (:llm (config/load-config {:llm {:provider :openai}})))))
         (is (not (adapter/prefill-support? (registry/adapter-for :ollama) beta)))))
 
     (testing "a supporting adapter appends the prefix as a trailing assistant turn"
       (let [a (registry/adapter-for :deepseek)
-            body (adapter/chat-body a {:model "m" :base-url "https://api.deepseek.com/beta"}
+            body (adapter/chat-body a {:model "m" :base-url "https://api.deepseek.com/beta"
+                                       :features (config/features-of :deepseek)}
                                     {:messages [{:role "user" :content "go"}]
                                      :prefill "```tool-call\n"})
             msgs (:messages body)]
@@ -1422,7 +1433,11 @@
         (is (nil? (:id_slot body)))))
 
     (testing "the same adapter, once /props identified it, gets the knobs"
-      (let [body (adapter/chat-body hosted {:base-url "u" :llama-cpp? true} req)]
+      ;; config/apply-discovery is what system/start! does with the answer:
+      ;; the llama.cpp features join whatever the preset declared.
+      (let [body (adapter/chat-body hosted (config/apply-discovery {:base-url "u"}
+                                                                   {:llama-cpp? true :total-slots 1})
+                                    req)]
         (is (true? (:cache_prompt body)))))))
 
 (deftest thinking-is-off-by-default-on-a-local-endpoint
@@ -1433,21 +1448,23 @@
   ;; treats that reply as an error rather than an empty answer, which is the
   ;; right reading and does nothing to prevent it.
   (let [local (openai/openai-family {:id :local :label "L"})
+        cfg (config/apply-discovery {:base-url "u"} {:llama-cpp? true :total-slots 1})
         req {:messages [] :max-tokens 10 :cache-key "B1"}]
     (is (= {:enable_thinking false}
-           (:chat_template_kwargs (adapter/chat-body local {:base-url "u"} req))))
+           (:chat_template_kwargs (adapter/chat-body local cfg req))))
     (testing "and a reasoning model asked to reason is still a valid config"
       (is (nil? (:chat_template_kwargs
-                 (adapter/chat-body local {:base-url "u" :thinking? true} req)))))))
+                 (adapter/chat-body local (assoc cfg :thinking? true) req)))))))
 
 (deftest an-id-slot-is-pinned-only-from-an-explicit-table
   ;; A slot count is a property of how the server was launched; inventing an
   ;; index evicts another conversation's warm prefix to serve a guess.
   (let [local (openai/openai-family {:id :local :label "L"})
+        cfg (config/apply-discovery {:base-url "u"} {:llama-cpp? true :total-slots 4})
         req {:messages [] :max-tokens 10 :cache-key "B1"}]
-    (is (nil? (:id_slot (adapter/chat-body local {:base-url "u"} req))))
-    (is (= 3 (:id_slot (adapter/chat-body local {:base-url "u" :slots {"B1" 3}} req))))
-    (is (nil? (:id_slot (adapter/chat-body local {:base-url "u" :slots {"other" 3}} req))))))
+    (is (nil? (:id_slot (adapter/chat-body local cfg req))))
+    (is (= 3 (:id_slot (adapter/chat-body local (assoc cfg :slots {"B1" 3}) req))))
+    (is (nil? (:id_slot (adapter/chat-body local (assoc cfg :slots {"other" 3}) req))))))
 
 (deftest the-probe-answers-nil-for-anything-that-is-not-llama-cpp
   ;; Unreachable, not-llama.cpp and malformed are the same answer, and none of
@@ -1693,7 +1710,9 @@
 
 (deftest a-reasoning-budget-reaches-a-llama-cpp-endpoint-and-nobody-else
   (let [local (registry/adapter-for :local)
-        cfg {:base-url "http://127.0.0.1:8080/v1" :model "m" :thinking? true}
+        cfg (config/apply-discovery {:base-url "http://127.0.0.1:8080/v1" :model "m" :thinking? true
+                                     :features (config/features-of :local)}
+                                    {:llama-cpp? true :total-slots 4})
         req {:messages [{:role "user" :content "x"}] :reasoning-budget 512}]
     (is (= 512 (:reasoning_budget_tokens (adapter/chat-body local cfg req))))
     (is (= 0 (:reasoning_budget_tokens (adapter/chat-body local cfg (assoc req :reasoning-budget 0))))
@@ -1702,7 +1721,8 @@
         "nil leaves the server's own default in force")
     (doseq [p [:deepseek :glm :openai]]
       (is (nil? (:reasoning_budget_tokens
-                 (adapter/chat-body (registry/adapter-for p) (assoc cfg :api-key "k") req)))
+                 (adapter/chat-body (registry/adapter-for p)
+                                    (assoc cfg :api-key "k" :features (config/features-of p)) req)))
           (str (name p) " has no such field")))
     (testing "the client forwards it by name, like every other knob"
       (let [sent (atom nil)]

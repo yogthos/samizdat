@@ -2234,30 +2234,61 @@
         campaigns folded 308 times with no 500, so the default template
         there accepts the shape and nothing changes for it. Not
         capability-tunable: it describes the endpoint, not the branch."}
+ :force-mechanism
+ {:value {:named [:grammar :prefill :native]
+          :fence [:prefill :grammar]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-srw9" "karamazov-fp21.1" "karamazov-fp21.4"]
+  :doc "HOW A STEERED TURN IS FORCED, in order of preference, against what
+        the endpoint's features say it can do (config :llm :features,
+        samizdat.config; infer/force-mechanism picks the first the endpoint
+        has). Exactly one goes out per call.
+
+        :named   a gate naming a forceable tool (done, give_up) — the
+                 terminal forces
+        :fence   a gate that only forecloses prose, and the no-call clamp:
+                 a call is required, any tool
+
+        The mechanisms:
+          :prefill  a trailing assistant message the endpoint continues
+                    (DeepSeek /beta, llama.cpp --jinja); the model starts
+                    INSIDE the fence and cannot ramble, and on both it
+                    thinks not at all for that turn
+          :grammar  a sampling grammar (llama.cpp); the reasoning stays
+                    free and the reply cannot end without the fence — which
+                    is also its failure: a model that resists the call has
+                    no way to stop, and on Bonsai a forced plan came back as
+                    one passage repeated 36 times to the 8192-token cap
+                    (2026-09-18)
+          :native   tools + tool_choice naming the tool (GLM, OpenAI,
+                    DeepSeek with thinking off); rewrites the prefix, so a
+                    cache miss per forced turn; named forces only
+
+        WHY THESE DEFAULTS. :named keeps the grammar first where it exists
+        because that is the arm karamazov-fp21.4 is measuring against
+        :native; :prefill is the third arm (karamazov-srw9). On DeepSeek the
+        order resolves to the prefill it always used, on GLM to the native
+        call it always used. :fence prefers the prefill because a bare
+        fence is what the no-call clamp sends to a model that has stopped
+        producing calls, and a mechanism that leaves it free to keep not
+        producing one is the wrong tool for that: on Bonsai the clamp was a
+        prefill the adapter said the endpoint could not continue, so eight
+        no-call turns in a row got nothing (2026-09-18). A provider with
+        none of a list's mechanisms is steered by words alone, as a bare
+        steer on GLM always was.
+
+        Not capability-tunable: the tier under observation should not
+        choose how it is forced."}
+
  :local-grammar
- {:value {:force :grammar :restrict-after-refusal? false :think-close "</think>"}
+ {:value {:restrict-after-refusal? false :think-close "</think>"}
   :kind :policy :capability-tunable? false
   :provenance ["karamazov-fp21.1" "karamazov-4ih"]
-  :doc "HOW A LLAMA.CPP ENDPOINT IS FORCED, AND WHETHER A REFUSAL RESTRICTS
-        THE NEXT DECISION (samizdat.llm.grammar, infer/grammar-for).
-
-        A gate that must land a call — last-call, plan-last-call, the
-        mechanics forces — forces it with a prefill where the provider
-        continues one (DeepSeek /beta) and with native tool_choice
-        elsewhere. On llama.cpp the tools array that tool_choice needs is
-        rendered into the PROMPT by the chat template, so every forced turn
-        rewrote the prefix and re-prefilled the whole context, and a
-        template with no tool-call support could not be forced at all.
-
-        :force  :grammar   send a GBNF grammar under which the reply cannot
-                           end without a well-formed fence naming the forced
-                           tool. Applied at sampling: the prompt is
-                           byte-identical to an unforced turn, so the cache
-                           holds. Reasoning is untouched — the grammar
-                           leaves a <think> block free and constrains only
-                           the fences after it, which is the fence the
-                           parser reads.
-                :native    the tools + tool_choice fallback, as before.
+  :doc "THE GRAMMAR'S OWN KNOBS (samizdat.llm.grammar; the grammar as a
+        FORCE is chosen by :force-mechanism above, on an endpoint whose
+        features include :grammar). A grammar is applied at sampling: the
+        prompt is byte-identical to an unforced turn, so the cache holds,
+        and a template with no tool-call support can still be forced.
 
         :restrict-after-refusal?  after the harness refuses a call (a phase
                            withhold, the shell policy), sample the NEXT

@@ -170,6 +170,12 @@
     :summary "Read the fold-role probe's answer from a status and body, pure: system, user, or nil for inconclusive."}
    {:name samizdat.llm.grammar/fence-grammar
     :summary "The GBNF under which a llama.cpp reply's tool calls are well-formed fences naming only the listed tools — required (the force) or optional (the restriction). Cache-safe: applied at sampling, never in the prompt. gates.edn :local-grammar says when it is sent."}
+   {:name samizdat.config/supports?
+    :summary "Whether this run's endpoint has a feature (:prefill :grammar :cache-prompt :reasoning-budget :thinking-toggle :native-tool-choice :reasoning-effort) — declared per provider preset, added to by the startup probe, editable in a config file's :llm :features. The one question to ask before choosing a mechanism; the adapter emits only what the features allow."}
+   {:name samizdat.config/features-of
+    :summary "The features a provider preset declares, before discovery."}
+   {:name samizdat.agent.infer/force-mechanism
+    :summary "How a steered turn is forced — prefill, grammar or native tool_choice — chosen once from gates.edn :force-mechanism's order against the endpoint's features. Exactly one mechanism's knobs go out."}
    {:name samizdat.llm.grammar/no-substring-rules
     :summary "GBNF rules for the strings that do not contain a pattern — the KMP automaton, written out so the grammar is unambiguous."}]}
 

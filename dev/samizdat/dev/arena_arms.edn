@@ -17,7 +17,7 @@
 {:fp21-force
  [{:name :grammar-force}
   {:name :native-force
-   :setup (samizdat.dev.arena/flip-gate! [:local-grammar :force] :native)}]
+   :setup (samizdat.dev.arena/flip-gate! [:force-mechanism :named] [:native :grammar :prefill])}]
 
  :fp21-orient
  [{:name :orient-on}

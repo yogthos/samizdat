@@ -1280,7 +1280,7 @@
 (defn flip-gate!
   "Set one gates.edn value for the CHILD's project — an arm's :setup form.
 
-  `(flip-gate! [:local-grammar :force] :native)` reads the project's current
+  `(flip-gate! [:force-mechanism :named] [:native :grammar :prefill])` reads the project's current
   gates body, changes that path under the entry's :value, appends it as a new
   userspace version with the arm's name as the rationale, and reloads. The
   child's database is the worktree's and dies with it, so nothing leaks

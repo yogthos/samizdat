@@ -57,14 +57,13 @@
      body it produces today.")
 
   (prefill-support? [this config]
-    "Whether this provider AND this endpoint will continue a trailing assistant
-     message rather than treating it as a completed turn.
-
-     Takes config because it is not a property of the provider alone: DeepSeek
-     serves prefix completion only from its beta base URL and REJECTS the
-     request outright on /v1 ('prefix is only available when using beta api').
-     A misconfigured endpoint would therefore fail every steered turn, so the
-     check has to see the URL and simply not prefill when it cannot.
+    "Whether this endpoint will continue a trailing assistant message rather
+     than treating it as a completed turn: config :llm :features says
+     (samizdat.config), declared per provider preset, added to by the
+     startup probe, and edited by the one URL rule (DeepSeek off /beta
+     answers a prefill with 'prefix is only available when using beta api').
+     An adapter reads the declaration; it does not guess from the id or the
+     URL, which is how llama.cpp's support went unnoticed (karamazov-srw9).
 
      Tool calls here are a fenced JSON block in free text, so the model can
      always answer in prose instead — the harness's dominant mechanical

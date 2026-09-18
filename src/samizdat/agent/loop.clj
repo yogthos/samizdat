@@ -1239,12 +1239,12 @@
                              :window (:window decision)
                              :turn turn})
            ;; Consumed by the NEXT call-model and cleared there, so a steer
-           ;; forecloses prose on exactly the turn it steers and no later one. A
-           ;; gate naming a forceable tool sets BOTH a prefill and a force-tool
-           ;; spec; the adapter uses the prefill where the provider continues a
-           ;; trailing assistant message (DeepSeek /beta) and falls back to native
-           ;; tool_choice only where it does not (GLM) — tool_choice is rejected
-           ;; by some providers' thinking mode, so it is the fallback, not the
-           ;; default. A bare steer just prefills the fence.
+           ;; forecloses prose on exactly the turn it steers and no later one.
+           ;; These are the INTENT: a gate naming a forceable tool sets both a
+           ;; prefill with the name and a force-tool spec (a named force), a
+           ;; bare steer sets the fence alone (a fence force). Which mechanism
+           ;; carries it — prefill, grammar, native tool_choice — is decided
+           ;; once in infer/force-mechanism, from gates.edn :force-mechanism
+           ;; against the endpoint's features.
            decision (assoc :force-tool (arbiter/force-tool-for decision)
                            :prefill (arbiter/prefill-for decision))))))))

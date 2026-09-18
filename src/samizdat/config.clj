@@ -238,6 +238,11 @@
               ;; to prevent.
               :context-window 128000
               :base-url "https://api.deepseek.com/beta"
+              ;; What the endpoint was MEASURED to do (2026-09-06): the beta
+              ;; URL continues a flagged assistant prefix; `thinking {type
+              ;; disabled}` reliably yields no reasoning; a native tool_choice
+              ;; is honoured, but only with thinking off (the adapter knows).
+              :features #{:prefill :native-tool-choice :thinking-toggle :reasoning-effort}
               :key-env  "DEEPSEEK_API_KEY"
               ;; deepseek-v4-flash is the development and test model: cheap
               ;; enough to run the beam repeatedly. deepseek-v4-pro is the
@@ -252,6 +257,10 @@
    ;; handles it unchanged.
    :glm      {:context-window 128000
               :base-url "https://open.bigmodel.cn/api/coding/paas/v4"
+              ;; Measured 2026-09-06: ignores a trailing assistant prefix
+              ;; entirely, cannot be told not to think (effort low is the
+              ;; least), honours tool_choice {type function} despite its docs.
+              :features #{:native-tool-choice :reasoning-effort}
               :key-env  "ZHIPU_API_KEY"
               :model    "glm-5.3"
               ;; GLM benefits from a low temperature on coding tasks (dirge
@@ -259,6 +268,7 @@
               :temperature 0.2}
    :openai   {:context-window 128000
               :base-url "https://api.openai.com/v1"
+              :features #{:native-tool-choice :reasoning-effort}
               :key-env  "OPENAI_API_KEY"
               :model    "gpt-4o"}
    ;; A local llama-server / vLLM / LM Studio OpenAI-compatible endpoint.
@@ -268,13 +278,95 @@
               :context-window 32768
               :base-url "http://127.0.0.1:8080/v1"
               :key-env  nil
-              :model    "local-model"}
+              :model    "local-model"
+              ;; A bare OpenAI-compatible endpoint until the startup probe
+              ;; says which server it is; `llama-cpp-features` is what a
+              ;; llama.cpp answer adds (apply-discovery).
+              :features #{:native-tool-choice :reasoning-effort}}
    ;; Ollama's NATIVE api, so no /v1 suffix. See llm/adapter/ollama.clj for
    ;; why the native surface rather than Ollama's OpenAI-compatible one.
    :ollama   {:context-window 32768
               :base-url "http://127.0.0.1:11434"
               :key-env  nil
-              :model    "qwen3"}})
+              :model    "qwen3"
+              :features #{}}})
+
+;; --- provider FEATURES -------------------------------------------------------
+;;
+;; What an endpoint can do, as data, so nothing downstream guesses it from a
+;; URL or a provider id (karamazov-srw9 found the guess wrong: the local
+;; adapter said no prefill while the server continued one; the no-call clamp
+;; is a prefill; eight no-call turns on Bonsai got a clamp that did nothing).
+;; Every preset DECLARES a set; system/start! ADDS what the probe discovers;
+;; a config file may name its own, which replaces the set. The adapter emits
+;; only the knobs a feature allows, and infer/force-mechanism picks how a
+;; steered turn is forced from gates.edn :force-mechanism's order against it.
+;;
+;;   :prefill             continues a trailing assistant message (the fence
+;;                        force; the reply content may or may not repeat it)
+;;   :native-tool-choice  tools + tool_choice {type function}
+;;   :grammar             a GBNF `grammar` field applied at sampling (llama.cpp)
+;;   :cache-prompt        `cache_prompt` / `id_slot` prefix-cache reuse (llama.cpp)
+;;   :reasoning-budget    `reasoning_budget_tokens` per call (llama.cpp)
+;;   :thinking-toggle     thinking can be turned OFF on request (DeepSeek's
+;;                        thinking {type disabled}, llama.cpp's
+;;                        chat_template_kwargs {enable_thinking false})
+;;   :reasoning-effort    a top-level reasoning_effort is honoured
+
+(def llama-cpp-features
+  "What a llama.cpp server adds once /props has identified it. Measured on
+  stock b10809 and on PrismML's fork at mainline 10687 with --jinja
+  (2026-09-17/18): grammar at sampling, prefix-cache reuse, a per-call
+  reasoning budget, thinking off through the template, and a trailing
+  assistant message continued (thinking on or off; the content repeats the
+  prefill, which the parser's reattach already tolerates)."
+  #{:grammar :cache-prompt :reasoning-budget :thinking-toggle :prefill})
+
+(defn features-of
+  "The features a provider preset declares. Throws on an unknown provider,
+  like every other read of the table."
+  [provider]
+  (or (:features (providers provider))
+      (throw (ex-info (str "Unknown provider: " provider)
+                      {:provider provider :known (keys providers)}))))
+
+(defn- resolve-features
+  "`llm` with the one feature rule that depends on the URL applied to
+  whatever features it carries: DeepSeek serves prefix completion only from
+  its beta URL and answers 'prefix is only available when using beta api'
+  on /v1, so a config pointed there must not claim :prefill, whichever
+  layer claimed it. Kept from the days the adapter guessed this from the
+  URL; now it edits the declaration instead."
+  [provider llm]
+  (cond-> llm
+    (and (= :deepseek provider)
+         (not (str/includes? (str (:base-url llm)) "/beta")))
+    (update :features (fnil disj #{}) :prefill)))
+
+(defn- provider-features
+  "The declared features for `provider` at `base-url` (see resolve-features
+  for the URL rule)."
+  [provider base-url]
+  (:features (resolve-features provider {:features (features-of provider)
+                                         :base-url base-url})))
+
+(defn apply-discovery
+  "`llm` with what the startup probe learned merged in: the probe's own facts
+  (`:llama-cpp?`, `:total-slots`, `:model-id`) and, for a llama.cpp server,
+  `llama-cpp-features` added to the declared set. nil `probed` is the
+  endpoint saying nothing, which changes nothing."
+  [llm probed]
+  (cond-> llm
+    probed (merge probed)
+    (:llama-cpp? probed) (update :features (fnil into #{}) llama-cpp-features)))
+
+(defn supports?
+  "Whether this `llm` config's endpoint has `feature` — the one question a
+  cell or a gate asks before choosing a mechanism. No features declared is
+  no features: an endpoint nobody described can do nothing special."
+  [llm feature]
+  (contains? (or (:features llm) #{}) feature))
+
 
 (def providers-for-test
   "The static provider table, exposed for tests — a live load-config picks a
@@ -355,6 +447,12 @@
        :db       {:path (:path db) :from (:from db)}
        :llm      {:provider    provider
                   :base-url    (or (env "HARNESS_BASE_URL") (:base-url defaults))
+                  ;; What this endpoint can do, from the preset (see the
+                  ;; features section above); the probe adds to it at
+                  ;; start, a file may replace it.
+                  :features    (provider-features provider
+                                                  (or (env "HARNESS_BASE_URL")
+                                                      (:base-url defaults)))
                   :api-key     (some-> (:key-env defaults) env)
                   :model       (or (env "HARNESS_MODEL") (:model defaults))
                   ;; Sent only when set — see llm/adapter/openai. Left unset,
@@ -477,7 +575,11 @@
       ;; every consumer downstream — registry/adapter-for above all — expects
       ;; a keyword; leaving the file's `"glm"` to win the merge would dispatch
       ;; on a string and find no adapter.
-      (assoc-in [:llm :provider] provider)))))
+      (assoc-in [:llm :provider] provider)
+      ;; The one feature rule that depends on the RESOLVED url, after every
+      ;; layer has had its say: DeepSeek off /beta answers a prefill with a
+      ;; 400, whatever a file claimed.
+      (update :llm #(resolve-features provider %))))))
 
 (defn provider-llm
   "The :llm config for a SPECIFIC provider — its base URL, model, temperature,
@@ -493,6 +595,7 @@
     (merge
      {:provider    provider
       :base-url    (:base-url defaults)
+      :features    (provider-features provider (:base-url defaults))
       :api-key     (some-> (:key-env defaults) env)
       :model       (:model defaults)
       :temperature (provider-temperature provider)

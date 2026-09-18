@@ -33,6 +33,7 @@
             [jolt.time]
             [clojure.data.json :as json]
             [clojure.string :as str]
+            [samizdat.config :as config]
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]
             [samizdat.util :as util]))
@@ -57,89 +58,53 @@
          "\n```")))
 
 (defn- supports-prefill?
-  "Which members of the family continue a flagged trailing assistant message,
-  on the endpoint actually configured.
-
-  DeepSeek does, but ONLY from its beta base URL: on /v1 the same request is
-  rejected with 'prefix is only available when using beta api', so a prefill
-  sent to the wrong endpoint fails the call outright rather than degrading.
-  Both halves are checked here so a /v1 config simply does not prefill and
-  behaves exactly as it does today.
-
-  Plain OpenAI and a stock local endpoint have no equivalent. Opted into by id
-  rather than assumed for the family."
-  [provider-id config]
-  (and (= :deepseek provider-id)
-       (str/includes? (str (:base-url config)) "/beta")))
-
-(defn llama-cpp-endpoint?
-  "Whether this config points at a llama.cpp server.
-
-  Two ways to be one, and the second is why this exists. `:local` as a
-  provider id is how an operator DECLARES it. `:llama-cpp?` is what
-  `client/probe-llama-cpp` DISCOVERED by asking `/props` at startup — so a
-  llama-server configured under `:openai`, which RFC-005 recorded as silently
-  losing its prefix pinning, gets it anyway.
-
-  The declared form still counts on its own, because a probe needs the server
-  to be up and the config to be right about the URL, and neither is
-  guaranteed at the moment an operator is setting one up."
-  [provider-id config]
-  (or (= :local provider-id) (boolean (:llama-cpp? config))))
+  "Whether this endpoint continues a flagged trailing assistant message:
+  config :llm :features says (samizdat.config), not the provider id and not
+  the URL. It used to be 'DeepSeek, and only on /beta', which was true and
+  incomplete: llama.cpp with --jinja continues one too, and the no-call clamp
+  that relies on it was a no-op there (karamazov-srw9). The DeepSeek URL rule
+  now lives where the features are declared."
+  [_provider-id config]
+  (config/supports? config :prefill))
 
 (defn- local-cache-wire
-  "The extra body keys a llama.cpp server honours, or an empty map.
+  "The llama.cpp-flavoured knobs, each behind the feature that says the
+  endpoint has it (config :llm :features; samizdat.config documents them):
 
-  `cache_prompt` asks the server to reuse the longest common prefix it already
-  holds instead of re-prefilling. That is the difference between an inherited
-  fork or a fan of probes off one tape costing a completion each and costing a
-  full prefill each — see docs/RFCS/RFC-005-provider-layer.md.
+  `cache_prompt` (:cache-prompt) asks the server to reuse the longest common
+  prefix it already holds instead of re-prefilling. `id_slot` PINS a
+  conversation to a physical KV slot, and is emitted only from an explicit
+  `:slots` table in the provider config ({cache-key -> int}): a slot count is
+  a property of how the server was launched, and inventing an index would
+  evict another conversation's warm prefix to serve a guess.
 
-  `id_slot` PINS a conversation to a physical KV slot, and is emitted only
-  from an explicit `:slots` table in the provider config ({cache-key -> int}).
-  Absent, the server picks by prefix similarity and LRU, which is the right
-  default: a slot count is a property of how the server was launched, and
-  inventing an index would evict another conversation's warm prefix to serve
-  a guess. A bad pin costs a re-prefill, never a wrong answer.
+  `chat_template_kwargs {enable_thinking false}` (:thinking-toggle) turns
+  Qwen-family reasoning OFF — `/no_think` in the PROMPT does not, the
+  template decides — unless the config opts into thinking with `:thinking?
+  true`, which a reasoning model asked to reason is.
 
-  `chat_template_kwargs {enable_thinking false}` turns Qwen-family reasoning
-  OFF. llama.cpp has it ON by default and `/no_think` in the PROMPT does not
-  disable it — the template decides, not the text — so without this knob a
-  local model can spend its whole output budget thinking and return a reply
-  with neither content nor a tool call. This layer already treats that reply
-  as an error rather than an empty answer (see `client`), which is the right
-  reading and does nothing to prevent it; this is what prevents it. From
-  llm-repl's `llamacpp` backend, which documents the same trap.
+  `reasoning_budget_tokens` (:reasoning-budget) is a per-CALL cap on
+  thinking, honoured by injecting the end-of-thinking tag at the cut; only
+  when a caller stated one (karamazov-w7n4).
 
-  Opt-out via `:thinking? true` in the provider config, because a reasoning
-  model asked to reason is a legitimate configuration — just not the default
-  for a harness whose turns must end in a tool call.
+  Gated per feature rather than per provider id, so a hosted endpoint's body
+  is byte-identical to what it was and a llama-server configured under any
+  id gets the knobs once the probe has identified it. The cache design is
+  llm-repl's `llama-wire`; only the seam differs."
+  [_provider-id config cache-key reasoning-budget]
+  (cond-> {}
+    (and (config/supports? config :thinking-toggle) (not (:thinking? config)))
+    (assoc :chat_template_kwargs {:enable_thinking false})
 
-  Gated on the endpoint being llama.cpp, so every hosted provider's body is
-  byte-identical to what it was. The cache design is llm-repl's `llama-wire`;
-  only the seam differs."
-  [provider-id config cache-key reasoning-budget]
-  (if-not (llama-cpp-endpoint? provider-id config)
-    {}
-    (cond-> {}
-      (not (:thinking? config))
-      (assoc :chat_template_kwargs {:enable_thinking false})
+    (and (config/supports? config :cache-prompt) (some? cache-key))
+    (assoc :cache_prompt true)
 
-      ;; A per-CALL cap on thinking, in tokens: llama.cpp injects the
-      ;; end-of-thinking tag at the cut (server-common.cpp:1354,
-      ;; `reasoning_budget_tokens`; 0 = none, -1 = the server's own
-      ;; --reasoning-budget). Only when a caller stated one — nil leaves the
-      ;; server's default in force — and only here, since no hosted API has
-      ;; the field (karamazov-w7n4). Which occasion gets what budget is
-      ;; gates.edn :local-reasoning-budget.
-      (some? reasoning-budget)
-      (assoc :reasoning_budget_tokens (long reasoning-budget))
+    (and (config/supports? config :cache-prompt) cache-key
+         (get (:slots config) cache-key))
+    (assoc :id_slot (get (:slots config) cache-key))
 
-      (some? cache-key)
-      (assoc :cache_prompt true)
-
-      (and cache-key (get (:slots config) cache-key))
-      (assoc :id_slot (get (:slots config) cache-key)))))
+    (and (config/supports? config :reasoning-budget) (some? reasoning-budget))
+    (assoc :reasoning_budget_tokens (long reasoning-budget))))
 
 (defn- reasoning-wire
   "The reasoning fields for a resolved `effort` on `provider-id`.
@@ -205,12 +170,11 @@
          ;; run stated nothing, and the model does whatever it does by default.
          effort (or reasoning-effort (:reasoning-effort config))
          ;; A GBNF grammar (samizdat.llm.grammar) forces or restricts the
-         ;; call AT SAMPLING on a llama.cpp endpoint — cache-safe, since it
-         ;; never touches the prompt, and template-free (karamazov-fp21.1).
-         ;; Only such an endpoint sees the field: a strict hosted server 422s
-         ;; the whole request over a key it does not know, and the caller
-         ;; (infer/grammar-for) never builds one for them anyway.
-         grammar* (when (and grammar (llama-cpp-endpoint? provider-id config))
+         ;; call AT SAMPLING — cache-safe, since it never touches the prompt,
+         ;; and template-free (karamazov-fp21.1). Only an endpoint whose
+         ;; features say :grammar sees the field: a strict hosted server 422s
+         ;; the whole request over a key it does not know.
+         grammar* (when (and grammar (config/supports? config :grammar))
                     grammar)
          ;; Force a specific finishing tool with native tool_choice — the way
          ;; to make a prefill-less provider (GLM) call `done`/`give_up`. Only
