@@ -652,6 +652,51 @@
       (is (< (Math/abs (- (- s0 0.05) (:salience (knowledge/get-by-id c id)))) 1e-9)
           "the third is past it, and the memory begins to fall"))))
 
+(deftest distil-session-reports-a-half-that-threw-rather-than-hiding-it
+  ;; karamazov-atgu. Every half of distil-session! was best effort in the
+  ;; sense that a throw became nil, 0 or [] — so a run whose project half
+  ;; threw returned the same map as a run that learned nothing, and nothing
+  ;; journaled either. The store already refuses to let absence and failure
+  ;; read the same on the read side (recall-status, support/:recorded?); this
+  ;; is the write side of the same rule. hive-mcp's harvest carries
+  ;; :source-errors for the same reason.
+  (let [c @conn
+        r1 (runs/start-run! c {:problem "p"})]
+    (with-redefs [knowledge/distil-project! (fn [& _] (throw (ex-info "boom" {})))]
+      (let [res (knowledge/distil-session! c {:run-id r1})]
+        (is (= [] (:project res)) "the half that threw wrote nothing")
+        (is (= [{:half :project :error "boom"}] (:errors res))
+            "and the result says which half, and why")))
+    (let [note (journal/last-note c r1 :distilled)]
+      (is (some? note) "one :distilled note per run end")
+      (is (= [{:half "project" :error "boom"}] (:errors note))
+          "the note carries the failure, so a reader with only the journal can tell")
+      (is (every? #(contains? note %) [:findings :verdicts :project :aged :decayed :evicted])
+          "beside the counts of what did land"))
+    ;; And a clean distillation records that it WAS clean: an :errors key
+    ;; that is present and empty, not absent — absent is what a run that
+    ;; never distilled looks like.
+    (Thread/sleep 5)
+    (let [r2 (runs/start-run! c {:problem "p"})]
+      (is (= [] (:errors (knowledge/distil-session! c {:run-id r2}))))
+      (is (= [] (:errors (journal/last-note c r2 :distilled)))))))
+
+(deftest a-half-that-throws-does-not-stop-the-halves-after-it
+  ;; The findings half used to throw straight out of distil-session!, which
+  ;; meant one bad finding cost the run its project distillation and its
+  ;; curation too. Each half is guarded on its own now, and each failure is
+  ;; named on its own.
+  (let [c @conn
+        r1 (runs/start-run! c {:problem "p"})
+        project-ran (atom false)]
+    (with-redefs [knowledge/distill! (fn [& _] (throw (ex-info "bad finding" {})))
+                  knowledge/distil-project! (fn [& _] (reset! project-ran true) [])]
+      (let [res (knowledge/distil-session! c {:run-id r1
+                                              :findings [{:pattern "x" :content "y"}]})]
+        (is @project-ran "the project half still ran")
+        (is (= [] (:findings res)))
+        (is (= [{:half :findings :error "bad finding"}] (:errors res)))))))
+
 (deftest the-recent-use-bonus-is-by-runs
   ;; Pure: a row used minutes ago but idle for more runs than the window is
   ;; not recently used, and a row used long ago by the clock but in the last
