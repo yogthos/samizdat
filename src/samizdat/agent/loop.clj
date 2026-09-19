@@ -294,14 +294,25 @@
 
   nil on a first run, an empty store, or a store that learned nothing since,
   so the block simply does not appear rather than announcing its own absence.
-  The prose is userspace like every other block's."
+  The prose is userspace like every other block's.
+
+  NOT nil when the previous run's distillation THREW (karamazov-atgu): its
+  :distilled note carries the halves that failed, and a branch opening on an
+  empty head start has to be able to tell `there was nothing to learn` from
+  `the harness failed to keep it` — the second means the store is missing
+  what that run would have said, which changes how much to trust its silence.
+  Absent and empty errors both mean clean: a run from before the note existed
+  has nothing to report, not a failure."
   [conn run-id]
   (when-let [prev (knowledge/last-run-before conn run-id)]
-    (when-let [rows (seq (knowledge/learned-since conn (:started_at prev)))]
-      (prompt/render "learned-since"
-                     {:run (str (:id prev))
-                      :memories (str/join "\n"
-                                          (map #(str "- " (:content %)) rows))}))))
+    (let [rows (seq (knowledge/learned-since conn (:started_at prev)))
+          errors (seq (:errors (journal/last-note conn (:id prev) :distilled)))]
+      (when (or rows errors)
+        (prompt/render "learned-since"
+                       {:run (str (:id prev))
+                        :memories (when rows
+                                    (str/join "\n" (map #(str "- " (:content %)) rows)))
+                        :errors (vec errors)})))))
 
 (defn- context-block
   "What the harness adds to the branch's view before its next turn: the

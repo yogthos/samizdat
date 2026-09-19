@@ -931,31 +931,73 @@
   bridge existing in one driver is the same as not existing, for every run that
   uses the other.
 
-  Best effort in both halves: a failure to remember must never turn a finished
-  run into a failed one."
+  Best effort in every half: a failure to remember must never turn a finished
+  run into a failed one. BUT A FAILURE IS NOT AN ABSENCE (karamazov-atgu).
+  Each half used to turn its throw into nil, 0 or [] — the same value it
+  returns when there was nothing to do — so a run whose project half threw
+  and a run that learned nothing came back as the same map, and the callers
+  logged a count or nothing. The store refuses that on the read side already
+  (`recall-status`, `support`'s :recorded?); this is the write side of the
+  same rule, and hive-mcp's harvest pipeline carries `:source-errors` for the
+  same reason. Every half is guarded on its own, so one bad finding no longer
+  costs the run its project distillation, and each failure is named on its
+  own in `:errors` — `[{:half :project :error \"…\"} …]`, empty when clean.
+
+  Journals one `:distilled` note per run end with the counts and the errors,
+  because this is the one moment the whole run has happened and the callers
+  are two drivers that would otherwise each have to remember to write it.
+  What reads the note: the next run's opening block (loop/learned-block), so
+  a branch can tell an empty head start from a lost one; and the run detail
+  the front ends show."
   [conn {:keys [run-id findings experiments]}]
-  (let [;; THE CLOCK TICKS FIRST. Everything distilled below either writes a
+  (let [errors (atom [])
+        ;; One half, guarded: the value on success, `absent` on a throw, and
+        ;; the throw recorded under the half's name. `log/warn` as well,
+        ;; because the log was the only witness before and a reader used to
+        ;; it should not find it gone.
+        half (fn [which absent f]
+               (try (f)
+                    (catch Throwable e
+                      (log/warn "distilling the session:" (name which)
+                                "half failed:" (ex-message e))
+                      (swap! errors conj {:half which :error (ex-message e)})
+                      absent)))
+        ;; THE CLOCK TICKS FIRST. Everything distilled below either writes a
         ;; new row (which has not had this run to go unused in) or
         ;; corroborates an existing one (which resets its clock), so ageing
         ;; before them is what makes a re-observed pattern come out at zero
         ;; and an untouched one at plus one, whichever order the writes land.
-        aged (try (age! conn run-id) (catch Throwable _ 0))
-        written (when (seq findings) (distill! conn findings {:run-id run-id}))
-        verdicts (when (seq experiments)
-                   (distill-verdicts! conn experiments {:run-id run-id}))
+        aged (half :age 0 #(age! conn run-id))
+        written (half :findings []
+                      #(when (seq findings) (distill! conn findings {:run-id run-id})))
+        verdicts (half :verdicts []
+                       #(when (seq experiments)
+                          (distill-verdicts! conn experiments {:run-id run-id})))
         ;; And what the run learned about the PROJECT, which is the half that
         ;; was missing entirely: everything else here is the harness watching
         ;; itself.
-        project (try (distil-project! conn {:run-id run-id})
-                     (catch Throwable _ nil))
+        project (half :project [] #(distil-project! conn {:run-id run-id}))
         ;; And curation, so the store does not become a ranking in which
         ;; everything has risen.
-        decayed (try (curate! conn) (catch Throwable _ 0))
+        decayed (half :curate 0 #(curate! conn))
         ;; And the bound on the working set, after decay has had its say
         ;; about who is lowest.
-        evicted (try (evict! conn) (catch Throwable _ []))]
-    {:findings (vec written) :verdicts (vec verdicts) :project (vec project)
-     :aged aged :decayed decayed :evicted (vec evicted)}))
+        evicted (half :evict [] #(evict! conn))
+        result {:findings (vec written) :verdicts (vec verdicts) :project (vec project)
+                :aged aged :decayed decayed :evicted (vec evicted)
+                :errors @errors}]
+    ;; Best effort like every note; a journal that cannot be written is not a
+    ;; reason to lose the map the caller is about to read.
+    (try
+      (journal/note! conn run-id :distilled
+                     {:data (-> result
+                                (update :findings count)
+                                (update :verdicts count)
+                                (update :project count)
+                                (update :evicted count))})
+      (catch Throwable e
+        (log/warn "journaling the distillation failed:" (ex-message e))))
+    result))
 
 (defn learned-since
   "What was written to memory after `since`, most worth reading first.

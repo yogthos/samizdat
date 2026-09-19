@@ -193,8 +193,15 @@ run end (both drivers, knowledge/distil-session!)
   ├─ knowledge/distill-verdicts! verdicts  → procedural memory, outcome recorded
   ├─ knowledge/distil-project!   shell facts → semantic memory, one per command as it RAN
   ├─ knowledge/curate!           decay past the window, in runs
-  └─ knowledge/evict!            retire the lowest-standing rows over a kind's cap
+  ├─ knowledge/evict!            retire the lowest-standing rows over a kind's cap
+  └─ journal :distilled          one note: the counts, and which halves threw
 ```
+
+Each half is guarded on its own and a throw is named in `:errors` rather than
+folded into the empty value the half returns when it had nothing to do. The
+next run's opening block (`loop/learned-block`) reads the note and says when
+the last run's memory was lost rather than empty; the run detail
+(`GET /v1/runs/:id` `distilled`) carries it to an operator.
 
 ## Invariants
 
@@ -210,6 +217,8 @@ run end (both drivers, knowledge/distil-session!)
 | Recall reinforces; being shown by default does not. | `recall` calls `touch!`, `standing` does not; `knowledge-test`. |
 | A memory is not aged by the run that wrote it. | `age!` ages only rows created before the run started; `knowledge-test/a-memory-written-this-run-does-not-decay-when-the-run-ends`. |
 | Eviction retires; it never deletes. | `evict!` goes through `retire!`; `knowledge-test/over-the-cap-the-lowest-standing-memories-are-retired-not-deleted`. |
+| A distillation that threw does not read as a run that learned nothing. | `distil-session!` names each failed half in `:errors` and journals `:distilled`; `knowledge-test/distil-session-reports-a-half-that-threw-rather-than-hiding-it`, `store-test/the-opening-block-says-when-the-last-run-failed-to-remember`. |
+| One bad half does not cost the run the halves after it. | Each half of `distil-session!` is guarded alone; `knowledge-test/a-half-that-throws-does-not-stop-the-halves-after-it`. |
 | The store surfaces graduation candidates; it never promotes one. | `graduation-candidates` is a read; `oversight-pass.md` hands the decision to the supervisor. |
 | An unfinished experiment teaches nothing. | `distill-verdicts!` skips `:too-early`; `session-test`. |
 | Nor does one the world ruined. | `distill-verdicts!` skips `:confounded`; `session-test/a-confounded-experiment-teaches-nothing-and-is-not-written`. |

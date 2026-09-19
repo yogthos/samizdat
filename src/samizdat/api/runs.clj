@@ -144,7 +144,12 @@
        ;; tables the loop already appends to, so they need no cooperation
        ;; from the run and work the same on a finished one.
        :tasks (tasks/board conn {:run-id run-id})
-       :modified (journal/run-writes conn run-id (gates/threshold :modified-files-shown))})))
+       :modified (journal/run-writes conn run-id (gates/threshold :modified-files-shown))
+       ;; What the run's end wrote to long-term memory, and which halves of
+       ;; that threw (karamazov-atgu). nil until the run has ended and
+       ;; distilled; the front ends hold no database handle, so the note
+       ;; has to ride the detail to reach an operator.
+       :distilled (journal/last-note conn run-id :distilled)})))
 
 (defn journal-tail
   "Everything after `since`. The `next` cursor is what the client sends back,

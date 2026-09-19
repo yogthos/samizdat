@@ -1272,6 +1272,48 @@
           (is (= produced (filter (set produced) declared))
               "and in the order the branch reads them in"))))))
 
+;; --- the opening block says when the last run failed to remember ----------
+
+(deftest the-opening-block-says-when-the-last-run-failed-to-remember
+  ;; karamazov-atgu. learned-block renders what the previous run learned and
+  ;; is silent when it learned nothing. Silence was also what a distillation
+  ;; that THREW looked like, so a branch opening on an empty head start could
+  ;; not tell "there was nothing to learn" from "the harness failed to keep
+  ;; it" — and the second is the one worth knowing, because the store is then
+  ;; missing what that run would have told you.
+  (with-db [c]
+    (let [r1 (runs/start-run! c {:problem "p"})]
+      (journal/note! c r1 :distilled
+                     {:data {:findings 0 :verdicts 0 :project 0 :aged 0 :decayed 0 :evicted 0
+                             :errors [{:half "project" :error "sqlite step failed: disk I/O"}]}})
+      (runs/finish-run! c r1 :completed "answer")
+      (Thread/sleep 5)
+      (let [r2 (runs/start-run! c {:problem "p"})
+            block (#'branch-loop/learned-block c r2)]
+        (is (string? block) "the block appears although nothing was learned")
+        (is (re-find #"disk I/O" block) "and names the failure in its own words")
+        (is (re-find #"project" block) "and which half"))
+      (testing "a clean note with nothing learned stays silent, as before"
+        (Thread/sleep 5)
+        (let [r3 (runs/start-run! c {:problem "p"})]
+          (journal/note! c r3 :distilled
+                         {:data {:findings 0 :verdicts 0 :project 0 :aged 0 :decayed 0 :evicted 0
+                                 :errors []}})
+          (runs/finish-run! c r3 :completed "answer")
+          (Thread/sleep 5)
+          (is (nil? (#'branch-loop/learned-block c (runs/start-run! c {:problem "p"})))))))))
+
+(deftest the-run-detail-carries-the-distillation-note
+  ;; The operator's path to the same fact: the front ends are HTTP clients and
+  ;; hold no database handle, so the note has to ride the run detail. nil
+  ;; until the run has ended and distilled.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (is (nil? (:distilled (api-runs/get-run c rid))) "nothing yet on a live run")
+      (journal/note! c rid :distilled {:data {:findings 2 :verdicts 0 :project 3
+                                              :aged 1 :decayed 0 :evicted 0 :errors []}})
+      (is (= 3 (get-in (api-runs/get-run c rid) [:distilled :project]))))))
+
 ;; --- prefix identity on the turn row (karamazov-o4wm.1) ---------------------
 
 (deftest a-turn-records-its-prefix-identity
