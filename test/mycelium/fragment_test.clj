@@ -429,3 +429,55 @@
                 :dispatches {:step [[:done (constantly true)]]}}]
       ;; Should not throw — :inherit is allowed during fragment validation
       (is (some? (fragment/validate-fragment frag))))))
+
+;; --- :ref resolution relative to the manifest file (upstream #57) ---
+
+(deftest manifest-dir-is-absolute-even-for-bare-filenames-test
+  (let [dir (manifest/manifest-dir "todo-delete.edn")]
+    (is (some? dir))
+    (is (.isAbsolute (java.io.File. ^String dir)))))
+
+(def ^:private simple-fragment
+  {:id    :simple
+   :doc   "one step"
+   :entry :step
+   :exits [:done]
+   :cells {:step {:id :simple/step :doc "step"
+                  :schema {:input [:map] :output [:map]}
+                  :on-error nil}}
+   :edges {:step :_exit/done}})
+
+(defn- tmp-dir! [prefix]
+  (let [d (java.io.File. (System/getProperty "java.io.tmpdir")
+                         (str prefix "-" (System/nanoTime)))]
+    (.mkdirs d)
+    d))
+
+(deftest load-manifest-resolves-a-ref-beside-the-manifest-and-in-its-parent-test
+  ;; The standard layout keeps manifests in resources/workflows and fragments
+  ;; in resources/fragments — one level up from the manifest — and neither
+  ;; is on the classpath when the manifest lives in another project.
+  (let [root      (tmp-dir! "myc-frag")
+        workflows (doto (java.io.File. root "workflows") .mkdirs)
+        frags     (doto (java.io.File. root "fragments") .mkdirs)
+        host      {:id :host
+                   :fragments {:tail {:ref "fragments/simple.edn" :as :tail :exits {:done :end}}}
+                   :cells {:start {:id :host/start :doc "start"
+                                   :schema {:input [:map] :output [:map]}
+                                   :on-error nil}}
+                   :edges {:start :tail}}
+        path      (java.io.File. workflows "host.edn")]
+    (spit (java.io.File. frags "simple.edn") (pr-str simple-fragment))
+    (spit path (pr-str host))
+    (testing "resolved through the manifest's parent directory"
+      (let [loaded (manifest/load-manifest (.getPath path) {:strict? false})]
+        (is (contains? (:cells loaded) :tail))))
+    (testing "and through the manifest's own directory"
+      (let [path2 (java.io.File. root "host2.edn")]
+        (spit path2 (pr-str host))
+        (is (contains? (:cells (manifest/load-manifest (.getPath path2) {:strict? false})) :tail))))
+    (testing "the binding does not leak past the load"
+      (is (nil? fragment/*fragment-dir*))
+      (is (thrown-with-msg? Exception #"Fragment resource not found"
+            (fragment/load-fragment "fragments/simple.edn"))))))
+

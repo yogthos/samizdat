@@ -164,6 +164,25 @@ rethrown, so a broken edit never half-loads.
 | `(propose-cell! {:keys [name body loop-def extra-defs soak-input compile-fn conn run-id]})` | Validate a candidate and commit it as a new version **only if it survives**. `:loop-def` is the ACTIVE stored loop (soaked); `:extra-defs` is every other shipped+stored manifest (compiled, not soaked) — a cell wired only into the beam or a team loop is invisible to the active loop, and validating one definition let an edit that broke every other workflow commit (blt.2). `{:status :committed :version n}`, `{:status :live-unsaved :reason :unbound}` when no store is bound, or `{:status :rolled-back :reason s}`. |
 | `(apply-cell-edit! {:keys [dirs loop-def soak-input compile-fn conn run-id]})` | The legacy file-based protocol: reload, validate, soak, commit or restore the file. Refuses a store-mode image (`:reason :store-mode-image`) — its checkpoint is file paths, and the production loader's is store names (blt.7). |
 
+### `mycelium.patch`
+
+The checked-edit half of the manifest tool (karamazov-rnnc, from mycelium
+#57/#58). Ops are data over the manifest **as written**; the validator is
+injected, because samizdat's manifests are the workflow dialect (bare handler
+keywords, registry schemas) that `mycelium.manifest` does not read.
+
+| fn | contract |
+|---|---|
+| `(apply-ops raw {:ops [{:op "rename-cell" :from k :to k} …] :validator f})` | Validate `raw` with `f`, apply every op in order, validate the result once, return the new raw map or throw. A batch may pass through states that are not individually valid, so a node can be added and wired in one call. Ops: `rename-cell` `add-cell` `remove-cell` `set-edge` `delete-edge` `set-cell-field` `set-dispatches`; `(ops)` is the registry with each op's arguments. |
+| `(cell-refs raw cell)` | Every site that names `cell`, as `{:role :path}` — definition, edges both ways, dispatches, `:constraints`, `:invariants`, and the join/region/fragment sections samizdat does not use. The one list `rename-cell` rewrites and `remove-cell` checks. |
+| `(render text old new)` | `text` (which read as `old`) rewritten to read as `new`, changing only the entries that changed: comments, layout and key order survive. Maps sync by key position, equal-length vectors element-wise; anything else is reprinted. Falls back to a pretty-print when `text` does not read as `old`. |
+| `(diff-manifests a b)` | Cells per field (a bare keyword as `{:id kw}`), edges, dispatches, and every other section that differs; `:same?` when nothing does. |
+
+`manifest patch {name, ops, rationale, expect-version?}` is `apply-ops` with
+`compile-loop` as the validator over the stored body, then `render` over that
+body, then `us/save!`; `manifest refs` and `manifest diff` are the other two
+over stored versions.
+
 ## Protocol
 
 ### The mutation protocol
@@ -200,7 +219,9 @@ workflow/compile-loop
 
 | invariant | enforced by |
 |---|---|
-| A manifest that cannot run cannot be saved. | `manifest save` compiles before storing. |
+| A manifest that cannot run cannot be saved. | `manifest save` and `manifest patch` compile before storing; `manifest-test/a-patch-that-does-not-compile-stores-nothing`. |
+| A patch keeps every line it did not change. | `patch/render` rewrites over the stored text; `patch-workflow-test/render-keeps-a-shipped-manifests-prose` pins a rename in `loop.edn` to its five naming lines. |
+| A rename reaches every reference, `:invariants` included. | `patch/cell-refs` is the one list rename rewrites and remove checks; `patch-workflow-test/rename-rewrites-invariants-like-constraints`. |
 | A cell edit that breaks the loop never goes live. | `propose-cell!`'s validate + soak. |
 | A cell that declares no effects is rejected. | `mutation/validate` reads mycelium's `:undeclared-effects` warning. |
 | Declared constraints are compile-time errors. | mycelium `:constraints`; `beam-test` asserts a violating edit is refused. |

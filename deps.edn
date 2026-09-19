@@ -68,6 +68,13 @@
         metosin/malli {:mvn/version "0.17.0"}
         org.clojure/test.check {:mvn/version "1.1.1"}
 
+        ;; src/mycelium/patch — a checked manifest edit writes back over the
+        ;; ORIGINAL text so the stored body keeps its comments (the manifests
+        ;; are half prose about why an edge is where it is). rewrite-clj is
+        ;; the node tree that makes a minimal rewrite possible; upstream
+        ;; mycelium pins the same version. Loads under jolt unmodified.
+        rewrite-clj/rewrite-clj {:mvn/version "1.2.57"}
+
         ;; src/samizdat/symbolic — the rule layer's substrate (RFC/karamazov-41a).
         ;; Runs unmodified: 423 tests, 658 assertions, 0 failures under jolt.
         ;; No fork and no jolt port — the Maven artifact ships the .clj sources

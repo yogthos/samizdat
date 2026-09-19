@@ -78,4 +78,22 @@
   :lib      :mycelium
   :kind     :port
   :summary  "mycelium.schema requires jolt.time before malli.transform, whose date formatter needs the java.time shim at namespace load; the same fix as selmer in samizdat.prompt."
-  :unpinned "Load order: the namespace does not load without it, which every run checks."}]
+  :unpinned "Load order: the namespace does not load without it, which every run checks."}
+
+ {:id       :mycelium-patch-reads-the-workflow-dialect
+  :lib      :mycelium
+  :kind     :harness
+  :summary  "Upstream's checked edits target the self-describing manifest and validate through mycelium.manifest, which refuses a bare-keyword cell. apply-ops takes a :validator so the caller's compiler decides (manifests/compile-loop behind `manifest patch`); add-cell with only an id writes the bare keyword, set-cell-field and diff-manifests read one as its :id; :invariants is a reference site for cell-refs, rename-cell and remove-cell."
+  :pinned-by mycelium.patch-workflow-test/a-caller-supplied-validator-replaces-myceliums}
+
+ {:id       :mycelium-patch-renders-vectors-element-wise
+  :lib      :mycelium
+  :kind     :behaviour
+  :summary  "Upstream's minimal rewrite descends into maps and reprints any other changed value whole, so a rename inside :invariants would reflow every :protects paragraph. A vector of unchanged length syncs child by child, so the rename touches one keyword. Worth offering upstream (karamazov-h3uc)."
+  :pinned-by mycelium.patch-workflow-test/render-keeps-a-shipped-manifests-prose}
+
+ {:id       :mycelium-patch-hash-needs-the-crypto-shim
+  :lib      :mycelium
+  :kind     :port
+  :summary  "manifest-hash uses java.security.MessageDigest, which under jolt exists only once jolt.crypto has registered the shim (RFC 0014), so mycelium.patch requires it. Load order, like the time shim."
+  :pinned-by mycelium.patch-test/expect-hash-match-applies-test}]
