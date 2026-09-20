@@ -84,7 +84,10 @@ checks it: a branch an earlier pattern makes unreachable is refused, and two
 branches that overlap with neither more specific are reported by `manifest
 save` and `manifest show` as order-dependent. A `(fn [data] pred)` form is
 still accepted where a pattern cannot say it; it is evaluated at **compile**
-time and is opaque to the analysis.
+time and is opaque to the analysis — and `show` and `save` list every such
+entry as unanalysed, so a report with no such paragraph means every entry was
+checked (karamazov-viht.2; the same disclosure rides `policy show gates` and
+`policy save gates`, whose `:when` forms are compiled and analysed no further).
 
 ### The two levels
 

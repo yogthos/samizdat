@@ -511,6 +511,38 @@
         (is (str/includes? (str (:result saved)) ":provider-error"))
         (is (str/includes? (str (:result shown)) "Order-dependent"))))))
 
+(deftest show-and-save-name-every-dispatch-entry-the-analysis-could-not-read
+  ;; A (fn [d] ...) entry is legal and opaque: it is checked for neither
+  ;; shadowing nor order, and until now nothing said so — a table with three
+  ;; forms and no overlapping patterns showed clean and read as checked
+  ;; through. BendTT's rule for its one escape hatch: every use is reported,
+  ;; so a clean report means no claim was waived (karamazov-viht.2). The
+  ;; paragraph is present exactly when an entry was waived; the same table
+  ;; as patterns prints nothing of the kind.
+  (with-db
+    (fn [conn]
+      (let [patterns (slurp (io/resource "manifests/loop.edn"))
+            _ (is (str/includes? patterns "[:tool _]") "the fixture's target is present")
+            forms (str/replace patterns "[:tool _]" "[:tool (fn [d] true)]")
+            run (fn [args] (base/run-tool {:branch {:id "B1"} :conn conn
+                                            :tool-name "manifest" :args args}))
+            saved (run {:action "save" :name "loop5" :edn forms
+                        :rationale "one entry as a form, on purpose"})
+            shown (run {:action "show" :name "loop5"})
+            clean (run {:action "save" :name "loop6" :edn patterns
+                        :rationale "the same table as patterns"})]
+        (is (= :neutral (:category saved)) (str (:result saved)))
+        (doseq [r [saved shown]]
+          (is (str/includes? (str (:result r)) "not analysed")
+              "the waiver is disclosed on save and on show")
+          (is (str/includes? (str (:result r)) ":parse")
+              "naming the table")
+          (is (str/includes? (str (:result r)) ":tool")
+              "and the entry"))
+        (is (= :neutral (:category clean)))
+        (is (not (str/includes? (str (:result clean)) "not analysed"))
+            "no waiver, no paragraph — absence means every entry was analysed")))))
+
 (deftest a-manifests-prompt-reaches-the-driver-that-production-uses
   ;; karamazov-ioo.20's leftover, and the same shape its own commit message
   ;; describes: the two drivers were unified for what a TURN is and left

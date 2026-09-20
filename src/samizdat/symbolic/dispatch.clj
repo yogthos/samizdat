@@ -40,7 +40,15 @@
   and is neither. Two entries to the same label are never order-dependent,
   the data going the same way whichever fires. Guards are not analysed, and
   entries that are forms or functions are opaque: they take part in neither
-  check, so a table that mixes forms and patterns is only partly checked."
+  check, so a table that mixes forms and patterns is only partly checked —
+  and SAYS so:
+    opaque           every entry the analysis could not read, in the order
+                     that runs. Reported beside the other two, because a
+                     clean :shadowed and :order-dependent over a table of
+                     forms would otherwise read as a table checked through.
+                     BendTT's rule for its one escape hatch: every use is
+                     reported, so a clean report means no claim was waived
+                     (karamazov-viht.2)."
   (:require [samizdat.symbolic :as sym]))
 
 (defn pattern-entry?
@@ -91,17 +99,18 @@
 
 (defn analyse
   "{:shadowed [{:label :pattern :by :by-pattern} ...]
-    :order-dependent [{:labels [a b] :patterns [pa pb]} ...]}
-  over the pattern entries of `dispatch-vec`, in the order that runs."
+    :order-dependent [{:labels [a b] :patterns [pa pb]} ...]
+    :opaque [{:label :form} ...]}
+  over `dispatch-vec` in the order that runs: the two checks over its
+  pattern entries, and the list of entries they could not read."
   [dispatch-vec]
-  (let [entries (into []
-                      (comp (map-indexed
-                             (fn [i [label spec guard :as e]]
-                               {:i i :label label :spec spec
-                                :guard (when (> (count e) 2) guard)
-                                :pattern? (pattern-entry? spec)}))
-                            (filter :pattern?))
-                      (effective-order dispatch-vec))]
+  (let [{entries true opaque false}
+        (->> (effective-order dispatch-vec)
+             (map-indexed (fn [i [label spec guard :as e]]
+                            {:i i :label label :spec spec
+                             :guard (when (> (count e) 2) guard)
+                             :pattern? (pattern-entry? spec)}))
+             (group-by :pattern?))]
     (reduce
      (fn [acc [a b]]
        (cond
@@ -119,7 +128,8 @@
          :else
          (update acc :order-dependent conj {:labels [(:label a) (:label b)]
                                             :patterns [(:spec a) (:spec b)]})))
-     {:shadowed [] :order-dependent []}
+     {:shadowed [] :order-dependent []
+      :opaque (mapv (fn [{:keys [label spec]}] {:label label :form spec}) opaque)}
      (for [a entries b entries :when (< (:i a) (:i b))] [a b]))))
 
 (defn check!
@@ -143,12 +153,20 @@
     analysis))
 
 (defn report
-  "Every order-dependent pair in a whole :dispatches map, each with its cell."
+  "Over a whole :dispatches map, each finding carrying its cell:
+  {:order-dependent [{:cell :labels :patterns} ...]
+   :opaque          [{:cell :label :form} ...]}
+  The two things a reader of the table is told and not refused for: where
+  only the order decides, and which entries were never analysed at all."
   [dispatches-map]
-  (into []
-        (for [[cell table] dispatches-map
-              pair (:order-dependent (analyse table))]
-          (assoc pair :cell cell))))
+  (reduce (fn [acc [cell table]]
+            (let [a (analyse table)
+                  with-cell (map #(assoc % :cell cell))]
+              (-> acc
+                  (update :order-dependent into with-cell (:order-dependent a))
+                  (update :opaque into with-cell (:opaque a)))))
+          {:order-dependent [] :opaque []}
+          dispatches-map))
 
 (def ^:private refusals
   "The :error keys this layer and the engine raise — what a caller rendering

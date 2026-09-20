@@ -79,26 +79,56 @@
                       :instead (some-> (:instead d) pr-str)})
       message)))
 
-(defn- order-report
-  "Where a dispatch table's order is the only thing deciding, rendered for
-  the author looking at the table — or nil when nowhere. Two branches that
-  overlap with neither more specific are legal (the loop's own :parse table
-  has them), so this is a report and not a refusal; the moment to make it
-  is when the manifest is saved or shown, not on every run that compiles it."
+(defn- form-head
+  "A form as the reader will recognise it without its body: `(fn [d] …)`.
+  A function object has no text; it is named as what it is."
+  [form]
+  (cond
+    (fn? form) "a compiled function"
+    (seq? form) (str "(" (str/join " " (map pr-str (take 2 form))) " …)")
+    :else (pr-str form)))
+
+(defn- dispatch-report
+  "What the analysis found and did not refuse, rendered for the author
+  looking at the table — or nil when there is nothing to say. Two
+  paragraphs, each present only when it applies:
+
+  Where the order is the only thing deciding. Two branches that overlap
+  with neither more specific are legal (the loop's own :parse table has
+  them), so this is a report and not a refusal.
+
+  Which entries were never analysed. A (fn [d] ...) form is legal and
+  opaque — checked for neither shadowing nor order — and a table with three
+  of them and no overlapping patterns used to show clean and read as checked
+  through. The escape hatch is disclosed every time it is used, so that a
+  report with no such paragraph means every entry was analysed
+  (karamazov-viht.2).
+
+  The moment to say either is when the manifest is saved or shown, not on
+  every run that compiles it."
   [edn-text]
-  (when-let [pairs (seq (dispatch/report
-                         (:dispatches (manifests/read-definition edn-text))))]
-    (str "\n\n"
-         (prompt/render
-          "dispatch-order"
-          {:pairs (str/join "\n"
-                            (for [{:keys [cell labels patterns]} pairs]
-                              (str "  " cell " — " (first labels) " "
-                                   (pr-str (first patterns)) " before "
-                                   (second labels) " " (pr-str (second patterns)))))}))))
+  (let [{:keys [order-dependent opaque]}
+        (dispatch/report (:dispatches (manifests/read-definition edn-text)))]
+    (when (or (seq order-dependent) (seq opaque))
+      (str (when (seq order-dependent)
+             (str "\n\n"
+                  (prompt/render
+                   "dispatch-order"
+                   {:pairs (str/join "\n"
+                                     (for [{:keys [cell labels patterns]} order-dependent]
+                                       (str "  " cell " — " (first labels) " "
+                                            (pr-str (first patterns)) " before "
+                                            (second labels) " " (pr-str (second patterns)))))})))
+           (when (seq opaque)
+             (str "\n\n"
+                  (prompt/render
+                   "dispatch-opaque"
+                   {:entries (str/join "\n"
+                                       (for [{:keys [cell label form]} opaque]
+                                         (str "  " cell " — " label " " (form-head form))))})))))))
 
 (def ^:private usage
-  "Actions: list, show {name, version?}, save {name, edn | file, rationale}, patch {name, ops, rationale, expect-version?}, refs {name, cell}, diff {name, from?, to?}. A manifest is the loop as data — a :cells map, :edges, and dispatch patterns. Save and patch validate by compiling before they store; the run that uses it is chosen by config :run :loop. Prefer patch to save for an edit: it names the change and keeps the rest of the file, comments included. rationale: one sentence on why — the history shows it to the next supervisor deciding whether your change stays.")
+  "Actions: list, show {name, version?}, save {name, edn | file, rationale}, patch {name, ops, rationale, expect-version?}, refs {name, cell}, diff {name, from?, to?}. A manifest is the loop as data — a :cells map, :edges, and dispatch patterns. Save and patch validate by compiling before they store; the run that uses it is chosen by config :run :loop. Show, save and patch report where only branch order decides and name every dispatch entry written as a form, which the analysis cannot read. Prefer patch to save for an edit: it names the change and keeps the rest of the file, comments included. rationale: one sentence on why — the history shows it to the next supervisor deciding whether your change stays.")
 
 (defn- deflag
   "The vendored op refusals speak the CLI's `--rewire`; here an argument is a
@@ -255,7 +285,7 @@
                            (us/load-version conn :manifest name v)
                            (us/load-latest conn :manifest name))]
               (base/ok branch (str name " v" (:version row) ":\n\n" (:body row)
-                                   (order-report (:body row))))
+                                   (dispatch-report (:body row))))
               ;; Not stored — fall back to the userspace seam, which serves
               ;; the factory template (and seeds it as v1 when a project is
               ;; bound), so a shipped manifest is readable before any run
@@ -263,7 +293,7 @@
               ;; pin to here, so only the latest form takes this path.
               (if-let [body (when-not v (manifests/manifest-body name))]
                 (base/ok branch (str name " (factory template):\n\n" body
-                                     (order-report body)))
+                                     (dispatch-report body)))
                 (base/malformed branch (str "No manifest " name
                                             (when v (str " v" v)) "."))))))
 
@@ -291,7 +321,7 @@
                                   "\n\n" usage))
               (let [v (us/save! conn :manifest name edn-text "project" why)]
                 (base/ok branch
-                         (str (saved-line name v) (order-report edn-text))
+                         (str (saved-line name v) (dispatch-report edn-text))
                          :progress? true)))))
 
         "patch"
@@ -330,7 +360,7 @@
                       (base/ok branch
                                (str (saved-line name v)
                                     "\n\n" (format-diff (patch/diff-manifests old new) old new)
-                                    (order-report text))
+                                    (dispatch-report text))
                                :progress? true)))))
               (base/malformed branch (str "No manifest " name ".")))))
 

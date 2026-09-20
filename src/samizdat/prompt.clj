@@ -47,7 +47,7 @@
    "branch-out" "cell-shadowed" "cell-tool" "clojure-syntax"
    "compaction-marker" "compaction-summary" "context-empty" "critic"
    "critic-system" "crossover" "cull-reprieve" "digest"
-   "design-brief" "digest-tool" "directive-refused" "directive-rejected" "dispatch-order"
+   "design-brief" "digest-tool" "directive-refused" "directive-rejected" "dispatch-opaque" "dispatch-order"
    "dispatch-refused" "drift" "emergency-review" "eval-calls-main"
    "eval-error" "eval-image" "eval-syntax" "eval-terminates-process"
    "experiment-line" "experiment-tool" "explore-cap" "failure-log"

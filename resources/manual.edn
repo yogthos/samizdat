@@ -121,7 +121,9 @@
    {:name samizdat.symbolic/subsumes?
     :summary "Whether every term one pattern matches the other matches too — the specificity order the dispatch check uses."}
    {:name samizdat.symbolic.dispatch/analyse
-    :summary "A dispatch table's shadowed branches (refused at save) and order-dependent pairs (reported), over the order that runs."}
+    :summary "A dispatch table's shadowed branches (refused at save), order-dependent pairs (reported), and :opaque entries — the (fn [d] ...) forms the analysis cannot read, listed so a clean report means every entry was checked — over the order that runs."}
+   {:name samizdat.symbolic.dispatch/report
+    :summary "analyse over a whole :dispatches map, each finding carrying its cell: {:order-dependent :opaque}. What manifest show and save render as their two report paragraphs; neither is a refusal."}
    {:name samizdat.symbolic/widest-beam
     :summary "The widest beam that fits one turn deadline against a provider serving N calls at a time, and the run's token budget at the turn cap, in core.logic.fd; gates.edn :beam-contention and :run :token-budget feed it."}
    {:name samizdat.repl.guard/rules
