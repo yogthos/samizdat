@@ -244,11 +244,34 @@ manifest({action, ...})
       list                 Every stored manifest, its latest version, and
                            whether it has a factory default.
       show {name, version?} The manifest as data (cells + edges + dispatch).
-      save {name, edn}     Store an edited or new manifest. It is COMPILED
-                           first — a manifest that cannot run cannot be saved.
-                           Saving a new version of the active manifest tunes
-                           the loop for your next run; saving a new name adds
-                           a loop that config (:run :loop) can select.
+      patch {name, ops, rationale, expect-version?}
+                           Change the wiring by naming the change: a list of
+                           ops, each {:op "rename-cell" :from "journal" :to
+                           "record"} / {:op "add-cell" :name "critic" :id
+                           "gate/critic" :edges "{:ship :distil :revise
+                           :start}" :dispatches "[[:ship {...}] ...]"} /
+                           set-edge {from, to, label?} / delete-edge /
+                           remove-cell {name, rewire?} / set-dispatches /
+                           set-cell-field. An EDN-valued argument is a
+                           string. The batch is applied to the stored text,
+                           COMPILED as one, and written back over the
+                           original so its comments survive — a refusal
+                           lists every op. Prefer this to save for an edit.
+      refs {name, cell}    Every place a node is named — definition, edges
+                           in and out, dispatch, invariants — with the
+                           path to each. Read it before a rename or removal.
+      diff {name, from?, to?}
+                           What changed between two stored versions, per
+                           section; without versions, the newest against
+                           the one before it. What a supervisor reads to
+                           judge an edit without re-reading the file.
+      save {name, edn}     Store a whole edited or new manifest. It is
+                           COMPILED first — a manifest that cannot run
+                           cannot be saved. Saving a new version of the
+                           active manifest tunes the loop for your next run;
+                           saving a new name adds a loop that config
+                           (:run :loop) can select. For a new manifest;
+                           for an edit, patch.
 intervene({kind, branch?, text?})
     Steer a run that is happening right now. `kind` is one of message,
     review, cull, fork, retract, extend, pause, resume; `message` is the one

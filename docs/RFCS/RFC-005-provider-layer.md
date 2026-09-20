@@ -16,8 +16,17 @@ nothing about what to say or when to say it.
 **It must not know** what a turn is, what a branch is, or that tools exist. It
 sees messages in and a parsed reply out.
 
-**It hands** `{:content :reasoning :finish-reason :usage :elapsed-ms}` to the
-inference layer (RFC-004) and nothing to anyone else.
+**It hands** `{:content :reasoning :finish-reason :usage :elapsed-ms
+:model-requested :model}` to the inference layer (RFC-004) and nothing to
+anyone else. `:model` is the id the provider says answered, or nil when the
+body does not name one; it is never defaulted to `:model-requested`, because
+a retired or aliased id is served by a different model behind a normal 200
+with no warning field anywhere (z.ai answers `glm-4.6` with `glm-5.3-flash`,
+DeepSeek answers `deepseek-chat` with `deepseek-v4-flash`). The loop keeps
+the reported id as branch memory and journals a `:model` note the turn a
+branch first learns it or the provider switches — once per agent, not a
+column on every row (karamazov-a28w). `:elapsed-ms` reaches the turn row as
+`elapsed_ms`, so a generation rate is a query rather than a stopwatch.
 
 ## Model
 
@@ -32,7 +41,7 @@ llm/chat adapter config messages opts
    │   ├─ classify               :retry | :fatal
    │   └─ adapter/parse-chat     content · reasoning · finish-reason · usage
    ▼
-{:content merged :finish-reason :usage :elapsed-ms}
+{:content merged :finish-reason :usage :elapsed-ms :model-requested :model}
    │
 fence/parse-tool-call            ```tool-call fenced JSON → {:name :args}
 ```

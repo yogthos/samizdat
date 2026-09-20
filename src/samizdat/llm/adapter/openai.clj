@@ -238,6 +238,15 @@
                     (:content msg))
          :reasoning (get msg reasoning-key)
          :finish-reason (or (:finish_reason choice) "stop")
+         ;; The model that ANSWERED, as the provider names it, or nil when
+         ;; the body does not say. Kept apart from the one requested and
+         ;; never defaulted to it: a retired or aliased id is served by a
+         ;; different model behind a normal 200 with no warning field
+         ;; anywhere (z.ai answers glm-4.6 with glm-5.3-flash, DeepSeek
+         ;; answers deepseek-chat with deepseek-v4-flash — escapement,
+         ;; 2026-09-07), and echoing the request here would hide exactly
+         ;; that (karamazov-a28w).
+         :model (some-> (:model body) str not-empty)
          :usage (when-let [u (:usage body)]
                   ;; The cache split is conditional on the provider reporting
                   ;; it, and ABSENT rather than zero when it does not: zero

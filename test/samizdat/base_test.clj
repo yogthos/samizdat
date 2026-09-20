@@ -678,11 +678,6 @@
     "diagnostics needs file. line/col are 0-based ints."
     "line and col must be integers. "
     }
-   "src/samizdat/agent/tools/manifest.clj"
-   #{
-    " up on the next run."
-    " will use it; tuning the active manifest is picked"
-    }
    "src/samizdat/agent/tools/messages.clj"
    #{
     "Actions: send {to?, body} (to omitted = broadcast), inbox. "

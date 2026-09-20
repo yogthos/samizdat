@@ -29,6 +29,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [mycelium.cell :as cell]
+            [mycelium.patch]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.manifest]
             [samizdat.store.db :as db]
@@ -574,3 +575,209 @@
         (let [system (->> @seen first (filter #(= "system" (:role %))) first :content)]
           (is (str/includes? system "CODE REVIEW")
               "the beam ran the EDITED version, not the factory file it seeds from"))))))
+
+;; ===== patch / refs / diff — mycelium #57 and #58 ported (karamazov-rnnc) =====
+;;
+;; `manifest save` takes the whole EDN text, so changing one edge meant the
+;; model re-emitting a 128-line file it had read a few turns earlier — and a
+;; local model re-emitting a file drops comments, reorders keys and loses the
+;; occasional edge on the way. A patch names the edit and nothing else: the
+;; ops are applied to the stored text, validated through the same compile a
+;; save gets, and written back over the ORIGINAL text so the prose survives.
+
+(defn- run-manifest [conn args]
+  (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest" :args args}))
+
+(defn- changed-lines [before after]
+  (remove (set (str/split-lines before)) (str/split-lines after)))
+
+(deftest patch-rewires-the-loop-without-re-emitting-it
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)                                  ; seed "loop" v1
+      (let [r   (run-manifest conn {:action "patch" :name "loop"
+                                    :rationale "record says what the node does"
+                                    :ops [{:op "rename-cell" :from "journal" :to "record"}]})
+            v1  (us/load-version conn :manifest "loop" 1)
+            row (us/load-latest conn :manifest "loop")]
+        (is (= :neutral (:category r)) (:result r))
+        (is (:progress? r))
+        (is (= 2 (:version row)))
+        (testing "the stored body is the old text with only the naming lines changed"
+          (is (= (count (re-seq #";;" (:body v1))) (count (re-seq #";;" (:body row))))
+              "every comment survived")
+          (let [changed (changed-lines (:body v1) (:body row))]
+            (is (= 5 (count changed)) (pr-str changed))
+            (is (every? #(str/includes? % ":record") changed))))
+        (testing "the :invariants followed the rename, so the next compile holds"
+          (is (str/includes? (:body row) ":if :dispatch :then :record"))
+          (is (= "loop" (:name (wf/load-loop! conn "loop")))))
+        (testing "the reply names the version and what changed"
+          (is (str/includes? (:result r) "v2"))
+          (is (re-find #"- :journal" (:result r)))
+          (is (re-find #"\+ :record" (:result r))))))))
+
+(deftest a-batch-adds-a-node-and-wires-it-in-one-patch
+  ;; The skill's worked example — the critic on the :done path — as a patch.
+  ;; add-cell alone leaves :critic unreachable; validation runs once for the
+  ;; batch, so the wiring can come in the same call. EDN-valued arguments
+  ;; arrive as STRINGS (a JSON call cannot carry a keyword), and are read
+  ;; the way each op declares.
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)
+      (let [r (run-manifest conn {:action "patch" :name "loop" :rationale "judge a done first"
+                                  :ops [{:op "add-cell" :name "critic" :id "gate/critic"
+                                         :edges "{:ship :distil :revise :start}"
+                                         :dispatches "[[:ship {:critic/decision :ship}] [:revise {:critic/decision :revise}]]"}
+                                        {:op "set-edge" :from "route" :label "done" :to "critic"}]})
+            def' (wf/read-definition (:body (us/load-latest conn :manifest "loop")))]
+        (is (= :neutral (:category r)) (:result r))
+        (is (= :gate/critic (get-in def' [:cells :critic])) "a bare handler keyword, like its neighbours")
+        (is (= :critic (get-in def' [:edges :route :done])))
+        (is (= {:ship :distil :revise :start} (get-in def' [:edges :critic])))
+        (is (= 2 (count (get-in def' [:dispatches :critic]))))
+        (is (= "loop" (:name (wf/load-loop! conn "loop"))))))))
+
+(deftest ops-may-arrive-as-one-edn-string-or-one-bare-op
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)
+      (let [r (run-manifest conn {:action "patch" :name "loop" :rationale "edn ops"
+                                  :ops "[{:op \"rename-cell\" :from :journal :to :record}]"})]
+        (is (= :neutral (:category r)) (:result r))
+        (is (str/includes? (:body (us/load-latest conn :manifest "loop")) ":record")))
+      (let [r (run-manifest conn {:action "patch" :name "loop" :rationale "one op, no list"
+                                  :ops {:op "rename-cell" :from "record" :to "journal"}})]
+        (is (= :neutral (:category r)) (:result r))
+        (is (= 3 (:version (us/load-latest conn :manifest "loop"))))))))
+
+(deftest a-patch-that-does-not-compile-stores-nothing
+  ;; Same contract as save (karamazov-gn64): refused, told why, not charged.
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)
+      (testing "the compiler refuses the result"
+        (let [r (run-manifest conn {:action "patch" :name "loop" :rationale "break it"
+                                    :ops [{:op "set-edge" :from "finish" :to "nowhere"}]})]
+          (is (= :mechanics (:category r)))
+          (is (str/includes? (:result r) "nowhere") "names the fault")
+          (is (= 1 (:version (us/load-latest conn :manifest "loop"))))))
+      (testing "the op itself refuses"
+        (let [r (run-manifest conn {:action "patch" :name "loop" :rationale "typo"
+                                    :ops [{:op "rename-cell" :from "jornal" :to "record"}]})]
+          (is (= :mechanics (:category r)))
+          (is (str/includes? (:result r) "Unknown cell :jornal"))
+          (is (= 1 (:version (us/load-latest conn :manifest "loop"))))))
+      (testing "a refusal speaks in this tool's arguments, not the CLI's flags"
+        (let [r (run-manifest conn {:action "patch" :name "loop" :rationale "x"
+                                    :ops [{:op "remove-cell" :name "journal"}]})]
+          (is (= :mechanics (:category r)))
+          (is (str/includes? (:result r) "still referenced"))
+          (is (str/includes? (:result r) ":rewire"))
+          (is (not (str/includes? (:result r) "--")))))
+      (testing "an unknown op lists the ones there are"
+        (let [r (run-manifest conn {:action "patch" :name "loop" :rationale "x"
+                                    :ops [{:op "move-cell" :from "a"}]})]
+          (is (= :mechanics (:category r)))
+          (is (str/includes? (:result r) "rename-cell")))))))
+
+(deftest a-stale-expect-version-is-refused
+  ;; The version is the store's own optimistic-concurrency token: a model that
+  ;; read v1 and patches against it is told the manifest moved, instead of
+  ;; silently patching whatever is there now.
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)
+      (let [ok (run-manifest conn {:action "patch" :name "loop" :rationale "first"
+                                   :expect-version 1
+                                   :ops [{:op "rename-cell" :from "journal" :to "record"}]})
+            stale (run-manifest conn {:action "patch" :name "loop" :rationale "second"
+                                      :expect-version 1
+                                      :ops [{:op "rename-cell" :from "record" :to "journal"}]})]
+        (is (= :neutral (:category ok)) (:result ok))
+        (is (= :mechanics (:category stale)))
+        (is (str/includes? (:result stale) "v2"))
+        (is (= 2 (:version (us/load-latest conn :manifest "loop"))))))))
+
+(deftest an-unseeded-factory-manifest-can-be-patched
+  ;; Like show (karamazov-blt.4): the template is the starting point when
+  ;; nothing is stored, and the patch becomes the project's v1.
+  (with-db
+    (fn [conn]
+      (let [r (run-manifest conn {:action "patch" :name "worker" :rationale "tune"
+                                  :ops [{:op "rename-cell" :from "journal" :to "record"}]})]
+        (is (= :neutral (:category r)) (:result r))
+        (is (= 1 (:version (us/load-latest conn :manifest "worker"))))
+        (is (str/includes? (:body (us/load-latest conn :manifest "worker")) ":record"))))))
+
+(deftest refs-lists-every-site-a-cell-is-named
+  (with-db
+    (fn [conn]
+      (let [r (run-manifest conn {:action "refs" :name "loop" :cell "journal"})]
+        (is (= :neutral (:category r)) (:result r))
+        (is (re-find #":journal — \d+ references" (:result r)))
+        (doseq [role ["definition" "edges-out" "edges-in" "invariant"]]
+          (is (str/includes? (:result r) role) role))
+        (is (str/includes? (:result r) ":invariants 0 :then") "a get-in path per site"))
+      (let [r (run-manifest conn {:action "refs" :name "loop" :cell "nope"})]
+        (is (= :neutral (:category r)))
+        (is (str/includes? (:result r) "0 references"))))))
+
+(deftest diff-shows-what-a-version-changed
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)
+      (run-manifest conn {:action "patch" :name "loop" :rationale "rename"
+                          :ops [{:op "rename-cell" :from "journal" :to "record"}]})
+      (testing "no versions given: the latest against the one before it"
+        (let [r (run-manifest conn {:action "diff" :name "loop"})]
+          (is (= :neutral (:category r)) (:result r))
+          (is (str/includes? (:result r) "v1 → v2"))
+          (is (re-find #"- :journal" (:result r)))
+          (is (re-find #"\+ :record" (:result r)))
+          (is (re-find #"~ :dispatch :journal → :record" (:result r)))))
+      (testing "explicit versions"
+        (let [r (run-manifest conn {:action "diff" :name "loop" :from 1 :to 2})]
+          (is (re-find #"- :journal" (:result r))))
+        (let [r (run-manifest conn {:action "diff" :name "loop" :from 2 :to 2})]
+          (is (str/includes? (:result r) "no differences"))))
+      (testing "a version that does not exist is a complaint"
+        (let [r (run-manifest conn {:action "diff" :name "loop" :from 1 :to 9})]
+          (is (= :mechanics (:category r)))
+          (is (str/includes? (:result r) "v9")))))))
+
+(deftest diff-needs-two-versions-to-compare
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)                                  ; one version only
+      (let [r (run-manifest conn {:action "diff" :name "loop"})]
+        (is (= :mechanics (:category r)))
+        (is (str/includes? (:result r) "only one version"))))))
+
+(deftest patch-refs-and-diff-missing-their-arguments-are-mechanics-complaints
+  (with-db
+    (fn [conn]
+      (wf/load-loop! conn)
+      (let [no-ops  (run-manifest conn {:action "patch" :name "loop" :rationale "x"})
+            no-why  (run-manifest conn {:action "patch" :name "loop"
+                                        :ops [{:op "rename-cell" :from "journal" :to "record"}]})
+            no-name (run-manifest conn {:action "patch" :rationale "x"
+                                        :ops [{:op "rename-cell" :from "journal" :to "record"}]})
+            no-cell (run-manifest conn {:action "refs" :name "loop"})
+            bad-ops (run-manifest conn {:action "patch" :name "loop" :rationale "x"
+                                        :ops "[{:op"})]
+        (doseq [[label r arg] [["ops" no-ops "ops"] ["rationale" no-why "rationale"]
+                               ["name" no-name "name"] ["cell" no-cell "cell"]]]
+          (is (= :mechanics (:category r)) label)
+          (is (str/includes? (:result r) (str "Missing required argument(s): " arg)) label))
+        (is (= :mechanics (:category bad-ops)))
+        (is (= 1 (:version (us/load-latest conn :manifest "loop"))) "nothing stored")))))
+
+(deftest every-patch-op-is-described-to-the-model
+  ;; The op WORDS live in prompts/manifest-tool.md (editable without a
+  ;; rebuild); the argument lists come from the registry. A new op upstream
+  ;; that the template does not name would be accepted and never explained.
+  (let [template (slurp (io/resource "prompts/manifest-tool.md"))]
+    (doseq [op (keys (mycelium.patch/ops))]
+      (is (str/includes? template (str "  " op " {{args." op "}}")) op))))

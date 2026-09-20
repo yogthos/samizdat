@@ -816,6 +816,24 @@
         (is (= 80 (:cache-hit-tokens u)))
         (is (= 20 (:cache-miss-tokens u)))))
 
+    (testing "the model the provider REPORTED is read off the body (karamazov-a28w)"
+      ;; A provider can answer a request for a retired or aliased id with a
+      ;; different model behind a normal 200 and no warning anywhere:
+      ;; escapement verified 2026-09-07 that z.ai serves glm-4.6 as
+      ;; glm-5.3-flash and DeepSeek serves deepseek-chat as deepseek-v4-flash.
+      ;; parse-chat dropped the field, so the journal knew only what was asked.
+      (let [reply {:model "deepseek-v4-flash"
+                   :choices [{:message {:content "c"} :finish_reason "stop"}]}]
+        (is (= "deepseek-v4-flash"
+               (:model (adapter/parse-chat (registry/adapter-for :deepseek) reply)))))
+      (let [reply {:model "qwen3:latest" :message {:content "c"} :done_reason "stop"}]
+        (is (= "qwen3:latest"
+               (:model (adapter/parse-chat (registry/adapter-for :ollama) reply)))
+            "Ollama names it at the top level too"))
+      (let [reply {:choices [{:message {:content "c"} :finish_reason "stop"}]}]
+        (is (nil? (:model (adapter/parse-chat (registry/adapter-for :openai) reply)))
+            "absent, not a guess, when the body carries none")))
+
     (testing "a provider that reports no cache split omits the keys rather than zeroing them"
       ;; Zero and absent are different claims. A zero would say the cache was
       ;; missed on every token; absent says the provider did not tell us. The
@@ -935,6 +953,29 @@
       (is (thrown? Throwable (registry/adapter-for :nope))))))
 
 ;; --- retry policy -----------------------------------------------------------
+
+(deftest a-response-names-the-model-that-answered-beside-the-one-asked-for
+  ;; karamazov-a28w. The two ids are carried separately and never collapsed:
+  ;; anything comparing two runs believing they ran the same model has to
+  ;; read the REPORTED one, and reading the requested one is wrong with no
+  ;; sign of trouble. `:elapsed-ms` was already here; the journal is what
+  ;; dropped it.
+  (let [cfg {:base-url "https://api.example.com/v1" :model "deepseek-chat"
+             :api-key "k" :max-retries 0}
+        a (registry/adapter-for :deepseek)
+        answer (fn [body]
+                 (with-redefs [http/post (fn [_ _] {:status 200 :body (json/write-str body)})]
+                   (client/chat a cfg [{:role "user" :content "hi"}])))]
+    (testing "a substitution is visible as two different ids"
+      (let [r (answer {:model "deepseek-v4-flash"
+                       :choices [{:message {:content "ok"} :finish_reason "stop"}]})]
+        (is (= "deepseek-chat" (:model-requested r)))
+        (is (= "deepseek-v4-flash" (:model r)))
+        (is (number? (:elapsed-ms r)))))
+    (testing "a body that names no model leaves :model absent rather than echoing the request"
+      (let [r (answer {:choices [{:message {:content "ok"} :finish_reason "stop"}]})]
+        (is (= "deepseek-chat" (:model-requested r)))
+        (is (nil? (:model r)))))))
 
 (deftest every-provider-call-bounds-its-connect
   ;; http-client honours :conn-timeout as of v0.0.3 (a variadic-fcntl fix);

@@ -114,10 +114,15 @@ You have three tools; use them in this order.
   Pass or fail, a bad edit is rolled back and the file restored. This is how a
   cell's behavior changes.
 - **`manifest`** — to change the WIRING or add a whole alternative loop.
-  `manifest save {name, edn}` compiles the manifest the way the loader will
-  before storing it, so a manifest that can't run can't be saved. Which
-  manifest a run uses is config (`:run :loop`); save a new version of the
-  active one to tune it, or a new name to propose an alternative.
+  `manifest patch {name, ops, rationale}` names the change — rename a node,
+  add one and wire it, retarget an edge — and applies it to the stored text,
+  so the rest of the file, comments included, stays as it was. `manifest save
+  {name, edn}` stores a whole new manifest. Both compile the result the way
+  the loader will before storing it, so a manifest that can't run can't be
+  stored. `manifest refs {name, cell}` shows every place a node is named
+  before you touch it; `manifest diff {name}` shows what the last version
+  changed. Which manifest a run uses is config (`:run :loop`); patch the
+  active one to tune it, or save a new name to propose an alternative.
 - **`introspect`** — see the wiring and this run's health before and after.
 
 ## Adding a step to the loop (worked example)
@@ -127,11 +132,24 @@ path. The recipe generalizes — add a node, point an edge at it, dispatch out.
 
 1. Write the cell (`resources/cells/critic.clj`, id `:gate/critic`) that sets a
    decision key: `(assoc data :critic/decision :ship)` or `:revise`.
-2. In the manifest, add the node to `:cells`, retarget the edge
-   (`:route {:done :critic ...}`), add its out-edges
-   (`:critic {:ship :finish :revise :start}`), and a dispatch on the key
-   (`:critic [[:ship (fn [d] (= :ship (:critic/decision d)))] ...]`).
-3. `manifest save` it (it compiles or it is refused), then run under it.
+2. Patch the manifest in one call — add the node with its out-edges and a
+   dispatch on the key, and retarget the `:done` edge at it. The batch
+   compiles as one, so the node is never stored unreachable:
+
+   ```
+   manifest patch {name "loop", rationale "judge a done before it ships",
+     ops [{:op "add-cell" :name "critic" :id "gate/critic"
+           :edges "{:ship :distil :revise :start}"
+           :dispatches "[[:ship {:critic/decision :ship}] [:revise {:critic/decision :revise}]]"}
+          {:op "set-edge" :from "route" :label "done" :to "critic"}]}
+   ```
+
+   Dispatch entries are patterns over the data map — `{:critic/decision
+   :ship}` matches when that key has that value, `_` matches anything, first
+   match wins. A `(fn [d] ...)` form is accepted where a pattern cannot say
+   it.
+3. It compiles or it is refused with the reason; `manifest diff {name "loop"}`
+   shows what landed. Then run under it.
 
 ## Common mistakes
 

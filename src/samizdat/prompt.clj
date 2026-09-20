@@ -56,7 +56,7 @@
    "image-timeout" "intervene-tool" "judge" "judge-exemptions" "judge-plan" "judge-verify"
    "learned-since"
    "judge-user" "juvenile-grace" "kernel-write-refused" "last-call"
-   "ledger" "manual-group" "mechanics-streak" "memory-stale-completion"
+   "ledger" "manifest-tool" "manual-group" "mechanics-streak" "memory-stale-completion"
    "memory-tool" "memory-unverified" "metrics-findings" "milestone" "mutation-refused"
    "no-call-exhausted" "no-call-imitation" "no-call-periodic" "no-call-reason"
    "no-call-withheld"

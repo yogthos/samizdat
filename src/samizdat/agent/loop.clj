@@ -606,16 +606,30 @@
          prefix (when wire
                   (assoc (infer/prefix-stats (:last-wire branch) wire)
                          :forced-tool (:forced response)
-                         :forced-via (:forced-via response)))]
+                         :forced-via (:forced-via response)))
+         ;; WHAT THE BRANCH IS RUNNING ON (karamazov-a28w), once per branch
+         ;; rather than on every row: the model the provider reported is
+         ;; branch memory, and a change marker rides for exactly one step
+         ;; so the journal step can note it — the first time the branch
+         ;; learns it, and again only if the provider switches mid-run. A
+         ;; response naming no model (a stub, a replay) leaves what was
+         ;; known and marks nothing.
+         reported (:model response)
+         model-change (when (and reported (not= reported (:model-reported branch)))
+                        {:requested (:model-requested response)
+                         :reported reported
+                         :was (:model-reported branch)})]
      {:parsed parsed
       :signals signals
       :said said
       :pressure pressure
       :branch (cond-> (-> (infer/into-branch branch tape)
                           (state/record-mechanics signals)
-                          (dissoc :last-prefix))
+                          (dissoc :last-prefix :model-change))
                 (contains? #{:urgent :over} pressure) state/squeeze-context
-                wire (assoc :last-wire wire :last-prefix prefix))})))
+                wire (assoc :last-wire wire :last-prefix prefix)
+                model-change (assoc :model-reported reported
+                                    :model-change model-change))})))
 
 (defn no-call-step
   "No usable call. Say exactly what was wrong; a bare \"try again\" produces
@@ -697,6 +711,8 @@
                            ;; A turn that produced no usable call still cost
                            ;; tokens, and those are the ones worth counting.
                            :usage (:usage response)
+                           :elapsed-ms (:elapsed-ms response)
+                           :model-change (:model-change branch)
                            :prefix (:last-prefix branch)
                            :forced-tool (:forced-tool (:last-prefix branch))
                          :forced-via (:forced-via (:last-prefix branch))})
@@ -1013,6 +1029,13 @@
                          :assistant-text said
                          :reasoning-text (:reasoning response)
                          :usage (:usage response)
+                         ;; How long the call took, beside what it produced
+                         ;; (karamazov-a28w): tokens per second is a query.
+                         :elapsed-ms (:elapsed-ms response)
+                         ;; The model this branch learned it is running on,
+                         ;; only on the turn it learned it; absorb-response
+                         ;; wrote it.
+                         :model-change (:model-change branch)
                          ;; What the cache was asked, beside what it answered
                          ;; (karamazov-o4wm.1); absorb-response wrote it.
                          :prefix (:last-prefix branch)

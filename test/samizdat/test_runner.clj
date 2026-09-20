@@ -50,6 +50,8 @@
             [mycelium.manifest-test]
             [mycelium.middleware-test]
             [mycelium.orchestrate-test]
+            [mycelium.patch-test]
+            [mycelium.patch-workflow-test]
             [mycelium.propagate-keys-test]
             [mycelium.queue-integration-test]
             [mycelium.queue-test]
@@ -218,6 +220,8 @@
     mycelium.manifest-test
     mycelium.middleware-test
     mycelium.orchestrate-test
+    mycelium.patch-test
+    mycelium.patch-workflow-test
     mycelium.propagate-keys-test
     mycelium.queue-integration-test
     mycelium.queue-test

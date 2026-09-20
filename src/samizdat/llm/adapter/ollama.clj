@@ -58,6 +58,8 @@
        ;; Ollama returns a separate thinking stream on models that emit one.
        :reasoning (:thinking msg)
        :finish-reason (or (:done_reason body) "stop")
+       ;; What answered, as Ollama names it (see the openai adapter).
+       :model (some-> (:model body) str not-empty)
        :usage (when (:eval_count body)
                 {:prompt-tokens (or (:prompt_eval_count body) 0)
                  :completion-tokens (or (:eval_count body) 0)

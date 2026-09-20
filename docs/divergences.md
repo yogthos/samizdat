@@ -14,7 +14,7 @@ the upstream as an oracle, and none of them run under jolt.
 
 | library | upstream | in tree | licence |
 |---|---|---|---|
-| mycelium | [mycelium-clj/mycelium](https://github.com/mycelium-clj/mycelium), sha not recorded when vendored | `src/mycelium/` | as upstream |
+| mycelium | [mycelium-clj/mycelium](https://github.com/mycelium-clj/mycelium), sha not recorded when vendored; `patch.clj`, `fragment.clj`, `manifest.clj` and `dev.clj` synced to `b7c8c6e` (2026-09-19) | `src/mycelium/` | as upstream |
 | maestro | [yogthos/maestro](https://github.com/yogthos/maestro) `src/maestro/core.cljc` | `src/maestro/` | as upstream |
 | parinferish | [oakes/parinferish](https://github.com/oakes/parinferish) `src/parinferish/core.cljc` | `src/parinferish/` | public domain, not ours to relicense |
 | ring-chez-adapter | jolt-lang/ring-chez-adapter `@07f14d9` | `src/ring_chez/` | EPL-2.0, not ours to relicense |
@@ -98,3 +98,32 @@ started from, which upstream has no reason to offer. Pinned by
 **`jolt.time` is required before `malli.transform`.** malli's date formatter
 needs the java.time shim at namespace load, the same fix as selmer in
 `samizdat.prompt`. Load order; the namespace does not load without it.
+
+<!-- divergence: mycelium-patch-reads-the-workflow-dialect -->
+**`mycelium.patch` edits the workflow dialect too.** Upstream's checked
+edits target the self-describing manifest (`{:id :doc :schema}` per cell)
+and validate through `mycelium.manifest/validate-manifest`, which refuses a
+bare-keyword cell with "missing :id" — and every samizdat manifest names its
+cells that way, compiling through `mycelium.workflow`. `apply-ops` takes a
+`:validator` so the caller's compiler decides (`manifests/compile-loop`
+behind `manifest patch`); `add-cell` with only an id writes the bare
+keyword and `set-cell-field`/`diff-manifests` read one as its `:id`; and
+`:invariants` — samizdat's `:constraints` with prose attached — is a
+reference site for `cell-refs`, `rename-cell` and `remove-cell`. Pinned by
+`mycelium.patch-workflow-test/a-caller-supplied-validator-replaces-myceliums`.
+
+<!-- divergence: mycelium-patch-renders-vectors-element-wise -->
+**`render` syncs equal-length vectors element-wise.** Upstream's minimal
+rewrite descends into maps and reprints any other changed value whole, so a
+rename inside `:invariants` would pretty-print the vector and reflow every
+`:protects` paragraph in it. Here a vector of unchanged length syncs child by
+child, so the rename touches one keyword. Worth offering upstream
+(karamazov-h3uc). Pinned by
+`mycelium.patch-workflow-test/render-keeps-a-shipped-manifests-prose`.
+
+<!-- divergence: mycelium-patch-hash-needs-the-crypto-shim -->
+**`mycelium.patch` requires `jolt.crypto`.** `manifest-hash` uses
+`java.security.MessageDigest`, which under jolt exists only once a provider
+has registered the shim (RFC 0014); jolt-crypto is already a main dep. Load
+order, like the time shim. Pinned by
+`mycelium.patch-test/expect-hash-match-applies-test`.
