@@ -289,6 +289,13 @@
                           :reasoning (:reasoning parsed)
                           :finish-reason (:finish-reason parsed)
                           :usage (:usage parsed)
+                          ;; BOTH ids, never collapsed (karamazov-a28w):
+                          ;; what this call asked for, and what the provider
+                          ;; says answered — absent when the body does not
+                          ;; name one. Anything comparing two runs believing
+                          ;; they ran the same model reads the reported one.
+                          :model-requested (:model config)
+                          :model (:model parsed)
                           ;; The prefill this reply CONTINUES, or nil when the
                           ;; adapter did not send one. absorb reattaches the
                           ;; opener iff this is non-nil, so a provider that
@@ -348,7 +355,9 @@
 ;; --- the public surface -----------------------------------------------------
 
 (defn chat
-  "Send `messages` and return {:content :finish-reason :usage :elapsed-ms}.
+  "Send `messages` and return {:content :finish-reason :usage :elapsed-ms
+  :model-requested :model} — the last being what the provider reported ran,
+  or nil.
 
   Throws ex-info with :provider and :attempts when every attempt failed. The
   loop is bounded in attempts and each attempt is bounded in wall clock, so a

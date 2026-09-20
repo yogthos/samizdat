@@ -150,6 +150,52 @@
           (is (nil? (:prompt_tokens t)))
           (is (nil? (:cache_hit_tokens t))))))))
 
+(deftest a-turn-records-how-long-the-model-took
+  ;; karamazov-a28w. client/chat has returned :elapsed-ms since the first
+  ;; adapter and record-turn! never kept it, so every decode and prefill rate
+  ;; in AGENTS.md was measured by hand with a stopwatch on one machine. With
+  ;; the column beside completion_tokens a run's tokens per second is a
+  ;; query, and :gen-floor-tps can be checked against what the journal saw.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
+                                   :result "ok" :category :success
+                                   :usage {:completion-tokens 200}
+                                   :elapsed-ms 10000})
+      (is (= 10000 (:elapsed_ms (first (journal/turns c rid))))))
+    (testing "absent, not zero, when there was no call to time"
+      ;; The provider-error path and a replayed turn have no wall clock. A
+      ;; zero would read as an instant reply and pull every rate to infinity.
+      (let [rid (runs/start-run! c {:problem "p2"})]
+        (journal/record-turn! c rid {:branch-id "B1" :turn 1
+                                     :tool-name "__provider_error__"
+                                     :result "boom" :category :neutral})
+        (is (nil? (:elapsed_ms (first (journal/turns c rid)))))))))
+
+(deftest a-branch-notes-the-model-that-answered-when-it-learns-it
+  ;; karamazov-a28w. Once per agent, not per call: the loop marks the branch
+  ;; when the reported model is first seen or changes, and the turn row that
+  ;; carries the marker journals a :model event beside its :turn event. A
+  ;; supervisor reading the log sees what the branch actually ran on, and a
+  ;; provider substituting behind a 200 shows up as requested != reported.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
+                                   :result "ok" :category :success
+                                   :model-change {:requested "deepseek-chat"
+                                                  :reported "deepseek-v4-flash"
+                                                  :was nil}})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 2 :tool-name "verify"
+                                   :result "ok" :category :success})
+      (let [notes (journal/notes c rid :model)]
+        (is (= 1 (count notes)) "the unmarked turn notes nothing")
+        (is (= {:requested "deepseek-chat" :reported "deepseek-v4-flash" :was nil}
+               (first notes)))
+        (is (= ["B1" 1]
+               (map (first (db/fetch c ["SELECT branch_id, turn FROM events WHERE kind = 'model'"]))
+                    [:branch_id :turn]))
+            "on the branch and turn, so it joins to the turn row")))))
+
 (deftest a-run-reports-the-width-it-is-actually-running-at
   ;; beam_width is the repopulation FLOOR, not a cap: repopulate only fires
   ;; below it, and branch-out grows past it up to :max-total-branches, which is
@@ -1471,7 +1517,9 @@
     (let [rid (runs/start-run! c {:problem "p"})]
       (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "t"
                                    :result "ok" :category :success
-                                   :usage {:prompt-tokens 5000 :cache-hit-tokens 4000}
+                                   :usage {:prompt-tokens 5000 :cache-hit-tokens 4000
+                                           :completion-tokens 300}
+                                   :elapsed-ms 15000
                                    :prefix {:change :rewritten :stable-chars 100 :chars 20000}
                                    :forced-tool "done"})
       (let [t (first (journal/branch-turns c rid "B1"))]
@@ -1479,6 +1527,8 @@
         (is (= 4000 (:cache_hit_tokens t)))
         (is (= "rewritten" (:prefix_change t)))
         (is (= "done" (:forced_tool t)))
+        (is (= 300 (:completion_tokens t)) "the two that make a rate ride along (karamazov-a28w)")
+        (is (= 15000 (:elapsed_ms t)))
         (is (not (contains? t :assistant_text)) "the prose still stays out")))))
 
 ;; --- what was in flight when a turn did not finish (karamazov-o4wm.2) --------

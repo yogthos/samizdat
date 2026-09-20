@@ -341,6 +341,59 @@
         (is (= (:last-wire b1) (:last-wire b3)) "the last real render is kept")
         (is (nil? (:last-prefix b3)))))))
 
+(deftest absorb-response-records-the-model-that-answered-once-per-branch
+  ;; karamazov-a28w. Not a column on every turn — the branch carries the
+  ;; model the provider REPORTED as context, and a change marker rides for
+  ;; exactly one step so the journal step can note it: once when the branch
+  ;; first learns what it is running on, again only if the provider switches.
+  (let [b (state/new-branch {:id "B1" :problem "p"})
+        reply (fenced "verify" "{\"claim\": \"c\"}")
+        {b1 :branch} (aloop/absorb-response
+                      b {:content reply :finish-reason "stop"
+                         :model-requested "deepseek-chat" :model "deepseek-v4-flash"} 1)]
+    (testing "the first response names the model, and marks it as news"
+      (is (= "deepseek-v4-flash" (:model-reported b1)))
+      (is (= {:requested "deepseek-chat" :reported "deepseek-v4-flash" :was nil}
+             (:model-change b1))))
+    (testing "the same model again is not news"
+      (let [{b2 :branch} (aloop/absorb-response
+                          b1 {:content reply :finish-reason "stop"
+                              :model-requested "deepseek-chat" :model "deepseek-v4-flash"} 2)]
+        (is (= "deepseek-v4-flash" (:model-reported b2)))
+        (is (nil? (:model-change b2)) "the marker is cleared, not left over from turn 1")))
+    (testing "a provider switching mid-run is news again, with what it was"
+      (let [{b3 :branch} (aloop/absorb-response
+                          b1 {:content reply :finish-reason "stop"
+                              :model-requested "deepseek-chat" :model "deepseek-v4-pro"} 2)]
+        (is (= "deepseek-v4-pro" (:model-reported b3)))
+        (is (= {:requested "deepseek-chat" :reported "deepseek-v4-pro" :was "deepseek-v4-flash"}
+               (:model-change b3)))))
+    (testing "a response naming no model (a stub, a replay) changes nothing"
+      (let [{b4 :branch} (aloop/absorb-response
+                          b1 {:content reply :finish-reason "stop"} 2)]
+        (is (= "deepseek-v4-flash" (:model-reported b4)) "what was known is kept")
+        (is (nil? (:model-change b4)))))))
+
+(deftest both-journal-paths-hand-the-turn-its-wall-clock-and-the-model-marker
+  ;; karamazov-a28w. record-turn! is built by NAME from what the loop passes,
+  ;; so a key the loop does not name never reaches the row — the same gap
+  ;; that left reasoning_text empty for every run before it was threaded.
+  ;; Both paths that journal a response: the tool path and the no-call path.
+  (let [rows (atom [])
+        b (assoc (state/new-branch {:id "B1" :problem "p"})
+                 :model-change {:requested "m" :reported "m'" :was nil})
+        response {:content "x" :finish-reason "stop" :elapsed-ms 4321}]
+    (with-redefs [journal/record-turn! (fn [_ _ row] (swap! rows conj row))]
+      (aloop/journal-step! {} b 1 {:parsed {:name "verify" :args {}}
+                                  :result {:category :success :result "ok"}
+                                  :tool "verify" :said "x" :response response})
+      (aloop/no-call-step {} b 2 {:parsed nil :signals {} :said "x" :response response}))
+    (is (= 2 (count @rows)))
+    (doseq [row @rows]
+      (is (= 4321 (:elapsed-ms row)) (str (:tool-name row)))
+      (is (= {:requested "m" :reported "m'" :was nil} (:model-change row))
+          (str (:tool-name row))))))
+
 ;; --- a loop is not retried at a doubled budget (karamazov-o4wm.5) ------------
 
 (def ^:private loop-text

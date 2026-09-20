@@ -114,7 +114,8 @@
   tool that produced it knows, and a reconstruction would be guessing."
   [conn run-id {:keys [branch-id turn tool-name args result category
                        parse-error auto-repaired assistant-text reasoning-text
-                       usage policy-refusal? prefix forced-tool forced-via]}]
+                       usage policy-refusal? prefix forced-tool forced-via
+                       elapsed-ms model-change]}]
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO turns (run_id, branch_id, turn, tool_name, args, result,
@@ -124,8 +125,8 @@
                                         cache_hit_tokens, cache_miss_tokens,
                                         policy_refusal,
                                         prefix_stable_chars, prefix_chars, prefix_change,
-                                        forced_tool, forced_via)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                        forced_tool, forced_via, elapsed_ms)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (str tool-name) (js (or args {}))
                     (str result) (some-> category name) parse-error
                     (if auto-repaired 1 0)
@@ -149,7 +150,19 @@
                     (some-> forced-tool str not-empty)
                     ;; native | grammar (migration v32): which force, since
                     ;; only one of them moves the prefix.
-                    (some-> forced-via name)]))
+                    (some-> forced-via name)
+                    ;; Wall clock of the call (migration v33): nil, not 0,
+                    ;; when there was no call to time — a provider error, a
+                    ;; replay — since a 0 reads as an instant reply.
+                    (some-> elapsed-ms long)]))
+  ;; WHAT THE BRANCH IS RUNNING ON, on the turn it learned it
+  ;; (karamazov-a28w). The loop marks the branch when the provider-reported
+  ;; model is first seen or changes, so this is once per agent rather than a
+  ;; column on every row; requested != reported is a provider substituting
+  ;; behind a 200, which is otherwise invisible.
+  (when model-change
+    (emit! conn run-id :model
+           {:branch-id branch-id :turn turn :data model-change}))
   ;; WHERE history changed, beside the row that says it did
   ;; (karamazov-pdes): the message index, its role, its size before and
   ;; after. Only for a rewrite — the tail moving is the normal turn.
@@ -392,15 +405,16 @@
   62KB of results. The branch panel used to fetch all of it, spend over two
   minutes doing so, and exceed the client's socket timeout — so the branch
   never rendered at all. The token columns and the prefix identity ride
-  along (karamazov-pdes): four integers and two short strings a row are not
+  along (karamazov-pdes): a few integers and two short strings a row are not
   the bulk, and they are how a reader sees the cache serve, or stop
-  serving, at the turn it happened."
+  serving, at the turn it happened. completion_tokens and elapsed_ms are the
+  two that make a generation rate (karamazov-a28w)."
   [conn run-id branch-id]
   (db/fetch conn
             ["SELECT id, run_id, branch_id, turn, tool_name, args, result,
                      category, parse_error, auto_repaired, created_at,
-                     prompt_tokens, cache_hit_tokens, prefix_change, forced_tool,
-                     forced_via
+                     prompt_tokens, cache_hit_tokens, completion_tokens, elapsed_ms,
+                     prefix_change, forced_tool, forced_via
                 FROM turns
                WHERE run_id = ? AND branch_id = ?
                ORDER BY turn, id"

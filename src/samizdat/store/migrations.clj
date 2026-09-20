@@ -821,7 +821,20 @@
   before this column, which was native or nothing."
   ["ALTER TABLE turns ADD COLUMN forced_via TEXT"])
 
+(def v33
+  "HOW LONG the model took, beside what it produced (karamazov-a28w).
+
+  client/chat has returned :elapsed-ms since the first adapter and the
+  journal never kept it, so every decode and prefill rate the project quotes
+  (AGENTS.md: 20 tok/s short, 14-17 long, ~6 each with two running) was a
+  stopwatch on one machine. With the column beside completion_tokens the
+  rate is a query, per turn, per branch, per run — and :gen-floor-tps, which
+  sizes every read timeout, can be checked against what the journal saw
+  rather than set from memory. NULL when there was no call to time: the
+  provider-error row, a replay, every row from before this column."
+  ["ALTER TABLE turns ADD COLUMN elapsed_ms INTEGER"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30 v31 v32])
+   v25 v26 v27 v28 v29 v30 v31 v32 v33])
