@@ -102,7 +102,12 @@ manifests/beam.edn         the ROUND    advance · score · cull · settle ·
 redirecting every edge that would return to `:start` or reach a `:loop/finish`
 node into `:end`. One file therefore serves both drivers and an edit reaches
 both — rather than two files that must be kept in agreement, which is how the
-two drivers drifted apart before karamazov-ioo.20.
+two drivers drifted apart before karamazov-ioo.20. What surrounds the turn is
+still per driver, so the two are pinned the way BendRT pins its executors: one
+replayed case under `workflow/run!` and `beam/run!` at width 1 must write the
+same journal row for row (`workflow-test/both-drivers-write-one-journal-for-one-case`,
+karamazov-viht.3), with the beam's scheduler-only `:loop-workflow` keys the one
+named difference.
 
 `iterating?` classifies a manifest: a pass is one **turn** the beam may schedule
 against siblings iff the slice contains `:llm/infer` **and** an edge returns to

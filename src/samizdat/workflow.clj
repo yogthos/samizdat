@@ -382,6 +382,15 @@
              ;; development against the live image.
              :repl-session (repl/new-session)
              :max-turns max-turns}]
+    ;; Which loop drove this run, durably: an agent reading a surprising run
+    ;; back needs to know which version of itself produced it. BEFORE the
+    ;; branch opens, as the beam writes it: the note is about the run, and
+    ;; the two drivers' journals are pinned row for row on one replayed case
+    ;; (workflow-test/both-drivers-write-one-journal-for-one-case), which is
+    ;; how this ordering was found to differ (karamazov-viht.3).
+    (journal/note! conn run-id :loop-workflow
+                   {:data {:name loop-nm :version version
+                           :iterating? (iterating? definition)}})
     (runs/open-branch! conn run-id {:branch-id "B1"
                                     :prompt-suffix (workflow-prompt definition)})
     ;; The window findings are evaluated over.
@@ -397,10 +406,6 @@
     ;; drive — a nested reviewer loop being separately supervised was never
     ;; the design, and the outer run's stream watches the whole thing anyway.
 
-    ;; Which loop drove this run, durably: an agent reading a surprising run
-    ;; back needs to know which version of itself produced it.
-    (journal/note! conn run-id :loop-workflow
-                   {:data {:name loop-nm :version version}})
     (let [stop-watch (constantly nil)]
      (try
       (let [data (note-schema-warnings!
