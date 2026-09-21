@@ -216,6 +216,8 @@ workflow/compile-loop
   ├─ register-subworkflows!          nested manifests become workflow-cells
   └─ myc/pre-compile                 structure · dispatch coverage ·
                                      reachability · constraints
+  └─ unguarded-cycles                warning: a cycle whose exits read
+                                     no key its cells write
 ```
 
 ## Invariants
@@ -227,6 +229,7 @@ workflow/compile-loop
 | A rename reaches every reference, `:invariants` included. | `patch/cell-refs` is the one list rename rewrites and remove checks; `patch-workflow-test/rename-rewrites-invariants-like-constraints`. |
 | A cell edit that breaks the loop never goes live. | `propose-cell!`'s validate + soak. |
 | A cell that declares no effects is rejected. | `mutation/validate` reads mycelium's `:undeclared-effects` warning. |
+| Every shipped cycle can change its own exit. | `manifests/unguarded-cycles`: a cycle is guarded when a dispatch on it with an edge out reads a key a cell on it promises in `:output`; otherwise `compile-definition` carries an `:unguarded-cycle` warning and `manifest save`/`patch` render it (karamazov-viht.4, the manifest dialect's descent test — a warning, never a refusal, since termination stays dynamic). `manifest-test/no-shipped-manifest-has-an-unguarded-cycle`. |
 | A cell's mark covers what its body reaches. | `mutation/unearned-marks` before `load-string` in `propose-cell!` and after reload in `apply-cell-edit!`; `mutation-test/a-cell-whose-mark-its-body-does-not-earn-is-refused-before-it-is-installed`; `cells-test/every-shipped-cell-earns-its-mark-against-the-shipped-catalog` pins the shipped cells against the shipped catalog. |
 | Declared constraints are compile-time errors. | mycelium `:constraints`; `beam-test` asserts a violating edit is refused. |
 | Every registered cell is reachable from some manifest. | `beam-test/every-shipped-cell-is-reachable-from-some-manifest`. |

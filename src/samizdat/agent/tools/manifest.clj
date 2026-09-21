@@ -127,6 +127,25 @@
                                        (for [{:keys [cell label form]} opaque]
                                          (str "  " cell " — " label " " (form-head form))))})))))))
 
+(defn- cycle-report
+  "Every cycle of the manifest that cannot change its own exit — no
+  dispatch on it with an edge out reads a key a cell on it promises
+  (manifests/unguarded-cycles) — rendered for the author, or nil. A warning
+  and not a refusal: the compile carried it as :unguarded-cycle and stored
+  the manifest anyway. Rendered on save and patch, after the compile that
+  loaded the cells whose :output it reads; the log line the compile writes
+  is not where the author of an edit is looking (karamazov-viht.4)."
+  [edn-text]
+  (when-let [cycles (seq (manifests/unguarded-cycles (manifests/read-definition edn-text)))]
+    (str "\n\n"
+         (prompt/render
+          "cycle-unguarded"
+          {:cycles (str/join "\n"
+                             (for [{:keys [cycle reads produces]} cycles]
+                               (str "  " (str/join " → " (map str cycle)) " → " (first cycle)
+                                    " — its exits read " (pr-str (vec (sort reads)))
+                                    ", its cells promise " (pr-str (vec (sort produces))))))}))))
+
 (def ^:private usage
   "Actions: list, show {name, version?}, save {name, edn | file, rationale}, patch {name, ops, rationale, expect-version?}, refs {name, cell}, diff {name, from?, to?}. A manifest is the loop as data — a :cells map, :edges, and dispatch patterns. Save and patch validate by compiling before they store; the run that uses it is chosen by config :run :loop. Show, save and patch report where only branch order decides and name every dispatch entry written as a form, which the analysis cannot read. Prefer patch to save for an edit: it names the change and keeps the rest of the file, comments included. rationale: one sentence on why — the history shows it to the next supervisor deciding whether your change stays.")
 
@@ -321,7 +340,8 @@
                                   "\n\n" usage))
               (let [v (us/save! conn :manifest name edn-text "project" why)]
                 (base/ok branch
-                         (str (saved-line name v) (dispatch-report edn-text))
+                         (str (saved-line name v) (dispatch-report edn-text)
+                              (cycle-report edn-text))
                          :progress? true)))))
 
         "patch"
@@ -360,7 +380,8 @@
                       (base/ok branch
                                (str (saved-line name v)
                                     "\n\n" (format-diff (patch/diff-manifests old new) old new)
-                                    (dispatch-report text))
+                                    (dispatch-report text)
+                                    (cycle-report text))
                                :progress? true)))))
               (base/malformed branch (str "No manifest " name ".")))))
 

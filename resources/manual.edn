@@ -79,6 +79,8 @@
     :summary "A checked manifest edit as data: ops (rename-cell, add-cell, remove-cell, set-edge, delete-edge, set-cell-field, set-dispatches) applied to the manifest as written, every reference to a renamed node rewritten (edges, dispatches, :invariants), the whole batch compiled once at the end so a node can be added and wired in one call. `manifest patch` is this over the stored text; `render` writes the result back over the original so comments survive; `cell-refs` and `diff-manifests` are behind `manifest refs` and `manifest diff`."}
    {:name samizdat.workflow/catalog
     :summary "Every workflow available to select or adapt, with its description."}
+   {:name samizdat.manifests/unguarded-cycles
+    :summary "Every cycle in a manifest that cannot change its own exit — no dispatch on it with an edge out reads a key a cell on it promises in :output — with what its exits read and what its cells write. A compile warning (:unguarded-cycle) and a paragraph on manifest save/patch, never a refusal: the shipped manifests all pass, and termination itself stays with max-turns and the deadlines."}
    {:name samizdat.manifests/preconditions
     :summary "Every node's preconditions as one report — the ctx keys and data keys it requires, what holds on every path in, and what is unsatisfied with the path that fails — before an edit rather than as the refusal after."}
    {:name samizdat.workflow/compile-loop

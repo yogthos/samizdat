@@ -46,7 +46,7 @@
   ["acceptance-failed" "acceptance-judge" "architect" "ask-tool" "assembly" "branch-cap"
    "branch-out" "cell-effects" "cell-shadowed" "cell-tool" "clojure-syntax"
    "compaction-marker" "compaction-summary" "context-empty" "critic"
-   "critic-system" "crossover" "cull-reprieve" "digest"
+   "critic-system" "crossover" "cull-reprieve" "cycle-unguarded" "digest"
    "design-brief" "digest-tool" "directive-refused" "directive-rejected" "dispatch-opaque" "dispatch-order"
    "dispatch-refused" "drift" "emergency-review" "eval-calls-main"
    "eval-error" "eval-image" "eval-syntax" "eval-terminates-process"

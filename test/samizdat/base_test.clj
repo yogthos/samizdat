@@ -328,6 +328,16 @@
                        — an agent able to raise its own soak timeout can hang
                        the process with one cell and one edit."}}
 
+   "src/samizdat/manifests.clj"
+   {:threshold {500 "`cycle-cap`: where the loop-guard analysis stops
+                     enumerating simple cycles (karamazov-viht.4). The same
+                     reasoning as mutation.clj's soak timeout: an
+                     agent-authored manifest compiles at runtime, through the
+                     protocol that validates the agent's edits, and a bound on
+                     that compile must not be reachable from inside it — a
+                     dense enough graph would otherwise turn a save into a
+                     compile that never returns."}}
+
    "src/samizdat/repl.clj"
    {:threshold {10000 "The default eval timeout, as mutation.clj's soak:
                        in-process eval is the substrate the mutation protocol
