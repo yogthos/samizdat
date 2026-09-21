@@ -428,6 +428,16 @@
    "src/samizdat/store/db.clj"
    {:threshold {120 "Busy-timeout clamp for SQLite."}}
 
+   "src/samizdat/agent/webfetch.clj"
+   {:threshold
+    {4 "An IPv4 address has four parts — the address FORMAT the confinement
+        parses (inet_aton's grammar), which is what lets it refuse
+        `2130706433` as 127.0.0.1. A guard the agent could retune is not a
+        guard (karamazov-luqc.1); the redirect budget, which IS policy, lives
+        in gates.edn :webfetch."
+     255 "The largest value of one byte of that address."
+     8 "Bits in one byte of that address."}}
+
    "src/samizdat/store/knowledge.clj"
    {:threshold {5 "Id-collision retry count. A UNIQUE collision is
                    astronomically unlikely twice; five is a loop bound, not a

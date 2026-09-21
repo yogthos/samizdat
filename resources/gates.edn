@@ -1692,12 +1692,20 @@
  {:value {:timeout-ms 30000
           :max-timeout-ms 120000
           :max-chars 60000
+          :max-redirects 5
           :user-agent "samizdat"}
   :kind :threshold :capability-tunable? false
-  :provenance ["karamazov-fn68.2" "opencode webfetch.ts"]
+  :provenance ["karamazov-fn68.2" "opencode webfetch.ts" "karamazov-luqc.1"]
   :doc "What one `webfetch` may spend. opencode's numbers, converted to this
         harness's units: 30 s default and 120 s ceiling on the request, and a
         cap on what comes back.
+
+        :max-redirects is how many hops the fetch follows BY HAND, each one
+        checked against the confinement before it is requested — the client
+        is told not to follow on its own, because a client that follows
+        presents only the last response and the check on it passes whatever
+        the first URL was (karamazov-luqc.1). Past the cap the chain is
+        reported, not the page.
 
         :max-chars is in CHARACTERS rather than opencode's 5 MB of bytes,
         because the reader is a context window and not a disk — 60k characters
