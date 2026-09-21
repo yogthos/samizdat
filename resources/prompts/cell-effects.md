@@ -1,0 +1,3 @@
+Nothing was saved. {% for c in cells %}`{{c.id}}` is marked {% if c.pure %}`:pure true`{% else %}`:effects [{{c.declared}}]`{% endif %}, and its body reaches what that mark does not cover: {{c.missing}}.
+{% endfor %}
+The mark is load-bearing, not documentation: the dry run that validates an edit stubs every cell by it, so a `:pure` cell that does IO runs that IO inside the dry run, and an `:effects` cell missing one runs as if that effect were not in it. Say what the body does — `:effects [:fs :net :db :proc]`, whichever apply — or take the call out of the cell. The catalog of what implies which effect is `:effect-symbols` in the gates policy, and it can be edited if a call is being read wrong.

@@ -149,11 +149,23 @@
  ;; cap as error code 1308 with a Chinese 使用上限 message, and some gateways
  ;; phrase it "per-day".
  ;;
+ ;; The bare numbers are BigModel's business codes, which ride in the error
+ ;; body with a message that names nothing in the English list. The set is
+ ;; the vendor's own — ZCode (Zhipu's client, karamazov-luqc.3) keeps it as
+ ;; the codes a workflow stops on to wait for quota rather than retry: 1005
+ ;; 1308 1310 1313 1316-1321 2056 20097 — and its OpenAI/Anthropic-family
+ ;; strings for the same wall (credit_balance_exhausted, the spend_limit and
+ ;; usage_limit families). What that table marks RETRYABLE is deliberately
+ ;; NOT here: 1302/1303/1305 are per-minute limits and 3008-3010 are
+ ;; concurrency caps, both of which clear on their own and are the retry
+ ;; ladder's and the rate-limit latch's case. Unmeasured on this side; the
+ ;; codes are bounded on both ends so a token count cannot match them.
+ ;;
  ;; Here rather than in the adapter because it is a fact about PROVIDERS, and
  ;; providers change their error text without asking. A user hitting a new
  ;; gateway's wording should be able to add it and keep working, not wait for
  ;; a release. Kept as a string because EDN has no regex literal.
- "(?i)insufficient|quota|billing|exceeded your current|payment|per-day|daily limit|1308|使用上限|每日"
+ "(?i)insufficient|quota|billing|exceeded your current|payment|per-day|daily limit|credit_balance_exhausted|spend_limit_exceeded|usage_limit_exceeded|使用上限|每日|\\b(1005|1308|1310|1313|131[6-9]|132[01]|2056|20097)\\b"
 
  :tool-version
  ;; A tool name followed by its version. Stripped BEFORE tokenizing,

@@ -54,7 +54,7 @@
         completeness and a review of the run's diff. COMPLETE with no critical
         finding ships; anything else re-activates the branch, injects one
         [critic] note, and re-enters. Bounded and fail-open."
-   :effects [:net :db]
+   :effects [:net :db :proc]
    :requires [:conn :git-baseline :llm-adapter :llm-config :root :run-id]
    ;; :critic/attempts is read before it is ever written — the first pass
    ;; defaults it to 0 — so it is optional coming IN and produced going out on

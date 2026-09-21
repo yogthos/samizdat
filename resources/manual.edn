@@ -72,11 +72,15 @@
    {:name samizdat.cells/load-cells!
     :summary "Reload every cell from resources. Transactional — a broken edit rolls the registry back."}
    {:name samizdat.mutation/propose-cell!
-    :summary "The safety around a cell edit: install, validate against every manifest, soak, commit a project version or roll back."}
+    :summary "The safety around a cell edit: refuse a mark the body does not earn, install, validate against every manifest, soak, commit a project version or roll back."}
+   {:name samizdat.cells/effect-problems
+    :summary "Whether each cell's :pure / :effects mark covers what its body reaches, by the catalog in gates.edn :effect-symbols — a :pure cell that calls slurp, an :effects [:fs] cell that calls the provider. The mark is what the soak stubs by, so it is checked against the source before the edit is installed. What the catalog does not name is not a hit; extend it when a call does IO it does not know."}
    {:name mycelium.patch/apply-ops
     :summary "A checked manifest edit as data: ops (rename-cell, add-cell, remove-cell, set-edge, delete-edge, set-cell-field, set-dispatches) applied to the manifest as written, every reference to a renamed node rewritten (edges, dispatches, :invariants), the whole batch compiled once at the end so a node can be added and wired in one call. `manifest patch` is this over the stored text; `render` writes the result back over the original so comments survive; `cell-refs` and `diff-manifests` are behind `manifest refs` and `manifest diff`."}
    {:name samizdat.workflow/catalog
     :summary "Every workflow available to select or adapt, with its description."}
+   {:name samizdat.manifests/unguarded-cycles
+    :summary "Every cycle in a manifest that cannot change its own exit — no dispatch on it with an edge out reads a key a cell on it promises in :output — with what its exits read and what its cells write. A compile warning (:unguarded-cycle) and a paragraph on manifest save/patch, never a refusal: the shipped manifests all pass, and termination itself stays with max-turns and the deadlines."}
    {:name samizdat.manifests/preconditions
     :summary "Every node's preconditions as one report — the ctx keys and data keys it requires, what holds on every path in, and what is unsatisfied with the path that fails — before an edit rather than as the refusal after."}
    {:name samizdat.workflow/compile-loop
@@ -121,7 +125,9 @@
    {:name samizdat.symbolic/subsumes?
     :summary "Whether every term one pattern matches the other matches too — the specificity order the dispatch check uses."}
    {:name samizdat.symbolic.dispatch/analyse
-    :summary "A dispatch table's shadowed branches (refused at save) and order-dependent pairs (reported), over the order that runs."}
+    :summary "A dispatch table's shadowed branches (refused at save), order-dependent pairs (reported), and :opaque entries — the (fn [d] ...) forms the analysis cannot read, listed so a clean report means every entry was checked — over the order that runs."}
+   {:name samizdat.symbolic.dispatch/report
+    :summary "analyse over a whole :dispatches map, each finding carrying its cell: {:order-dependent :opaque}. What manifest show and save render as their two report paragraphs; neither is a refusal."}
    {:name samizdat.symbolic/widest-beam
     :summary "The widest beam that fits one turn deadline against a provider serving N calls at a time, and the run's token budget at the turn cap, in core.logic.fd; gates.edn :beam-contention and :run :token-budget feed it."}
    {:name samizdat.repl.guard/rules
@@ -323,7 +329,9 @@
   [{:name samizdat.replay/record
     :summary "Freeze a finished run as a replay case: the model's side of the conversation, per branch, in order."}
    {:name samizdat.replay/complete-fn
-    :summary "Serve a recorded case back in place of the provider, so the same loop runs on fixed input and costs nothing."}
+    :summary "Serve a recorded case back in place of the provider, so the same loop runs on fixed input and costs nothing; names the first turn at which the tape stopped being the one the reply answered."}
+   {:name samizdat.replay/tape-digest
+    :summary "What a tape would send, digested the way a live turn's request_hash is — so a recorded reply and a candidate's render are comparable."}
    {:name samizdat.battery/check
     :summary "Run a case's named expectations against a finished run — per target, so a failure says WHICH behaviour broke."}
    {:name samizdat.battery/vocabulary

@@ -291,7 +291,7 @@
         deterministic checks, then an LLM verdict on the answer + the run's diff
         — but WITHOUT the single-branch critic's branch surgery. Sets
         :critic/decision :ship or :revise. Fail-open (a judge that errors ships)."
-   :effects [:net :db]
+   :effects [:net :db :fs :proc]
    :requires [:conn :git-baseline :root :run-id]
    :input  [:map [:branch :map]]
    ;; :critique/findings, not :critic/findings — the decision key is
@@ -504,7 +504,7 @@
         test run) when gate 1 already failed — a hollow diff or a revise
         verdict means the loop is going back anyway. Neither configured -> not
         applicable, passes."
-   :effects [:proc :net :db]
+   :effects [:proc :net :db :fs]
    :requires [:config :conn :git-baseline :root :run-id]
    ;; Reads gate 1's verdicts to decide whether to pay for a test run at all,
    ;; so both are required — a manifest wiring verify without a review and a
@@ -620,7 +620,7 @@
         into a hard runaway guard (:run :max-revisions-hard) as an unattended
         safety net, but by default there is none. Abandoning is honest, not a
         hollow ship: the run reports it did not solve the task."
-   :effects [:db]
+   :effects [:db :proc]
    :requires [:config :conn :run-id]
    :input  [:map [:branch :map]
             [:review/decision :keyword] [:critic/decision :keyword]

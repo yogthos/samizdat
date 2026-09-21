@@ -144,6 +144,7 @@
             [samizdat.roles-test]
             [samizdat.sandbox-test]
             [samizdat.websearch-test]
+            [samizdat.webfetch-test]
             [samizdat.toolerr-test]
             [samizdat.handoff-test]
             [samizdat.repetition-test]
@@ -335,6 +336,7 @@
     samizdat.roles-test
     samizdat.sandbox-test
     samizdat.websearch-test
+    samizdat.webfetch-test
     samizdat.toolerr-test
     samizdat.handoff-test
     samizdat.repetition-test

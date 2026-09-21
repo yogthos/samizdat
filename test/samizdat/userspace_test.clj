@@ -596,6 +596,40 @@
               "unedited tables list too — the whole surface is discoverable")))
       (finally (us/unbind!) (gates/reload-config!) (db/close c)))))
 
+(deftest saving-and-showing-gates-say-the-when-forms-were-compiled-not-analysed
+  ;; Every gate's :when is an evaluated form (gates/compile-form), and a save
+  ;; proves only that it compiles — nothing checks two gates for overlap or
+  ;; one shadowing another the way a manifest's dispatch patterns are
+  ;; checked. That was known (RFC-014 chose patterns for the procedural
+  ;; graph because of it) and said nowhere the author of an edit would read
+  ;; it. The one escape hatch is disclosed at the two moments the table is
+  ;; in front of them: save and show (karamazov-viht.2).
+  (let [c (db/open! ":memory:")]
+    (try
+      (us/bind! c)
+      (gates/reload-config!)
+      (let [g (us/edn-body! :policy "gates")
+            n (count (:gates g))
+            saved (tools/run-tool {:tool-name "policy" :branch {:id "B1"}
+                                   :args {:action "save" :name "gates"
+                                          :edn (pr-str g)
+                                          :rationale "unchanged, to read the report"}})
+            shown (tools/run-tool {:tool-name "policy" :branch {:id "B1"}
+                                   :args {:action "show" :name "gates"}})]
+        (is (pos? n))
+        (is (= :neutral (:category saved)) (str (:result saved)))
+        (doseq [r [saved shown]]
+          (is (str/includes? (str (:result r)) (str n " gates"))
+              "the count of :when forms the compile covered")
+          (is (str/includes? (str (:result r)) "not analysed")
+              "and that compiling is all that happened to them"))
+        ;; A table with no :when forms — phases — says nothing of the kind:
+        ;; the line is a disclosure, not boilerplate.
+        (let [other (tools/run-tool {:tool-name "policy" :branch {:id "B1"}
+                                     :args {:action "show" :name "phases"}})]
+          (is (not (str/includes? (str (:result other)) "not analysed")))))
+      (finally (us/unbind!) (gates/reload-config!) (db/close c)))))
+
 (deftest the-agent-can-save-its-own-tui-layout
   ;; resources/tui.edn says it "seeds version 1 of the tui policy table",
   ;; samizdat.tui.layout names the stored row as how the AGENT rearranges its

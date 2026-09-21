@@ -190,13 +190,16 @@
    ;; URL itself comes from the model. That is the whole risk — without a
    ;; check it reaches loopback, link-local (169.254.169.254 is the cloud
    ;; metadata endpoint) or anything on the private network the harness sits
-   ;; in. webfetch/allowed? refuses those and re-checks the redirect, because
-   ;; a public URL that 302s inward defeats a check made only before the
-   ;; request. The response is third-party text entering model space and
+   ;; in. webfetch/allowed? refuses those — judging an address literal by its
+   ;; value, so `2130706433` is 127.0.0.1 — and the fetch follows redirects
+   ;; by hand, checking every hop before it is requested, because a public
+   ;; URL that 302s inward defeats a check made only before the request
+   ;; (webfetch-test pins both; karamazov-luqc.1 is the version that did
+   ;; neither). The response is third-party text entering model space and
    ;; crosses the redaction boundary like any other tool result; nothing
    ;; renders or executes it.
    "webfetch"    {:reach :spawns-process
-                  :also "outbound HTTP with a model-supplied URL; webfetch/allowed? refuses loopback, link-local and RFC1918, and re-checks the redirect target"}
+                  :also "outbound HTTP with a model-supplied URL; webfetch/allowed? refuses loopback, link-local, RFC1918 and every spelling that resolves there, and every redirect hop is checked before it is followed"}
    "doc"         {:reach :in-process     :also "reads the live image, same as eval"}
    "complete"    {:reach :in-process     :also "reads the live image, same as eval"}
 

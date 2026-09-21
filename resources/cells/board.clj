@@ -304,7 +304,7 @@
         see what THIS task changed. Verdict :empty when the board is clear, when
         everything left is a task this run already gave up on, or when the
         runaway guard trips."
-   :effects [:db]
+   :effects [:db :fs :proc]
    :requires [:conn :run-id :root]
    ;; Everything it reads is its own bookkeeping from an earlier lap, so all
    ;; of it is optional: the first pass through the board has none of it.
@@ -854,7 +854,7 @@
         again; bounded by :board-review-attempts, and FAIL-OPEN past it (a plan
         the critic keeps refusing must not hold the run open forever). A broken
         critic closes the epic rather than wedging."
-   :effects [:net :db]
+   :effects [:net :db :fs :proc]
    :requires [:conn :run-id :root]
    :input  [:map [:board/task {:optional true} :any]]
    :output [:map [:board/epic-decision :keyword]]}
@@ -969,7 +969,7 @@
         it finishes or gives up. On a re-attempt the critic's findings are
         appended to the task's problem, so the owner works the same task again
         knowing what was wrong with the last try."
-   :effects [:net :db]
+   :effects [:net :db :fs]
    :requires [:config :conn :run-id]
    ;; The claimed task, and OPTIONAL only because the two board manifests
    ;; guarantee it by different means. board.edn edges :next -> :work, so the
@@ -1088,7 +1088,7 @@
         sends it back to the same owner with the findings. A task whose owner
         did not finish is never closed — it goes back to the board open, which
         is the honest record of what is left."
-   :effects [:net :db]
+   :effects [:net :db :fs :proc]
    :requires [:conn :root :run-id :llm-adapter :llm-config]
    ;; :board/outcome and :board/baseline are what make this a review OF a
    ;; change rather than of a claim — the diff is taken against the baseline

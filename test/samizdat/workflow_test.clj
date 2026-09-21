@@ -34,6 +34,7 @@
             [samizdat.agent.state :as state]
             [samizdat.llm.client :as llm]
             [samizdat.manifests :as manifests]
+            [samizdat.replay :as replay]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
@@ -166,6 +167,62 @@
                           first)]
             (is (some? note)
                 "a beam run journals its :loop-workflow provenance")))))))
+
+(deftest both-drivers-write-one-journal-for-one-case
+  ;; BendRT's checksum discipline: one C text runs on one thread, sixteen
+  ;; threads and the GPU, and the harness checks that all three print the
+  ;; same bytes — for an unverified runtime that IS the correctness argument.
+  ;; samizdat has one manifest and two drivers, one composition of a turn
+  ;; (run-turn) so they cannot drift THERE, and they drifted around it once
+  ;; (karamazov-ioo.20). The two tests above run each driver on one script
+  ;; and read each journal alone; nothing diffed them. This replays ONE case
+  ;; under both, at width 1, and pins the journals row for row with ids and
+  ;; clocks normalised out. Found on the first run: the drivers wrote
+  ;; :loop-workflow and :branch-opened in opposite orders (karamazov-viht.3).
+  ;;
+  ;; The beam's :loop-workflow note carries how the loop was CHOSEN and the
+  ;; width it was asked for — scheduler facts the single-branch driver has no
+  ;; counterpart to — and they are named here as the one allowed difference.
+  ;; A row kind one driver writes and the other does not would be the next
+  ;; finding; today there is none, and the empty set says so.
+  (let [beam-only-kinds #{}
+        beam-only-loop-workflow-keys #{"chosen-by" "beam-width" "requested-beam-width"}
+        say (fn [m] (str "```tool-call\n" (json/write-str m) "\n```"))
+        case- {:problem "solve the problem"
+               :replies {"B1" [(say {:name "thesis" :args {:goal "solve the problem"
+                                                            :technique "direct"}})
+                               (say {:name "done" :args {:answer "the problem is solved directly"}})]}}
+        events (fn [c rid]
+                 (for [e (journal/events-since c rid 0)
+                       :when (not (beam-only-kinds (:kind e)))
+                       :let [data (some-> (:data e) json/read-str)]]
+                   [(:kind e) (:branch_id e)
+                    (if (= "loop-workflow" (:kind e))
+                      (apply dissoc data beam-only-loop-workflow-keys)
+                      data)]))
+        turns (fn [c rid]
+                (for [t (journal/branch-turns c rid "B1")]
+                  (dissoc t :id :run_id :created_at)))
+        run-row (fn [c rid]
+                  (dissoc (runs/get-run c rid) :id :created_at :started_at :ended_at :finished_at :updated_at))
+        drive (fn [driver c]
+                (driver {:conn c :config {:run {:beam-width 1}} :beam-width 1
+                         :llm-adapter :a :llm-config {:max-tokens 16384}
+                         :problem "solve the problem" :max-turns 10
+                         :complete (replay/case-complete-fn case-)}))]
+    (with-redefs [llm/chat (fn [& _] (throw (ex-info "the provider must not be called" {})))]
+      (with-db [c1]
+        (with-db [c2]
+          (let [r1 (drive workflow/run! c1)
+                r2 (drive beam/run! c2)]
+            (is (= :completed (:status r1) (:status r2)))
+            (is (= (:answer r1) (:answer r2)))
+            (is (= (turns c1 (:run-id r1)) (turns c2 (:run-id r2)))
+                "the same turns, tool by tool, result by result")
+            (is (= (events c1 (:run-id r1)) (events c2 (:run-id r2)))
+                "the same journal, row for row and in order")
+            (is (= (run-row c1 (:run-id r1)) (run-row c2 (:run-id r2)))
+                "and the same run row")))))))
 
 (deftest a-non-iterating-manifest-forces-beam-width-1
   ;; team/feature/decompose are whole-run workflows: one pass is the branch's

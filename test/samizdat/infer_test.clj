@@ -253,6 +253,24 @@
 
 ;; --- prefix identity: what the cache could have kept ------------------------
 
+(deftest a-request-digest-names-one-request
+  ;; One number for the whole request, so a replayed case can say whether the
+  ;; tape a candidate renders at turn k is the tape the recorded reply
+  ;; answered (karamazov-luqc.2). Over the wire fingerprint, so it measures
+  ;; what the provider was sent; stable across processes, because it is
+  ;; written to the journal and read back by a later one.
+  (let [fp (fn [& contents]
+             (infer/wire-fingerprint (map (fn [c] {:role "user" :content c}) contents)))]
+    (is (= (infer/request-digest (fp "sys" "problem"))
+           (infer/request-digest (fp "sys" "problem"))))
+    (is (not= (infer/request-digest (fp "sys" "problem"))
+              (infer/request-digest (fp "sys" "problem!")))
+        "one character of one message is a different request")
+    (is (not= (infer/request-digest (fp "sys" "problem"))
+              (infer/request-digest (fp "sys" "problem" "more")))
+        "one more message is a different request")
+    (is (integer? (infer/request-digest (fp "x"))) "a number the journal can hold")))
+
 (deftest prefix-stats-classifies-what-changed-since-the-last-render
   ;; A cache miss has three shapes and the journal could not tell them apart
   ;; (karamazov-o4wm.1): a branch's first call, the normal turn where only

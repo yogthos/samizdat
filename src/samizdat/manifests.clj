@@ -335,6 +335,91 @@
                         :missing missing-keys :path path}))]
     {:nodes nodes :unsatisfied (vec unsatisfied)}))
 
+;; --- loop guards -------------------------------------------------------------
+;;
+;; BendTT checks recursion with one syntactic descent test — each self-call
+;; must shrink a column — chosen because it is one pass and an auditor can
+;; read it in an afternoon. This is the manifest dialect's counterpart
+;; (karamazov-viht.4). mycelium already refuses a cycle with no way out (no
+;; path to :end); the next question is whether the way out can ever be
+;; TAKEN, and the syntactic version of that is: some dispatch on the cycle,
+;; one with an edge that leaves it, reads a key that a cell on the cycle
+;; promises in its :output. Then the loop recomputes its own exit condition
+;; each time round. A cycle whose exits read only keys nothing on it writes
+;; was decided before it was entered — it leaves at once or never — and that
+;; is reported as a warning, on the same channel as :undeclared-effects,
+;; never a refusal: termination itself stays dynamic (max-turns, the turn
+;; deadline, the soak's budget), and the shipped manifests all pass.
+
+(def ^:private cycle-cap
+  "Simple cycles can multiply in a dense graph. A manifest is a dozen sparse
+  nodes and the shipped ones have one or two, but an agent-authored manifest
+  compiles at runtime and a compile that never finishes is worse than an
+  analysis that stops early and says so."
+  500)
+
+(defn- simple-cycles
+  "Every simple cycle in `adj` ({node #{node}}) as a vector of nodes, each
+  once, rooted at its first node in `order`: a DFS from each node through
+  nodes later in the order, so a cycle is found only from its earliest
+  member. Stops at `cycle-cap`."
+  [adj]
+  (let [order (vec (sort-by str (keys adj)))
+        rank (zipmap order (range))]
+    (loop [roots order found []]
+      (if (or (empty? roots) (>= (count found) cycle-cap))
+        found
+        (let [root (first roots)
+              r (rank root)
+              cycles (loop [stack [[root [root] #{root}]] out []]
+                       (if (or (empty? stack) (>= (+ (count found) (count out)) cycle-cap))
+                         out
+                         (let [[node path on-path] (peek stack)
+                               stack (pop stack)
+                               nexts (get adj node #{})
+                               out (if (contains? nexts root) (conj out path) out)
+                               pushes (for [n nexts
+                                            :when (and (contains? rank n)
+                                                       (> (rank n) r)
+                                                       (not (on-path n)))]
+                                        [n (conj path n) (conj on-path n)])]
+                           (recur (into stack pushes) out))))]
+          (recur (rest roots) (into found cycles)))))))
+
+(defn- pattern-reads
+  "The top-level keys a dispatch table's pattern entries read. A form or a
+  function is opaque here as everywhere (the manifest tool says so) and
+  reads nothing; `_` and a bare variable read nothing either."
+  [table]
+  (into #{} (for [[_ spec] table :when (map? spec) k (keys spec)] k)))
+
+(defn unguarded-cycles
+  "Every simple cycle of `definition` with no guarding dispatch, as
+  [{:cycle [node …] :reads #{key …} :produces #{key …}} …]: `:reads` is
+  what the cycle's exit dispatches look at and `:produces` what its cells
+  promise on every transition (`guaranteed-output-keys`), so a reader sees
+  both halves of the mismatch. [] when every cycle is guarded, which is what
+  the shipped manifests are pinned to. Reads the cell registry for the
+  :output schemas, so the cells must be loaded, as they are at any compile."
+  [definition]
+  (let [cells (:cells definition)
+        adj (into {} (for [[from to] (:edges definition)] [from (edge-targets to)]))
+        tables (:dispatches definition)]
+    (vec
+     (for [cycle (simple-cycles adj)
+           :let [in-cycle (set cycle)
+                 produces (reduce into #{}
+                                  (keep #(some-> (get cells %) cell-ref-id guaranteed-output-keys)
+                                        cycle))
+                 exits (for [node cycle
+                             :let [table (get tables node)]
+                             :when (and table
+                                        (some #(not (in-cycle %)) (get adj node)))]
+                         node)
+                 reads (reduce into #{} (map #(pattern-reads (get tables %)) exits))]
+           :when (empty? (set/intersection reads produces))]
+       {:cycle (vec cycle) :reads reads :produces produces}))))
+
 (defn invariants
   "Every ordering rule a manifest CLAIMS, enforced or not.
 
@@ -474,9 +559,18 @@
                             :pre cancel/pre-check
                             :rethrow? cancel/control-signal?}
                      (:on-trace opts) (assoc :on-trace (:on-trace opts))))]
-     (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
-       (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
-     compiled)))
+     ;; The loop-guard warnings join mycelium's on the one channel a caller
+     ;; reads warnings from, so the mutation protocol and the manifest tool
+     ;; see them where they already look for :undeclared-effects.
+     (let [unguarded (for [c (unguarded-cycles definition)]
+                       (assoc c :type :unguarded-cycle))
+           compiled (cond-> compiled
+                      (and (seq unguarded) (:compiled-fsm compiled))
+                      (update-in [:compiled-fsm :mycelium/compile-warnings]
+                                 (fnil into []) unguarded))]
+       (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
+         (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
+       compiled))))
 
 (defn compile-loop
   "Compile a loop definition through mycelium's full static checking:

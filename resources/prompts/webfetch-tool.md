@@ -11,6 +11,10 @@ local service, that is not this tool.
 
 Checking only the address you gave would be no check at all — a public URL
 that redirects inward is exactly how that guard gets walked around.
+{% endif %}{% if redirect-loop %}`{{url}}` was still redirecting after {{hops}} hops (next: `{{to}}`), so the fetch stopped there.
+
+A chain that long is a loop or a page that does not want to be read this
+way. Try the address it kept pointing at directly, once.
 {% endif %}{% if bad-status %}`{{url}}` answered {{status}}.
 
 Not a harness failure — the page said no. A 404 means the address is wrong, a

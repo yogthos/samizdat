@@ -1,0 +1,2 @@
+Saved with a warning. Each cycle below cannot change its own exit: no dispatch on it that has an edge out reads a key a cell on it promises in its :output, so the exit was decided before the loop was entered and the loop leaves at once or never. Have a cell on the cycle write the key the exit reads (declare it in that cell's :output), or route the exit through a dispatch that reads one it does:
+{{cycles}}

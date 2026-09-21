@@ -37,7 +37,7 @@ stopped being visible in the manifest.
 |---|---|
 | `ctx` | run-scoped resources: `:conn :run-id :config :llm-adapter :llm-config :root :max-turns :abort`. Never mutated. |
 | `data` | the workflow's value, threaded node to node. A cell returns it changed. |
-| `:pure`/`:effects` | **load-bearing, not documentation.** The mutation soak stubs effectful cells to identity so a dry-run does no IO; a cell declaring neither is rejected, because the safety the marks exist for would be void. |
+| `:pure`/`:effects` | **load-bearing, not documentation.** The mutation soak stubs effectful cells to identity so a dry-run does no IO; a cell declaring neither is rejected, because the safety the marks exist for would be void. The mark is also **earned, not trusted**: `cells/effect-problems` walks the cell's source against `gates.edn :effect-symbols` and the protocol refuses, before installing, a `:pure` cell whose body reaches an effect or an `:effects` cell missing one it reaches (karamazov-viht.1, after BendTT's rule that a kind is earned at every constructor). The catalog is policy: a bare core name, a namespace whose every var is that effect, or one var in a mixed namespace; what it does not name is not a hit, which is why the mark stays required rather than inferred. |
 
 Effect vocabulary: `:net` (a provider or network call), `:db`, `:fs`, `:proc`
 (spawns a process).
@@ -84,7 +84,10 @@ checks it: a branch an earlier pattern makes unreachable is refused, and two
 branches that overlap with neither more specific are reported by `manifest
 save` and `manifest show` as order-dependent. A `(fn [data] pred)` form is
 still accepted where a pattern cannot say it; it is evaluated at **compile**
-time and is opaque to the analysis.
+time and is opaque to the analysis — and `show` and `save` list every such
+entry as unanalysed, so a report with no such paragraph means every entry was
+checked (karamazov-viht.2; the same disclosure rides `policy show gates` and
+`policy save gates`, whose `:when` forms are compiled and analysed no further).
 
 ### The two levels
 
@@ -99,7 +102,12 @@ manifests/beam.edn         the ROUND    advance · score · cull · settle ·
 redirecting every edge that would return to `:start` or reach a `:loop/finish`
 node into `:end`. One file therefore serves both drivers and an edit reaches
 both — rather than two files that must be kept in agreement, which is how the
-two drivers drifted apart before karamazov-ioo.20.
+two drivers drifted apart before karamazov-ioo.20. What surrounds the turn is
+still per driver, so the two are pinned the way BendRT pins its executors: one
+replayed case under `workflow/run!` and `beam/run!` at width 1 must write the
+same journal row for row (`workflow-test/both-drivers-write-one-journal-for-one-case`,
+karamazov-viht.3), with the beam's scheduler-only `:loop-workflow` keys the one
+named difference.
 
 `iterating?` classifies a manifest: a pass is one **turn** the beam may schedule
 against siblings iff the slice contains `:llm/infer` **and** an edge returns to
@@ -213,6 +221,8 @@ workflow/compile-loop
   ├─ register-subworkflows!          nested manifests become workflow-cells
   └─ myc/pre-compile                 structure · dispatch coverage ·
                                      reachability · constraints
+  └─ unguarded-cycles                warning: a cycle whose exits read
+                                     no key its cells write
 ```
 
 ## Invariants
@@ -224,6 +234,8 @@ workflow/compile-loop
 | A rename reaches every reference, `:invariants` included. | `patch/cell-refs` is the one list rename rewrites and remove checks; `patch-workflow-test/rename-rewrites-invariants-like-constraints`. |
 | A cell edit that breaks the loop never goes live. | `propose-cell!`'s validate + soak. |
 | A cell that declares no effects is rejected. | `mutation/validate` reads mycelium's `:undeclared-effects` warning. |
+| Every shipped cycle can change its own exit. | `manifests/unguarded-cycles`: a cycle is guarded when a dispatch on it with an edge out reads a key a cell on it promises in `:output`; otherwise `compile-definition` carries an `:unguarded-cycle` warning and `manifest save`/`patch` render it (karamazov-viht.4, the manifest dialect's descent test — a warning, never a refusal, since termination stays dynamic). `manifest-test/no-shipped-manifest-has-an-unguarded-cycle`. |
+| A cell's mark covers what its body reaches. | `mutation/unearned-marks` before `load-string` in `propose-cell!` and after reload in `apply-cell-edit!`; `mutation-test/a-cell-whose-mark-its-body-does-not-earn-is-refused-before-it-is-installed`; `cells-test/every-shipped-cell-earns-its-mark-against-the-shipped-catalog` pins the shipped cells against the shipped catalog. |
 | Declared constraints are compile-time errors. | mycelium `:constraints`; `beam-test` asserts a violating edit is refused. |
 | Every registered cell is reachable from some manifest. | `beam-test/every-shipped-cell-is-reachable-from-some-manifest`. |
 | Every shipped manifest compiles and is in the catalogue. | `beam-test/every-shipped-manifest-compiles-and-is-selectable`. |
