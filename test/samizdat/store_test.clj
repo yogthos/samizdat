@@ -1390,6 +1390,23 @@
           (is (nil? (:prefix_change t)))
           (is (nil? (:forced_tool t))))))))
 
+(deftest a-turn-records-the-digest-of-what-was-sent
+  ;; karamazov-luqc.2: the prefix columns say how much of the request was
+  ;; new; this says WHICH request it was, so a replay of the run can tell
+  ;; whether the tape it renders at this turn is the one the reply answered.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
+                                   :result "ok" :category :success
+                                   :prefix {:stable-chars 0 :chars 10 :change :first
+                                            :request-hash 1234567}})
+      (is (= 1234567 (:request_hash (first (journal/turns c rid))))))
+    (testing "a turn with no fingerprint stores null, not zero"
+      (let [rid (runs/start-run! c {:problem "p2"})]
+        (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "verify"
+                                     :result "ok" :category :success})
+        (is (nil? (:request_hash (first (journal/turns c rid)))))))))
+
 (deftest a-rewritten-turn-journals-where-history-changed
   ;; karamazov-pdes: the four columns say THAT history was rewritten; the
   ;; note says WHERE — which message, its role, its size before and after —

@@ -455,7 +455,20 @@
     ;; (samizdat.replay) needs it as a first-class seam rather than a test
     ;; hack, because the validation gate runs it in production
     ;; (karamazov-ylte.4). Absent from ctx, nothing changes.
-    ((or (:complete ctx) (infer/complete-fn ctx)) (infer/of-branch branch))))
+    (let [r ((or (:complete ctx) (infer/complete-fn ctx)) (infer/of-branch branch))]
+      ;; A REPLAY THAT DIVERGED (karamazov-luqc.2). samizdat.replay serves a
+      ;; recorded reply whatever the tape now says — that is what lets an
+      ;; edit be measured on a fixed conversation — and reports, once per
+      ;; branch, the turn at which the tape stopped being the one the reply
+      ;; answered. This is the one place that sees every complete's answer,
+      ;; so the note lands here and the loop stays otherwise replay-blind;
+      ;; battery/reading turns the note into :diverged-at.
+      (when-let [d (get-in r [:response :replay :diverged])]
+        (when (and (:conn ctx) (:run-id ctx))
+          (journal/note! (:conn ctx) (:run-id ctx) :replay-diverged
+                         {:branch-id (:id branch)
+                          :data (assoc d :branch (:id branch))})))
+      r)))
 
 (defn- settle-predictions!
   "Close out any prediction whose window has passed or whose expectation the
@@ -605,6 +618,10 @@
          wire (:wire response)
          prefix (when wire
                   (assoc (infer/prefix-stats (:last-wire branch) wire)
+                         ;; WHICH request, beside how much of it was new
+                         ;; (karamazov-luqc.2): a replay of this run checks
+                         ;; the tape it renders against this.
+                         :request-hash (infer/request-digest wire)
                          :forced-tool (:forced response)
                          :forced-via (:forced-via response)))
          ;; WHAT THE BRANCH IS RUNNING ON (karamazov-a28w), once per branch

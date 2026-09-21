@@ -38,7 +38,13 @@
 
 (defn- reading
   "Everything the assertions may look at, read once per case. A closed set,
-  so an assertion cannot reach past what is declared here."
+  so an assertion cannot reach past what is declared here.
+
+  `:diverged-at` is the earliest turn at which the replay served a reply
+  against a tape that was not the one it answered (karamazov-luqc.2: the
+  :replay-diverged notes loop/call-model writes), or nil when every reply
+  met its own question. From that turn on the run is the harness's doing
+  with a conversation the model never had, which a verdict has to say."
   [conn run-id]
   (let [turns (journal/turns conn run-id)
         tally (journal/gate-tally conn run-id)]
@@ -46,7 +52,11 @@
      :tools (set (keep :tool_name turns))
      :turn-count (count turns)
      :artifacts (count (journal/artifacts conn run-id))
-     :gates (into {} (for [g tally] [(keyword (str (:gate g))) g]))}))
+     :gates (into {} (for [g tally] [(keyword (str (:gate g))) g]))
+     :diverged-at (some->> (journal/notes conn run-id :replay-diverged)
+                           (keep :turn)
+                           seq
+                           (apply min))}))
 
 ;;; ------------------------------------------------------------- the verbs
 
@@ -96,6 +106,14 @@
 (defmethod verb :turns-at-most [_ r [n]]
   {:ok? (<= (:turn-count r) (long n)) :actual (:turn-count r)})
 
+(defmethod verb :replay-faithful [_ r _]
+  ;; Every reply was served against the tape it answered. A case pins this
+  ;; when the behaviour under test is the harness's routing on a FIXED
+  ;; conversation, and an edit that changes the conversation itself has
+  ;; taken the case outside what replay can measure — which the live sweep
+  ;; answers, and this target says so rather than passing on fiction.
+  {:ok? (nil? (:diverged-at r)) :actual (:diverged-at r)})
+
 (defmethod verb :default [v _ _]
   (throw (ex-info (str "unknown assertion " (pr-str v)
                        " — the battery's vocabulary is closed; add a verb in "
@@ -113,10 +131,12 @@
 (defn check
   "Run `expectations` against the finished run `run-id`.
 
-  Returns {:ok? bool :passed n :total n :targets [{:name :ok? :actual}]}. One
-  failing target fails the case; every target is still reported, because a
-  candidate that broke three things and a candidate that broke one are
-  different candidates."
+  Returns {:ok? bool :passed n :total n :targets [{:name :ok? :actual}]
+  :diverged-at turn-or-nil}. One failing target fails the case; every
+  target is still reported, because a candidate that broke three things
+  and a candidate that broke one are different candidates. `:diverged-at`
+  rides on the result whether or not a target asks about it, so the gate
+  can say which cases were scored on the harness side alone from turn k."
   [conn run-id expectations]
   (let [r (reading conn run-id)
         targets (mapv (fn [{:keys [name assert]}]
@@ -127,7 +147,8 @@
     {:ok? (every? :ok? targets)
      :passed (count (filter :ok? targets))
      :total (count targets)
-     :targets targets}))
+     :targets targets
+     :diverged-at (:diverged-at r)}))
 
 ;;; ------------------------------------------------------------- the gate rule
 

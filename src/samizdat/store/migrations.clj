@@ -787,9 +787,10 @@
   prefix byte-stable, so a forced miss and a rewritten miss are different
   findings.
 
-  Nullable: a replayed or stubbed call has no fingerprint, and a pre-v30
-  row was never measured. Nothing here changes a byte of what goes over the
-  wire; it records what did."
+  Nullable: a stubbed call has no fingerprint, and a pre-v30 row was never
+  measured (a replayed call has carried one since karamazov-luqc.2, of the
+  tape it would have sent). Nothing here changes a byte of what goes over
+  the wire; it records what did."
   ["ALTER TABLE turns ADD COLUMN prefix_stable_chars INTEGER"
    "ALTER TABLE turns ADD COLUMN prefix_chars INTEGER"
    "ALTER TABLE turns ADD COLUMN prefix_change TEXT"
@@ -834,7 +835,23 @@
   provider-error row, a replay, every row from before this column."
   ["ALTER TABLE turns ADD COLUMN elapsed_ms INTEGER"])
 
+(def v34
+  "WHICH request a turn answered, beside how much of it was new
+  (karamazov-luqc.2).
+
+  The v30 columns measure a request against the previous one; nothing named
+  the request itself, so a replay of the run could not tell whether the tape
+  a candidate renders at turn k is the one the recorded reply answered — it
+  served the reply regardless, and replay.clj called that its blind spot.
+  `request_hash` is infer/request-digest over the wire fingerprint, stable
+  across processes; replay/record carries it beside each reply and
+  replay/complete-fn compares it to what the candidate renders, reporting
+  the first mismatch as a :replay-diverged note. NULL when the call carried
+  no fingerprint and on every row from before this column, which a replay
+  reads as `not judged`, never as `diverged`."
+  ["ALTER TABLE turns ADD COLUMN request_hash INTEGER"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30 v31 v32 v33])
+   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34])

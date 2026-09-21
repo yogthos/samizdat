@@ -329,7 +329,9 @@
   [{:name samizdat.replay/record
     :summary "Freeze a finished run as a replay case: the model's side of the conversation, per branch, in order."}
    {:name samizdat.replay/complete-fn
-    :summary "Serve a recorded case back in place of the provider, so the same loop runs on fixed input and costs nothing."}
+    :summary "Serve a recorded case back in place of the provider, so the same loop runs on fixed input and costs nothing; names the first turn at which the tape stopped being the one the reply answered."}
+   {:name samizdat.replay/tape-digest
+    :summary "What a tape would send, digested the way a live turn's request_hash is — so a recorded reply and a candidate's render are comparable."}
    {:name samizdat.battery/check
     :summary "Run a case's named expectations against a finished run — per target, so a failure says WHICH behaviour broke."}
    {:name samizdat.battery/vocabulary

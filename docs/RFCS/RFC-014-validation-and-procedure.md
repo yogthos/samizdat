@@ -103,14 +103,27 @@ run that looked like a clean replay and was not one.
 
 **Only the model's side is recorded.** The tape the harness assembled, the
 gates that fired, where it routed — those are exactly what an edit is allowed
-to change, and recording them would pin the thing under test.
+to change, and recording them would pin the thing under test. One number about
+the harness's side is kept beside each reply: the digest of the request it
+answered (`turns.request_hash`, `infer/request-digest` over the wire
+fingerprint). It pins nothing; it lets the replay say whether the tape it is
+handed is the one the reply answered.
 
-**The blind spot, stated so it is never rediscovered as a surprise.** The
-recorded reply is fixed, so under replay a changed *prompt* cannot change the
-model's behaviour. Replay measures what the harness DOES with a given
-conversation. Whether different words would produce a better conversation is
-the live sweep's question. This is why the validation design is a hybrid and
-not a cost compromise.
+**The blind spot, stated so it is never rediscovered as a surprise — and
+measured.** The recorded reply is fixed, so under replay a changed *prompt*
+cannot change the model's behaviour. Replay measures what the harness DOES with
+a given conversation. Whether different words would produce a better
+conversation is the live sweep's question. This is why the validation design is
+a hybrid and not a cost compromise. Since karamazov-luqc.2 (after ZCode's
+workflow engine, which keys every replayed step on a hash of its input) the
+point at which the conversation stops being *given* is named: the first reply
+served against a tape whose digest is not the recorded one comes back with
+`:replay {:diverged {:turn k :recorded :rendered}}`, `loop/call-model` journals
+it as a `:replay-diverged` note, and `battery/check` carries it as
+`:diverged-at`, so a verdict says "harness side only from turn k" instead of
+scoring turns k+1… on a conversation that never happened. The reply is still
+served, because the harness side is still what replay measures; a case that
+wants faithfulness itself as a target asserts `[:replay-faithful]`.
 
 **Running past the recording is a result, not a gap.** A candidate that takes
 more turns than the recording has exhausts the fixture, and that comes back as
@@ -173,9 +186,10 @@ decides.
 
 | fn | contract |
 |---|---|
-| `replay/record` | A run's model-side conversation as a case, with the run id and time it was taken. |
-| `replay/complete-fn` | Case + branch → a `complete`. Stateful; one per branch, since two branches are two conversations. |
-| `battery/check` | Expectations against a finished run → `{:ok? :passed :total :targets}`. |
+| `replay/record` | A run's model-side conversation as a case, with the run id and time it was taken, and under `:sent` the digest each reply answered. |
+| `replay/tape-digest` | What a tape would send, digested the way a live turn's `request_hash` is — the two are comparable. |
+| `replay/complete-fn` | Case + branch → a `complete`. Stateful; one per branch, since two branches are two conversations. Carries `:wire` like a live call, and `:replay {:diverged …}` on the first reply served against a tape it did not answer. |
+| `battery/check` | Expectations against a finished run → `{:ok? :passed :total :targets :diverged-at}`. |
 | `battery/accept?` | Whether a candidate may commit. `>=`, ties included; refuses outright when the two results cover different numbers of targets. |
 | `battery/regressions` | Targets that passed before and fail after — the flips only. |
 | `battery/vocabulary` | Every assertion verb a case may use. |
