@@ -1027,7 +1027,22 @@
       ;; English — the provider we actually run on.
       (is (= :fatal (client/classify a 429 {:error {:code "1308" :message "达到使用上限"}})))
       (is (= :fatal (client/classify a 429 {:error {:message "per-day quota reached"}})))
-      (is (= :retry (client/classify a 429 {:error {:message "Rate limit reached, slow down"}}))))))
+      (is (= :retry (client/classify a 429 {:error {:message "Rate limit reached, slow down"}}))))
+
+    (testing "the vendor's own quota codes are walls too (karamazov-luqc.3)"
+      ;; BigModel's business codes ride in the body with a message that names
+      ;; nothing in the English list. ZCode (Zhipu's client) keeps the set of
+      ;; codes that mean out-of-quota rather than slow-down, and its
+      ;; OpenAI/Anthropic-family strings for the same thing.
+      (are [code] (= :fatal (client/classify a 429 {:error {:code code :message "限额"}}))
+        "1005" "1310" "1313" "1316" "1317" "1318" "1319" "1320" "1321" "2056" "20097")
+      (are [m] (= :fatal (client/classify a 429 {:error {:type m}}))
+        "credit_balance_exhausted" "organization_spend_limit_exceeded"
+        "project_spend_limit_exceeded" "organization_usage_limit_exceeded")
+      ;; and the codes that same table marks RETRYABLE stay a window: a
+      ;; concurrency cap or a per-minute limit clears on its own.
+      (are [code] (= :retry (client/classify a 429 {:error {:code code :message "请求过快"}}))
+        "1302" "1303" "1305" "3008" "3010"))))
 
 (deftest a-402-is-a-usage-cap-and-is-not-retried
   ;; DeepSeek answers 402 "Insufficient Balance" when the account is out of
