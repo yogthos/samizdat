@@ -378,6 +378,57 @@
 
 ;; --- the battery gate (karamazov-ylte.4) ------------------------------------
 
+(deftest a-cell-whose-mark-its-body-does-not-earn-is-refused-before-it-is-installed
+  ;; BendTT 2.4: a kind is earned at every constructor, never trusted from
+  ;; the declaration. The :pure mark is what the soak stubs by, so a :pure
+  ;; cell that calls slurp used to run its IO inside the "dry" run — validate
+  ;; checked the mark's shape and never its truth (karamazov-viht.1).
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+  (cells/load-cells! (:dirs (opts)))
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})
+        before ((:handler (cell/get-cell :mini/start)) {} {:n 0})]
+    (try
+      (us/bind! c)
+      (testing "a pure mark on a body that reads the filesystem"
+        (let [r (mut/propose-cell!
+                 (assoc (opts) :name "mini" :conn c :run-id rid
+                        :body (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
+                                   "(cell/defcell :mini/start {:doc \"s\" :pure true}\n"
+                                   "  (fn [_ d] (assoc d :src (slurp \"/etc/hosts\"))))\n")))]
+          (is (= :rolled-back (:status r)))
+          (is (re-find #"slurp" (str (:reason r))) "names the call")
+          (is (re-find #":fs" (str (:reason r))) "and the effect it implies")
+          (is (nil? (us/body :cell "mini")) "nothing was committed")
+          (is (= before ((:handler (cell/get-cell :mini/start)) {} {:n 0}))
+              "and nothing was installed — refused before load-string, like a shadowed id")))
+      (testing "an effects mark that leaves out what the body reaches"
+        (let [r (mut/propose-cell!
+                 (assoc (opts) :name "mini" :conn c :run-id rid
+                        :body (str "(ns cells.mini (:require [mycelium.cell :as cell]"
+                                   " [samizdat.llm.client :as llm]))\n"
+                                   "(cell/defcell :mini/start {:doc \"s\" :effects [:fs]}\n"
+                                   "  (fn [ctx d] (llm/chat (:llm-adapter ctx) {} []) d))\n")))]
+          (is (= :rolled-back (:status r)))
+          (is (re-find #":net" (str (:reason r))))
+          (is (nil? (us/body :cell "mini")))))
+      (testing "the attempt is journalled like any other refusal"
+        (is (= 2 (count (filter #(re-find #"mutation-rolled-back" (str (:kind %)))
+                                (journal/events-since c rid 0))))))
+      (finally (us/unbind!) (db/close c)))))
+
+(deftest the-dir-protocol-refuses-an-unearned-mark-too
+  ;; The file-based path loads the edit first and rolls the file back; the
+  ;; same check runs over what it loaded, before validate.
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+  (cells/load-cells! (:dirs (opts)))
+  (write-cells! (str @root "/cells") "(fn [_ d] (assoc d :src (slurp \"/etc/hosts\")))")
+  (let [r (mut/apply-cell-edit! (opts))]
+    (is (= :rolled-back (:status r)))
+    (is (re-find #"slurp" (str (:reason r))))
+    (is (re-find #"update d :n inc" (slurp (str @root "/cells/mini.clj")))
+        "the file is back to the last-good content")))
+
 (deftest the-battery-gate-sits-between-soak-and-commit
   ;; The paper's Step 3. The soak proves an edit does not CRASH; the battery
   ;; proves it does not REGRESS. Order matters: the battery costs a replay per

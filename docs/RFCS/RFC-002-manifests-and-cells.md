@@ -37,7 +37,7 @@ stopped being visible in the manifest.
 |---|---|
 | `ctx` | run-scoped resources: `:conn :run-id :config :llm-adapter :llm-config :root :max-turns :abort`. Never mutated. |
 | `data` | the workflow's value, threaded node to node. A cell returns it changed. |
-| `:pure`/`:effects` | **load-bearing, not documentation.** The mutation soak stubs effectful cells to identity so a dry-run does no IO; a cell declaring neither is rejected, because the safety the marks exist for would be void. |
+| `:pure`/`:effects` | **load-bearing, not documentation.** The mutation soak stubs effectful cells to identity so a dry-run does no IO; a cell declaring neither is rejected, because the safety the marks exist for would be void. The mark is also **earned, not trusted**: `cells/effect-problems` walks the cell's source against `gates.edn :effect-symbols` and the protocol refuses, before installing, a `:pure` cell whose body reaches an effect or an `:effects` cell missing one it reaches (karamazov-viht.1, after BendTT's rule that a kind is earned at every constructor). The catalog is policy: a bare core name, a namespace whose every var is that effect, or one var in a mixed namespace; what it does not name is not a hit, which is why the mark stays required rather than inferred. |
 
 Effect vocabulary: `:net` (a provider or network call), `:db`, `:fs`, `:proc`
 (spawns a process).
@@ -227,6 +227,7 @@ workflow/compile-loop
 | A rename reaches every reference, `:invariants` included. | `patch/cell-refs` is the one list rename rewrites and remove checks; `patch-workflow-test/rename-rewrites-invariants-like-constraints`. |
 | A cell edit that breaks the loop never goes live. | `propose-cell!`'s validate + soak. |
 | A cell that declares no effects is rejected. | `mutation/validate` reads mycelium's `:undeclared-effects` warning. |
+| A cell's mark covers what its body reaches. | `mutation/unearned-marks` before `load-string` in `propose-cell!` and after reload in `apply-cell-edit!`; `mutation-test/a-cell-whose-mark-its-body-does-not-earn-is-refused-before-it-is-installed`; `cells-test/every-shipped-cell-earns-its-mark-against-the-shipped-catalog` pins the shipped cells against the shipped catalog. |
 | Declared constraints are compile-time errors. | mycelium `:constraints`; `beam-test` asserts a violating edit is refused. |
 | Every registered cell is reachable from some manifest. | `beam-test/every-shipped-cell-is-reachable-from-some-manifest`. |
 | Every shipped manifest compiles and is in the catalogue. | `beam-test/every-shipped-manifest-compiles-and-is-selectable`. |

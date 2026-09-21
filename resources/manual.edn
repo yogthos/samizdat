@@ -72,7 +72,9 @@
    {:name samizdat.cells/load-cells!
     :summary "Reload every cell from resources. Transactional — a broken edit rolls the registry back."}
    {:name samizdat.mutation/propose-cell!
-    :summary "The safety around a cell edit: install, validate against every manifest, soak, commit a project version or roll back."}
+    :summary "The safety around a cell edit: refuse a mark the body does not earn, install, validate against every manifest, soak, commit a project version or roll back."}
+   {:name samizdat.cells/effect-problems
+    :summary "Whether each cell's :pure / :effects mark covers what its body reaches, by the catalog in gates.edn :effect-symbols — a :pure cell that calls slurp, an :effects [:fs] cell that calls the provider. The mark is what the soak stubs by, so it is checked against the source before the edit is installed. What the catalog does not name is not a hit; extend it when a call does IO it does not know."}
    {:name mycelium.patch/apply-ops
     :summary "A checked manifest edit as data: ops (rename-cell, add-cell, remove-cell, set-edge, delete-edge, set-cell-field, set-dispatches) applied to the manifest as written, every reference to a renamed node rewritten (edges, dispatches, :invariants), the whole batch compiled once at the end so a node can be added and wired in one call. `manifest patch` is this over the stored text; `render` writes the result back over the original so comments survive; `cell-refs` and `diff-manifests` are behind `manifest refs` and `manifest diff`."}
    {:name samizdat.workflow/catalog

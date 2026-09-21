@@ -159,6 +159,132 @@
        (filter keyword?)
        vec))
 
+;; --- earned effect marks ------------------------------------------------------
+;;
+;; A cell's :pure / :effects mark is load-bearing: the mutation soak stubs
+;; every non-pure cell to identity so a dry run does no IO, and mycelium's
+;; validate-effects-declaration! checks the mark for SHAPE — :pure only true,
+;; :effects a non-empty vector — and nothing else. A cell marked :pure that
+;; calls slurp passed validate and ran its IO inside the soak; a cell marked
+;; :effects [:fs] that called the provider was stubbed as if it only touched
+;; the filesystem. BendTT's rule for the same situation is that a kind is
+;; EARNED: the type declares it and the checker walks every constructor
+;; (karamazov-viht.1). This is that walk for a cell file.
+;;
+;; The walk is over SOURCE, the same forms defcell-ids reads, so it runs before
+;; the candidate is load-stringed into the image — a mis-marked cell is refused
+;; before it is installed, like a shadowed id. What it reaches is decided by a
+;; catalog that is data (gates.edn :effect-symbols), keyed by effect, each
+;; entry a symbol: a bare name for a core fn (slurp), a namespace for one whose
+;; every var is that effect (samizdat.store), or a qualified var for one in a
+;; mixed namespace (samizdat.agent.loop/call-model). Anything the catalog does
+;; not name is not a hit: a scan cannot be complete, so it errs toward
+;; accepting, which is why the mark stays required rather than inferred.
+
+(defn- source-forms
+  [content]
+  (read-string (str "[" content "\n]")))
+
+(defn- ns-aliases
+  "{alias full-ns} from the file's ns form, so `llm/chat` in a body reads as
+  samizdat.llm.client/chat against the catalog."
+  [forms]
+  (let [ns-form (first (filter #(and (seq? %) (= 'ns (first %))) forms))]
+    (into {}
+          (for [clause (rest ns-form)
+                :when (and (seq? clause) (= :require (first clause)))
+                spec (rest clause)
+                :when (vector? spec)
+                :let [[nsym & {:keys [as]}] spec]
+                :when as]
+            [as nsym]))))
+
+(defn- called-symbols
+  "Every symbol in `form` outside a quoted subform — the calls a body can
+  make. A quoted list is data."
+  [form]
+  (letfn [(walk [f acc]
+            (cond (and (seq? f) (= 'quote (first f))) acc
+                  (symbol? f) (conj acc f)
+                  (coll? f) (reduce #(walk %2 %1) acc f)
+                  :else acc))]
+    (walk form #{})))
+
+(defn- resolve-alias
+  [aliases s]
+  (if-let [full (some->> (namespace s) symbol (get aliases))]
+    (symbol (str full) (name s))
+    s))
+
+(defn- catalog-hit?
+  "Whether the resolved symbol `s` is what catalog entry `e` names: the same
+  var, a var in that namespace or under it, or — for a bare entry — a bare
+  call of that name (or its clojure.core spelling)."
+  [e s]
+  (let [ens (namespace e) sns (namespace s)]
+    (cond
+      ens (= e s)
+      sns (or (= sns (str e)) (str/starts-with? sns (str e ".")))
+      :else (= (name s) (str e)))))
+
+(defn implied-effects
+  "What each cell in `content` reaches that `catalog` names as an effect:
+  {cell-id {:declared {:pure true} | {:effects #{…}} | {}
+            :implied  {effect #{resolved-symbol …}}}}.
+  A cell's symbols are its own plus those of every top-level defn in the
+  file it reaches, transitively, so an effect cannot be laundered through a
+  local helper. Only effects with a hit appear under :implied."
+  [content catalog]
+  (let [forms (source-forms content)
+        aliases (ns-aliases forms)
+        top? (fn [f heads] (and (seq? f) (symbol? (first f))
+                                (contains? heads (name (first f)))))
+        locals (into {}
+                     (for [f forms :when (top? f #{"defn" "defn-" "def"})]
+                       [(second f) (called-symbols (drop 2 f))]))
+        ;; `seq` on every recur: concat is lazy and never nil, and a loop
+        ;; that tests the queue for nil would spin forever once it empties.
+        expand (fn [syms]
+                 (loop [seen #{} todo (seq syms)]
+                   (if-not todo
+                     seen
+                     (let [s (first todo)
+                           more (when-not (seen s) (get locals s))]
+                       (recur (conj seen s)
+                              (seq (concat (rest todo) (remove seen more))))))))
+        declared (fn [opts]
+                   (cond (true? (:pure opts)) {:pure true}
+                         (seq (:effects opts)) {:effects (set (:effects opts))}
+                         :else {}))]
+    (into {}
+          (for [f forms :when (top? f #{"defcell"})
+                :let [[_ id opts & body] f]
+                :when (keyword? id)]
+            (let [syms (->> (called-symbols body) expand (map #(resolve-alias aliases %)))]
+              [id {:declared (declared (when (map? opts) opts))
+                   :implied (into {}
+                                  (for [[effect entries] catalog
+                                        :let [hits (set (for [s syms e entries
+                                                              :when (catalog-hit? e s)]
+                                                          s))]
+                                        :when (seq hits)]
+                                    [effect hits]))}])))))
+
+(defn effect-problems
+  "The cells in `content` whose mark does not cover what their body implies,
+  as [{:id :declared :missing #{effect} :evidence {effect #{symbol}}} …]:
+  a :pure cell with any hit, or an :effects cell missing one. An undeclared
+  cell is not this function's complaint — mycelium's :undeclared-effects
+  warning already refuses it — and a clean file is []."
+  [content catalog]
+  (vec
+   (for [[id {:keys [declared implied]}] (implied-effects content catalog)
+         :let [covered (or (:effects declared) #{})
+               missing (when (seq declared) (set (remove covered (keys implied))))]
+         :when (seq missing)]
+     {:id id :declared declared :missing missing
+      :evidence (select-keys implied missing)})))
+
 (defn- load-source!
   "Load one cell SOURCE into the live image; return the cell ids it defines.
 

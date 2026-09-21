@@ -182,7 +182,7 @@
         mailbox, the shared-tree block and the stale-write notice). Join their
         answers into the manager branch and finish. A dataflow join, not a live
         actor: workers run to completion."
-   :effects [:net :db]
+   :effects [:net :db :fs]
    :requires [:config :conn :run-id]
    ;; :subtasks stays optional even though :team/plan always produces it —
    ;; the handler falls back to the whole problem, and a manifest is free to
@@ -288,7 +288,7 @@
         fresh branch (W<idx>r1). The retry replaces the original only if it does
         better. A bounded re-task, not an open loop — the supervisor's job is to
         catch a stalled part, not to grind. Re-joins the answers after."
-   :effects [:net :db]
+   :effects [:net :db :fs]
    :requires [:conn :run-id]
    ;; :results is REQUIRED and is the point — this cell exists to re-task the
    ;; parts that did not land, so a manifest wiring it without a fan-out in

@@ -303,7 +303,7 @@
         when a unit is stuck, split it (architect) and solve the sub-units first,
         then assemble. Landed => the manager branch ships the tree; failed =>
         abandoned honestly."
-   :effects [:net :db]
+   :effects [:net :db :fs :proc]
    :requires [:conn :run-id]
    :input  [:map [:branch :map]]
    ;; :verdict is the key :loop/finish routes on. This cell is one of the

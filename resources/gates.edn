@@ -196,6 +196,61 @@
         iteration 1 propose something different and be accepted. samizdat kept
         the reason and restored the files over the attempt (karamazov-mpd)."}
 
+ :effect-symbols
+ {:value {:fs   [slurp spit clojure.java.io java.nio.file.Files
+                 samizdat.agent.files
+                 samizdat.agent.skills/discover samizdat.agent.skills/load-skill
+                 samizdat.agent.loop/tool-step samizdat.agent.beam/advance-all]
+          :net  [samizdat.llm.client
+                 samizdat.agent.webfetch samizdat.agent.websearch
+                 samizdat.agent.infer/ab samizdat.agent.infer/trampoline
+                 samizdat.agent.loop/call-model samizdat.agent.loop/tool-step
+                 samizdat.agent.beam/advance-all samizdat.agent.beam/ensure-scored
+                 samizdat.agent.reflect/distil-task!]
+          :db   [samizdat.store
+                 samizdat.userspace/save!
+                 samizdat.agent.loop/journal-step! samizdat.agent.loop/no-call-step
+                 samizdat.agent.loop/provider-error-step samizdat.agent.loop/settle-step
+                 samizdat.agent.loop/steer-step samizdat.agent.loop/tool-step
+                 samizdat.agent.beam/advance-all samizdat.agent.beam/ensure-scored
+                 samizdat.agent.beam/drain-directives! samizdat.agent.beam/record-inactive!
+                 samizdat.agent.beam/spawn-children! samizdat.agent.beam/await-resume!
+                 samizdat.agent.reflect/distil-task!]
+          :proc [clojure.java.shell samizdat.engine.proc
+                 samizdat.agent.gitdiff/baseline samizdat.agent.gitdiff/snapshot
+                 samizdat.agent.gitdiff/changed-files samizdat.agent.gitdiff/changed-lines
+                 samizdat.agent.gitdiff/diff
+                 samizdat.agent.verify/run-verify
+                 samizdat.agent.loop/tool-step samizdat.agent.beam/advance-all]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-viht.1"]
+  :doc "WHAT A CALL IN A CELL BODY IMPLIES ABOUT ITS EFFECTS. The catalog
+        cells/effect-problems reads when the mutation protocol checks a
+        cell's :pure / :effects mark against its body, before installing it.
+
+        The mark is what the soak stubs by, and until this catalog it was
+        checked for shape and never for truth: a :pure cell that called
+        slurp ran its read inside the dry run. BendTT's rule for the same
+        situation is that a kind is declared and then EARNED at every
+        constructor; this is the walk that earns a cell's.
+
+        One entry per effect in the cell vocabulary, each a vector of
+        symbols of three kinds: a bare name for a core fn (slurp); a
+        namespace for one whose every var is that effect (samizdat.store
+        covers samizdat.store.journal and the rest); a qualified var for one
+        in a MIXED namespace (samizdat.agent.loop/call-model is the provider,
+        samizdat.agent.loop/absorb-response is pure, so the namespace as a
+        whole names nothing). A var that reaches several effects is listed
+        under each — tool-step dispatches every tool, so it is all four.
+
+        What is NOT here is not a hit. A scan cannot be complete, so it errs
+        toward accepting, which is why the mark stays required rather than
+        inferred; reads of config, prompts and userspace bodies are cached
+        lookups and are not counted. Extend it when a call is added that
+        does IO the catalog does not name, and narrow it if a shipped pure
+        cell is refused for a helper that does none — cells-test pins the
+        shipped cells against this catalog so the two cannot drift apart."}
+
  :max-suspect-test-nudges
  {:value 2 :kind :re-fire-guard :capability-tunable? true
   :doc "How often suspect-the-test may re-fire in one episode — and an episode
