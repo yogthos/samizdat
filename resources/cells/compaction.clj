@@ -81,28 +81,50 @@
         A model with no recorded context window routes :none. Every rung is a
         fraction of that number, so guessing it would be guessing the policy."
    :pure true
-   :requires [:llm-config]
-   :input  [:map [:branch :map]]
+   ;; :max-turns for the cost fold's turns-left; every run ctx carries it.
+   :requires [:llm-config :max-turns]
+   :input  [:map [:branch :map] [:turn {:optional true} :int]]
    ;; One output rather than per-transition: both edges leave with the same
    ;; keys and only :compaction/route differs in VALUE, which is the whole
    ;; design — measure writes the key, the manifest dispatches on it.
    ;; :compaction/tier is nil when no window is recorded, hence :any.
    :output [:map [:compaction/tier :any] [:compaction/ratio :any]
             [:compaction/before :any] [:compaction/route :keyword]]}
-  (fn [{:keys [llm-config]} {:keys [branch] :as data}]
+  (fn [{:keys [llm-config max-turns]} {:keys [branch turn] :as data}]
     (let [p (policy)
           window (window-of llm-config)
           msgs (vec (:messages branch))
           tokens (cmp/estimate-tokens msgs (:chars-per-token p))
           ratio (cmp/pressure tokens window)
-          t (and window (cmp/tier ratio (:ladder p)))]
-      (assoc data
-             :compaction/tier t
-             :compaction/ratio ratio
-             :compaction/before tokens
-             ;; Any tier reached at all caps first: it is the cheapest thing
-             ;; that can help and it often makes the rest unnecessary.
-             :compaction/route (if t :cap :none)))))
+          t (and window (cmp/tier ratio (:ladder p)))
+          ;; BELOW THE LADDER, a fold can still pay for itself: carrying an
+          ;; old window costs its cached price every turn, folding it costs
+          ;; one re-prefill (gates.edn :cost-fold, karamazov-d5wo.6). Asked
+          ;; for as an ordinary :fold, so every rung after this one is
+          ;; unchanged.
+          ;; The price of a cached token relative to a fresh one is the
+          ;; provider's fact (config :cached-token-weight); the gates value
+          ;; is only a fallback, nil by default: no declared price, no fold.
+          cf (let [c (gates/threshold :cost-fold)]
+               (assoc c :cached-weight (or (:cached-token-weight llm-config) (:cached-weight c))))
+          cost? (and (nil? t) window (:enabled? cf) (:cached-weight cf) max-turns turn
+                     (>= ratio (:min-ratio cf))
+                     (let [[s e] (cmp/compress-window msgs (:protect-head p) (:protect-tail p))
+                           est #(cmp/estimate-tokens % (:chars-per-token p))]
+                       (and (< s e)
+                            (cmp/fold-pays? {:window-tokens (est (subvec msgs s e))
+                                             :after-tokens (est (subvec msgs e))
+                                             :remaining (- max-turns turn)}
+                                            cf))))
+          t (if cost? :fold t)]
+      (cond-> (assoc data
+                     :compaction/tier t
+                     :compaction/ratio ratio
+                     :compaction/before tokens
+                     ;; Any tier reached at all caps first: it is the cheapest thing
+                     ;; that can help and it often makes the rest unnecessary.
+                     :compaction/route (if t :cap :none))
+        cost? (assoc :compaction/why :cost)))))
 
 ;; --- cap ---------------------------------------------------------------------
 
@@ -340,6 +362,8 @@
                       data)
                   (do (note! conn run-id data
                              {:tier (some-> (:compaction/tier data) name)
+                              ;; "cost" when measure asked below the ladder.
+                              :why (some-> (:compaction/why data) name)
                               :action "fold" :folded (- e s)
                               :before (:compaction/before data) :after after
                               :memories kept})

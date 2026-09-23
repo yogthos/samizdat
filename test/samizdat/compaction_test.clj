@@ -192,6 +192,57 @@
     (is (= [pinned] (cmp/pinned-in msgs [2 8])))
     (is (= [] (cmp/pinned-in (convo 12) [2 8])))))
 
+;; --- the cost fold (karamazov-d5wo.6) -----------------------------------------
+
+(deftest a-fold-pays-when-carrying-the-window-costs-more-than-rebuilding
+  (let [p {:cached-weight 0.1 :horizon 40}]
+    (testing "fold cost: re-prefill what follows the fold, plus the summarizer reading the window"
+      (is (= 26000.0 (cmp/fold-cost {:window-tokens 12000 :after-tokens 14000}))))
+    (is (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 30} p)
+        "0.1 x 12000 x 30 = 36000 carried against 26000 to fold")
+    (is (not (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 10} p))
+        "near the end of the budget there is not enough run left to earn it back")
+    (is (not (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 30}
+                             (assoc p :cached-weight 0.01)))
+        "where a cached token is nearly free (a local prefix cache) it never pays")
+    (is (not (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 500} (assoc p :horizon 20)))
+        "the horizon caps how far ahead the saving is counted")
+    (is (not (cmp/fold-pays? {:window-tokens 0 :after-tokens 100 :remaining 30} p)))))
+
+(deftest measure-asks-for-a-fold-below-the-ladder-when-it-pays
+  (cells/load-cells!)
+  (let [big (apply str (repeat 4000 "x"))
+        msgs (into [{:role "system" :content "sys"} {:role "user" :content "go"}]
+                   (mapcat (fn [i] [{:role "assistant" :content (str "call " i)}
+                                    {:role "user" :content big}])
+                           (range 10)))
+        ;; ~10k tokens at 4 chars/token in a 20k window: 0.5, under every rung.
+        measure (fn [cost-fold turn]
+                  (with-redefs [gates/threshold (let [orig gates/threshold]
+                                                  (fn [k] (if (= k :cost-fold) cost-fold (orig k))))]
+                    ((:handler (cell/get-cell! :compaction/measure))
+                     {:llm-config {:context-window 20000} :max-turns 60}
+                     {:branch {:messages msgs} :turn turn})))
+        on {:enabled? true :min-ratio 0.4 :cached-weight 0.5 :horizon 40}]
+    (let [out (measure on 2)]
+      (is (= :fold (:compaction/tier out)))
+      (is (= :cap (:compaction/route out)))
+      (is (= :cost (:compaction/why out))))
+    (testing "off, or below the floor, or cheap to carry: the ladder alone decides"
+      (is (= :none (:compaction/route (measure (assoc on :enabled? false) 2))))
+      (is (= :none (:compaction/route (measure (assoc on :min-ratio 0.9) 2))))
+      (is (= :none (:compaction/route (measure (assoc on :cached-weight 0.001) 2))))
+      (is (= :none (:compaction/route (measure on 59))) "one turn left earns nothing back")
+      (is (= :none (:compaction/route (measure (assoc on :cached-weight nil) 2)))
+          "no declared price for a cached token, no cost fold"))
+    (testing "the provider's declared weight is the one used"
+      (with-redefs [gates/threshold (let [orig gates/threshold]
+                                      (fn [k] (if (= k :cost-fold) (assoc on :cached-weight nil) (orig k))))]
+        (is (= :fold (:compaction/tier
+                      ((:handler (cell/get-cell! :compaction/measure))
+                       {:llm-config {:context-window 20000 :cached-token-weight 0.5} :max-turns 60}
+                       {:branch {:messages msgs} :turn 2}))))))))
+
 ;; --- the task fold (karamazov-d5wo.5) -----------------------------------------
 
 (defn- task-convo

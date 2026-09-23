@@ -2525,6 +2525,38 @@
         Not capability-tunable: it is what the project says, not a knob on
         the branch."}
 
+ :cost-fold
+ {:value {:enabled? true :cached-weight nil :min-ratio 0.4 :horizon 40}
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-d5wo.6"]
+  :doc "FOLD BELOW THE LADDER WHEN IT PAYS (the :compaction/measure cell;
+        compaction/fold-cost and fold-pays? are the arithmetic).
+
+        The ladder folds on pressure alone. Under it, every turn still pays
+        for the old window at the cached-token price, and a fold costs one
+        re-prefill of everything after the fold point plus the summarizer
+        reading the window. Measured across the campaign dbs, prompt tokens
+        processed outnumber completion tokens 28:1, so carrying is the
+        larger bill. When carrying the window for the turns left costs more
+        than folding it now, measure asks for an ordinary :fold, notes
+        :compaction/why :cost, and every later rung runs as it would.
+
+        :cached-weight  what a cached prompt token costs relative to a fresh
+                        one. THE PROVIDER'S FACT, so the provider's config
+                        (:cached-token-weight in its :llm knobs) wins over
+                        this, and nil here means no fold on cost where a
+                        provider declares nothing. A hosted API's cache
+                        discount is roughly 0.1; a local llama.cpp prefix
+                        cache makes a cached token close to free in time,
+                        where a re-prefill is 135 tok/s, so a local model
+                        should declare nothing or near zero.
+        :min-ratio      never below this pressure: a small context is cheap
+                        to carry and its fold is all loss.
+        :horizon        how many of the turns left count toward the saving;
+                        a run seldom uses its whole budget.
+
+        A cost ceiling, so the capability tier may never raise it."}
+
  :task-fold
  {:value {:enabled? true :min-messages 12}
   :kind :policy :capability-tunable? false

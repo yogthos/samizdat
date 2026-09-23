@@ -421,3 +421,28 @@
                  [{:role "user" :content text :task-fold task-id}]
                  (pinned-in v [start end])
                  (subvec v end)))))
+
+;; --- the cost fold (karamazov-d5wo.6) -----------------------------------------
+;;
+;; The ladder folds on pressure alone. Below it, carrying an old window still
+;; costs something every turn — a cached token is cheaper than a fresh one,
+;; not free — and folding it costs a re-prefill of everything after the fold
+;; point, once. These say which is larger, in fresh-token equivalents; the
+;; measure cell decides whether to ask, and gates.edn :cost-fold holds the
+;; numbers.
+
+(defn fold-cost
+  "What a fold costs in fresh tokens: the summarizer reads the window once,
+  and everything after the fold point is re-prefilled because the prefix
+  cache no longer matches it."
+  [{:keys [window-tokens after-tokens]}]
+  (double (+ window-tokens after-tokens)))
+
+(defn fold-pays?
+  "Whether carrying `window-tokens` for the turns left (capped at `horizon`)
+  at `cached-weight` per token costs more than folding it now."
+  [{:keys [window-tokens remaining] :as sizes} {:keys [cached-weight horizon]}]
+  (boolean
+   (and cached-weight (pos? window-tokens) (pos? remaining)
+        (> (* cached-weight window-tokens (min remaining horizon))
+           (fold-cost sizes)))))

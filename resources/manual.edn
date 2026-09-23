@@ -36,6 +36,8 @@
     :summary "Whether a replacement is small enough to accept: |new| <= max(|original|, floor)."}
    {:name samizdat.tape/apply-fold
     :summary "Collapse a finished conversation into one block plus a verbatim tail, or reject it. Pure: you supply the summary; the harness never calls it on its own."}
+   {:name samizdat.agent.compaction/fold-pays?
+    :summary "Whether folding a window now costs less than carrying it at the cached-token price for the turns left. The measure cell asks for a fold below the ladder when it does (gates.edn :cost-fold; the weight is the provider's :cached-token-weight)."}
    {:name samizdat.agent.compaction/task-span
     :summary "Where a task's work sits in the tape: from its statement to, not including, the call that closed it."}
    {:name samizdat.agent.compaction/fold-task
