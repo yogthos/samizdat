@@ -53,6 +53,7 @@
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
+            [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
@@ -323,6 +324,11 @@
         ;; row (samizdat.agent.orient, karamazov-fp21.3) — the beam does the
         ;; same, and a resume reads it back.
         orient (orient/block root problem (gates/threshold :orient-inject))
+        ;; The project's root instruction file ahead of the orient block
+        ;; (karamazov-d5wo.4): one opening, on the row, so a resume reopens
+        ;; on both.
+        opening (instr/opening-context root (:block orient)
+                                       (gates/threshold :instructions))
         run-id (runs/start-run! conn {:problem problem
                                       :provider (:provider llm-config)
                                       :model (:model llm-config)
@@ -330,7 +336,7 @@
                                       :beam-width 1
                                       :prompt-digest (branch-loop/prompt-digest
                                                       (workflow-prompt definition))
-                                      :opening-context (:block orient)})
+                                      :opening-context opening})
         ;; Per segment, beside the digest (karamazov-o4wm.4). Best effort.
         _ (try (journal/note! conn run-id :prompt-manifest
                               {:data (branch-loop/prompt-manifest
@@ -345,7 +351,7 @@
         branch (state/new-branch {:id "B1" :problem problem
                                   :messages (branch-loop/initial-messages
                                              problem (workflow-prompt definition)
-                                             nil (:block orient))})
+                                             nil opening)})
         ;; Make the project's own namespaces requirable from `eval` before any
         ;; branch takes a turn. The system prompt's whole first section is
         ;; REPL-first against the project under work, and without this that

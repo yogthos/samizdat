@@ -68,6 +68,7 @@
             [samizdat.agent.handoff :as handoff]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
+            [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
             [samizdat.agent.select :as select]
             [samizdat.cancel :as cancel]
@@ -1026,6 +1027,11 @@
         ;; branches saw rather than on whatever the tree says by then. nil
         ;; when gates.edn :orient-inject is off or nothing was found.
         orient (orient/block root problem (gates/threshold :orient-inject))
+        ;; The project's root instruction file ahead of the orient block
+        ;; (karamazov-d5wo.4): one opening, on the row, so a resume reopens
+        ;; on both.
+        opening (instr/opening-context root (:block orient)
+                                       (gates/threshold :instructions))
         ;; THE ROW FIRST, then the caller, then everything that costs a model
         ;; call (karamazov-5fyo). api.control/start-run! blocks until on-start
         ;; fires, so this line is how long POST /v1/runs takes. It used to
@@ -1047,7 +1053,7 @@
                                       :max-turns max-turns
                                       :beam-width requested-width
                                       :token-budget token-budget
-                                      :opening-context (:block orient)})
+                                      :opening-context opening})
         ;; THE IMPLEMENTER'S STREAM (RFC-012). Every cell that completes is
         ;; published as a step, onto the same bus the journal already uses.
         ;; An atom because the tracer is built once and read per step.
@@ -1143,7 +1149,7 @@
              ;; What the manifest says this run is FOR — see seed-branch.
              :prompt-suffix prompt-suffix
              ;; And what the problem already names — see seed-branch.
-             :orient (:block orient)
+             :orient opening
              ;; The compiled per-turn manifest advance-branch drives, and
              ;; whether it is a per-turn loop at all (which decides the turn
              ;; deadline; see advance-all).

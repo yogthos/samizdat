@@ -198,6 +198,15 @@
    {:name samizdat.agent.orient/block
     :summary "The rendered opening block for a problem under a root, with the names taken and those found — computed once per run by the driver, kept on the run row, off with :orient-inject :enabled? false (the arena's control arm)."}]}
 
+ {:group "The project's instruction files"
+  :entries
+  [{:name samizdat.agent.instructions/opening-context
+    :summary "The run's opening: the root's AGENTS.md (or the first of gates.edn :instructions :file-names that exists), then the orient block. On the run row, so a resume reopens on it."}
+   {:name samizdat.agent.instructions/pending
+    :summary "Which subdirectory instruction files touching some paths should load, and which directories that checked. The :tool/dispatch cell pins each found file into the tape once per branch."}
+   {:name samizdat.agent.instructions/touched-paths
+    :summary "The paths a parsed tool call names, by the argument names in gates.edn :instructions :path-args."}]}
+
  {:group "Reading and writing Clojure"
   :entries
   [{:name samizdat.lisp/diagnose

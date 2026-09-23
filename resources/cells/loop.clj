@@ -14,6 +14,8 @@
 ;; glob-scoped interceptors match on.
 (ns cells.loop
   (:require [mycelium.cell :as cell]
+            [samizdat.agent.gates :as gates]
+            [samizdat.agent.instructions :as instr]
             [samizdat.agent.loop :as turn]
             [samizdat.agent.reflect :as reflect]
             [samizdat.agent.state :as state]
@@ -115,16 +117,32 @@
                                            {:parsed parsed :signals signals
                                             :said said :response (:response call)}))))
 
+(defn- load-instructions
+  "Pin the instruction file of every directory this call touched for the
+  first time (gates.edn :instructions). The call's own result is not in the
+  tape yet, so the file lands just before it, where a claimed task's
+  statement lands too."
+  [{:keys [root]} parsed branch]
+  (let [p (gates/threshold :instructions)
+        paths (instr/touched-paths parsed p)]
+    (if (or (nil? root) (empty? paths))
+      branch
+      (let [{:keys [found seen]} (instr/pending root paths (:instructions-seen branch) p)]
+        (-> (reduce (fn [b f] (update b :messages conj (instr/pin-message f))) branch found)
+            (assoc :instructions-seen seen))))))
+
 (cell/defcell :tool/dispatch
   {:doc "Phase policy first, then the tool, then the branch bookkeeping the
         outcome demands (outcome counters, artifact banking, repeat-failure
-        escalation)."
+        escalation), then the instruction file of any directory the call
+        reached for the first time."
    :effects [:db :fs :proc :net]
    :requires []
    :input  [:map [:branch :map] [:turn :int] [:parsed :any]]
    :output [:map [:branch :map] [:result :any] [:tool :any]]}
   (fn [ctx {:keys [branch turn parsed] :as data}]
-    (merge data (turn/tool-step ctx branch turn parsed))))
+    (let [out (turn/tool-step ctx branch turn parsed)]
+      (merge data (update out :branch #(load-instructions ctx parsed %))))))
 
 (cell/defcell :journal/record
   {:doc "The durable record of the turn: the turn row, any artifact and its
