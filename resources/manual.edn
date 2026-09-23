@@ -208,6 +208,8 @@
   :entries
   [{:name samizdat.security.policy/read-paths
     :summary "The files a shell command prints (cat, head, tail, sed -n, less, more, nl), or none when a substitution, redirection or cd makes that unknowable. Stale-read notices, the digest steer and provider exposure count these as reads."}
+   {:name samizdat.agent.outline/outline
+    :summary "A file's definitions with the line ranges they span, by gates.edn :outline :patterns. read_file({path, outline: true}) returns it, so the next read can take one range instead of the whole file."}
    {:name samizdat.agent.files/large-shell-print?
     :summary "Whether a shell call is a lone `cat FILE` of a file over gates.edn :digest :min-lines — the phases.edn rule :large-shell-print-needs-a-digest refuses it toward read_digest."}]}
 

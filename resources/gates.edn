@@ -2557,6 +2557,31 @@
 
         A cost ceiling, so the capability tier may never raise it."}
 
+ :outline
+ {:value {:patterns ["^\\((?:defn-?|def|defmacro|defmulti|defmethod|defprotocol|defrecord|deftype|defonce|ns)\\s+([^\\s()\\[\\]]+)"
+                     "^\\s*(?:async\\s+)?(?:def|class)\\s+(\\w+)"
+                     "^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function\\*?|func|interface|type|enum)\\s+(\\w+)"
+                     "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?(?:fn|struct|enum|trait|impl|mod)\\s+(\\w+)"]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-d5wo.10"]
+  :doc "WHAT COUNTS AS A DEFINITION in read_file({path, outline: true})
+        (samizdat.agent.outline).
+
+        Measured over the campaign dbs, reading was ~70% of tool-result
+        characters and most of it whole files (read_file median 2.1k chars,
+        p90 at the page cap; shell cat and sed 3.3M chars). An outline is
+        each definition's name and line range, so the next read can ask for
+        the one range it needs. The digest refusals name it as a third way
+        forward.
+
+        :patterns   one regex per language shape, tried in order on every
+                    line; the first group is the name. Clojure's top-level
+                    def forms; Python def and class at any depth; JS/TS/Go
+                    function, interface, type and enum; Rust items. A line
+                    none matches is part of the definition above it.
+
+        Not capability-tunable: it describes source files, not a branch."}
+
  :task-fold
  {:value {:enabled? true :min-messages 12}
   :kind :policy :capability-tunable? false

@@ -124,6 +124,7 @@
             [samizdat.orient-test]
             [samizdat.instructions-test]
             [samizdat.exposure-test]
+            [samizdat.outline-test]
             [samizdat.hashline-test]
             [samizdat.control-test]
             [samizdat.util-test]
@@ -318,6 +319,7 @@
     samizdat.orient-test
     samizdat.instructions-test
     samizdat.exposure-test
+    samizdat.outline-test
     samizdat.hashline-test
     samizdat.control-test
     samizdat.util-test

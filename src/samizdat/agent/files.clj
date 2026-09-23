@@ -41,6 +41,7 @@
             [samizdat.lisp :as lisp]
             [samizdat.prompt :as prompt]
             [samizdat.agent.exam :as exam]
+            [samizdat.agent.outline :as outline]
             [samizdat.security.policy :as policy]
             [samizdat.store.journal :as journal]))
 
@@ -218,6 +219,8 @@
         offset (or (some-> (:offset args) str parse-long) 0)]
     (boolean
      (and min-lines
+          ;; An outline pages nothing through the context.
+          (not (or (:outline args) (get args "outline")))
           (not (str/blank? path))
           (zero? offset)
           (nil? (:limit args))
@@ -304,7 +307,8 @@
         path (str (:path args))
         offset (or (some-> (:offset args) str parse-long) 0)
         limit (some-> (:limit args) str parse-long)
-        anchors? (boolean (or (:anchors args) (get args "anchors")))]
+        anchors? (boolean (or (:anchors args) (get args "anchors")))
+        outline? (boolean (or (:outline args) (get args "outline")))]
     (cond
       (str/blank? path)
       (miss branch (msg {:needs-path true :tool "read_file"}))
@@ -312,6 +316,17 @@
       :else
       (if-let [abs (resolve-for-read (or root ".") refs path)]
         (if (fs/exists? abs)
+          (if outline?
+            ;; NAMES AND RANGES, NOT THE BODY (karamazov-d5wo.10): so the
+            ;; next read can ask for the one definition it needs.
+            (let [content (slurp abs)
+                  entries (outline/outline content (:patterns (gates/threshold :outline)))]
+              {:result (msg {:outline true :path path
+                             :total (count (str/split-lines content))
+                             :entries (str/join "\n" (map (fn [{:keys [line end name]}]
+                                                            (str "  " line "-" end "  " name))
+                                                          entries))})
+               :category :neutral :progress? false :branch branch})
           (let [content (slurp abs)
                 {:keys [text from next total]}
                 (page content offset (max-read-chars) limit)
@@ -339,7 +354,7 @@
                           (when next
                             (str "\n" (msg {:more true :path path :next next
                                             :shown next :total total}))))
-             :category :neutral :progress? false :branch branch})
+             :category :neutral :progress? false :branch branch}))
           (miss branch (msg {:no-file true :path path})))
         ;; The refusal NAMES the roots that would have worked. A boundary the
         ;; model cannot see the shape of is one it can only probe by failing,

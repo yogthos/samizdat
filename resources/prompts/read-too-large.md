@@ -2,4 +2,5 @@
 
 Two ways forward:
 - read_digest({paths: ["{{args.path}}"], question: "…"}) — ask what you need to know. A reader answers in bullets and the file stays out of your context; asking again is free for you. Add anchors: true when you mean to patch what it finds.
+- read_file({path: "{{args.path}}", outline: true}) — its definitions and the lines each spans, to find the section.
 - read_file({path: "{{args.path}}", offset, limit}) — when you already know which section you need.
