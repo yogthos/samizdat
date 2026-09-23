@@ -35,7 +35,7 @@
             ;; formatter resolves against; must load before the first log call
             [jolt.time]
             [jolt.http.platform :as platform]
-            [ring-chez.adapter :as adapter]
+            [samizdat.net :as net]
             [samizdat.api.control :as api-control]
             [samizdat.agent.acceptance :as acceptance]
             [samizdat.agent.gates :as gates]
@@ -85,10 +85,16 @@
   up edits without a process restart."
   [conn]
   (userspace/bind! conn)
+  ;; A project's first run copies the shipped role map and its files into
+  ;; .samizdat/ — before the reloads below, which must read the project's
+  ;; files. A no-op without a root bound, and after the first run.
+  (userspace/seed-project!)
   (gates/reload-config!)
   (lexicon/reload!)
   (phases/reload!)
   conn)
+
+(declare start-system! abandon-start!)
 
 (defn start!
   "Bring the system up. `overrides` is merged into the config, so a REPL
@@ -108,7 +114,17 @@
   ([handler overrides]
    (when (started?)
      (throw (ex-info "system already started; call stop! first" {})))
-   (let [cfg (config/load-config overrides)
+   (let [opened (volatile! nil)]
+     (try (start-system! handler overrides opened)
+          (catch Throwable e
+            (abandon-start! @opened)
+            (throw e))))))
+
+(defn- start-system!
+  "start!'s body. `opened` receives the database connection the moment it
+  exists, so a start that throws after it can close it."
+  [handler overrides opened]
+  (let [cfg (config/load-config overrides)
          ;; THE ACCEPTANCE SPEC IS CHECKED HERE, not at the ship gate. A
          ;; malformed criterion is the operator's mistake in the operator's
          ;; file, and a run that discovered it at `done` would wedge every
@@ -159,34 +175,38 @@
                        (or fold-role "system (probe inconclusive)")))
          ;; Which config files were read, so a surprising value is traceable
          ;; to its layer rather than to a guess about which file won.
-         _ (doseq [{:keys [layer path present?]} (config/config-sources
-                                                  (get-in cfg [:run :root]))]
-             (log/info "config" (name layer)
-                       (cond (nil? path) "— no config home"
-                             present? (str "read " path)
-                             :else (str "absent " path))))
+         _ (doseq [{:keys [layer path present? error]} (config/config-sources
+                                                        (get-in cfg [:run :root]))]
+             (if error
+               (log/warn "config" (name layer) "ignored" path "—" error)
+               (log/info "config" (name layer)
+                         (cond (nil? path) "— no config home"
+                               present? (str "read " path)
+                               :else (str "absent " path)))))
          _ (when (= :legacy (get-in cfg [:db :from]))
              (log/info "db: opening the pre-existing root file"
                        (get-in cfg [:db :path])
                        "— new projects get .samizdat/samizdat.sqlite3; move"
                        "this one there to adopt the new layout"))
-         c (db/open! (get-in cfg [:db :path]))
-         ;; Point the userspace reads at THIS project's store, and reload the
-         ;; policy caches AFTER the bind so they hold the project's own
-         ;; gates/wordlists/phases (bind-project! carries the ordering
-         ;; argument). From here on a cell, manifest, policy table or prompt
-         ;; resolves to the project's own version — seeded from the shipped
-         ;; template on first read — so two projects running this binary can
-         ;; evolve different loops and neither can edit the other's. Unbound
-         ;; (a bare REPL, a unit test) the same reads fall back to the
-         ;; templates, which is what the harness did before the store existed.
-         _ (bind-project! c)
-         ;; And which DIRECTORY the project is. Prompt assembly reads it to
-         ;; decide whether this run's target is the harness itself — the
-         ;; sections about cells, manifests and src-vs-resources are standing
-         ;; instruction about the wrong codebase on any other project
-         ;; (karamazov-8zk). The same value the drivers take :root from.
+         c (vreset! opened (db/open! (get-in cfg [:db :path])))
+         ;; Point userspace at THIS project — its directory, then its store —
+         ;; and reload the policy caches AFTER both, so they hold the
+         ;; project's own gates/wordlists/phases (bind-project! carries the
+         ;; ordering argument). The root comes first because the project's
+         ;; workflow is FILES under <root>/.samizdat/: the first run copies
+         ;; the shipped templates there, and from then on a cell, manifest,
+         ;; policy table or prompt is the project's file, with the store
+         ;; keeping its history — so two projects running this binary evolve
+         ;; different loops and neither can edit the other's. Unbound (a bare
+         ;; REPL, a unit test) the same reads fall back to the templates.
+         ;;
+         ;; The directory also tells prompt assembly whether this run's
+         ;; target is the harness itself — the sections about cells,
+         ;; manifests and src-vs-resources are standing instruction about the
+         ;; wrong codebase on any other project (karamazov-8zk). The same
+         ;; value the drivers take :root from.
          _ (userspace/bind-root! (get-in cfg [:run :root]))
+         _ (bind-project! c)
          ;; And which MODEL, for the prompt file layer
          ;; (.samizdat/prompts/<provider>/<model>/). The configured :model is
          ;; the identity for a hosted provider; for a local endpoint it is the
@@ -224,7 +244,7 @@
          ;; it. Started before the server, so a client that connects on the
          ;; first request is not polling a ring nothing is filling yet.
          _ (steps/start-pump!)
-         server (adapter/run-server handler {:port (get-in cfg [:http :port])})]
+         server (net/run-server handler (select-keys (:http cfg) [:port :worker-threads]))]
      (reset! system {:config cfg :conn c :server server})
      (log/info "samizdat up on port" (get-in cfg [:http :port])
                "provider" (get-in cfg [:llm :provider])
@@ -236,7 +256,19 @@
      (let [n (runs/reconcile-orphans! c)]
        (when (pos? n)
          (log/info "marked" n "run(s) interrupted: still flagged running with no process")))
-     :started)))
+     :started))
+
+(defn- abandon-start!
+  "Undo what a start that threw had already done: the step pump, the repair
+  seam, the project userspace was bound to, the database. Without this a
+  failed start left the process bound to that project — every userspace read
+  after it, in a REPL or the next test, went to a project nobody had started."
+  [conn]
+  (doseq [f [#(do (steps/stop-pump!) (steps/reset!))
+             #(fence/install-repair! nil)
+             #(do (userspace/unbind!) (userspace/bind-root! nil))
+             #(when conn (db/close conn))]]
+    (try (f) (catch Throwable e (log/warn "undoing a failed start:" (ex-message e))))))
 
 (defn stop!
   "Tear the system down. Best effort per resource: one failing close must not
@@ -262,7 +294,7 @@
                                (when (= ::hung (deref future 15000 ::hung))
                                  (log/warn "run" rid "did not stop within 15s;"
                                            "closing the system under it")))))]
-                       ["http server" #(adapter/stop-server (:server s))]
+                       ["http server" #(net/stop-server (:server s))]
                        ;; After the server, so a request in flight can still
                        ;; read the trace it was serving; the rings go with it.
                        ["step pump" #(do (steps/stop-pump!) (steps/reset!))]

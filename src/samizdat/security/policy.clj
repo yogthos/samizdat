@@ -632,7 +632,9 @@
   [{:keys [conn run-id args root] :as ctx}]
   (let [command (str (:command args))
         env (or (:env ctx) (into {} (System/getenv)))
-        session (if (and conn run-id) (grants/for-run conn run-id) {:grants []})
+        ;; The run's grants and what a person allowed always this session.
+        session (update (if (and conn run-id) (grants/for-run conn run-id) {:grants []})
+                        :grants into (approval/session-grants run-id))
         {:keys [head complex? promoted? blocked-segment protected-path
                 malformed rule]
          :as decided}

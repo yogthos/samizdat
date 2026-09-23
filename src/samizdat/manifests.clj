@@ -50,14 +50,12 @@
             [samizdat.store.userspace :as us]
             [samizdat.userspace :as userspace]))
 
-(def shipped-manifests
-  "The manifests that ship with the harness, ENUMERATED not globbed — a
-  classpath has no directory listing, so a glob finds nothing inside a built
-  binary (same reasoning as cells/shipped-cells and prompt/shipped-prompts).
-  Pinned against the directory by workflow-test."
-  ["loop" "beam" "critic" "orchestrator" "probe" "review" "reviewer"
-   "supervisor" "oversight" "worker" "team" "board" "board-bt" "feature" "decompose"
-   "repair" "repl"])
+(defn shipped-manifests
+  "Every manifest role the harness ships, from the shipped role map
+  (resources/userspace.edn). What a project HAS is its own map —
+  `userspace/roles` — and that is what a lister should read."
+  []
+  (userspace/shipped-roles :manifest))
 
 (defn manifest-resource
   "The factory resource path a manifest name seeds from, e.g. \"loop\" ->
@@ -743,6 +741,11 @@
   [name]
   (compile-loop (read-definition (manifest-body! name))))
 
+(defn- us-roles
+  "The manifest roles of the map in force: the project's own in file mode."
+  []
+  (userspace/roles :manifest))
+
 (defn catalog
   "The workflows available to select or adapt: every factory manifest and
   every stored one, each with its :description. This is the set the
@@ -755,9 +758,7 @@
   that will actually run, and serving the factory description for an evolved
   manifest was karamazov-blt.4."
   [conn]
-  (let [factory (->> shipped-manifests
-                     (filter #(io/resource (manifest-resource %)))
-                     set)
+  (let [factory (set (us-roles))
         stored (->> (try (us/names conn :manifest) (catch Throwable _ nil))
                     ;; us/names yields rows ({:name :version :versions}),
                     ;; factory yields name strings — normalise to names.
@@ -766,7 +767,8 @@
                     set)]
     (->> (sort (into factory stored))
          (keep (fn [nm]
-                 (let [edn (or (when conn
+                 (let [edn (or (when (userspace/files?) (userspace/body :manifest nm))
+                               (when conn
                                  (try (some-> (us/load-latest conn :manifest nm) :body)
                                       (catch Throwable _ nil)))
                                (some-> (io/resource (manifest-resource nm)) slurp))]
@@ -780,3 +782,19 @@
                         ;; pointed at. render-catalog does that filtering.
                         :turn-sliceable? (turn-sliceable? d)})))))
          vec)))
+
+;; A manifest edit is checked before it is what runs (karamazov-1a51.8): it
+;; has to read, and it has to compile against the cells the project loads —
+;; which is where a cell id that does not exist, an edge to nowhere or an
+;; unreachable state is caught. The registry is brought up to date first, so
+;; the check is against the project's cells rather than whatever was loaded
+;; last.
+(userspace/register-validator!
+ :manifest
+ (fn [_ text]
+   (let [{:keys [value problem]} (userspace/read-edn text)]
+     (or problem
+         (try (cells/load-cells!)
+              (compile-definition value)
+              nil
+              (catch Throwable e (userspace/problem :compile e)))))))

@@ -38,7 +38,7 @@
   that called them, which no test could see because each half was correct on
   its own."
   #{:decide :answer :toggle :select-run :select-branch :input :submit :start
-    :abort :resume})
+    :abort :resume :reply :toggle-option})
 
 (def max-trace
   "How many steps the UI holds. The server's ring is bounded and so is this:
@@ -66,7 +66,25 @@
    :trace []
    :steps-cursor 0
    :trace-dropped 0
+   ;; The id of the last journal event the stream delivered: what a
+   ;; reconnect sends as Last-Event-ID, so nothing is replayed twice.
    :journal-cursor 0
+   ;; Whether the run's event stream is up. While it is, the run panels are
+   ;; refreshed when an event says they changed rather than on a timer.
+   :live? false
+   ;; Where the conversation is scrolled to: the key of the entry held in
+   ;; view, or nil to follow the bottom as new entries arrive.
+   :scroll-anchor nil
+   ;; What this TUI printed — command output, /help — drawn in the
+   ;; conversation as the harness's voice. Local: nothing the server holds.
+   :local-notes []
+   ;; What was sent from the compose box, oldest first, and where Ctrl+P /
+   ;; Ctrl+N have walked to in it (nil when not walking).
+   :history []
+   :history-at nil
+   ;; The model and effort a /model or /effort with no run on screen set for
+   ;; the next run started from here.
+   :next-llm {}
    :turn-text {}
    :approvals []
    :approval-id nil
@@ -147,7 +165,8 @@
           head (:id (first as))]
       (cond-> (assoc (connected s) :approvals as)
         (not= head (:approval-id s))
-        (assoc :approval-id head :question-cursor 0 :question-answers [])))))
+        (assoc :approval-id head :question-cursor 0 :question-answers []
+               :question-selected #{} :reply nil)))))
 
 (defn answer-question
   "Record an answer and move to the next question, or say the set is done.
@@ -157,7 +176,8 @@
   [s answers]
   (let [total (count (:questions (first (:approvals s))))
         next-i (count answers)]
-    [(assoc s :question-answers (vec answers) :question-cursor (min next-i (dec total)))
+    [(assoc s :question-answers (vec answers) :question-cursor (min next-i (dec total))
+            :question-selected #{} :reply nil)
      (>= next-i total)]))
 
 (defn apply-turn-text
@@ -238,19 +258,46 @@
 (defn select-branch [s branch-id]
   (assoc s :branch-id branch-id :branch nil :turn-text {}))
 
-(defn pending-decision
-  "What a bare `y`/`n` means right now: `[approval-id decision]`, or nil.
+(defn dialog-action
+  "What a key means while a question is on screen, as an action for the loop:
+  [:decide id decision-map], [:reply kind id], [:cancel-reply], or nil when
+  the key is not the dialog's.
 
-  Only over a yes/no PERMISSION question. A questionnaire's answer box takes
-  characters, and a `y` typed into it is a word being written, not a verdict
-  on a question nobody offered as yes-or-no."
-  [s ch]
+  Permission: y allow once, a allow always (this session — only when the
+  question names the pattern it would allow), n or Esc deny, d deny with a
+  note typed in the compose box. A questionnaire takes only Esc: reject it.
+  Letters count only with nothing typed — a y in the middle of a directive
+  is a letter, not a verdict."
+  [s {:keys [char key]}]
   (let [a (first (:approvals s))]
-    (when (and a (empty? (:questions a)))
-      (case (str ch)
-        "y" [(:id a) :allow]
-        "n" [(:id a) :deny]
-        nil))))
+    (cond
+      (nil? a) nil
+      (:reply s) (when (= :escape key) [:cancel-reply])
+      (= :escape key) [:decide (:id a) (if (seq (:questions a))
+                                         {:decision :deny :note "rejected"}
+                                         {:decision :deny})]
+      (seq (:questions a)) nil
+      (not (str/blank? (str (:input s)))) nil
+      :else (case (str char)
+              "y" [:decide (:id a) {:decision :allow}]
+              "a" (when (:always a) [:decide (:id a) {:decision :allow :always true}])
+              "n" [:decide (:id a) {:decision :deny}]
+              "d" [:reply :deny-note (:id a)]
+              nil))))
+
+(defn start-reply
+  "Give the compose box to a dialog: its next Enter is the deny note or the
+  custom answer, not a directive."
+  [s kind id]
+  (assoc s :reply {:kind kind :id id} :input ""))
+
+(defn cancel-reply [s] (assoc s :reply nil))
+
+(defn toggle-option
+  "Tick or untick option `i` of a multi-select question."
+  [s i]
+  (update s :question-selected (fn [sel] (let [sel (set sel)]
+                                           (if (contains? sel i) (disj sel i) (conj sel i))))))
 
 (defn toggle-fold [s id]
   (update s :expanded (fn [e] (let [e (set e)]
@@ -320,3 +367,116 @@
           (note-notice (str "started " (str id))))
       (note-error s (or (not-empty (str error))
                         "the server accepted the request and returned no run id")))))
+
+;; --- the pushed event stream -------------------------------------------------
+
+(def ^:private refresh-for
+  "What a journal event of each kind changed, beyond the branch it names.
+  Anything unlisted changes the run detail — the gates, the artifacts, the
+  board — which is the cheap default."
+  {"run-finished" #{:detail :runs}
+   "run-started"  #{:detail :runs}
+   "run-failed"   #{:detail :runs}
+   "run-error"    #{:detail :runs}})
+
+(defn- step-entry
+  "A pushed step in the shape the steps tail serves."
+  [d]
+  (select-keys d [:node :cell :transition :ms :failed :turn :branch_id]))
+
+(defn apply-event
+  "Fold one pushed event into the state. Returns [state wants]: `wants` is
+  the set of things the event changed that the stream does not carry —
+  :detail, :branch, :approvals, :runs — for the caller to fetch, coalesced."
+  [s {:keys [id event data]}]
+  (let [s (cond-> s id (assoc :journal-cursor (or (parse-long (str id)) (:journal-cursor s))))]
+    (case event
+      "step" [(update s :trace (fn [t] (let [t (conj (vec t) (step-entry data))]
+                                         (if (> (count t) max-trace)
+                                           (subvec t (- (count t) max-trace))
+                                           t))))
+              #{}]
+      "approval" [s #{:approvals}]
+      [s (cond-> (get refresh-for event #{:detail})
+           (and (:branch_id data) (= (:branch_id data) (:branch-id s))) (conj :branch))])))
+
+(defn stream-status
+  "Note the event stream's state: `status` 200 is up, anything else down."
+  [s status]
+  (assoc s :live? (= 200 status)))
+
+;; --- following the bottom ----------------------------------------------------
+
+(defn follow
+  "Follow the bottom of the conversation again."
+  [s]
+  (assoc s :scroll-anchor nil))
+
+(defn scroll
+  "Move the conversation `delta` entries (negative is up) over `ks`, the
+  entries' keys in order. Following the bottom is the anchor being nil;
+  scrolling back down to the last entry follows again, and an anchor holds
+  its entry however many arrive below it — the view stays where the reader
+  left it (dirge's rule)."
+  [s ks delta]
+  (let [n (count ks)
+        at (or (some-> (:scroll-anchor s) (#(.indexOf ^java.util.List ks %)) (#(when (>= % 0) %)))
+               (dec n))
+        to (max 0 (min (dec n) (+ at delta)))]
+    (if (or (zero? n) (>= to (dec n)))
+      (follow s)
+      (assoc s :scroll-anchor (nth ks to)))))
+
+(defn toggle-latest-fold
+  "Ctrl+O, from dirge: open the newest fold in `ids` (in order), or shut it
+  when it is the one already open."
+  [s ids]
+  (if-let [id (last ids)]
+    (update s :expanded (fn [e] (let [e (set e)] (if (contains? e id) (disj e id) (conj e id)))))
+    s))
+
+;; --- what this TUI says, and what was typed ------------------------------------
+
+(defn- now [] (str (java.time.Instant/now)))
+
+(defn note-local
+  "Lines this TUI prints into the conversation, in the harness's voice."
+  [s lines]
+  (let [at (now)]
+    (update s :local-notes (fnil into [])
+            (map-indexed (fn [i l] {:key (str "local-" at "-" i) :at at :text (str l)}) lines))))
+
+(defn clear-local [s] (assoc s :local-notes []))
+
+(def ^:private history-cap 500)
+
+(defn remember-input
+  "Keep what was sent, for Ctrl+P. A repeat of the last line is not kept
+  twice."
+  [s text]
+  (let [t (str/trim (str text))]
+    (cond-> (assoc s :history-at nil)
+      (and (seq t) (not= t (peek (:history s))))
+      (update :history (fn [h] (let [h (conj (vec h) t)]
+                                 (if (> (count h) history-cap)
+                                   (subvec h (- (count h) history-cap))
+                                   h)))))))
+
+(defn history-back
+  "Ctrl+P: the line before the one on show."
+  [s]
+  (let [h (:history s)]
+    (if (empty? h)
+      s
+      (let [i (max 0 (dec (or (:history-at s) (count h))))]
+        (assoc s :history-at i :input (nth h i))))))
+
+(defn history-forward
+  "Ctrl+N: the line after; past the newest, an empty line."
+  [s]
+  (if-let [i (:history-at s)]
+    (let [j (inc i)]
+      (if (< j (count (:history s)))
+        (assoc s :history-at j :input (nth (:history s) j))
+        (assoc s :history-at nil :input "")))
+    s))

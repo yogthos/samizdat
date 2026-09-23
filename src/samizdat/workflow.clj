@@ -116,9 +116,18 @@
   ([conn] (load-loop! conn loop-name))
   ([conn name]
    (let [res (manifest-resource name)
-         row (if-let [r (io/resource res)]
-               (us/seed! conn :manifest name (slurp r))
-               (us/load-latest conn :manifest name))]
+         row (if (userspace/files?)
+               ;; A project with files runs the file its role map names —
+               ;; checked, so a broken edit is the last good version — and
+               ;; the version is the history that read just brought up to
+               ;; date. Reading the store row here started every run on
+               ;; whatever the store last held, not on the file.
+               (let [body (userspace/body! :manifest name)]
+                 {:body body
+                  :version (:version (us/load-latest conn :manifest name))})
+               (if-let [r (io/resource res)]
+                 (us/seed! conn :manifest name (slurp r))
+                 (us/load-latest conn :manifest name)))]
      (when-not row
        (throw (ex-info (str "no loop manifest named '" name
                             "' — no resource at " res " and nothing stored")

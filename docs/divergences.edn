@@ -16,17 +16,11 @@
 ;; What it cannot do is spot a divergence nobody wrote down; that needs the
 ;; upstream as an oracle, and none of them run under jolt.
 ;;
-;; :lib  is :mycelium, :maestro, :parinferish or :ring-chez.
+;; :lib  is :mycelium, :maestro or :parinferish.
 ;; :kind is :port (the runtime differs), :harness (samizdat asked for it), or
 ;;       :behaviour (observable difference not forced by either).
 
-[{:id       :ring-chez-connection-off-the-accept-loop
-  :lib      :ring-chez
-  :kind     :behaviour
-  :summary  "Upstream serves one connection at a time on the accept thread, so a long request held /health and everything else. The vendored copy hands each accepted connection off the loop."
-  :unpinned "The smoke task (samizdat.smoke) probes /health during a /slow request; no unit test isolates the accept loop."}
-
- {:id       :maestro-dispatch-predicates-compile-with-host-eval
+[{:id       :maestro-dispatch-predicates-compile-with-host-eval
   :lib      :maestro
   :kind     :harness
   :summary  "Upstream evaluates EDN dispatch predicates under sci. Here they compile with the host eval; safety against a bad agent-authored predicate comes from the mutation protocol's validate, soak and rollback, not from interpreter sandboxing."

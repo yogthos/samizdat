@@ -6,7 +6,8 @@
 ;; rules, either ships the answer or sends the branch back with one [critic]
 ;; note. Bounded and fail-open, so it can never wedge a run.
 ;;
-;; This seeds version 1 of the "critic" workflow; after that the db rows win.
+;; A project's first run copies this to .samizdat/manifests/critic.edn; after
+;; that the project's copy is what runs.
 ;; The agent can tune it or fork a new manifest with the `manifest` tool.
 {:description "The worker loop with a finalization critic: on a done, a judge reviews the run's diff and either ships it or sends it back. Use when correctness matters more than speed and a single branch is enough."
  :input-schema

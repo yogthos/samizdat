@@ -44,6 +44,39 @@ Concretely, when adding a capability:
    entry, which is fine — but a decision made in `src/` is a bug.
 4. Add it to `resources/manual.edn` so the next run knows it exists.
 
+### Where a project's configuration lives
+
+Two kinds of file, deliberately different:
+
+- **The workflow is the project's.** `resources/` ships a generic starting
+  point. `.samizdat/userspace.edn` is the project's ROLE MAP — which file
+  serves each manifest, prompt and policy role, and the ordered list of cells
+  — and `resources/userspace.edn` is the shipped one. A project's first run
+  copies that map and every file it names into `<root>/.samizdat/`
+  (`userspace/seed-project!`), and from then on only the project's map and
+  files are read — there is no global set, because the point is a workflow
+  that adapts to each project. `src/` asks for a ROLE and never lists what a
+  project has; a role the map lacks is refused with a message naming the
+  role and the map, never answered by the shipped template. Every edit is
+  CHECKED before it runs (`userspace/register-validator!` per kind): one that
+  does not read, compile, render or load is rejected, the last version that
+  passed keeps running, and whoever made it is told what broke — a file
+  tool's write in its own result, anyone else's through the supervisor. The userspace store is
+  their HISTORY: a tool save writes the file and a version with its
+  rationale, a revert rewrites the file, and an edit made to the file
+  directly is recorded as a version on its next read. A template a later
+  release adds or changes is not written into an existing project, and
+  neither is a version stored before the project had files: each is OFFERED
+  to the supervisor (`userspace/offers`, shown once per run in the oversight
+  pass), answered with the `adopt` tool, and the answer is remembered in
+  `.samizdat/adoption.edn`.
+- **Settings follow the person.** `config.edn` and each front end's file
+  (`tui.edn`, later `gui.edn`, `webui.edn`) are LAYERED by
+  `samizdat.layers`: `$SAMIZDAT_<NAME>_FILE` > `.samizdat/<name>.edn` >
+  `~/.config/samizdat/<name>.edn` > the shipped default, deep-merged (maps key
+  by key, vectors such as a hiccup `:layout` replaced whole). A new front end
+  is a new name, not a new loader.
+
 `docs/RFCS/` specifies each layer: its purpose and scope, its API, and the
 invariants it holds. `docs/provenance.md` indexes the numbered review findings
 that code comments cite.
@@ -95,12 +128,13 @@ jolt tui           # the terminal UI; SAMIZDAT_URL / HARNESS_PORT point it at a 
 jolt tui-test      # the TUI's toolkit-bound tests: real FTXUI widgets, headless
 ```
 
-The TUI's own arrangement is EDN, and it comes from three places, most local
-first: `$SAMIZDAT_TUI_LAYOUT` or `.samizdat/tui.edn` (a person's, re-read
-whenever it changes, so an edit lands on the next frame); `GET
-/v1/harness/layout` (the project's stored `tui` policy — how the AGENT
-rearranges its own UI, served because a front end holds no database handle);
-then `resources/tui.edn` off the classpath. Adding a widget means registering
+The TUI's own arrangement is EDN in `tui.edn`, a layered settings file (see
+"Where a project's configuration lives" below): `$SAMIZDAT_TUI_FILE` /
+`$SAMIZDAT_TUI_LAYOUT`, then `.samizdat/tui.edn`, then what `GET
+/v1/harness/layout` serves (the server's own project file — how the AGENT
+rearranges a front end's UI), then `~/.config/samizdat/tui.edn`, then
+`resources/tui.edn` — each merged over the ones below and re-read whenever it
+changes, so an edit lands on the next frame. Adding a widget means registering
 a `:widget/*` tag in `tui/samizdat/tui/widgets.clj` and naming it in a layout
 — the core owns what a widget IS, the layout owns where it goes.
 

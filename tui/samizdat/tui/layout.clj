@@ -43,17 +43,22 @@
   The alternative is a UI that black-screens on the edit whose damage it is
   the only tool for seeing.
 
-  WHERE THE LAYOUT COMES FROM. Three sources, most local first:
+  WHERE THE LAYOUT COMES FROM. tui.edn is a LAYERED settings file — it
+  follows a person between projects — so it is assembled by samizdat.layers
+  like config.edn, highest first:
 
-  1. a FILE, `SAMIZDAT_TUI_LAYOUT` or `.samizdat/tui.edn` beside the run —
-     what a person edits, re-read whenever its mtime moves, so an edit shows
-     up on the next frame with no restart;
-  2. what the HARNESS SERVES, `GET /v1/harness/layout`, folded in by the
-     poller — the project's stored `tui` policy, which is how the agent
-     rearranges its own UI: the server is bound to the project and can read
-     that row, and this process is a strict HTTP client that cannot;
-  3. the SHIPPED template off the classpath, which is what draws offline and
-     on the first frame.
+  1. the file SAMIZDAT_TUI_FILE (or the older SAMIZDAT_TUI_LAYOUT) names;
+  2. `.samizdat/tui.edn` in the project the TUI was started in;
+  3. what the HARNESS SERVES, `GET /v1/harness/layout` — the server's own
+     project file, which is how the agent rearranges its UI for a front end
+     running somewhere else;
+  4. `~/.config/samizdat/tui.edn`, a person's own across every project;
+  5. the SHIPPED file off the classpath, which is what draws offline and on
+     the first frame.
+
+  Each is merged over the ones below: maps key by key, so one file can move
+  a colour without restating the rest; a `:layout` whole. Every file is
+  re-read when its stamp moves, so an edit shows up on the next frame.
 
   This used to be one source, `userspace/edn-body`, and it could not work:
   a front end binds no project, so that read fell through to the classpath
@@ -65,7 +70,10 @@
   Toolkit-free on purpose: hiccup is data, so everything here is covered by
   the suite with no terminal and no ftxui."
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.string :as str]
+            [samizdat.layers :as layers]
+            [samizdat.tui.theme :as theme]))
 
 ;; --- the registry ------------------------------------------------------------
 ;;
@@ -96,7 +104,7 @@
   stood, and an operator scanning a broken layout should be able to see
   which panel is missing without reading the text."
   [title detail]
-  [:vbox {:border :rounded :color :red}
+  [:vbox {:class :complaint :border :rounded}
    [:text {:bold true} title]
    [:text detail]])
 
@@ -174,89 +182,78 @@
   `:error` if there is one — an operator whose edit did not take needs to be
   told, and told without losing the UI."
   [spec]
-  (let [l (:layout spec)]
+  (let [l (:layout spec)
+        {th :theme problems :problems} (theme/check (:theme spec))
+        inline (theme/inline-problems l)
+        colour-error (when (or (seq problems) (seq inline))
+                       (str "tui.edn — not a colour: "
+                            (str/join ", " (concat
+                                            (for [[cls k v] problems]
+                                              (str ":theme " cls " " k " " (pr-str v)))
+                                            (for [[k v] inline]
+                                              (str ":style " k " " (pr-str v)))))))
+        spec (assoc spec :theme th)]
     (if (drawable? l)
-      (dissoc spec :error)
+      (cond-> (dissoc spec :error)
+        colour-error (assoc :error colour-error))
       (assoc spec
              :layout (:layout (template))
              :error (str "tui.edn :layout is not a hiccup element ("
                          (if (nil? l) "absent" (pr-str (type l)))
-                         "); showing the shipped layout")))))
+                         "); showing the shipped layout"
+                         (when colour-error (str "; " colour-error)))))))
 
-;; --- the three sources -------------------------------------------------------
+;; --- the layers --------------------------------------------------------------
 
-(defn- parse
-  "An EDN layout body as a spec, or a spec carrying only the complaint.
-
-  Never throws. A half-written file is exactly what a runtime edit looks like
-  for the instant it is being saved, and the tool for seeing the damage must
-  not be the thing the damage takes out."
-  [body what]
-  (try
-    (let [v (edn/read-string (str body))]
-      (if (map? v) v {:error (str what " is not a map of layout settings")}))
-    (catch Throwable e
-      {:error (str what " did not parse: " (ex-message e))})))
-
-;; The body the harness last served, already parsed. Written by the poller
-;; through `serve!`; nil until the first successful fetch, and left alone by
-;; a failed one — an outage must not cost the layout that is on screen.
+;; The text the harness last served. Written by the poller through `serve!`;
+;; nil until the first successful fetch, and left alone by a failed one — an
+;; outage must not cost the layout that is on screen. Text rather than parsed:
+;; samizdat.layers parses every layer the same way, this one included.
 (defonce ^:private served (atom nil))
 
 (defn serve!
   "Take the layout body `GET /v1/harness/layout` returned. nil clears it."
   [body]
-  (reset! served (when (not-empty (str body)) (parse body "the harness's tui.edn")))
+  (reset! served (not-empty (str (or body ""))))
   nil)
-
-(defn file-path
-  "Where a person's own layout lives, if they have one.
-
-  `SAMIZDAT_TUI_LAYOUT` names it outright; otherwise `.samizdat/tui.edn`
-  beside the project, which is where the harness already keeps the files a
-  person and the agent both edit in place."
-  []
-  (or (not-empty (str (System/getenv "SAMIZDAT_TUI_LAYOUT")))
-      ".samizdat/tui.edn"))
-
-;; {:path :stamp :spec} — so the common case is a stat and not a parse. The
-;; stamp is mtime AND length: `lastModified` is milliseconds, and an edit
-;; saved inside one of them would otherwise not be seen.
-(defonce ^:private file-cache (atom nil))
 
 (defn forget-file!
   "Drop the file cache, so the next read goes to disk. For tests."
   []
-  (reset! file-cache nil)
-  nil)
+  (layers/forget-files!))
 
-(defn- from-file
-  "The layout in `path`, re-read whenever its mtime moves. nil when there is
-  no such file.
-
-  A spec that FAILED to parse is not cached: a torn read of a file being
-  written would otherwise be remembered as the answer, and the finished
-  write — which need not change the mtime again — would never be seen."
-  [path]
-  (let [f (io/file (str path))]
-    (when (.isFile f)
-      (let [stamp [(.lastModified f) (.length f)]
-            c @file-cache]
-        (if (and (= (str path) (:path c)) (= stamp (:stamp c)))
-          (:spec c)
-          (let [spec (try (parse (slurp f) (str path))
-                          (catch Throwable e {:error (str path ": " (ex-message e))}))]
-            (when-not (:error spec)
-              (reset! file-cache {:path (str path) :stamp stamp :spec spec}))
-            spec))))))
+(defn default-opts
+  "Where the TUI's layers are: the project it was started in, and the person's
+  config home. The TUI binds no project, so the project is the working
+  directory — which is where `jolt tui` is run from."
+  []
+  {:root (System/getProperty "user.dir")
+   :global-dir (layers/global-dir)})
 
 (defn current
-  "The layout to draw: the local file, else what the harness serves, else the
-  shipped template — validated, so a broken one costs its own panel and a
-  line in the status bar rather than the screen.
+  "The layout to draw, as the merged settings map plus `:sources` (the layers
+  that contributed) and `:error` (what did not, and why).
 
-  Cheap enough to call every frame, which is the point: the file is re-read
-  only when its mtime moves, and the served body was parsed when it arrived."
-  ([] (current (file-path)))
-  ([path]
-   (validate (or (from-file path) @served (template) {}))))
+  Through samizdat.layers, like every other layered settings file:
+  SAMIZDAT_TUI_FILE / SAMIZDAT_TUI_LAYOUT, then .samizdat/tui.edn, then what
+  the harness serves, then ~/.config/samizdat/tui.edn, then the shipped file —
+  each merged over the one below. `opts` override `default-opts`; a test
+  passes its own dirs and environment.
+
+  Validated, so a broken one costs its own layer and a line in the status bar
+  rather than the screen. Cheap enough to call every frame: each file is
+  re-read only when its stamp moves."
+  ([] (current nil))
+  ([opts]
+   (let [r (layers/resolve "tui" (merge (default-opts)
+                                        opts
+                                        {:served @served
+                                         :shipped (some-> (io/resource "tui.edn") slurp)}))
+         layer-error (when (seq (:errors r))
+                       (str/join "; " (for [{:keys [layer path var error]} (:errors r)]
+                                        (str (or path var (name layer)) " " error))))
+         v (validate (or (:value r) {}))]
+     (cond-> (assoc v :sources (:sources r))
+       layer-error (assoc :error (if (:error v)
+                                   (str layer-error "; " (:error v))
+                                   layer-error))))))

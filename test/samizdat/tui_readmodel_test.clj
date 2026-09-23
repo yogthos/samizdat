@@ -158,3 +158,22 @@
       (let [t (first (:turns (api-runs/branch-detail c rid "B1")))]
         (is (= 43000 (:prompt_tokens t)))
         (is (= 40000 (:cache_hit_tokens t)))))))
+
+(deftest the-branch-detail-carries-the-notes-a-timeline-asks-for
+  ;; The conversation shows who said what — the critic's scores, the
+  ;; supervisor's notes — beside the turns. Which kinds is the front end's
+  ;; choice (tui.edn), so it names them; a note on another branch is not
+  ;; this branch's, and a run-wide one (no branch) is everybody's.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/note! c rid :critic-score {:branch-id "B1" :turn 2 :data {:reply "fine"}})
+      (journal/note! c rid :critic-score {:branch-id "B2" :turn 2 :data {:reply "other"}})
+      (journal/note! c rid :oversight {:data {:notes "run-wide"}})
+      (journal/note! c rid :prompt-manifest {:data {}})
+      (let [ns (:notes (api-runs/branch-detail c rid "B1" ["critic-score" "oversight"]))]
+        (is (= [["critic-score" {:reply "fine"}] ["oversight" {:notes "run-wide"}]]
+               (mapv (juxt :kind :data) ns)))
+        (is (every? :created_at ns) "placed in time beside the turns"))
+      (is (nil? (:notes (api-runs/branch-detail c rid "B1")))
+          "no kinds asked for, no notes"))))

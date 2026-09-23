@@ -261,3 +261,39 @@
       (let [r (deref answer 5000 {:effect :hung})]
         (is (= :ask (:effect r)))
         (is (= "use the vendored copy" (:note r)))))))
+
+(deftest allow-always-holds-for-the-session-and-is-never-stored
+  ;; dirge's `a`: a person who has allowed `cargo test` twice should not be
+  ;; asked a third time. Session-only, by choice: it is this person's call
+  ;; about this sitting, not a fact about the project, and a standing allow
+  ;; left behind is the dangerous default — so it lives in memory, per run,
+  ;; and is gone with the process. The question offers the pattern it would
+  ;; allow so the person sees what they are agreeing to.
+  (with-redefs [approval/policy (constantly {:mode :block :wait-ms 5000
+                                             :on-timeout :deny})]
+    (let [result (future (shell "frobnicate --widgets"))]
+      (future (loop [] (if-let [p (first (approval/pending "r1"))]
+                         (do (is (= "frobnicate *" (:always p))
+                                 "the question names what always would allow")
+                             (approval/decide! (:id p) {:decision :allow :always true}))
+                         (do (Thread/sleep 5) (recur)))))
+      (is (not= :ask (get-in (deref result 8000 ::hung) [:policy :effect]))))
+    (is (= ["frobnicate *"] (approval/session-grants "r1")))
+    (let [again (deref (future (shell "frobnicate --gadgets")) 3000 ::hung)]
+      (is (not= ::hung again) "not asked again")
+      (is (not= :ask (get-in again [:policy :effect]))))
+    (is (empty? (approval/session-grants "r2")) "another run is asked as usual")
+    (testing "a run that ends forgets it"
+      (approval/abandon! "r1")
+      (is (empty? (approval/session-grants "r1"))))))
+
+(deftest a-question-the-person-rejects-says-so
+  ;; Esc on a questionnaire: the question was seen and not answered, which
+  ;; is not the same thing as nobody being there.
+  (with-redefs [approval/policy (constantly {:mode :block :wait-ms 3000 :on-timeout :deny})]
+    (let [r (future (ask {:questions [{:question "which store?" :options ["a" "b"]}]}))]
+      (future (loop [] (if-let [p (first (approval/pending "r1"))]
+                         (approval/decide! (:id p) {:decision :deny :note "not now"})
+                         (do (Thread/sleep 5) (recur)))))
+      (let [out (deref r 5000 ::hung)]
+        (is (re-find #"declined to answer it: not now" (:result out)))))))

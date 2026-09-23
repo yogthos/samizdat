@@ -40,7 +40,8 @@
   selmer has to parse it — because an unbalanced `{% if %}` fails at the
   moment the prompt is used, which for a gate message is mid-run and for the
   system prompt is at the top of every branch."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
             [samizdat.prompt :as prompt]
             [samizdat.store.userspace :as us]
@@ -75,28 +76,49 @@
          :project  "project")
        "  " path))
 
-(defn- render-list []
-  (let [stored (into {} (map (juxt :name identity)) (userspace/names :prompt))
-        files (userspace/prompt-variants)
-        shipped (sort prompt/shipped-prompts)
-        all (sort (into (set shipped) (concat (keys stored) (keys files))))]
+(defn- render-list
+  "Every prompt this project has, with its history and where its words come
+  from. In a project with files (userspace/files?) the ROLE MAP is the list —
+  every role has its own file, so only what is not the plain case is marked:
+  a text that differs from the shipped template, and a provider or model
+  variant that wins over the role's file."
+  []
+  (let [files? (userspace/files?)
+        stored (into {} (map (juxt :name identity)) (userspace/names :prompt))
+        variants (cond->> (userspace/prompt-variants)
+                   files? (into {} (keep (fn [[n vs]]
+                                           (when-let [vs (seq (filter #(#{:model :provider} (:layer %)) vs))]
+                                             [n vs])))))
+        roles (userspace/roles :prompt)
+        all (if files?
+              (sort roles)
+              (sort (into (set roles) (concat (keys stored) (keys variants)))))]
     (if (empty? all)
       "No prompts."
       (str/join "\n"
                 (for [n all
                       :let [{:keys [version versions]} (get stored n)
-                            src (userspace/prompt-source n)]]
+                            src (userspace/prompt-source n)
+                            edited? (if files?
+                                      ;; The role's OWN file, not whatever
+                                      ;; variant the running model reads.
+                                      (and (shipped? n)
+                                           (not= (some-> (userspace/project-path :prompt n)
+                                                         io/file (#(when (.isFile %) (slurp %))))
+                                                 (userspace/template :prompt n)))
+                                      (and version (shipped? n)))]]
                   (str n
                        (if version
                          (str "  v" version " (" versions
                               (if (= 1 versions) " version)" " versions)"))
                          "  [template]")
-                       (when (and version (shipped? n)) "  [edited]")
-                       ;; A file shadows the row above it, and the reader of
+                       (when edited? "  [edited]")
+                       ;; A file shadows what is above it, and the reader of
                        ;; this list is deciding which one to edit.
-                       (when (= :file (:source src))
+                       (when (and (= :file (:source src))
+                                  (or (not files?) (#{:model :provider} (:layer src))))
                          (str "  [file: " (name (:layer src)) " wins]"))
-                       (when-let [vs (get files n)]
+                       (when-let [vs (get variants n)]
                          (str "\n" (str/join "\n" (map variant-line vs))))))))))
 
 (defn- source-line

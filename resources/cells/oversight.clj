@@ -84,6 +84,13 @@
     failed to carry a requirement or the ship gate let it through, and both
     are the harness's words failing. No floor; one is the signal.
 
+  - something is ON OFFER to the project's workflow and this run has not
+    shown it yet: a role or template a later release shipped, or a version
+    the project stored before its workflow lived in files (karamazov-1a51.6).
+    Nothing applies them but the supervisor, so a run that never looked
+    would leave them unanswered for good. Once per run: after the pass that
+    shows them they wait in `adopt list`.
+
   A healthy run that is shipping gets no supervision, which is correct: there
   is nothing to tune and saying so costs a turn of somebody's budget. THE
   PREMISE OF THAT SENTENCE is that shipping means shipping something whole,
@@ -95,7 +102,7 @@
   idle, no crash, cap far off, something DID ship, nothing refused. That is
   what the last trigger is for."
   [{:keys [unmet-gates idle-turns errors at-cap? nothing-shipped? refused
-           sent-back-green?]}
+           sent-back-green? offers]}
    {:keys [unmet-floor idle-floor]}]
   (boolean (or (>= (or unmet-gates 0) unmet-floor)
                (>= (or idle-turns 0) idle-floor)
@@ -103,7 +110,8 @@
                (seq refused)
                at-cap?
                nothing-shipped?
-               sent-back-green?)))
+               sent-back-green?
+               (seq offers))))
 
 (defn sent-back-green?
   "Whether the last round passed its own tests and was sent back regardless.
@@ -231,7 +239,17 @@
              ;; (mapv :data ...) here yields [nil] and reads as 'a refusal
              ;; happened with no reason', which is worse than not reading it.
              refused (vec (journal/notes conn run-id :mutation-rolled-back))
-             crashes (journal/notes conn run-id :stage-error)]
+             ;; EDITS TO THE PROJECT'S FILES THAT WERE REJECTED and that no
+             ;; branch was told about — a person's edit, a shell command's —
+             ;; so the supervisor is the one asked to fix them. An edit a
+             ;; file tool made was rejected back to the branch that made it
+             ;; (:by), in its own turn (karamazov-1a51.8).
+             rejected (vec (remove :by (userspace/rejections)))
+             crashes (journal/notes conn run-id :stage-error)
+             ;; WHAT THE PROJECT HAS NOT TAKEN, until a pass of this run has
+             ;; shown it (the :adoption-offered note the reason cell leaves).
+             offers (when-not (journal/last-note conn run-id :adoption-offered)
+                      (safely :offers userspace/offers []))]
          (assoc data
                 :oversight/turns turns
                 :oversight/firings firings
@@ -242,14 +260,17 @@
                 :oversight/results results
                 :oversight/self-graded self-graded
                 :oversight/refused refused
+                :oversight/rejected rejected
                 :oversight/crashes crashes
+                :oversight/offers (vec offers)
                 :oversight/worth-a-look?
                 (worth-a-look? {:unmet-gates unmet :idle-turns since
                                 :errors (seq (concat (filter :error findings) crashes))
                                 :at-cap? (at-cap? round)
                                 :nothing-shipped? (nothing-shipped? results)
-                                :refused refused
-                                :sent-back-green? (sent-back-green? round)}
+                                :refused (seq (concat refused rejected))
+                                :sent-back-green? (sent-back-green? round)
+                                :offers offers}
                                {:unmet-floor (gates/threshold :oversight-unmet-floor)
                                 :idle-floor (gates/threshold :oversight-idle-floor)}))))
      (assoc data :oversight/worth-a-look? false))))
@@ -303,6 +324,7 @@
             [:oversight/refused {:optional true} :any]
             [:oversight/round {:optional true} :any]
             [:oversight/crashes {:optional true} :any]
+            [:oversight/offers {:optional true} :any]
             [:oversight/carry {:optional true} :any]]
    ;; :oversight/branch only on the path that ran — the fallback records a
    ;; verdict and an explanation, and there is no branch to carry.
@@ -374,6 +396,35 @@
                                   ;; gave. nil when nothing was refused, so
                                   ;; the block takes no room — same shape as
                                   ;; :drift above (ylte.2).
+                                  ;; The project's files that were edited
+                                  ;; and rejected with nobody told: the
+                                  ;; supervisor is asked to fix them.
+                                  ;; What the project has not adopted or
+                                  ;; declined, shown once per run; the
+                                  ;; note is what keeps it once.
+                                  :offers (when-let [os (seq (:oversight/offers data))]
+                                            (journal/note! conn run-id :adoption-offered
+                                                           {:data {:offers (count os)}})
+                                            (prompt/render
+                                             "adoption-offer"
+                                             {:offers (mapv (fn [o]
+                                                              {:kind (clojure.core/name (:kind o))
+                                                               :name (:name o)
+                                                               :offer (clojure.core/name (:offer o))
+                                                               :edited (:edited? o)
+                                                               :version (:version o)})
+                                                            os)}))
+                                  :rejected (when-let [rs (seq (:oversight/rejected data))]
+                                              (prompt/render
+                                               "userspace-rejections"
+                                               {:files (mapv (fn [{:keys [path kind name problem]}]
+                                                               {:path path :kind (clojure.core/name kind)
+                                                                :role name
+                                                                :stage (clojure.core/name (or (:stage problem) :check))
+                                                                :line (:line problem) :column (:column problem)
+                                                                :message (clip (:message problem)
+                                                                               (gates/threshold :oversight-note-chars))})
+                                                             rs)}))
                                   :refused (when-let [rs (seq (:oversight/refused data))]
                                              (prompt/render
                                               "mutation-refused"

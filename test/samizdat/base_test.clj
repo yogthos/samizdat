@@ -83,7 +83,7 @@
    form))
 
 (defn- src-files []
-  ;; src/samizdat, not src. The vendored trees (mycelium, maestro, ring_chez)
+  ;; src/samizdat, not src. The vendored trees (mycelium, maestro)
   ;; moved under src/ and are not ours to hold to this rule — it is about
   ;; samizdat's own discipline of keeping model-facing prose out of compiled
   ;; code, and a vendored library's docstrings are neither prose we wrote nor
@@ -226,7 +226,20 @@
                        own userspace — resources/tui.edn for the TUI."
                 1500 "The poll interval. See 40000 on why a client's numbers
                       are not the server's userspace."
-                30000 "The poll backoff ceiling, same reasoning."}}
+                30000 "The poll backoff ceiling, same reasoning."
+                5000 "How often a front end polls what is not pushed (the run
+                      list, the project) while a run's event stream is up. A
+                      client's number, same reasoning as 1500."}}
+
+   "src/samizdat/api/sse.clj"
+   {:vocabulary {:all "HTTP/1.1 and server-sent-events wire syntax: the status
+                       line, the chunked transfer-encoding header, the URL
+                       form. Protocol, not a vocabulary a project chooses."}
+    :threshold {80 "The default port of an http URL with none. Protocol."}}
+
+   "src/samizdat/api/stream.clj"
+   {:vocabulary {:all "The query syntax of the stream's own cursor parameter
+                       (?since=). The API's shape, not policy."}}
 
    "src/samizdat/symbolic.clj"
    {:threshold {100 "The rewrite step bound: a runaway backstop, not a tunable.

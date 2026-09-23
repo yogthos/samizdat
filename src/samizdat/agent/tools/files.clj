@@ -25,7 +25,34 @@
   (:require [clojure.string :as str]
             [samizdat.agent.files :as files]
             [samizdat.agent.tools.base :as base]
-            [samizdat.security.exposure :as exposure]))
+            [samizdat.prompt :as prompt]
+            [samizdat.security.exposure :as exposure]
+            [samizdat.userspace :as userspace]))
+
+(defn- with-userspace-check
+  "A successful write to a file that serves a role of the project's workflow
+  — .samizdat/manifests/…, cells/…, prompts/…, a policy table, the role map —
+  is checked on the spot, and an edit that does not pass is REJECTED back to
+  the branch that wrote it, in the same result: which file, which role, which
+  check, where, and what it said (karamazov-1a51.8). The previous version
+  keeps running either way; this is what makes sure the writer knows."
+  [result {:keys [branch root args]}]
+  (if-not (= :success (:category result))
+    result
+    (let [path (str (:path args))
+          abs (files/resolve-under-root (or root ".") path)
+          r (when abs (userspace/check-written! abs {:branch-id (:id branch)}))]
+      (if-not r
+        result
+        (let [{:keys [stage message line column]} (:problem r)
+              ctx {:path path :kind (name (:kind r)) :role (:name r)
+                   :stage (name (or stage :check)) :message message
+                   :line line :column column}
+              note (try (prompt/render "userspace-rejected" ctx)
+                        ;; The project's map may lack the role that words
+                        ;; this; the writer still gets the facts.
+                        (catch Throwable _ (pr-str ctx)))]
+          (base/rejected branch (str (:result result) "\n\n" note)))))))
 
 (defmethod base/run-tool "read_file" [ctx]
   (files/read-file ctx))
@@ -34,17 +61,17 @@
   ;; The sibling notice rides the RESULT rather than gating the call: workers
   ;; sharing a tree are collaborating, and which version should win is not the
   ;; harness's judgement to make. See samizdat.agent.files/stale-note.
-  (files/with-stale (files/write-file ctx) ctx))
+  (-> (files/write-file ctx) (files/with-stale ctx) (with-userspace-check ctx)))
 
 (defmethod base/run-tool "edit_file" [ctx]
-  (files/with-stale (files/edit-file ctx) ctx))
+  (-> (files/edit-file ctx) (files/with-stale ctx) (with-userspace-check ctx)))
 
 (defmethod base/run-tool "patch" [ctx]
   ;; Anchored editing (karamazov-0kk). Beside edit_file rather than replacing
   ;; it: clojure-mcp made the same bet on addressed editing and later demoted
   ;; its own to a fallback, so which one a model actually reaches for is a
   ;; question to MEASURE, not to assume.
-  (files/with-stale (files/patch-file ctx) ctx))
+  (-> (files/patch-file ctx) (files/with-stale ctx) (with-userspace-check ctx)))
 
 (defmethod base/run-tool "glob" [{:keys [branch root] :as ctx}]
   ;; Find files by NAME (karamazov-fn68). :neutral — locating establishes

@@ -115,6 +115,7 @@
             [samizdat.source-test]
             [samizdat.security.secrets-test]
             [samizdat.config-test]
+            [samizdat.layers-test]
             [samizdat.files-test]
             [samizdat.edit-test]
             [samizdat.eval-mode-test]
@@ -159,6 +160,14 @@
             [samizdat.manual-test]
             [samizdat.user-sim-test]
             [samizdat.userspace-test]
+            [samizdat.userspace-files-test]
+            [samizdat.userspace-validation-test]
+            [samizdat.userspace-adoption-test]
+            [samizdat.event-stream-test]
+            [samizdat.tui-theme-test]
+            [samizdat.tui-timeline-test]
+            [samizdat.tui-commands-test]
+            [samizdat.live-model-test]
             [samizdat.beam-test]
             [samizdat.kanban-test]
             [samizdat.security.policy-test]
@@ -310,6 +319,7 @@
     samizdat.source-test
     samizdat.security.secrets-test
     samizdat.config-test
+    samizdat.layers-test
     samizdat.files-test
     samizdat.edit-test
     samizdat.eval-mode-test
@@ -354,6 +364,14 @@
     samizdat.manual-test
     samizdat.user-sim-test
     samizdat.userspace-test
+    samizdat.userspace-files-test
+    samizdat.userspace-validation-test
+    samizdat.userspace-adoption-test
+    samizdat.event-stream-test
+    samizdat.tui-theme-test
+    samizdat.tui-timeline-test
+    samizdat.tui-commands-test
+    samizdat.live-model-test
     samizdat.beam-test
     samizdat.kanban-test
     samizdat.security.policy-test

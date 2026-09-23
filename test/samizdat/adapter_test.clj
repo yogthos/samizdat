@@ -16,7 +16,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (ns samizdat.adapter-test
-  "The vendored ring adapter's connection handling, driven end to end through a
+  "The HTTP server's connection handling (ring-chez-adapter, a dependency), driven end to end through a
   raw socket client: chunked-body refusal (provenance R3-3), the request-size cap
   and read timeout (#4), and byte-exact body decoding across packet splits
   (#5). The client carries its own 5s SO_RCVTIMEO so a broken server FAILS
@@ -24,10 +24,11 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [jolt.ffi :as ffi]
-            [ring-chez.adapter :as adapter]))
+            [ring-chez.adapter :as adapter]
+            [ring-chez.socket :as socket]))
 
-;; connect(2) is the one call the adapter never makes; its siblings
-;; (socket/send/recv/close/setsockopt) are public vars on the adapter.
+;; connect(2) is the one call the server never makes; its siblings
+;; (socket/send/recv/close/setsockopt) are public vars on ring-chez.socket.
 (ffi/defcfn t-connect "connect" [:int :pointer :int] :int)
 
 (def ^:private af-inet 2)
@@ -56,17 +57,17 @@
   "Open a client socket to the loopback adapter, guarded by a 5s receive
   timeout so a server that never answers cannot wedge the suite."
   [port]
-  (let [fd (adapter/c-socket af-inet sock-stream 0)]
+  (let [fd (socket/c-socket af-inet sock-stream 0)]
     (when (neg? fd) (throw (ex-info "client socket() failed" {})))
     (let [sa (sockaddr port)]
       (when (neg? (t-connect fd sa 16))
-        (ffi/free sa) (adapter/c-close fd)
+        (ffi/free sa) (socket/c-close fd)
         (throw (ex-info "connect() failed" {})))
       (ffi/free sa))
     (let [tv (ffi/alloc 16)]
       (ffi/write tv :int64 5 0)
       (ffi/write tv :int64 0 8)
-      (adapter/c-setsockopt fd sol-socket so-rcvtimeo tv 16)
+      (socket/c-setsockopt fd sol-socket so-rcvtimeo tv 16)
       (ffi/free tv))
     fd))
 
@@ -83,7 +84,7 @@
   [fd p start len]
   (loop [off start, left len]
     (when (pos? left)
-      (let [sent (adapter/c-send fd (+ p off) left 0)]
+      (let [sent (socket/c-send fd (+ p off) left 0)]
         (when (pos? sent) (recur (+ off sent) (- left sent)))))))
 
 (defn- send-string [fd s]
@@ -99,7 +100,7 @@
   (let [buf (ffi/alloc bufsize)]
     (try
       (loop [acc ""]
-        (let [n (adapter/c-recv fd buf bufsize 0)]
+        (let [n (socket/c-recv fd buf bufsize 0)]
           (cond
             (zero? n) {:text acc :closed? true}
             (neg? n) {:text acc :closed? false}
@@ -141,31 +142,31 @@
     (try (f port) (finally (adapter/stop-server server)))))
 
 (defn- lengthed-post [body]
-  (str "POST /v1/runs HTTP/1.1\r\nContent-Type: application/json\r\n"
+  (str "POST /v1/runs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
        "Content-Length: " (alength (.getBytes body "UTF-8")) "\r\n\r\n"
        body))
 
-(deftest chunked-request-bodies-are-refused-not-truncated
+(deftest chunked-request-bodies-are-decoded-whole-not-truncated
   ;; provenance R3-3: with no Content-Length header, content-length answered 0, so
   ;; a chunked body looked complete the instant its headers arrived and the
-  ;; handler ran on whatever fragment happened to land in the first recv. A
-  ;; 1.1 server that does not speak chunked must refuse it (411), never serve
-  ;; a silent truncation.
+  ;; handler ran on whatever fragment happened to land in the first recv. The
+  ;; vendored reader refused chunked bodies (411); the server now decodes
+  ;; them, and what must hold either way is that no handler sees a fragment.
   (let [captured (atom [])]
     (with-server {} captured
       (fn [port]
         (let [fd (connect! port)]
           (try
-            (send-string fd (str "POST /v1/runs HTTP/1.1\r\n"
+            (send-string fd (str "POST /v1/runs HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                                  "Content-Type: application/json\r\n"
                                  "Transfer-Encoding: chunked\r\n\r\n"
-                                 "5\r\nhello\r\n0\r\n\r\n"))
+                                 "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"))
             (let [r (read-response fd)]
-              (is (str/starts-with? (:text r) "HTTP/1.1 411")
+              (is (str/starts-with? (:text r) "HTTP/1.1 200")
                   (str "got: " (pr-str (:text r))))
-              (is (= [] @captured)
-                  "the handler must never see a chunked request"))
-            (finally (adapter/c-close fd))))))))
+              (is (= ["hello world"] (mapv #(slurp (:body %)) @captured))
+                  "the handler saw the whole body, once"))
+            (finally (socket/c-close fd))))))))
 
 (deftest a-request-over-the-cap-is-refused-not-buffered-forever
   ;; provenance R3-4: the read loop appended whatever arrived with no ceiling, so a
@@ -176,14 +177,14 @@
       (fn [port]
         (let [fd (connect! port)]
           (try
-            (send-string fd (str "POST /v1/runs HTTP/1.1\r\nContent-Length: 100000\r\n\r\n"
+            (send-string fd (str "POST /v1/runs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100000\r\n\r\n"
                                  (apply str (repeat 1100 "x"))))
             (let [r (read-response fd)]
               (is (str/starts-with? (:text r) "HTTP/1.1 413")
                   (str "got: " (pr-str (:text r))))
               (is (= [] @captured)
                   "an oversized request never reaches the handler"))
-            (finally (adapter/c-close fd))))))))
+            (finally (socket/c-close fd))))))))
 
 (deftest a-request-that-stalls-is-closed-not-held
   ;; provenance R3-4: recv blocked forever with no SO_RCVTIMEO, so a client that
@@ -192,16 +193,16 @@
   ;; closed on the server's schedule — :closed? here is true only when the
   ;; hangup came from the other end, not from our own 5s guard.
   (let [captured (atom [])]
-    (with-server {:read-timeout-ms 400} captured
+    (with-server {:request-timeout-ms 400 :keep-alive-timeout-ms 400} captured
       (fn [port]
         (let [fd (connect! port)]
           (try
-            (send-string fd "POST /v1/runs HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc")
+            (send-string fd "POST /v1/runs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\nabc")
             (let [r (read-response fd)]
               (is (:closed? r) "the server must close a stalled connection")
               (is (= [] @captured)
                   "a stalled request never reaches the handler"))
-            (finally (adapter/c-close fd))))))))
+            (finally (socket/c-close fd))))))))
 
 (deftest a-body-split-across-packets-decodes-exactly-once
   ;; provenance R3-5: the accumulator decoded every recv separately and str'd the
@@ -210,7 +211,7 @@
   ;; raw and the string decode once, after the body is complete.
   (let [captured (atom [])
         body (str "{\"note\": \"" (apply str (repeat 8 "—")) "\"}")
-        headers (str "POST /v1/runs HTTP/1.1\r\nContent-Type: application/json\r\n"
+        headers (str "POST /v1/runs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
                      "Content-Length: " (alength (.getBytes body "UTF-8")) "\r\n\r\n")
         ;; headers and the body's ASCII prefix encode 1 byte per char, so the
         ;; encoded offset of the first em-dash equals its character index;
@@ -229,7 +230,7 @@
                   (is (str/starts-with? (:text r) "HTTP/1.1 200")
                       (str "got: " (pr-str (:text r)))))
                 (finally (ffi/free p))))
-            (finally (adapter/c-close fd))))
+            (finally (socket/c-close fd))))
         (testing "the handler saw the body byte-exact"
           (is (= 1 (count @captured)) "the request was served")
           (when-let [req (first @captured)]
@@ -246,11 +247,11 @@
       (fn [port]
         (let [fd (connect! port)]
           (try
-            (send-string fd (str "POST /v1/runs HTTP/1.1\r\nContent-Length: 100\r\n\r\n"
+            (send-string fd (str "POST /v1/runs HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100\r\n\r\n"
                                  (apply str (repeat 40 "x"))))
             (Thread/sleep 200)         ; let the server recv the fragment
-            (adapter/c-close fd)       ; vanish mid-body
+            (socket/c-close fd)       ; vanish mid-body
             (Thread/sleep 200)         ; let the server notice the EOF
             (is (= [] @captured)
                 "an incomplete request must not reach the handler")
-            (finally (adapter/c-close fd))))))))
+            (finally (socket/c-close fd))))))))

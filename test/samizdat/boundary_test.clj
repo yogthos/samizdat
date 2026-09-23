@@ -239,6 +239,9 @@
    "reload_cells" {:reach :harness-only}
    "manifest"    {:reach :harness-only}
    "policy"      {:reach :harness-only}
+   ;; Writes only inside the project's .samizdat/, and only a text the
+   ;; harness shipped or already stored — never one the model composed.
+   "adopt"       {:reach :harness-only}
    "prompt"      {:reach :harness-only}
    "manual"      {:reach :harness-only}
    "introspect"  {:reach :harness-only}

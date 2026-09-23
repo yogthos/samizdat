@@ -50,16 +50,11 @@
             [samizdat.store.userspace]
             [samizdat.userspace :as userspace]))
 
-(def shipped-policies
-  "The policy tables that ship, ENUMERATED not globbed — same reason as every
-  other resource list (a classpath has no directory listing)."
-  ;; "tui" is the terminal UI's arrangement, and it belongs here for the
-  ;; same reason the rest do: resources/tui.edn calls itself the seed of a
-  ;; stored table, samizdat.tui.layout names that table as how the agent
-  ;; rearranges its own UI, and the server hands it out at
-  ;; GET /v1/harness/layout — with the name left off this list, `policy save`
-  ;; refused the one edit all of that documented (karamazov-ym03).
-  ["gates" "manual" "phases" "prompt-chain" "roles" "rules" "tui" "wordlists"])
+(defn- policy-names
+  "The policy tables this project can show and save: the ones its role map
+  names, and the layered settings files a save may still write."
+  []
+  (sort (distinct (concat (userspace/roles :policy) (sort userspace/layered-policies)))))
 
 (defn- msg [ctx] (prompt/render "policy-tool" ctx))
 
@@ -145,12 +140,12 @@
     nil)
   nil)
 
-(defn- known? [name] (some #{name} shipped-policies))
+(defn- known? [name] (some #{name} (policy-names)))
 
 (defn- render-list []
   (let [stored (into {} (map (juxt :name identity)) (userspace/names :policy))]
     (str/join "\n"
-              (for [nm (sort (distinct (concat shipped-policies (keys stored))))]
+              (for [nm (sort (distinct (concat (policy-names) (keys stored))))]
                 (if-let [row (get stored nm)]
                   (str nm "  v" (:version row) " (" (:versions row)
                        (if (= 1 (:versions row)) " version)" " versions)"))
@@ -195,7 +190,7 @@
           (not name) (base/malformed branch (base/missing ctx :name))
           (not (or (known? name) (seq (userspace/versions :policy name))))
           (base/malformed branch (msg {:no-policy true :name name
-                                       :names (str/join ", " shipped-policies)}))
+                                       :names (str/join ", " (policy-names))}))
           :else
           (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)
                 body (if v
@@ -207,7 +202,7 @@
               (base/ok branch (str name (when v (str " v" v)) ":\n\n" body
                                    (waiver-line name body)))
               (base/malformed branch (msg {:no-policy true :name name
-                                           :names (str/join ", " shipped-policies)})))))
+                                           :names (str/join ", " (policy-names))})))))
 
         "versions"
         (if-not name
@@ -228,7 +223,7 @@
             (nil? why) (base/malformed branch (base/missing ctx :rationale))
             (not (known? name))
             (base/malformed branch (msg {:no-policy true :name name
-                                         :names (str/join ", " shipped-policies)}))
+                                         :names (str/join ", " (policy-names))}))
             :else
             (let [parsed (try {:ok (edn/read-string (str body))}
                               (catch Throwable e {:error (ex-message e)}))]
@@ -294,3 +289,19 @@
       (catch Throwable e
         (base/fail branch (str "`policy " action "` failed: " (ex-message e)
                                "\n\n" (usage)))))))
+
+;; A policy edit is checked before it is what runs (karamazov-1a51.8): it has
+;; to read as a map, and then the same verification a `policy save` runs —
+;; the gates compile, the rules do not cycle, the roles name registered tools
+;; — is run against the CANDIDATE through userspace/with-candidate, and the
+;; caches it filled are refilled from the text that stays live.
+(userspace/register-validator!
+ :policy
+ (fn [name text]
+   (let [{:keys [value problem]} (userspace/read-edn text)]
+     (or problem
+         (when-not (map? value) {:stage :shape :message "not a map"})
+         (userspace/with-candidate :policy name text
+           (fn [] (try (reload-and-verify! name) nil
+                       (catch Throwable e (userspace/problem :compile e))))
+           (fn [] (reload-and-verify! name)))))))

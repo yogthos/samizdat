@@ -21,6 +21,15 @@
          :git/tag "v0.0.8"
          :git/sha "ccce992d6e3d0035a5ffd1d4364cdb39df4af2f0"}
 
+        ;; the HTTP server: HTTP/1.1 over BSD sockets through jolt.ffi, with a
+        ;; worker pool (a long request no longer holds /health) and channel
+        ;; bodies streamed chunked, which is what ring-chez.sse needs for the
+        ;; event stream the front ends follow. Was vendored at @07f14d9.
+        jolt-lang/ring-chez-adapter
+        {:git/url "https://github.com/jolt-lang/ring-chez-adapter"
+         :git/tag "v0.7.7"
+         :git/sha "7c65c5507a5f33c5954a1288797bb341afbd2bd8"}
+
         ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
         jolt-lang/db
         {:git/url "https://github.com/jolt-lang/db"
@@ -110,9 +119,8 @@
         {:git/url "https://github.com/jolt-lang/time"
          :git/sha "bc85090dae95d103ba04f4ea9687945cf46fb19e"}}
 
- ;; The vendored HTTP server (src/ring_chez/adapter.clj) binds BSD sockets
- ;; through the running process's own libc symbols, so they must be loaded
- ;; before that namespace is required.
+ ;; The HTTP server (ring-chez-adapter) binds BSD sockets through the running
+ ;; process's own libc symbols, so they must be loaded before it is required.
  :jolt/native [{:name "libc (POSIX sockets)" :process true}]
 
  ;; Bake resources/ into the binary, so io/resource resolves with no files on

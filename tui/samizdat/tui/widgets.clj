@@ -37,7 +37,9 @@
   Toolkit-free: hiccup is data. `ftxui` appears nowhere in this file."
   (:require [clojure.string :as str]
             [samizdat.tui.layout :as layout]
-            [samizdat.tui.state :as st]))
+            [samizdat.tui.state :as st]
+            [samizdat.tui.commands :as cmd]
+            [samizdat.tui.timeline :as tl]))
 
 ;; --- shared shapes -----------------------------------------------------------
 
@@ -56,24 +58,27 @@
   competition for rows: without a ceiling on the ones that do not need many,
   the flexed panel below them is the one that gets squeezed off the screen."
   [props & children]
-  (into [:vbox (cond-> {:border :rounded}
+  (into [:vbox (cond-> {:class (into [:panel] (let [c (:class props)] (if (keyword? c) [c] c)))
+                        :border :rounded}
                  ;; The VALUE, not a coerced true: ftxui's flex kinds are
                  ;; `:grow` (may take spare room, may not be squeezed) as
                  ;; well as plain `true` (both), and flattening them cost a
                  ;; layout the distinction that keeps a panel on screen.
                  (:flex props) (assoc :flex (:flex props))
                  (:width props) (assoc :width (:width props))
-                 (:height props) (assoc :height (:height props)))]
+                 (:height props) (assoc :height (:height props))
+                 ;; Inline style from the layout, over the theme's :panel.
+                 (:style props) (assoc :style (:style props)))]
         (cond-> []
-          (:title props) (conj [:text {:bold true} (str " " (:title props) " ")]
-                               [:separator])
+          (:title props) (conj [:text {:class :panel-title} (str " " (:title props) " ")]
+                               [:separator {:class :muted}])
           :always (into (remove nil? children)))))
 
 (defn- empty-note
   "What a panel says when it has nothing. Dim rather than blank: a panel that
   drew nothing is indistinguishable from one that failed to draw."
   [s]
-  [:text {:dim true} (str "  " s)])
+  [:text {:class :dim} (str "  " s)])
 
 (defn fmt-tokens
   "A token count short enough for a footer: 9475 -> \"9k\", 1250000 -> \"1.2M\".
@@ -97,13 +102,16 @@
       :else p)))
 
 (defn fold-id
-  "The identity of one foldable section, stable across frames.
+  "The identity of one foldable section of a turn, stable across frames: the
+  fold samizdat.tui.timeline gives that turn's :thinking or :result.
 
   Keyed by the turn and the section, never by a position in a list — the
   conversation grows, and an id that moved would shut every open fold on the
   turn after it was opened."
   [turn section]
-  (str turn "/" (name section)))
+  (case section
+    :thinking (str "t" turn "/thinking")
+    (str "t" turn "/tool/more")))
 
 (defn- toggle-fn
   "The click handler for a fold. Absent handlers are tolerated: a widget
@@ -135,9 +143,9 @@
 
 (defn- step-line [{:keys [node cell transition ms failed]}]
   [:hbox
-   [:text {:color (if failed :red :cyan)} (if failed " ✗ " " · ")]
+   [:text {:class (if failed :step-failed :step)} (if failed " ✗ " " · ")]
    [:text {:bold true} (clip node 12)]
-   [:text {:dim true} (str " " (clip (or cell "") 16)
+   [:text {:class :dim} (str " " (clip (or cell "") 16)
                            (when transition (str " →" (clip transition 8)))
                            (when ms (str " " ms "ms")))]])
 
@@ -158,7 +166,7 @@
         dropped (:trace-dropped state)]
     (panel props
            (when (and dropped (pos? dropped))
-             [:text {:color :yellow} (str "  ⚠ " dropped " step(s) dropped")])
+             [:text {:class :warn} (str "  ⚠ " dropped " step(s) dropped")])
            (if (seq trace)
              (into [:vbox {:flex true}] (map step-line trace))
              (empty-note "no steps yet")))))
@@ -170,26 +178,10 @@
   tells an edit that landed from one that replaced the wrong thing."
   [line]
   (cond
-    (str/starts-with? line "+") [:text {:color :green} line]
-    (str/starts-with? line "-") [:text {:color :red} line]
+    (str/starts-with? line "+") [:text {:class :diff-add} line]
+    (str/starts-with? line "-") [:text {:class :diff-del} line]
+    (str/starts-with? line "@@") [:text {:class :diff-hunk} line]
     :else [:text line]))
-
-(defn- body-block
-  "A result or an argument blob, as lines. Diff-coloured when `diff?`."
-  [s diff?]
-  (let [lines (str/split-lines (str s))]
-    (into [:vbox] (map (if diff? diff-line (fn [l] [:text l])) lines))))
-
-(defn- line-count
-  "How many lines `s` has, without cutting it into them. This is only ever a
-  number in a fold's LABEL, which is drawn on every frame for every turn on
-  screen — splitting a thousand-line result to count it is the body-building
-  the fold itself now avoids, moved into the header."
-  [s]
-  (inc (count (re-seq #"\n" (str s)))))
-
-(defn- failed? [turn]
-  (contains? #{"failure" "mechanics"} (str (:category turn))))
 
 (defn- request-cost
   "`  ctx 43k · hit 93%`, and what busted the cache when something did: the
@@ -206,45 +198,6 @@
          (when (not-empty (str forced_tool)) (str " · forced " forced_tool))
          (when (= "rewritten" (str prefix_change)) " · rewritten"))))
 
-(defn- turn-entry
-  [state {:keys [turn tool_name args result] :as t}]
-  (let [writing? (contains? #{"write_file" "edit_file" "patch"} (str tool_name))
-        ;; The prose arrives per turn, because the branch listing drops it —
-        ;; it is the bulk of a long run (5.5MB against 62KB of results) and
-        ;; fetching it wholesale timed the branch panel out entirely. So the
-        ;; words come from :turn-text, filled in for the turns on screen.
-        text (get-in state [:turn-text turn])
-        assistant_text (:assistant_text text)
-        reasoning_text (:reasoning_text text)]
-    [:vbox {:key (str turn)}
-     ;; What the model said, in full. Prose is the one thing never folded:
-     ;; it is short, and it is the part a reader is actually following.
-     (when (not-empty (str assistant_text))
-       [:paragraph (str assistant_text)])
-
-     (when (not-empty (str reasoning_text))
-       (fold state (fold-id turn :thinking)
-             (str "thinking (" (count (str reasoning_text)) " chars)")
-             #(vector :paragraph {:dim true} (str reasoning_text))))
-
-     (when tool_name
-       (cond-> [:hbox
-                [:text {:color (if (failed? t) :red :green)}
-                 (if (failed? t) " ✗ " " → ")]
-                [:text {:bold true} (str tool_name)]
-                [:text {:dim true} (str "  turn " turn)]]
-         (request-cost t) (conj [:text {:dim true} (request-cost t)])))
-
-     (when (not-empty (str args))
-       (fold state (fold-id turn :args) "arguments" #(body-block args false)))
-
-     (when (not-empty (str result))
-       (fold state (fold-id turn :result)
-             (str "result (" (line-count result) " lines)")
-             #(body-block result writing?)))
-
-     [:separator {:dim true}]]))
-
 (def default-turns-shown
   "How many turns the conversation draws when the layout does not say.
 
@@ -252,28 +205,85 @@
   and this is what a layout written before the prop existed gets."
   60)
 
+(def ^:private writing-tools #{"write_file" "edit_file" "patch"})
+
+(defn- say-entry
+  "A line in a role's voice, dirge-style: `<agent> ` and the words wrapped
+  under it with a hanging indent."
+  [{:keys [role text pending?]} handles]
+  [:hbox
+   [:text {:class role} (str "<" (get handles role (name role)) "> ")]
+   [:paragraph {:class role :flex true}
+    (str text (when pending? "  (not applied yet)"))]])
+
+(defn- thinking-entry [state e]
+  (fold state (tl/fold-id e)
+        (str "◇ thinking (" (count (:text e)) " chars)")
+        #(vector :paragraph {:class :thinking} (:text e))))
+
+(defn- tool-entry
+  "A tool call as a CHAMBER, dirge's word: a box headed by the tool and the
+  one argument it is known by, the first lines of what came back, and the
+  rest a click (or Ctrl+O) away."
+  [state {:keys [tool arg result failed? turn turn-row] :as e} {:keys [result-lines]}]
+  (let [lines (str/split-lines (str result))
+        shown (take (or result-lines 4) lines)
+        more (- (count lines) (count shown))
+        line-of (if (contains? writing-tools tool) diff-line (fn [l] [:text {:class :result} l]))]
+    (into [:vbox {:class (if failed? [:tool-box :error-box] :tool-box) :border :rounded}
+           (cond-> [:hbox
+                    [:text {:class (if failed? :error :tool-name)}
+                     (str (if failed? "✗ " "") (str/upper-case tool))]]
+             arg (conj [:text {:class :tool} (str " ─ \"" (clip arg 60) "\"")])
+             :always (conj [:filler]
+                           [:text {:class :dim}
+                            (str "turn " turn (or (request-cost turn-row) "") " ")]))]
+          (cond-> (if (str/blank? (str result))
+                    [[:text {:class :dim} "(no output)"]]
+                    (mapv line-of shown))
+            (pos? more)
+            (conj (fold state (tl/fold-id e) (str "↓ " more " more lines")
+                        #(into [:vbox] (map line-of (drop (count shown) lines)))))))))
+
+(defn- shown-entries
+  "The entries for the newest `n` turns — and everything said between them."
+  [es n]
+  (let [turns (distinct (keep :turn es))
+        keep-from (when (> (count turns) n) (nth turns (- (count turns) n)))]
+    (if keep-from
+      (let [start (first (keep-indexed (fn [i e] (when (= keep-from (:turn e)) i)) es))]
+        (subvec es start))
+      es)))
+
 (defn conversation
-  "The agent's turns: what it said, what it called, and what came back.
+  "The branch's story: the problem, what the agent said and called, and what
+  the person, the critic and the supervisor said to it — each in its own
+  voice (samizdat.tui.timeline), in the order it happened.
 
-  Thinking, arguments and results fold, closed by default — a log that
-  opened every tool result is unreadable after three turns, and the header
-  alone is what a reader scans.
+  A tool call is a chamber showing the first lines of its result; the rest,
+  and the model's thinking, fold, closed by default.
 
-  BOUNDED, like every other panel. `:turns` in the layout says how many, and
-  it is the newest that many — a conversation is read from the bottom, and
-  the four hundred entries above the fold were being rebuilt on every
-  keystroke to be scrolled past. How far back is userspace for the same
-  reason `:prose-turns` is: how much history a reader wants is their
-  business, and every turn added costs a frame."
+  FOLLOWS THE BOTTOM. The newest entry holds the frame's focus, so the pane
+  scrolls as the run speaks; scrolling up anchors it on an entry and it
+  stays there as more arrive, until End (or scrolling back down) follows
+  again.
+
+  BOUNDED: `:turns` in the layout, the newest that many."
   [state props]
-  (let [all (vec (get-in state [:branch :turns]))
-        n (or (:turns props) default-turns-shown)
-        turns (if (> (count all) n) (subvec all (- (count all) n)) all)]
+  (let [cfg (get-in state [:settings :conversation])
+        es (shown-entries (tl/entries state cfg) (or (:turns props) default-turns-shown))
+        focus (or (:scroll-anchor state) (:key (peek es)))
+        handles (:handles cfg)]
     (panel (assoc props :title (or (:title props)
                                    (some->> (:branch-id state) (str "BRANCH "))))
-           (if (seq turns)
+           (if (seq es)
              (into [:vbox {:flex true :frame :y :scroll-indicator :v}]
-                   (map #(turn-entry state %) turns))
+                   (for [e es]
+                     [:vbox (cond-> {:key (:key e)} (= focus (:key e)) (assoc :focus true))
+                      (case (:kind e)
+                        :say (say-entry e handles)
+                        :thinking (thinking-entry state e)
+                        :tool (tool-entry state e cfg))]))
              (empty-note "no turns yet — pick a run")))))
 
 ;; --- the side panels ---------------------------------------------------------
@@ -290,10 +300,10 @@
              (into [:vbox {:flex true :frame :y}]
                    (for [{:keys [title status]} board]
                      [:hbox
-                      [:text {:color (if (= "in_progress" status) :yellow :default)}
+                      [:text {:class (if (= "in_progress" status) :selected :result)}
                        (str " " (get task-glyph (str status) "·") " ")]
                       [:text (clip title 26)]
-                      [:text {:dim true} (str " " status)]]))
+                      [:text {:class :dim} (str " " status)]]))
              (empty-note "board is empty")))))
 
 (defn files
@@ -308,7 +318,7 @@
                      [:hbox
                       [:text " "]
                       [:text (clip path 24)]
-                      [:text {:dim true} (str " t" turn
+                      [:text {:class :dim} (str " t" turn
                                               (when (seq branches)
                                                 (str " " (str/join "," branches))))]]))
              (empty-note "nothing written yet")))))
@@ -397,22 +407,22 @@
         fill? (and (number? fill) (number? window) (pos? window))]
     (panel props
            (into [:vbox
-                  [:text {:dim true} (str "  tokens " (or used 0)
+                  [:text {:class :dim} (str "  tokens " (or used 0)
                                           (when budget (str " / " budget)))]
                   [:gauge {:value (ratio used budget)
-                           :color (if (> (ratio used budget) 0.85) :red :cyan)}]
-                  [:text {:dim true} (str "  turns  " (or turns 0)
+                           :class (if (> (ratio used budget) 0.85) :gauge-hot :gauge)}]
+                  [:text {:class :dim} (str "  turns  " (or turns 0)
                                           (when max-turns (str " / " max-turns)))]
-                  [:gauge {:value (ratio turns max-turns)}]]
+                  [:gauge {:value (ratio turns max-turns) :class :gauge}]]
                  (remove nil?
                          [(when fill?
-                            [:text {:dim true} (str "  ctx    " (fill-segment fill window))])
+                            [:text {:class :dim} (str "  ctx    " (fill-segment fill window))])
                           (when fill?
                             [:gauge {:value (ratio fill window)
-                                     :color (if (>= (ratio fill window) fold-warn-fraction)
-                                              :red :cyan)}])
+                                     :class (if (>= (ratio fill window) fold-warn-fraction)
+                                              :gauge-hot :gauge)}])
                           (when (number? rate)
-                            [:text {:dim true}
+                            [:text {:class :dim}
                              (str "  cache  " (Math/round (* 100.0 rate)) "% hit"
                                   (cache-miss-clause misses))])
                           ;; What the harness adds to each request itself —
@@ -421,7 +431,7 @@
                           ;; third of every request is a number and not a
                           ;; feeling.
                           (when (number? block)
-                            [:text {:dim true}
+                            [:text {:class :dim}
                              (str "  block  " block " chars/turn added by the harness")])])))))
 
 (defn gates
@@ -436,13 +446,14 @@
                      [:hbox
                       [:text " "]
                       [:text (clip gate 18)]
-                      [:text {:dim true} (str "  fired " fired)]
-                      [:text {:color (if (pos? (or open 0)) :yellow :default)}
+                      [:text {:class :dim} (str "  fired " fired)]
+                      [:text {:class (if (pos? (or open 0)) :warn :dim)}
                        (str "  open " (or open 0))]]))
              (empty-note "no gates fired")))))
 
-(def ^:private claim-color
-  {"confirmed" :green "refuted" :red "ambiguous" :yellow "existential" :cyan})
+(def ^:private claim-class
+  {"confirmed" :claim-confirmed "refuted" :claim-refuted
+   "ambiguous" :claim-ambiguous "existential" :claim-existential})
 
 (defn artifacts
   "The claims the run has made and how each was judged. The harness is
@@ -455,7 +466,7 @@
              (into [:vbox {:frame :y}]
                    (for [{:keys [claim claim_status]} as]
                      [:hbox
-                      [:text {:color (get claim-color (str claim_status) :default)}
+                      [:text {:class (get claim-class (str claim_status) :dim)}
                        (str " " (clip (str claim_status) 11) " ")]
                       [:text (clip claim 20)]]))
              (empty-note "no claims yet")))))
@@ -502,50 +513,92 @@
   (into [:vbox] (map (fn [l] [:text l]) (str/split-lines (str s)))))
 
 (defn- permission-dialog
-  [state {:keys [id kind input reason details]}]
-  (let [decide (fn [d] (fn [] (when-let [f (get-in state [:on :decide])] (f id d))))]
-    [:vbox {:border :heavy :color :yellow}
-     [:text {:bold true :color :yellow} " ⚠ PERMISSION REQUIRED "]
+  "dirge's permission prompt: what wants to run, why it was stopped, and the
+  answers — y allow once, a allow always (this session), n deny, d deny and
+  say what to do instead, Esc abort."
+  [state {:keys [id kind input reason details always]}]
+  (let [decide (fn [d] (fn [] (when-let [f (get-in state [:on :decide])] (f id d))))
+        reply (fn [] (when-let [f (get-in state [:on :reply])] (f :deny-note id)))
+        noting? (= {:kind :deny-note :id id} (:reply state))]
+    [:vbox {:class [:perm :perm-box]}
+     [:text {:class :perm :bold true} " ⚠ PERMISSION REQUIRED "]
      [:separator]
-     [:text {:dim true} (str " tool: " kind)]
+     [:text {:class :dim} (str " tool: " kind)]
      ;; NOT clipped, unlike every other panel. A person cannot judge
      ;; `rm -rf "$BUILD"/*` from its first three characters, and a dialog
      ;; that hid the rest would be asking them to approve something they
      ;; were not shown.
      (lines-of input)
-     (when (not-empty (str reason)) [:text {:dim true} (str " why: " reason)])
-     (when (not-empty (str details)) [:text {:dim true} (str " " details)])
+     (when (not-empty (str reason)) [:text {:class :dim} (str " why: " reason)])
+     (when (not-empty (str details)) [:text {:class :dim} (str " " details)])
+     (when always [:text {:class :dim} (str " always would allow: " always ", for this session")])
      [:separator]
-     [:hbox
-      [:button {:label "allow (y)" :on-click (decide :allow)}]
-      [:button {:label "deny (n)" :on-click (decide :deny)}]]]))
+     (if noting?
+       [:text {:class :perm}
+        " denying — type what to do instead below (Enter sends · Esc goes back)"]
+       (cond-> [:hbox
+                [:button {:label "allow once (y)" :style :ascii
+                          :on-click (decide {:decision :allow})}]]
+         always (conj [:button {:label "allow always (a)" :style :ascii
+                                :on-click (decide {:decision :allow :always true})}])
+         :always (conj [:button {:label "deny (n)" :style :ascii
+                                 :on-click (decide {:decision :deny})}]
+                       [:button {:label "deny + note (d)" :style :ascii :on-click reply}])))]))
 
 (defn- questionnaire
+  "ask_human's questions, one at a time: pick an option (tick several when
+  the question allows it), or write your own answer, or reject the lot."
   [state {:keys [id questions]}]
   (let [qs (vec questions)
         i (min (or (:question-cursor state) 0) (max 0 (dec (count qs))))
         q (nth qs i nil)
         so-far (vec (:question-answers state))
         opts (vec (:options q))
+        sel (set (:question-selected state))
         ;; Carry what has already been answered. Handing back only the
         ;; latest would lose every earlier answer on the way to the last
         ;; question.
         answer (fn [a] (when-let [f (get-in state [:on :answer])]
-                         (f id i (conj so-far (str a)))))]
-    [:vbox {:border :heavy :color :cyan}
-     [:text {:bold true :color :cyan}
-      (str " ? QUESTION " (inc i) " of " (count qs) " ")]
+                         (f id i (conj so-far a))))
+        custom (fn [] (when-let [f (get-in state [:on :reply])] (f :custom-answer id)))
+        reject (fn [] (when-let [f (get-in state [:on :decide])]
+                        (f id {:decision :deny :note "rejected"})))
+        writing? (= {:kind :custom-answer :id id} (:reply state))]
+    [:vbox {:class [:question :question-box]}
+     [:text {:class :question :bold true}
+      (str " ? QUESTION " (inc i) " of " (count qs) (when (:multi q) " — pick any") " ")]
      [:separator]
      [:paragraph (str (:question q))]
-     (if (seq opts)
+     (cond
+       writing?
+       [:text {:class :question} " your answer — type it below (Enter sends · Esc goes back)"]
+
+       (and (seq opts) (:multi q))
+       (into [:vbox]
+             (concat
+              (map-indexed (fn [n o]
+                             [:checkbox {:label (str o) :checked (contains? sel n)
+                                         :on-change (fn [_] (when-let [f (get-in state [:on :toggle-option])]
+                                                              (f n)))}])
+                           opts)
+              [[:button {:label "confirm" :style :ascii
+                         :on-click (fn [] (when (seq sel) (answer (mapv #(str (nth opts %)) (sort sel)))))}]]))
+
+       (seq opts)
        [:menu {:entries (mapv str opts)
-               :on-enter (fn [n] (answer (nth opts n nil)))}]
+               :on-enter (fn [n] (answer (str (nth opts n nil))))}]
+
        ;; No options is not a malformed question — `ask_human` takes a bare
        ;; string and an open-ended question is the ordinary use of a tool by
        ;; that name. Drawn as an empty menu it could not be answered AT ALL,
        ;; and the branch parked until the deadline for want of a text box.
+       :else
        [:input {:placeholder "type an answer — Enter sends"
-                :on-enter answer}])]))
+                :on-enter (fn [a] (answer (str a)))}])
+     (when-not writing?
+       [:hbox
+        (when (seq opts) [:button {:label "your own answer" :style :ascii :on-click custom}])
+        [:button {:label "reject (Esc)" :style :ascii :on-click reject}]])]))
 
 (defn approvals
   "Questions waiting on a person: the permission gate and ask_human.
@@ -588,18 +641,18 @@
                                          "not a git working tree"))
              :else
              [:vbox
-              [:text {:color :green} (str " \u2387 " (clip branch 24))]
+              [:text {:class :git-branch} (str " \u2387 " (clip branch 24))]
               (if (zero? dirty)
-                [:text {:dim true} "  clean"]
+                [:text {:class :dim} "  clean"]
                 [:hbox
-                 [:text {:color (if (pos? (nth counts 0)) :green :default)}
+                 [:text {:class (if (pos? (nth counts 0)) :ok :dim)}
                   (str "  +" (nth counts 0))]
-                 [:text {:color (if (pos? (nth counts 1)) :yellow :default)}
+                 [:text {:class (if (pos? (nth counts 1)) :warn :dim)}
                   (str " ~" (nth counts 1))]
-                 [:text {:color (if (pos? (nth counts 2)) :yellow :default)}
+                 [:text {:class (if (pos? (nth counts 2)) :warn :dim)}
                   (str " ?" (nth counts 2))]])
               (when (not-empty (str last_commit))
-                [:text {:dim true} (str "  " (clip last_commit 30))])]))))
+                [:text {:class :dim} (str "  " (clip last_commit 30))])]))))
 
 ;; --- the bottom strip --------------------------------------------------------
 
@@ -638,19 +691,28 @@
         row [:hbox (select-keys props [:flex :width :height])
              [:input {:flex true
                       :value (or (:input state) "")
-                      :placeholder (if starting?
-                                     "the problem to work on — Enter starts a run"
-                                     "a directive for the run — Enter sends")
+                      :placeholder (case (:kind (:reply state))
+                                     :deny-note "what the agent should do instead — Enter sends"
+                                     :custom-answer "your answer — Enter sends"
+                                     (if starting?
+                                       "the problem to work on — Enter starts a run, /help for commands"
+                                       "a directive for the run — Enter sends, /help for commands"))
                       :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
                       :on-enter on-enter}]
-             [:button {:label "start"
+             [:button {:label "start" :style :ascii
                        :on-click (fn [] (when-let [f (get-in state [:on :start])]
                                           (f (or (:input state) ""))))}]
-             [:button {:label "abort"
+             [:button {:label "abort" :style :ascii
                        :on-click (fn [] (when-let [f (get-in state [:on :abort])] (f)))}]
-             [:button {:label "resume"
+             [:button {:label "resume" :style :ascii
                        :on-click (fn [] (when-let [f (get-in state [:on :resume])] (f)))}]]]
-    (if (:title props) (panel props row) row)))
+    (cond
+      (:title props) (panel props row)
+      ;; A border and nothing else: the one-row box beside the avatar.
+      (:boxed props) [:hbox (merge {:class :panel :border :rounded}
+                                   (select-keys props [:flex :width :style]))
+                      (assoc row 1 {:flex true})]
+      :else row)))
 
 (defn status
   "The footer: where the harness is pointed, what is answering, what the run
@@ -677,46 +739,120 @@
         ;; see branch-fill); no measured request, no segment.
         fill (when-let [used (branch-fill state)]
                (fill-segment used (:context_window p)))
-        sep [:text {:dim true} " \u2502 "]]
-    (into [:hbox {:bg :gray-dark}]
+        sep [:text {:class :dim} " \u2502 "]]
+    (into [:hbox {:class :status}]
           (remove nil?
                   [(if (:connected? state)
-                     [:text {:color :green} " \u25cf connected "]
-                     [:text {:color :red} " \u25cb offline "])
+                     [:text {:class :status-live} " \u25cf connected "]
+                     [:text {:class :status-down} " \u25cb offline "])
                    (when-let [l (project-label p)]
                      [:text {:bold true} (str " " (clip l 34))])
                    (when model sep)
-                   (when model [:text {:color :cyan} (clip (str model) 20)])
+                   (when model [:text {:class :model} (clip (str model) 20)])
                    (when fill sep)
-                   (when fill [:text {:dim true} fill])
+                   (when fill [:text {:class :dim} fill])
                    (when turns sep)
-                   (when turns [:text {:dim true}
+                   (when turns [:text {:class :dim}
                                 (str turns (when-let [m (:max_turns run)]
                                              (str " / " m))
                                      " turns")])
                    (when run sep)
                    (when run [:text (str (:status run))])
+                   ;; The approval mode: what happens when the run needs a
+                   ;; person (dirge shows its permission mode the same way).
+                   (when (:approval_mode p) sep)
+                   (when-let [m (:approval_mode p)]
+                     [:text {:class (if (= "block" (str m)) :perm :dim)} (str "mode:" m)])
+                   ;; Pushed or polled: whether the run on screen is live.
+                   (when (:run-id state) sep)
+                   (when (:run-id state)
+                     [:text {:class (if (:live? state) :status-live :dim)}
+                      (if (:live? state) "live" "polling")])
                    sep
-                   [:text {:dim true} (if-let [r (:run-id state)]
+                   [:text {:class :dim} (if-let [r (:run-id state)]
                                         (subs (str r) 0 (min 8 (count (str r))))
                                         "no run")]
                    (when-let [e (:error state)]
-                     [:text {:color :red} (str " " (clip e 40) " ")])
+                     [:text {:class :error} (str " " (clip e 40) " ")])
                    ;; Cyan, not red, and only when there is no error to report
                    ;; instead: a notice says what is happening ("starting…"),
                    ;; and a strip carrying both at once does not tell the
                    ;; reader which of them is the news.
                    (when-let [n (and (not (:error state)) (:notice state))]
-                     [:text {:color :cyan} (str " " (clip n 40) " ")])
+                     [:text {:class :info} (str " " (clip n 40) " ")])
                    (when-let [e (:layout-error state)]
-                     [:text {:color :yellow} (str " " (clip e 60) " ")])
+                     [:text {:class :warn} (str " " (clip e 60) " ")])
                    [:filler]
                    ;; Scheme stripped: "http://" is seven columns that say
                    ;; nothing, and with the project, model, fill and turn
                    ;; segments now on this line the strip overran an
                    ;; ordinary terminal and clipped the run id into the URL.
-                   [:text {:dim true}
+                   [:text {:class :dim}
                     (str " " (str/replace (str (or (:base state) "")) #"^https?://" "") " ")]]))))
+
+;; --- slash commands ------------------------------------------------------------
+
+(defn command-hints
+  "While a slash command is being typed: the commands it could be, each with
+  its arguments and what it does — and once the name is typed, that one's
+  usage. Draws nothing otherwise. Tab completes (dirge's ghost, as a list)."
+  [state props]
+  (let [cs (get-in state [:settings :commands])
+        text (str (:input state))
+        matches (cmd/candidates text cs)
+        parsed (when (and (str/starts-with? text "/") (re-find #"\s" text))
+                 (cmd/parse text cs))
+        lines (cond
+                (seq matches) (map cmd/usage (take (or (:max props) 8) matches))
+                (:error parsed) [(:error parsed)]
+                parsed [(cmd/usage parsed)])]
+    (if (seq lines)
+      (into [:vbox {:class :panel :border :rounded}]
+            (map-indexed (fn [i l] [:text {:class (if (zero? i) :selected :dim)} (str " " l)])
+                         lines))
+      [:empty])))
+
+;; --- the frame -----------------------------------------------------------------
+
+(defn rule
+  "A horizontal line with a title set into it: `──[ AGENT LOG ]──`. dirge's
+  top frame is three of these, one over each column, and a layout lines them
+  up by giving each the width of the column below it."
+  [_state props]
+  (let [line [:vbox {:flex true} [:separator {:class :frame}]]]
+    [:hbox (select-keys props [:flex :width])
+     [:vbox {:width 2} [:separator {:class :frame}]]
+     [:text {:class :panel-title} (str "[" (:title props) "]")]
+     line]))
+
+(defn- avatar-mood
+  "Which face: somebody has to answer, the run failed, it finished, it is
+  using a tool the face table names, it is thinking, or there is no run."
+  [state tools]
+  (let [status (str (get-in state [:detail :run :status]))
+        tool (str (:tool_name (last (get-in state [:branch :turns]))))]
+    (cond
+      (seq (:approvals state)) :alert
+      (not (:run-id state)) :idle
+      (#{"failed" "aborted" "error"} status) :error
+      (and (not= "running" status) (not= "" status)) :done
+      (contains? tools tool) (keyword (get tools tool))
+      :else :thinking)))
+
+(defn avatar
+  "A face that says what the agent is doing, from dirge. The faces and which
+  tool makes which one are settings — tui.edn :avatar — so a person who
+  would rather not have a face can give it an empty string."
+  [state props]
+  (let [{:keys [faces tools]} (get-in state [:settings :avatar])
+        mood (avatar-mood state (or tools {}))
+        face (get faces mood (get faces :idle "(o o)"))]
+    [:vbox (merge {:class :panel :border :rounded} (select-keys props [:width :flex :style]))
+     [:filler]
+     [:text {:class (case mood :alert :perm :error :error :done :accent :agent)
+             :align :hcenter}
+      (str face)]
+     [:filler]]))
 
 ;; --- registration ------------------------------------------------------------
 ;;
@@ -724,7 +860,10 @@
 ;; nothing else resolves them; a tag with no entry here draws a complaint in
 ;; its own box rather than taking the frame down (samizdat.tui.layout).
 
-(doseq [[tag f] {:widget/activity     activity
+(doseq [[tag f] {:widget/rule         rule
+                 :widget/command-hints command-hints
+                 :widget/avatar       avatar
+                 :widget/activity     activity
                  :widget/git          git
                  :widget/approvals    approvals
                  :widget/conversation conversation

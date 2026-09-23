@@ -56,13 +56,13 @@
                      (map #(str "cells/" (last (clojure.string/split (str %) #"/"))))
                      set)]
     (is (seq on-disk) "resources/cells is readable from the test's cwd")
-    (is (= on-disk (set cells/shipped-cells))
-        (str "cells/shipped-cells and resources/cells disagree; missing: "
-             (sort (remove (set cells/shipped-cells) on-disk))
+    (is (= on-disk (set (cells/shipped-cells)))
+        (str "(cells/shipped-cells) and resources/cells disagree; missing: "
+             (sort (remove (set (cells/shipped-cells)) on-disk))
              ", listed but absent: "
-             (sort (remove on-disk (set cells/shipped-cells))))))
+             (sort (remove on-disk (set (cells/shipped-cells)))))))
   (testing "every shipped name resolves on the classpath"
-    (doseq [r cells/shipped-cells]
+    (doseq [r (cells/shipped-cells)]
       (is (some? (clojure.java.io/resource r)) (str r " does not resolve")))))
 
 (deftest every-shipped-cell-require-is-reachable-without-load-string
@@ -78,7 +78,7 @@
   ;; passed after other namespaces in the suite had loaded the harness, and
   ;; failed 23 times on its own.
   (require 'samizdat.core)
-  (let [required (->> cells/shipped-cells
+  (let [required (->> (cells/shipped-cells)
                       (keep clojure.java.io/resource)
                       (mapcat #(re-seq #"\[(samizdat\.[a-z0-9.-]+)" (slurp %)))
                       (map second)
@@ -341,6 +341,52 @@
   (let [cat (samizdat.agent.gates/threshold :effect-symbols)]
     (is (map? cat) "the catalog is read from gates.edn, not a constant")
     (is (= #{:fs :net :db :proc} (set (keys cat))) "one entry per effect in the cell vocabulary")
-    (doseq [n cells/shipped-cells
+    (doseq [n (cells/shipped-cells)
             :let [content (slurp (clojure.java.io/resource n))]]
       (is (= [] (cells/effect-problems content cat)) n))))
+
+;; --- a project's cells are its files (karamazov-1a51.3, .4) ------------------
+
+(deftest in-a-project-the-cells-are-the-ones-its-map-lists
+  ;; The project owns its whole cell set: what is in .samizdat/cells is what
+  ;; loads, keyed by PATH so the mutation protocol's file rollback applies,
+  ;; and a shipped cell the project changed is the project's version.
+  (let [root @tmp
+        c (db/open! ":memory:")
+        prev-root (userspace/bind-root! root)]
+    (try
+      (userspace/bind! c)
+      (cell-file! (str root "/.samizdat/cells") :proj/one "(fn [_ d] (assoc d :one 1))")
+      (cell-file! (str root "/.samizdat/cells") :proj/two "(fn [_ d] d)")
+      (cell-file! (str root "/.samizdat/cells") :proj/unlisted "(fn [_ d] d)")
+      (spit (str root "/.samizdat/userspace.edn")
+            (pr-str {:cells ["cells/one.clj" "cells/two.clj"]}))
+      (let [loaded (cells/load-cells!)]
+        (is (= #{:proj/one :proj/two} (set (keys loaded)))
+            "the role map's :cells list is the set — nothing shipped loads
+             beside it, and a file the map does not list does not load")
+        (is (= (str root "/.samizdat/cells/one.clj") (:source (loaded :proj/one))))
+        (is (every? #(clojure.string/starts-with? % (str root "/.samizdat/cells/"))
+                    (keys (cells/loaded-file-content)))
+            "content is keyed by path, so a rollback can write it back"))
+      (finally (userspace/unbind!) (userspace/bind-root! prev-root) (db/close c)))))
+
+(deftest a-dir-cell-overrides-a-shipped-cell-in-a-store-bound-image
+  ;; karamazov-1a51.4. The dir file was saved into the store only when the
+  ;; store had NOTHING under that name — and a shipped cell always has its
+  ;; template there — so a .samizdat/cells override of a shipped cell was
+  ;; silently ignored in a bound image, though the docstring said it won.
+  (let [dir (str @tmp "/cells")
+        c (db/open! ":memory:")
+        prev-root (userspace/bind-root! nil)]
+    (try
+      (userspace/bind! c)
+      (fs/create-dirs dir)
+      (spit (str dir "/critic.clj")
+            (str "(ns cells.gen.critic (:require [mycelium.cell :as cell]))\n"
+                 "(cell/defcell :proj/critic-override {:doc \"mine\" :pure true}\n"
+                 "  (fn [_ d] d))\n"))
+      (let [srcs (#'cells/project-sources [dir])
+            critic (some #(when (= "critic" (:id %)) %) srcs)]
+        (is (clojure.string/includes? (:content critic) ":proj/critic-override")))
+      (finally (userspace/unbind!) (userspace/bind-root! prev-root) (db/close c)))))

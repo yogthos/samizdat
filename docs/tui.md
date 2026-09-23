@@ -2,7 +2,7 @@
 
 A full-screen terminal front end for a running harness. It shows what the
 agent is doing, lets a person answer the questions a branch is parked on, and
-takes an intervention when the run needs steering.
+takes an intervention when the run needs steering — laid out after dirge's.
 
 It is a strict HTTP client, like the GUI: this process holds no engines, no
 database handle and no run state of its own. Everything on screen arrived
@@ -32,22 +32,65 @@ needing cmake and a C++17 compiler). This is also why the TUI is not part of
 
 | | |
 |---|---|
-| click a fold header | open a thinking block, a tool's arguments, or a result — diffs are coloured |
-| `y` / `n` | allow or deny the permission dialog |
-| `F5` | poll now, without waiting out the interval |
-| `Ctrl-C`, `Ctrl-Q` | quit |
-| arrows + `Enter` | pick a run in RUNS, a branch in BEAM, an option in a questionnaire |
 | type + `Enter` | **with no run selected**, start a run on what you typed; **with one**, send it as a directive |
-| `start` / `abort` / `resume` | the three things done *to* a run rather than said to it |
+| `/` + a command | a slash command — see below; `Tab` completes the name, `/help` lists them |
+| `Ctrl-P` / `Ctrl-N` | walk back and forth through what you sent |
+| `PgUp` / `PgDn`, mouse wheel | scroll the conversation; it stops following the bottom |
+| `End`, or `↓` while scrolled up | back to following the bottom |
+| `Ctrl-O` | open the newest folded result or thinking; again to shut it |
+| click a fold | open a thinking block or the rest of a result |
+| `y` `a` `n` `d` `Esc` | the permission dialog: allow once, allow always (this session), deny, deny with a note, abort |
+| `Esc` | over a questionnaire: reject it |
+| `F5` | fetch everything now |
+| `Ctrl-C`, `Ctrl-Q`, `/quit` | quit |
+| arrows + `Enter` | pick a run in RUNS, a branch in BEAM, an option in a questionnaire |
 
 The mouse is on, and folds are ftxui's own collapsibles — clicking one is how
 it opens, with no hit-testing of our own.
 
-`y` and `n` are consumed **only** while a yes/no permission dialog is up. Over
-a questionnaire's answer box a `y` is a letter being typed and goes through
-untouched (`samizdat.tui.state/pending-decision` decides which). Everything
-else — arrows, text, clicks — belongs to whichever widget has the focus; the
-global handler consumes as little as it can.
+The dialog's letter keys are consumed **only** while a permission dialog is up
+and **only** with nothing typed: a `y` in the middle of a directive is a
+letter, not a verdict (`samizdat.tui.state/dialog-action` decides). Everything
+else belongs to whichever widget has the focus.
+
+### Slash commands
+
+Typed into the compose box. They are data — `tui.edn :commands` names each
+one, what it does, its arguments and its help line, and `{:alias "/model"}`
+makes a second name — so a command can be renamed or aliased without a
+rebuild. What they print lands in the conversation as `<sys>`.
+
+| | |
+|---|---|
+| `/model [id]` | list the provider's models, or switch — **live** for the run on screen (every branch's next request), otherwise for the next run started from here |
+| `/effort <level>` | how hard the model thinks, the same way |
+| `/mode [refuse\|block]` | what happens when a run needs you, for this server session: refuse, or block and ask. The footer shows it |
+| `/run <problem>` `/abort` `/resume` | start a run; abort or resume the one on screen |
+| `/runs [id]` `/branch <id>` | list the runs or open one by the start of its id; read another branch |
+| `/steer` `/review` `/cull` `/fork` `/extend` `/pause` `/continue` `/switch` `/budget` `/stop` | the directive kinds the server takes, sent to the run on screen |
+| `/follow` `/clear` `/help` `/quit` | |
+
+A live `/model` or `/effort` is the `model` / `effort` intervention kind:
+applied on arrival rather than queued (samizdat.agent.live), and noted in
+the run's journal as `:llm-switch`, which the conversation shows.
+
+### The dialogs
+
+Both sit under the conversation, where the run is parked on them.
+
+**Permission**: the tool, the whole command (never clipped — a person cannot
+judge `rm -rf "$BUILD"/*` from its first characters), why it was stopped, and
+`allow once (y)`, `allow always (a)`, `deny (n)`, `deny + note (d)`. *Allow
+always* is offered only when the command has a pattern to allow (`cargo *`;
+never a compound command), says which, and holds for **this session only**:
+kept in the server's memory for that run, never written to the project, gone
+with the process. *Deny + note* hands the compose box to the dialog; what you
+type there is what the agent is told to do instead.
+
+**Questionnaire** (`ask_human`): one question at a time — a menu, or
+checkboxes and `confirm` when the question takes several — plus `your own
+answer`, which hands the compose box over the same way, and `reject (Esc)`,
+which the branch reads as *declined*, not as nobody being there.
 
 ### The compose box does two things
 
@@ -78,35 +121,72 @@ from one that is not wired up, which is exactly how it got reported.
 
 ## What is on screen
 
-Every panel is a widget, and which ones exist is the layout's business, not
-the core's. The shipped arrangement is a left gutter, the conversation, a
-right gutter, a wide short row, and the bottom strip.
+After dirge's: a top frame naming the three columns; the run's vitals on the
+left; the conversation in the middle, where the room is; the work in
+progress on the right; the avatar beside the compose box; the status line
+under everything.
+
+```
+──[RUN STATUS]────────[AGENT LOG]───────────────────────────────[HARNESS]────
+  S A M I Z D A T   ╭ BRANCH B1 ─────────────────────────────╮╭ RUNS ───────╮
+╭ CONTEXT ────────╮ │<you> fix the parser                    ││ TASKS       │
+│ tokens / turns  │ │<agent> Reading the lexer first.        ││             │
+╰─────────────────╯ │▶ ◇ thinking (812 chars)                ││ MODIFIED    │
+╭ ACTIVITY ───────╮ │╭──────────────────────────────────────╮││             │
+│ · infer →call   │ ││READ_FILE ─ "src/lex.clj"      turn 1 │││             │
+│                 │ ││(ns lex)                              │││             │
+╰─────────────────╯ │╰──────────────────────────────────────╯││             │
+╭ BEAM ───────────╮ │<critic> progress is slow               ││ GIT         │
+╰─────────────────╯ ╰────────────────────────────────────────╯╰─────────────╯
+                    ╭ CLAIMS ─────────╮╭ GATES ─────────╮
+╭─────────────────╮╭───────────────────────────────────────────╮
+│      (o .)      ││ a directive for the run — Enter sends    start  abort  resume │
+╰─────────────────╯╰───────────────────────────────────────────╯
+ ● connected  samizdat:main │ glm-5.3 │ 9k / 128k (7%) │ running │ mode:block │ live │ 61aba012
+```
 
 | widget | shows |
 |---|---|
-| `:widget/conversation` | the agent's turns: what it said, what it called, what came back. Thinking, arguments and results fold, shut by default |
+| `:widget/conversation` | the branch's story — see below |
 | `:widget/activity` | the manifest states the agent is walking, newest last |
 | `:widget/runs` | the run picker |
-| `:widget/branches` | the beam — every branch on the run and what became of it. A run is several branches and the one being read is a choice |
+| `:widget/branches` | the beam — every branch on the run and what became of it |
 | `:widget/tasks` | the board: open, in progress, blocked, done |
 | `:widget/files` | files this run has written, newest first |
-| `:widget/context` | the selected branch's context fill against the model's window, what the run has spent against its budget, and the cache: the run's hit rate and how many turns missed, by cause |
+| `:widget/context` | the selected branch's context fill against the model's window, what the run has spent, and the cache |
 | `:widget/gates` | gates that fired, and predictions still unsettled |
 | `:widget/artifacts` | claims made, and how each was judged |
-| `:widget/approvals` | the one question a person is being asked, if any. Draws nothing when there is none |
-| `:widget/git` | the working tree: branch, `+staged ~unstaged ?untracked`, and the last commit's subject |
-| `:widget/input` | the compose box, plus start, abort and resume. Bare by default — pass `{:title "STEER"}` for a caption |
+| `:widget/approvals` | the permission dialog or the questionnaire, when one is pending; nothing otherwise |
+| `:widget/command-hints` | while a `/command` is being typed, what it could be and what each does |
+| `:widget/git` | the working tree: branch, `+staged ~unstaged ?untracked`, the last commit |
+| `:widget/input` | the compose box, plus start, abort and resume. `{:boxed true}` for a border, `{:title "STEER"}` for a titled panel |
+| `:widget/rule` | a line with a title set into it, `──[ AGENT LOG ]──` |
+| `:widget/avatar` | a face for what the agent is doing — faces and which tool makes which are `tui.edn :avatar` |
 | `:widget/status` | the footer — see below |
 
-Two details worth knowing because they look like bugs otherwise:
+### The conversation
 
-- **The approval dialog shows one question at a time**, and does not clip the
-  command it is asking about. A wall of pending questions is how somebody
-  answers the second one thinking it was the first, and with a branch parked
-  on the answer that is not a cosmetic mistake.
-- **The conversation is bounded** — the newest `:turns` of them, 60 by
-  default. Every entry is rebuilt on every frame, so this is a frame-rate
-  number as much as a history one.
+One timeline per branch of who said what, in the order it happened
+(samizdat.tui.timeline), each role in its own voice and colour:
+
+- `<you>` — the problem, and every steer a person sent;
+- `<agent>` — what the model said; its thinking folds under `◇ thinking`;
+  each tool call is a **chamber**, headed by the tool and the argument it is
+  known by, showing the first `:result-lines` of what came back with the rest
+  a click (or `Ctrl-O`) away, diffs coloured, failures red;
+- `<critic>` — the critic's scores and the feature loop's critique and review;
+- `<supervisor>` — oversight passes and the watch's interventions;
+- `<sys>` — compaction, model switches, and whatever this TUI printed.
+
+Which journal notes appear, as whom, and where in each note's data its words
+are, is `tui.edn :conversation :notes`; the branch fetch asks the server for
+exactly those kinds (`?notes=…`).
+
+It **follows the bottom**: the newest entry holds the frame's focus, so the
+pane scrolls as the run speaks. Scrolling up anchors it on an entry, which
+stays put however much arrives below; `End` follows again. It is bounded —
+the newest `:turns` of them, 60 by default, since every entry is rebuilt on
+every frame.
 
 ### The footer
 
@@ -190,22 +270,29 @@ for one widget the core implements. Expansion replaces those and leaves the
 rest alone, which is why two conversation panes side by side is a layout rather
 than a feature somebody has to add.
 
-To change it without restarting, drop an edited copy of `resources/tui.edn` at
-`.samizdat/tui.edn` (or point `$SAMIZDAT_TUI_LAYOUT` at one). The layout is
-re-read every frame; the file itself is only re-read when its mtime or length
-moves, so this is cheap.
+`tui.edn` is a LAYERED settings file, like `config.edn`: it follows a person
+from project to project, so it is assembled from several files, each merged
+over the ones below it (samizdat.layers). Highest first:
 
-Three sources, most local first:
+1. **`$SAMIZDAT_TUI_FILE`** (or the older `$SAMIZDAT_TUI_LAYOUT`) — a file
+   named outright;
+2. **`.samizdat/tui.edn`** in the project the TUI was started in;
+3. **what the harness serves** — `GET /v1/harness/layout`, the server's own
+   project file (or a version the agent saved through
+   `policy({action: "save", name: "tui", …})`). This is how the *agent*
+   rearranges the UI of a front end running somewhere else;
+4. **`~/.config/samizdat/tui.edn`** (`$XDG_CONFIG_HOME` honoured) — a
+   person's own, across every project;
+5. **the shipped `resources/tui.edn`**, which is what draws offline and on the
+   first frame.
 
-1. **the file** — `$SAMIZDAT_TUI_LAYOUT`, else `.samizdat/tui.edn`. What a
-   person edits;
-2. **what the harness serves** — `GET /v1/harness/layout`, the project's
-   stored `tui` policy row, folded in by the poller. This is how the *agent*
-   rearranges its own UI, through `policy({action: "save", name: "tui", …})`
-   — the same seam that carries `gates.edn`. The TUI holds no database handle,
-   so it asks the server, which does;
-3. **the shipped template** off the classpath, which is what draws offline and
-   on the first frame.
+Maps merge key by key, so a global file can set one colour and a project file
+another and both apply; anything else — the `:layout` vector especially — is
+replaced whole by the highest file that sets it. A file only has to say what
+it changes: `{:prose-turns 20}` alone is a complete `tui.edn`. A file that
+does not read costs only itself, and the status line names it. Every file is
+re-read when its mtime or length moves, so an edit shows up on the next frame
+with the TUI still running.
 
 Two settings live at the top level of the map, beside `:layout`:
 
@@ -215,6 +302,22 @@ Two settings live at the top level of the map, beside `:layout`:
   enough that the panel exceeded its socket timeout and never drew. Raise it
   to scroll back further and pay a request per poll per turn.
 - `:turns` (60), a prop on `:widget/conversation` — how far back it draws.
+
+### Colours
+
+Every colour on screen is `tui.edn :theme`: a map from a **class** to a
+**style**, the way a stylesheet works. Widgets name classes (`:agent`,
+`:critic`, `:tool-box`, `:perm-box`, …) and never colours; any node in
+`:layout` may name classes too, `{:class :critic}`, or carry an inline
+`{:style {:color "#ffb955" :bold true}}`, which wins over its classes. A
+style takes ftxui's attributes — `:color :bg :bold :dim :italic :underlined
+:inverted :strikethrough` — plus `:border` and `:border-color`. A colour is a
+palette name, a 256-colour index, `"#rgb"`/`"#rrggbb"`, or `[:rgb r g b]`; one
+ftxui cannot read is left out and named in the status line, never drawn (it
+would otherwise throw at draw time and take the frame with it). The shipped
+theme is dirge's phosphor palette, and because themes merge key by key a
+`~/.config/samizdat/tui.edn` of `{:theme {:agent {:color "#ffffff"}}}` changes
+exactly that one colour.
 
 ### Two things that will bite
 
@@ -239,22 +342,28 @@ is being used, so every failure here is a rendering:
 - a file that does not parse — which is what a half-saved edit looks like for
   an instant — is not cached, so the finished write is still picked up.
 
-## What it polls
+## What is pushed, and what is polled
 
-One pass over every feed on a background thread, cheapest first, each fold
-independent so a slow branch detail does not hold up the step trace: the
-served layout, the run list, the step tail, pending approvals, the run detail,
-the branch detail, then the prose for the turns on screen. Every 1.5s while
-connected, every 30s while not — a TUI left open against a stopped server is
-not hammering it. Answering a question polls immediately rather than waiting
-out the interval, because the whole point of that dialog is that somebody is
-watching it.
+The run on screen is **pushed**. The TUI follows `GET /v1/runs/:id/events`, a
+server-sent event stream (samizdat.api.stream): every journal event after the
+cursor, then each one as it lands, plus the manifest steps and approval
+changes that are never journalled. An event says what changed — a turn on the
+branch being read, a question for a person, the run ending — and only that is
+fetched, a burst of events coalesced into one fetch of each thing. The footer
+says `live` while the stream is up. A dropped stream reconnects with
+`Last-Event-ID` and resumes after the last event it saw; the server reads the
+events back from the table by id, so a slow reader misses nothing.
+
+What is not a run — the layout, the project, the run list — is **polled**,
+every 5s while the stream is up. While it is down the run is polled too, as
+it always was (every 1.5s connected, 30s not), and the footer says `polling`:
+a server without the stream, or a dropped connection, costs freshness, not
+function.
 
 An outage costs nothing that is already drawn. Cursors, the trace and the
-prose survive it; a panel that blanked on a dropped connection would lose the
-history that says what happened before it. Switching runs drops all of it on
-purpose — turn numbers restart per branch, so prose kept across a switch would
-caption the new run's turn 3 with the old run's words.
+prose survive it. Switching runs drops all of it on purpose — turn numbers
+restart per branch, so prose kept across a switch would caption the new
+run's turn 3 with the old run's words.
 
 ## Tests
 
@@ -279,8 +388,13 @@ jolt tui-test
 
 | | |
 |---|---|
-| `tui/samizdat/tui/core.clj` | the loop, the pollers, the handlers — the only namespace that knows ftxui exists |
+| `tui/samizdat/tui/core.clj` | the loop, the feeds (stream, refresher, poller), the handlers, the slash commands — the only namespace that knows ftxui exists |
 | `tui/samizdat/tui/state.clj` | the view state and every fold into it, pure |
 | `tui/samizdat/tui/widgets.clj` | the widgets, each `(fn [state props] -> hiccup)`, pure |
-| `tui/samizdat/tui/layout.clj` | the three sources, expansion, and the degradations |
-| `resources/tui.edn` | the shipped arrangement |
+| `tui/samizdat/tui/timeline.clj` | the conversation as entries in each role's voice, pure |
+| `tui/samizdat/tui/commands.clj` | parsing, completion and help for slash commands, pure |
+| `tui/samizdat/tui/theme.clj` | classes and inline styles resolved against the theme, colours checked, pure |
+| `tui/samizdat/tui/layout.clj` | the layers, expansion, and the degradations |
+| `src/samizdat/api/sse.clj` | following an event stream: the chunked body and the event lines, and reconnecting |
+| `src/samizdat/api/stream.clj` | the server side of the stream |
+| `resources/tui.edn` | the shipped arrangement, theme, commands, conversation settings and avatar |

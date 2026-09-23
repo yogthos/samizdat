@@ -30,7 +30,8 @@
   THE UI. A layout the agent breaks at runtime has to degrade to something
   that still shows the run and still says what is wrong, or the one tool the
   operator would use to see the damage is the tool the damage took out."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
             [samizdat.tui.layout :as layout]
             ;; Registers every :widget/* into layout/widgets as a side effect
             ;; of loading — which is what the shipped-layout test below
@@ -127,10 +128,21 @@
   (layout/forget-file!)
   (try (f) (finally (layout/serve! nil) (layout/forget-file!))))
 
+(def ^:private nowhere
+  "No project, no config home, no environment: only what is served and what
+  ships. Every test states the layers it means rather than reading whatever
+  the machine running the suite has in ~/.config."
+  {:root nil :global-dir nil :getenv (constantly nil)})
+
+(defn- file-at
+  "The layers with a person's file named by the environment variable."
+  [path]
+  (assoc nowhere :getenv {"SAMIZDAT_TUI_LAYOUT" path}))
+
 (deftest with-no-file-and-no-server-the-shipped-layout-is-what-draws
   (with-clean-layout
     (fn []
-      (is (= (:layout (layout/template)) (:layout (layout/current)))
+      (is (= (:layout (layout/template)) (:layout (layout/current nowhere)))
           "offline, first frame, nothing configured — it still draws"))))
 
 (deftest what-the-harness-serves-beats-the-shipped-template
@@ -139,15 +151,15 @@
   (with-clean-layout
     (fn []
       (layout/serve! (pr-str {:prose-turns 5 :layout [:vbox [:widget/status {}]]}))
-      (is (= [:vbox [:widget/status {}]] (:layout (layout/current))))
-      (is (= 5 (:prose-turns (layout/current)))))))
+      (is (= [:vbox [:widget/status {}]] (:layout (layout/current nowhere))))
+      (is (= 5 (:prose-turns (layout/current nowhere)))))))
 
 (deftest an-unparseable-served-layout-falls-back-and-says-so
   (with-clean-layout
     (fn []
       (layout/serve! "{:layout [:vbox")
-      (is (= (:layout (layout/template)) (:layout (layout/current))))
-      (is (string? (:error (layout/current)))))))
+      (is (= (:layout (layout/template)) (:layout (layout/current nowhere))))
+      (is (string? (:error (layout/current nowhere)))))))
 
 (deftest a-local-file-beats-what-the-harness-serves
   ;; A person editing EDN is the requirement this file exists for, and they
@@ -159,7 +171,7 @@
           (spit f (pr-str {:layout [:vbox [:widget/activity {:title "MINE"}]]}))
           (layout/serve! (pr-str {:layout [:vbox [:widget/status {}]]}))
           (is (= [:vbox [:widget/activity {:title "MINE"}]]
-                 (:layout (layout/current (.getPath f)))))
+                 (:layout (layout/current (file-at (.getPath f))))))
           (finally (.delete f)))))))
 
 (deftest an-edit-to-the-file-takes-on-the-next-frame
@@ -171,15 +183,15 @@
             path (.getPath f)]
         (try
           (spit f (pr-str {:prose-turns 1 :layout [:vbox [:widget/status {}]]}))
-          (is (= 1 (:prose-turns (layout/current path))))
+          (is (= 1 (:prose-turns (layout/current (file-at path)))))
           (spit f (pr-str {:prose-turns 99 :layout [:vbox [:widget/activity {}]]}))
           ;; Pushed forward deliberately: two writes a millisecond apart can
           ;; land on the same mtime, and a test that happened to pass on the
           ;; clock rather than on the code would be no test at all.
           (.setLastModified f (+ 2000 (.lastModified f)))
-          (is (= 99 (:prose-turns (layout/current path)))
+          (is (= 99 (:prose-turns (layout/current (file-at path))))
               "the edit took, with no restart and no cache to invalidate")
-          (is (= [:vbox [:widget/activity {}]] (:layout (layout/current path))))
+          (is (= [:vbox [:widget/activity {}]] (:layout (layout/current (file-at path)))))
           (finally (.delete f)))))))
 
 (deftest a-half-written-file-does-not-take-the-screen-and-is-retried
@@ -192,12 +204,76 @@
             path (.getPath f)]
         (try
           (spit f "{:layout [:vbox")
-          (is (= (:layout (layout/template)) (:layout (layout/current path))))
-          (is (string? (:error (layout/current path))))
+          (is (= (:layout (layout/template)) (:layout (layout/current (file-at path)))))
+          (is (string? (:error (layout/current (file-at path)))))
           ;; Same mtime as far as the cache is concerned; the retry is what
           ;; makes the finished write visible.
           (spit f (pr-str {:layout [:vbox [:widget/status {}]]}))
           (.setLastModified f 1000)
-          (is (= [:vbox [:widget/status {}]] (:layout (layout/current path)))
+          (is (= [:vbox [:widget/status {}]] (:layout (layout/current (file-at path))))
               "a failed read is not remembered as the answer")
           (finally (.delete f)))))))
+
+;; --- the layers (karamazov-1a51.5) -------------------------------------------
+;;
+;; The TUI's file is one of the LAYERED settings files: it follows a person
+;; from project to project, so ~/.config/samizdat/tui.edn sits under the
+;; project's .samizdat/tui.edn, and each merges over the one below — a theme
+;; colour at a time, while a :layout is replaced whole.
+
+(defn- temp-dir []
+  (str (java.nio.file.Files/createTempDirectory
+        "tui-layers" (make-array java.nio.file.attribute.FileAttribute 0))))
+
+(defn- put! [dir rel body]
+  (let [f (java.io.File. (str dir "/" rel))]
+    (.mkdirs (.getParentFile f))
+    (spit f body)
+    (.getPath f)))
+
+(deftest a-global-file-reaches-every-project-and-a-project-file-overrides-it
+  (with-clean-layout
+    (fn []
+      (let [root (temp-dir) global (temp-dir)
+            o (assoc nowhere :root root :global-dir global)]
+        (put! global "tui.edn" (pr-str {:prose-turns 7
+                                        :theme {:agent {:color "#111111"}
+                                                :user {:color "#222222"}}}))
+        (is (= 7 (:prose-turns (layout/current o))))
+        (is (= (:layout (layout/template)) (:layout (layout/current o)))
+            "a file that says nothing about :layout keeps the shipped one")
+        (put! root ".samizdat/tui.edn" (pr-str {:theme {:agent {:color "#999999"}}
+                                                :layout [:vbox [:widget/status {}]]}))
+        (is (= {:agent {:color "#999999"} :user {:color "#222222"}}
+               (select-keys (:theme (layout/current o)) [:agent :user]))
+            "colours merge one at a time")
+        (is (= {:color "#8ae89c"} (:ok (:theme (layout/current o))))
+            "and what no file changed is the shipped theme's")
+        (testing "a colour ftxui cannot read is left out and named"
+          (put! root ".samizdat/tui.edn" (pr-str {:theme {:agent {:color "greenish"}}}))
+          (let [c (layout/current o)]
+            (is (nil? (get-in c [:theme :agent :color])))
+            (is (re-find #"greenish" (str (:error c))))))
+        (put! root ".samizdat/tui.edn" (pr-str {:theme {:agent {:color "#999999"}}
+                                                :layout [:vbox [:widget/status {}]]}))
+        (is (= [:vbox [:widget/status {}]] (:layout (layout/current o)))
+            "an arrangement is replaced whole")
+        (is (= 7 (:prose-turns (layout/current o))))))))
+
+(deftest the-sources-are-reported-so-a-surprising-panel-can-be-traced
+  (with-clean-layout
+    (fn []
+      (let [global (temp-dir)]
+        (put! global "tui.edn" "{:prose-turns 2}")
+        (is (= [:global :shipped]
+               (mapv :layer (:sources (layout/current (assoc nowhere :global-dir global))))))))))
+
+(deftest a-broken-layer-costs-itself-and-the-status-line-names-it
+  (with-clean-layout
+    (fn []
+      (let [root (temp-dir) global (temp-dir)
+            bad (put! root ".samizdat/tui.edn" "{:prose-turns ")]
+        (put! global "tui.edn" "{:prose-turns 3}")
+        (let [c (layout/current (assoc nowhere :root root :global-dir global))]
+          (is (= 3 (:prose-turns c)) "the global layer still counts")
+          (is (str/includes? (str (:error c)) bad)))))))

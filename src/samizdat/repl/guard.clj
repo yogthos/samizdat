@@ -80,7 +80,7 @@
 (def ^:private kernel-path-re
   "A string argument naming harness SOURCE rather than userspace.
 
-  `src/` only — the vendored trees (mycelium, maestro, ring_chez) live under
+  `src/` only — the vendored trees (mycelium, maestro) live under
   it now, so one arm covers the whole kernel. resources/ is deliberately
   absent: cells, manifests and prompts ARE the supervisor's editing surface,
   and refusing those would refuse the whole point of the role."

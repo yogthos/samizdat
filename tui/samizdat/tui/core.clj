@@ -39,8 +39,12 @@
   (:require [clojure.string :as str]
             [ftxui.core :as ui]
             [samizdat.api.client :as client]
+            [samizdat.api.sse :as sse]
+            [samizdat.tui.commands :as cmd]
             [samizdat.tui.layout :as layout]
             [samizdat.tui.state :as st]
+            [samizdat.tui.theme :as theme]
+            [samizdat.tui.timeline :as tl]
             ;; Registers every :widget/* as a side effect of loading. Without
             ;; this require the layout resolves nothing and every panel draws
             ;; a "no widget" complaint.
@@ -100,7 +104,8 @@
       (do (swap! state st/note-notice "starting…")
           (future
             (swap! state st/apply-start
-                   (client/start-run! base {:problem problem}))
+                   (client/start-run! base (merge {:problem problem}
+                                                  (:next-llm @state))))
             (poll-once!)))
       (swap! state st/note-error "type a problem statement first"))))
 
@@ -127,7 +132,10 @@
   has to be visible rather than swallowed — the run would otherwise sit
   there until the deadline with nobody knowing the click did nothing."
   [id decision]
-  (let [r (client/decide! (:base @state) id {:decision decision})]
+  ;; A decision map — {:decision :allow :always true}, {:decision :deny
+  ;; :note "…"} — or a bare keyword from an older caller.
+  (let [r (client/decide! (:base @state) id (if (map? decision) decision {:decision decision}))]
+    (swap! state st/cancel-reply)
     (swap! state st/note-error (when-not (:ok r) (:error r)))
     ;; Poll straight away rather than waiting out the interval: the whole
     ;; point of this dialog is that somebody is watching it.
@@ -149,6 +157,117 @@
         (swap! state st/note-error (when-not (:ok r) (:error r)))
         (future (poll-once!))))))
 
+;; --- slash commands ------------------------------------------------------------
+
+(defn- clip-line [s n]
+  (let [t (str/replace (str s) #"\s+" " ")]
+    (if (> (count t) n) (str (subs t 0 (dec n)) "…") t)))
+
+(defn- say! [& lines] (swap! state st/note-local lines))
+
+(defn- running? [s]
+  (= "running" (str (get-in s [:detail :run :status]))))
+
+(defn- live-switch!
+  "/model and /effort: live for the run on screen while it runs, otherwise
+  kept for the next run started from here."
+  [kind llm-key value]
+  (let [{:keys [base run-id] :as s} @state]
+    (if (and run-id (running? s))
+      (let [r (client/intervene! base run-id {:kind kind :payload value})]
+        (if (:ok r)
+          (say! (str kind " → " value " for run " (subs run-id 0 (min 8 (count run-id)))
+                     ", from its next turn"))
+          (say! (str kind " switch refused: " (:error r)))))
+      (do (swap! state assoc-in [:next-llm llm-key] value)
+          (say! (str kind " → " value " for the next run"))))))
+
+(defn- command!
+  "Do what a slash line says. Its output goes into the conversation."
+  [text]
+  (let [cs (:commands (layout/current))
+        {:keys [error arg kind target] :as c} (cmd/parse text cs)
+        {:keys [base run-id branch-id]} @state]
+    (swap! state #(-> % (st/remember-input text) st/clear-input))
+    (if error
+      (say! error)
+      (case (:do c)
+        :help (apply say! "commands:" (cmd/help-lines cs))
+        :quit (ui/exit!)
+        :clear (swap! state st/clear-local)
+        :follow (swap! state st/follow)
+        :abort (abort!)
+        :resume (resume!)
+        :start (if arg (start! arg) (say! "/run needs the problem to work on"))
+        :branch (if arg (swap! state st/select-branch arg) (say! "/branch needs a branch id"))
+        :runs (if arg
+                (if-let [r (first (filter #(str/starts-with? (str (:id %)) arg) (:runs @state)))]
+                  (swap! state st/select-run (:id r))
+                  (say! (str "no run starting " arg)))
+                (apply say! "runs:" (for [r (take 20 (:runs @state))]
+                                      (str "  " (clip-line (:id r) 9) "  " (:status r)
+                                           "  " (clip-line (:problem r) 60)))))
+        :model (if arg
+                 (live-switch! "model" :model arg)
+                 (future
+                   (let [r (client/models base)
+                         {:keys [current models]} (:body r)
+                         next-m (get-in @state [:next-llm :model])]
+                     (if (:ok r)
+                       (apply say! (str "models (current " current
+                                        (when next-m (str ", next run " next-m)) "):")
+                              (for [m models] (str "  " (if (= m current) "▸ " "  ") m)))
+                       (say! (str "could not list the models: " (:error r)))))))
+        :effort (if arg
+                  (live-switch! "effort" :reasoning_effort arg)
+                  (say! "/effort needs a level: low, medium, high or max"))
+        :mode (if arg
+                (future
+                  (let [r (client/set-approval-mode! base arg)]
+                    (if (:ok r)
+                      (do (say! (str "approval mode → " (get-in r [:body :mode])
+                                     " for this session"))
+                          (swap! state st/apply-project (client/project base)))
+                      (say! (str "mode not set: " (:error r))))))
+                (say! (str "approval mode: " (or (get-in @state [:project :approval_mode]) "unknown")
+                           " — /mode refuse or /mode block")))
+        :intervene
+        (cond
+          (not run-id) (say! "no run on screen to direct")
+          (and (= :arg target) (not arg)) (say! (str (:name c) " needs a branch id"))
+          :else
+          (let [r (client/intervene! base run-id
+                                     {:kind kind
+                                      :payload (if (= :arg target) "" (or arg ""))
+                                      :branch-id (case target
+                                                   :branch branch-id
+                                                   :arg arg
+                                                   nil)})]
+            (say! (if (:ok r)
+                    (str (:name c) " sent — " (or (get-in r [:body :note]) "queued"))
+                    (str (:name c) " refused: " (:error r))))))
+        (say! (str (:name c) " is not something this TUI can do"))))))
+
+(defn- send!
+  "Enter in the compose box. While a dialog holds it, the text is the deny
+  note or the custom answer; a slash line is a command; anything else starts
+  a run (none on screen) or steers the one that is."
+  [action text]
+  (let [{:keys [reply question-answers approvals question-cursor]} @state]
+    (cond
+      (= :deny-note (:kind reply))
+      (do (decide! (:id reply) {:decision :deny :note (str/trim (str text))})
+          (swap! state st/clear-input))
+
+      (= :custom-answer (:kind reply))
+      (do (swap! state #(-> % st/cancel-reply st/clear-input))
+          (answer! (:id reply) question-cursor (conj (vec question-answers) (str/trim (str text)))))
+
+      (cmd/parse text {}) (command! text)
+
+      :else (do (swap! state st/remember-input text)
+                (action text)))))
+
 (def ^:private handlers
   "What the widgets can do, handed to them in the state. Widgets stay pure
   functions and a test drives a click by passing recording functions here."
@@ -158,19 +277,24 @@
    :select-run    #(swap! state st/select-run %)
    :select-branch #(swap! state st/select-branch %)
    :input         #(swap! state st/set-input %)
-   :submit        steer!
-   :start         start!
+   :submit        #(send! steer! %)
+   :start         #(send! start! %)
    :abort         abort!
-   :resume        resume!})
+   :resume        resume!
+   :reply         (fn [kind id] (swap! state st/start-reply kind id))
+   :toggle-option #(swap! state st/toggle-option %)})
 
-;; --- the pollers -------------------------------------------------------------
+;; --- the feeds ----------------------------------------------------------------
+;;
+;; Two. The run being watched is PUSHED: its event stream (GET
+;; /v1/runs/:id/events) says what changed, and only that is fetched. What is
+;; not a run — the layout, the project, the run list — is polled, slowly.
+;; When the stream is down the run is polled too, as it always was, so a
+;; server without the stream or a dropped connection costs freshness, not
+;; function.
 
-(defn- poll-once!
-  "One pass over every feed, folded into the state.
-
-  Ordered cheapest-first and each fold is independent, so a slow branch
-  detail does not hold up the step trace — the panel that moves most often
-  is the one that must not wait."
+(defn- poll-harness!
+  "What the harness is, rather than what a run is doing."
   []
   (let [base (:base @state)]
     ;; The layout the harness holds, so a version the agent saved for itself
@@ -178,62 +302,128 @@
     ;; arrangement that is already drawn.
     (let [r (client/layout base)]
       (when (:ok r) (layout/serve! (get-in r [:body :layout]))))
-    ;; Beside the layout because it is the same KIND of thing — what the
-    ;; harness is, rather than what a run is doing — and because both survive
-    ;; a run being deselected. Cheap: the server caches the git side (gates.edn
-    ;; :git-snapshot-ttl-ms), so this is not three shell-outs per poll.
+    ;; Cheap: the server caches the git side (gates.edn :git-snapshot-ttl-ms),
+    ;; so this is not three shell-outs per poll.
     (swap! state st/apply-project (client/project base))
-    (swap! state st/apply-runs (client/list-runs base))
-    (when-let [rid (:run-id @state)]
-      ;; The cursor is read here, after apply-runs may have selected a run —
-      ;; reading it before would use the previous run's number on the first
-      ;; pass after a switch.
-      (swap! state st/apply-steps (client/steps-since base rid (:steps-cursor @state)))
-      ;; Before the detail: a branch parked on a question is a branch doing
-      ;; nothing, so the dialog is the panel that must not wait behind a
-      ;; slow response.
-      (swap! state st/apply-approvals (client/approvals base rid))
-      (swap! state st/apply-detail (client/run-detail base rid))
-      (when-let [bid (:branch-id @state)]
-        (swap! state st/apply-branch (client/branch-detail base rid bid))
-        ;; The prose, a turn at a time, for the newest turns only — the
-        ;; branch listing drops it because it is the bulk. How many is a
-        ;; userspace number, since how far back a reader wants to scroll is
-        ;; their business and not the harness's.
-        (doseq [n (st/prose-wanted @state (:prose-turns (layout/current) 12))]
-          (swap! state st/apply-turn-text n (client/turn-detail base rid bid n)))))))
+    (swap! state st/apply-runs (client/list-runs base))))
 
-(defonce ^:private poller (atom nil))
+(defn- refresh-run!
+  "Fetch what `wants` names for the selected run: :detail, :branch,
+  :approvals, :steps, :runs.
+
+  Questions first: a branch parked on a question is a branch doing nothing,
+  so the dialog is the panel that must not wait behind a slow response."
+  [wants]
+  (let [base (:base @state)]
+    (when (:runs wants) (swap! state st/apply-runs (client/list-runs base)))
+    (when-let [rid (:run-id @state)]
+      (when (:steps wants)
+        (swap! state st/apply-steps (client/steps-since base rid (:steps-cursor @state))))
+      (when (:approvals wants) (swap! state st/apply-approvals (client/approvals base rid)))
+      (when (:detail wants) (swap! state st/apply-detail (client/run-detail base rid)))
+      (when (:branch wants)
+        (when-let [bid (:branch-id @state)]
+          (swap! state st/apply-branch
+                 (client/branch-detail base rid bid
+                                       (keys (get-in (layout/current) [:conversation :notes]))))
+          ;; The prose, a turn at a time, for the newest turns only — the
+          ;; branch listing drops it because it is the bulk.
+          (doseq [n (st/prose-wanted @state (:prose-turns (layout/current) 12))]
+            (swap! state st/apply-turn-text n (client/turn-detail base rid bid n))))))))
+
+(def ^:private everything #{:steps :approvals :detail :branch})
+
+(defn- poll-once!
+  "One pass over every feed, folded into the state. F5, and after an action."
+  []
+  (poll-harness!)
+  (refresh-run! everything))
+
+;; What pushed events have asked to be fetched and nobody has fetched yet.
+;; A burst of forty events in one turn is one fetch of each thing, not forty.
+(defonce ^:private wanted (atom #{}))
+
+(defn- on-pushed
+  "One pushed event: fold it, and queue what it changed."
+  [e]
+  (let [w (volatile! #{})]
+    (swap! state (fn [s] (let [[s' wants] (st/apply-event s e)]
+                           (vreset! w wants)
+                           s')))
+    (when (seq @w) (swap! wanted into @w))))
+
+(defonce ^:private workers (atom nil))
+
+(defn- daemon! [name f]
+  (doto (Thread. f name) (.setDaemon true) (.start)))
+
+(defn- guarded
+  "Run `f`, and note rather than throw: a worker that died would leave a UI
+  that looks live and is frozen, which is the failure this project keeps
+  finding."
+  [f]
+  (try (f) (catch Throwable e (swap! state st/note-error (ex-message e)))))
+
+(defn- follow-loop
+  "Follow the selected run's event stream; move to the new run when the
+  selection changes."
+  [running]
+  (while @running
+    (let [{:keys [base run-id]} @state]
+      (if-not run-id
+        (Thread/sleep 250)
+        (do
+          ;; A run newly followed is fetched whole once; from then on its
+          ;; events say what changed.
+          (swap! wanted into everything)
+          (guarded
+           #(sse/follow! (str base "/v1/runs/" run-id "/events?since=now")
+                         {:on-event on-pushed
+                          :on-status (fn [status] (swap! state st/stream-status status))
+                          :on-error (fn [_] (swap! state st/stream-status nil))
+                          :stop? (fn [] (or (not @running)
+                                            (not= run-id (:run-id @state))))}))
+          (swap! state st/stream-status nil))))))
+
+(defn- refresh-loop
+  "Fetch whatever pushed events asked for, a batch at a time."
+  [running]
+  (while @running
+    (let [w (first (reset-vals! wanted #{}))]
+      (if (seq w)
+        (guarded #(refresh-run! w))
+        (Thread/sleep 100)))))
+
+(defn- poll-loop
+  "Poll what is not pushed — and the run as well, while its stream is down.
+  Backs off when the server is unreachable, so a TUI left open against a
+  stopped server is not hammering it."
+  [running]
+  (loop [last-harness 0]
+    (when @running
+      (let [now (System/currentTimeMillis)
+            {:keys [live? connected?]} @state
+            harness? (or (not live?) (>= (- now last-harness) client/idle-interval-ms))]
+        (guarded #(do (when harness? (poll-harness!))
+                      (when-not live? (refresh-run! everything))))
+        (Thread/sleep (if connected? client/base-interval-ms client/max-backoff-ms))
+        (recur (if harness? now last-harness))))))
 
 (defn start-polling!
-  "Tail the server on a background thread until `stop-polling!`.
-
-  The interval backs off on failure through the same policy the GUI's poll
-  loop uses, so a TUI left open against a stopped server is not hammering
-  it. Never throws out of the loop: a poller that died would leave a UI that
-  looks live and is frozen, which is the failure this project keeps finding."
+  "Start the feeds on background threads until `stop-polling!`."
   []
-  (when-not @poller
-    (let [running (atom true)
-          t (Thread.
-             (fn []
-               (while @running
-                 (try (poll-once!)
-                      (catch Throwable e
-                        (swap! state st/note-error (ex-message e))))
-                 (Thread/sleep (if (:connected? @state)
-                                 client/base-interval-ms
-                                 client/max-backoff-ms))))
-             "samizdat-tui-poller")]
-      (.setDaemon t true)
-      (reset! poller {:running running :thread t})
-      (.start t)))
+  (when-not @workers
+    (let [running (atom true)]
+      (reset! workers {:running running})
+      (daemon! "samizdat-tui-poller" #(poll-loop running))
+      (daemon! "samizdat-tui-follower" #(follow-loop running))
+      (daemon! "samizdat-tui-refresher" #(refresh-loop running))))
   nil)
 
 (defn stop-polling! []
-  (when-let [{:keys [running]} @poller]
+  (when-let [{:keys [running]} @workers]
     (reset! running false)
-    (reset! poller nil))
+    (reset! workers nil))
   nil)
 
 ;; --- the frame ---------------------------------------------------------------
@@ -246,9 +436,23 @@
   a broken edit falls back to the shipped layout and reports itself in the
   status line rather than taking the screen."
   []
-  (let [{:keys [layout error]} (layout/current)
-        s (assoc @state :on handlers :layout-error error)]
-    (layout/expand layout s)))
+  (let [{:keys [layout error] th :theme :as spec} (layout/current)
+        s (assoc @state :on handlers :layout-error error
+                 ;; The settings a widget reads beyond the layout itself —
+                 ;; the avatar's faces, say.
+                 :settings (dissoc spec :layout :sources :error))]
+    ;; Themed AFTER expansion, so the classes the widgets name are resolved
+    ;; along with the ones the layout names — one stylesheet for both.
+    (theme/apply-theme th (layout/expand layout s))))
+
+(def ^:private page-entries 10)
+(def ^:private wheel-entries 3)
+
+(defn- conversation-entries
+  "The conversation's entries as the widget draws them, for the keys that
+  move through it."
+  [s]
+  (tl/entries s (:conversation (layout/current))))
 
 (defn- on-event
   "Global keys. Everything else — clicks, arrows, text — belongs to whichever
@@ -259,18 +463,51 @@
   key has to mean it. `state/pending-decision` decides whether there is such
   a dialog — over a questionnaire's answer box a `y` is a letter being
   typed, and it goes through untouched."
-  [{:keys [type key char control]}]
-  (cond
-    (and (= :key type) (= :ctrl-c key)) (do (ui/exit!) true)
-    (and (= :character type) control (= "q" char)) (do (ui/exit!) true)
-    (and (= :key type) (= :f5 key)) (do (future (poll-once!)) true)
+  [{:keys [type key char control button]}]
+  (let [scroll! (fn [delta]
+                  (swap! state #(st/scroll % (mapv :key (conversation-entries %)) delta))
+                  true)]
+    (cond
+      (and (= :key type) (= :ctrl-c key)) (do (ui/exit!) true)
+      ;; ftxui delivers Ctrl+Q as a :key, never as a :character with a
+      ;; control flag — the old test for that could not match, and the quit
+      ;; key the docs named did nothing.
+      (and (= :key type) (= :ctrl-q key)) (do (ui/exit!) true)
+      (and (= :key type) (= :f5 key)) (do (future (poll-once!)) true)
 
-    (and (= :character type) (not control))
-    (if-let [[id d] (st/pending-decision @state char)]
-      (do (decide! id d) true)
-      false)
+      ;; The conversation: page through it, and back to following the bottom.
+      (and (= :key type) (= :page-up key)) (scroll! (- page-entries))
+      (and (= :key type) (= :page-down key)) (scroll! page-entries)
+      (and (= :mouse type) (= :wheel-up button)) (scroll! (- wheel-entries))
+      (and (= :mouse type) (= :wheel-down button)) (scroll! wheel-entries)
+      ;; Down or End while scrolled up jumps back to the bottom (dirge);
+      ;; while following, they are the input's.
+      (and (= :key type) (#{:arrow-down :end} key) (:scroll-anchor @state))
+      (do (swap! state st/follow) true)
+      ;; Tab completes a slash command's name.
+      (and (= :key type) (= :tab key) (str/starts-with? (str (:input @state)) "/"))
+      (do (swap! state #(st/set-input % (cmd/complete (:input %) (:commands (layout/current)))))
+          true)
+      ;; Ctrl+P / Ctrl+N walk back and forth through what was sent.
+      (and (= :key type) (= :ctrl-p key)) (do (swap! state st/history-back) true)
+      (and (= :key type) (= :ctrl-n key)) (do (swap! state st/history-forward) true)
+      ;; Ctrl+O opens the newest folded result or thinking, and shuts it again.
+      (and (= :key type) (= :ctrl-o key))
+      (do (swap! state #(st/toggle-latest-fold
+                         % (tl/fold-ids (conversation-entries %) (:conversation (layout/current)))))
+          true)
 
-    :else false))
+      ;; The dialog on screen, if any: y a n d, Esc (state/dialog-action).
+      (and (or (= :escape key) (and (= :character type) (not control)))
+           (st/dialog-action @state {:char char :key key}))
+      (let [[act a b] (st/dialog-action @state {:char char :key key})]
+        (case act
+          :decide (future (decide! a b))
+          :reply (swap! state st/start-reply a b)
+          :cancel-reply (swap! state st/cancel-reply))
+        true)
+
+      :else false)))
 
 (defn -main [& args]
   (let [base (or (first (remove str/blank? args)) (default-base-url))]

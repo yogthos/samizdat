@@ -36,6 +36,7 @@
   (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
             [jolt.time]
             [clojure.data.json :as json]
+            [clojure.string :as str]
             [jolt.http-client :as http]))
 
 (def ^:private opts
@@ -146,10 +147,13 @@
   string and every encoding, which on a long run is hundreds of kilobytes
   and takes seconds. A front end renders live activity from the event stream
   meanwhile, so this arriving late costs nothing."
-  [base run-id branch-id]
-  (try (result (http/get (str base "/v1/runs/" run-id "/branches/" branch-id)
-                         (assoc opts :socket-timeout 45000)))
-       (catch Throwable e {:ok false :error (ex-message e)})))
+  ([base run-id branch-id] (branch-detail base run-id branch-id nil))
+  ([base run-id branch-id note-kinds]
+   (try (result (http/get (str base "/v1/runs/" run-id "/branches/" branch-id
+                               (when (seq note-kinds)
+                                 (str "?notes=" (str/join "," (map str note-kinds)))))
+                          (assoc opts :socket-timeout 45000)))
+        (catch Throwable e {:ok false :error (ex-message e)}))))
 
 (def start-timeout-ms
   "How long to wait for POST /v1/runs.
@@ -190,6 +194,11 @@
         (cond-> {:kind (or kind "message") :payload payload}
           branch-id (assoc :branch_id branch-id))))
 
+(defn set-approval-mode!
+  "Set this server session's approval mode: \"refuse\" or \"block\"."
+  [base mode]
+  (POST base "/v1/harness/approval-mode" {:mode mode}))
+
 (defn abort! [base run-id]
   (POST base (str "/v1/runs/" run-id "/abort") {}))
 
@@ -204,6 +213,9 @@
 
 (def base-interval-ms 1500)
 (def max-backoff-ms 30000)
+;; How often what is NOT pushed (the run list, the project, the layout) is
+;; polled while a run's event stream is up.
+(def idle-interval-ms 5000)
 
 (defn poll-step
   "Fold one journal fetch into the loop state {:cursor :interval-ms}.

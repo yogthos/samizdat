@@ -29,6 +29,7 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.beam :as beam]
+            [samizdat.agent.live :as live]
             [samizdat.agent.resume :as resume]
             [samizdat.approval :as approval]
             [samizdat.cancel :as cancel]
@@ -36,6 +37,7 @@
             [samizdat.prompt :as prompt]
             [samizdat.store.grants :as grants]
             [samizdat.store.interventions :as interventions]
+            [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]))
 
 ;; run-id -> {:future f :abort (atom false)}. A run outlives the request that
@@ -252,6 +254,27 @@
             :else nil)]
     (when-not (str/blank? (str p)) (str p))))
 
+(def ^:private live-kinds
+  "The kinds that change a running run's model rather than what it is told.
+  Applied ON ARRIVAL, like `grant`: loop/call-model reads them on every
+  request (samizdat.agent.live), so there is no boundary to queue for."
+  {"model" :model "effort" :reasoning-effort})
+
+(defn- live-switch!
+  [conn run-id {:keys [kind payload]}]
+  (let [v (some-> payload str str/trim not-empty)
+        k (get live-kinds kind)]
+    (if-not v
+      {:status 400 :body {:error {:message (str "a " kind " switch needs the " (name k)
+                                                " as its payload")
+                                  :run_id run-id}}}
+      (do (live/set! run-id {k v})
+          ;; On the record, so the run's own account says when it changed
+          ;; and a front end's conversation can show it.
+          (journal/note! conn run-id :llm-switch {:data {k v}})
+          (log/info "run" run-id kind "switched to" v)
+          {:body {:status "switched" (name k) v :run_id run-id}}))))
+
 (defn intervene!
   "Record a human intervention. Queued kinds (message, cull, fork, …) go on
   the directive queue and apply at the next branch boundary. The exception is
@@ -281,6 +304,8 @@
         {:status 409 :body {:error {:message (str "run " run-id " is already "
                                                   (:status run))
                                     :run_id run-id}}})
+    (if (contains? live-kinds (:kind body))
+      (live-switch! conn run-id body)
     (if-not (contains? interventions/kinds (:kind body))
       ;; provenance R3-12: this reached submit!'s throw and surfaced as the
       ;; server's catch-all 500. An unknown kind is the client's mistake.
@@ -299,7 +324,7 @@
           :status "pending"
           ;; Said plainly rather than implied, because the difference between
           ;; accepted and applied is the thing a UI most easily lies about.
-          :note "Queued. It applies at the branch's next turn boundary, not now."}})))))
+          :note "Queued. It applies at the branch's next turn boundary, not now."}}))))))
 
 (defn kinds
   "Every directive kind with what it does — the names from the store, the

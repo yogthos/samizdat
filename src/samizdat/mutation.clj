@@ -50,6 +50,16 @@
 
 (def ^:private soak-timeout-ms 10000)
 
+(defn- reload-cells!
+  "Load the cells the protocol checkpoints: `dirs` when the caller named them;
+  otherwise the project's own files in file mode (karamazov-1a51.3), where a
+  dir scan would load the shipped library beside them; otherwise the legacy
+  scan of cells/default-dirs."
+  [dirs]
+  (if (and (nil? dirs) (userspace/files?))
+    (cells/load-cells!)
+    (cells/load-cells! (or dirs cells/default-dirs))))
+
 (defn- restore-files!
   "Write the checkpoint's file contents back to disk — undo the agent's edit."
   [files]
@@ -213,7 +223,7 @@
   (let [attempt (attempt-of files)]
   (restore-files! files)
   (cell/registry-restore! registry)
-  (try (cells/load-cells! (or dirs cells/default-dirs)) (catch Throwable _ nil))
+  (try (reload-cells! dirs) (catch Throwable _ nil))
   ;; WHAT WAS TRIED, not only that something was. Read before restore-files!
   ;; above overwrites it — the reason alone lets the next run re-derive the
   ;; same edit, which is the failure WikiSkill's skill-impact.md exists to
@@ -249,8 +259,7 @@
   Returns {:status :committed} on success (the edit is live), or
   {:status :rolled-back :reason \"...\"} with the registry and files restored."
   [{:keys [dirs loop-def soak-input compile-fn soak-fn battery-fn conn run-id] :as opts}]
-  (let [dirs (or dirs cells/default-dirs)
-        compile-fn (or compile-fn myc/pre-compile)
+  (let [compile-fn (or compile-fn myc/pre-compile)
         ;; Injected so a test can drive the ORDER of the ladder, and so the
         ;; battery can be supplied by the caller rather than requiring this
         ;; namespace to reach up into the workflow layer for a way to run one.
@@ -275,7 +284,7 @@
       ;; RELOAD — install the edit into the live image. Transactional: a syntax
       ;; error throws here and the loader has already restored the registry;
       ;; we still restore the file below.
-      (cells/load-cells! dirs)
+      (reload-cells! dirs)
       ;; VALIDATE — does the loop still compile with the edited cells, and
       ;; does every cell's :pure / :effects mark cover what its body reaches?
       ;; The second is over what was just loaded, before the soak that

@@ -37,7 +37,10 @@
 
 (def ^:private turns
   [{:turn 1 :tool_name "read_file" :args "{\"path\":\"src/a.clj\"}"
-    :result "(ns a)\n(defn go [])" :category "neutral"}])
+    ;; Six lines: the chamber shows four, and the last two — (defn go []) the
+    ;; last of them — fold behind "↓ 2 more lines".
+    :result "(ns a)\n(def x 1)\n(def y 2)\n(def z 3)\n(def w 4)\n(defn go [])"
+    :category "neutral"}])
 
 (defn- row-of
   "The 0-based row `needle` appears on in a rendered frame, or nil. How a
@@ -58,10 +61,10 @@
                {}))]
     (ui/with-screen [s app]
       (let [before (ui/render-text s 60 12)]
-        (is (str/includes? before "result") "the header is drawn")
+        (is (str/includes? before "more lines") "the header is drawn")
         (is (not (str/includes? before "(defn go [])"))
             "and its body is not, until it is opened")
-        (let [y (row-of before "result")]
+        (let [y (row-of before "more lines")]
           (is (some? y) "found the header's row")
           (ui/send-mouse! s {:button :left :motion :pressed :x 2 :y y})
           (ui/send-mouse! s {:button :left :motion :released :x 2 :y y})
@@ -83,7 +86,7 @@
     (ui/with-screen [s app]
       (let [open (ui/render-text s 60 12)]
         (is (str/includes? open "(defn go [])") "starts open")
-        (let [y (row-of open "result")]
+        (let [y (row-of open "more lines")]
           (ui/send-mouse! s {:button :left :motion :pressed :x 2 :y y})
           (ui/send-mouse! s {:button :left :motion :released :x 2 :y y})
           (is (not (str/includes? (ui/render-text s 60 12) "(defn go [])"))
@@ -103,7 +106,7 @@
         (is (some? y) "the allow button is on screen")
         (ui/send-mouse! s {:button :left :motion :pressed :x 3 :y y})
         (ui/send-mouse! s {:button :left :motion :released :x 3 :y y})
-        (is (= ["a1" :allow] @decided)
+        (is (= ["a1" {:decision :allow}] @decided)
             "the click answered the question the dialog was showing")))))
 
 (deftest an-open-ended-question-can-be-typed-into-and-sent
@@ -149,10 +152,12 @@
   search for \"start\" lands in the text field and focuses it instead —
   which looks exactly like a dead button. No placeholder says \"abort\"."
   [text label]
+  ;; The buttons sit at the END of the input's own line, after a placeholder
+  ;; that says "starts", so the last match on the line is the button.
   (let [lines (str/split-lines text)]
     (first (keep-indexed (fn [i line]
                            (when (str/includes? line "abort")
-                             (when-let [c (str/index-of line label)] [i c])))
+                             (when-let [c (str/last-index-of line label)] [i c])))
                          lines))))
 
 (defn- click!
@@ -224,8 +229,13 @@
                   :select-branch (fn [_])}
         current (requiring-resolve 'samizdat.tui.layout/current)
         expand (requiring-resolve 'samizdat.tui.layout/expand)
-        app (fn [] (expand (:layout (current))
-                           (assoc (st/initial "http://x") :on handlers)))]
+        themed (requiring-resolve 'samizdat.tui.theme/apply-theme)
+        ;; Themed, as core/root draws it: the theme pass is part of what
+        ;; reaches the toolkit, and it once ate the buttons' own :style.
+        app (fn [] (let [spec (current)]
+                     (themed (:theme spec)
+                             (expand (:layout spec)
+                                     (assoc (st/initial "http://x") :on handlers)))))]
     (ui/with-screen [s app]
       (let [frame (ui/render-text s 110 30)]
         (doseq [label ["abort" "resume" "start"]]
@@ -252,8 +262,11 @@
                                :staged 1 :unstaged 2 :untracked 0
                                :last_commit "a commit"
                                :model "glm-5.3" :context_window 128000})
-        frame (ui/render-text (expand (:layout (layout)) state) 120 30)]
-    (is (str/includes? frame "ACTIVITY LOG"))
+        themed (requiring-resolve 'samizdat.tui.theme/apply-theme)
+        spec (layout)
+        frame (ui/render-text (themed (:theme spec) (expand (:layout spec) state)) 120 30)]
+    (is (str/includes? frame "ACTIVITY"))
+    (is (str/includes? frame "[AGENT LOG]") "the top frame names the columns")
     (is (str/includes? frame "TASKS"))
     (is (str/includes? frame "offline") "the status line drew too")
     (is (not (str/includes? frame "STEER"))
@@ -269,3 +282,38 @@
          this layout's own warning is about")
     (is (re-find #"\+1 ~2" frame) "including the dirty counts")
     (is (str/includes? frame "samizdat:trunk") "and the footer's project label")))
+
+(deftest the-conversation-follows-the-bottom-in-the-real-toolkit
+  ;; The data half says the newest entry carries :focus. That is only the
+  ;; mechanism; the claim is that FTXUI scrolls its frame to it, so a run
+  ;; that has said more than fits shows what it said LAST.
+  (let [turns (mapv (fn [n] {:turn n :tool_name "read_file" :result (str "result " n)})
+                    (range 1 41))
+        frame (ui/render-text (w/conversation (assoc (st/initial "b") :branch {:turns turns}) {})
+                              60 20)]
+    (is (str/includes? frame "result 40") "the newest turn is on screen")
+    (is (not (str/includes? frame "result 1\n")) "and the oldest has scrolled away"))
+  (testing "scrolled up to an anchor, the frame holds it instead"
+    (let [turns (mapv (fn [n] {:turn n :tool_name "read_file" :result (str "result " n)})
+                      (range 1 41))
+          frame (ui/render-text (w/conversation (assoc (st/initial "b") :branch {:turns turns}
+                                                       :scroll-anchor "t5/tool") {})
+                                60 20)]
+      (is (str/includes? frame "result 5"))
+      (is (not (str/includes? frame "result 40"))))))
+
+(deftest a-multi-select-question-ticks-on-a-click
+  (let [state (atom (assoc (st/initial "b")
+                           :approvals [{:id "q1" :questions [{:question "which?" :multi true
+                                                              :options ["alpha" "beta"]}]}]))
+        app (fn [] (w/approvals (assoc @state :on {:toggle-option #(swap! state st/toggle-option %)
+                                                   :answer (fn [& _]) :decide (fn [& _])
+                                                   :reply (fn [& _])})
+                                {}))]
+    (ui/with-screen [s app]
+      (let [frame (ui/render-text s 60 14)
+            y (row-of frame "beta")]
+        (is (some? y) "the option is on screen")
+        (ui/send-mouse! s {:button :left :motion :pressed :x 3 :y y})
+        (ui/send-mouse! s {:button :left :motion :released :x 3 :y y})
+        (is (= #{1} (:question-selected @state)) "the click ticked it")))))

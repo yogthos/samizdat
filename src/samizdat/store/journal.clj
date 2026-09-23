@@ -900,6 +900,35 @@
    (db/fetch conn ["SELECT * FROM events WHERE run_id = ? AND id > ? ORDER BY id LIMIT ?"
                      run-id (or cursor 0) limit])))
 
+(defn branch-notes
+  "The journal notes of `kinds` that belong to a branch's story: its own,
+  and the run-wide ones (no branch). Oldest first, the newest `limit`."
+  [conn run-id branch-id kinds limit]
+  (when (seq kinds)
+    (vec (reverse
+          (db/fetch conn (into [(str "SELECT * FROM events WHERE run_id = ?
+                                        AND (branch_id = ? OR branch_id IS NULL)
+                                        AND kind IN ("
+                                     (str/join ", " (repeat (count kinds) "?"))
+                                     ") ORDER BY id DESC LIMIT ?")
+                                run-id branch-id]
+                               (concat (map str kinds) [limit])))))))
+
+(defn last-event-id
+  "The newest event id for `run-id` (every run's when nil), or 0."
+  [conn run-id]
+  (or (:id (db/fetch-one conn (if run-id
+                                ["SELECT MAX(id) AS id FROM events WHERE run_id = ?" run-id]
+                                ["SELECT MAX(id) AS id FROM events"])))
+      0))
+
+(defn all-events-since
+  "`events-since` across every run: what a stream following all of them
+  reads. Ids are global, so one cursor serves."
+  [conn cursor limit]
+  (db/fetch conn ["SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?"
+                  (or cursor 0) limit]))
+
 (defn note!
   "A free-form journal entry, for anything without a table of its own."
   [conn run-id kind data]

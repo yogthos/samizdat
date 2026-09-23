@@ -325,6 +325,18 @@ prompt({action, ...})
                            they carry.
       revert {name, version} Go back to an earlier body. The revert is itself
                            a new version, so nothing is lost.
+adopt({action, ...})
+    What this project has not taken yet. Its workflow is its own, so a role
+    a later release adds, a template it changes, and a version this project
+    stored before its workflow lived in files are OFFERED, never applied
+    behind your back. Take what helps this project; decline the rest with
+    the reason. Actions:
+      list                 Everything on offer.
+      show {kind, name}    The offered text, beside this project's own.
+      take {kind, name, rationale} Adopt it. It is checked like any edit,
+                           and refused with the reason if it does not pass.
+      decline {kind, name, rationale} Say no; it is not offered again until
+                           a later release changes it.
 ```
 
 The loop is not fixed infrastructure. Inspect how it is wired and running with

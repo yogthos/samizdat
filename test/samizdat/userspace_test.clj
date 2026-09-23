@@ -848,11 +848,15 @@
         (is (= {:source :file :layer :model
                 :path (str root "/.samizdat/prompts/local/qwen3/bar.md")}
                (us/prompt-source "bar")))
-        (testing "a name with a row and no file reports the row"
+        (testing "a save writes the project's file (karamazov-1a51.3), so the
+                  file is where the words now come from"
           (us/save! :prompt "baz" "ROW" "another")
-          (is (= {:source :project :version 1} (us/prompt-source "baz"))))
-        (testing "a shipped name with neither reports the template"
-          (is (= {:source :template} (us/prompt-source "problem"))))
+          (is (= {:source :file :layer :project
+                  :path (str root "/.samizdat/prompts/baz.md")}
+                 (us/prompt-source "baz"))))
+        (testing "a shipped name the project's role map lacks has no source:
+                  the map is the whole story (karamazov-1a51.7)"
+          (is (nil? (us/prompt-source "problem"))))
         (testing "an unknown name reports nothing"
           (is (nil? (us/prompt-source "no-such-prompt-anywhere")))))
       (finally (rm-rf (java.io.File. root))))))
@@ -901,14 +905,28 @@
                                         :conn *conn* :args args}))]
     (try
       (with-prompt-root [root {:provider :local :model "Qwen3.8-27B-Q8_0"}]
-        (us/save! :prompt "bar" "ROW BAR" "a stored edit the file now shadows")
+        ;; A project as its first run leaves it — every shipped file copied,
+        ;; the files written above kept — then its role map edited: the
+        ;; tool's own messages are a prompt role too, so it is the shipped
+        ;; map with "problem" dropped and "bar" added.
+        (us/seed-project!)
+        (spit (java.io.File. root ".samizdat/userspace.edn")
+              (pr-str (-> (us/template-map)
+                          (update :prompts dissoc :problem)
+                          (assoc-in [:prompts :bar] "prompts/bar.md"))))
+        ;; Straight into the store: with a root bound a save writes the file
+        ;; too, and what this pins is an OLDER row the file now shadows.
+        (store/save! *conn* :prompt "bar" "ROW BAR" "project"
+                     "a stored edit the file now shadows")
         (let [listing (:result (run {:action "list"}))]
-          (is (re-find #"(?m)^split-decision  \[template\]  \[file: model wins\]$" listing)
+          (is (re-find #"(?m)^split-decision  v1 \(1 version\)  \[file: model wins\]$" listing)
               (str listing))
           (is (re-find #"local/qwen3  .*local/qwen3/split-decision\.md" listing))
-          (is (re-find #"(?m)^bar  v1 \(1 version\)  \[file: project wins\]$" listing)
-              "a stored row that a file shadows says so, next to the version it shadows")
-          (is (re-find #"project  .*/\.samizdat/prompts/bar\.md" listing)))
+          (is (re-find #"(?m)^bar  v1 \(1 version\)$" listing)
+              "a project's own role, with its history — every role has its own
+               file, so the plain case carries no marker")
+          (is (not (re-find #"project  .*/\.samizdat/prompts/bar\.md" listing))
+              "and no path line: only a variant that wins is worth one"))
         (let [shown (:result (run {:action "show" :name "split-decision"}))]
           (is (re-find #"\[from model file .*local/qwen3/split-decision\.md\]" shown))
           (is (re-find #"QWEN BLOCK" shown)))
@@ -918,8 +936,10 @@
         (is (re-find #"ROW BAR"
                      (:result (run {:action "show" :name "bar" :version "1"})))
             "asking for a version by number still reads the row the file shadows")
-        (is (re-find #"\[from the shipped template\]"
-                     (:result (run {:action "show" :name "problem"})))))
+        (is (re-find #"No prompt 'problem'"
+                     (:result (run {:action "show" :name "problem"})))
+            "a shipped prompt the project's map does not name is not the
+             project's — the shipped copy does not answer for it"))
       (finally (rm-rf (java.io.File. root))))))
 
 ;; --- drift: how much each surface has moved (karamazov-00qw) -----------------

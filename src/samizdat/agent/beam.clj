@@ -79,6 +79,7 @@
             [samizdat.lexicon :as lexicon]
             [samizdat.symbolic :as sym]
             [samizdat.agent.oversight :as oversight]
+            [samizdat.agent.live :as live]
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
             [samizdat.store.artifacts :as artifacts]
@@ -928,6 +929,7 @@
         (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
         (oversight/forget-run! run-id)
         (session/forget-run! run-id)
+        (live/forget-run! run-id)
         ;; NOTHING IS LEFT PENDING ON A RUN NOBODY WILL DRAIN AGAIN. The
         ;; drains leave workflow kinds (switch/budget/stop) for a workflow's
         ;; own directives stage and only feature.edn has one, so on any other

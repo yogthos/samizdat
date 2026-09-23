@@ -160,7 +160,7 @@
          (str/trim (prompt/layer :crossover)))))
 
 (deftest shipped-prompts-match-what-ships
-  ;; Enumerated rather than globbed, for the reason cells/shipped-cells is:
+  ;; Enumerated rather than globbed, for the reason (cells/shipped-cells) is:
   ;; `jolt build` bakes resources/ into the binary and an embedded resource
   ;; has no filesystem path for a glob to walk, so a built binary run outside
   ;; the project root would report that the harness has no prompts. An
@@ -172,17 +172,17 @@
                                (str/replace #"\.md$" "")))
                      set)]
     (is (seq on-disk) "resources/prompts is readable from the test's cwd")
-    (is (= on-disk (set prompt/shipped-prompts))
-        (str "prompt/shipped-prompts and resources/prompts disagree; missing: "
-             (sort (remove (set prompt/shipped-prompts) on-disk))
+    (is (= on-disk (set (prompt/shipped-prompts)))
+        (str "(prompt/shipped-prompts) and resources/prompts disagree; missing: "
+             (sort (remove (set (prompt/shipped-prompts)) on-disk))
              ", listed but absent: "
-             (sort (remove on-disk prompt/shipped-prompts))))))
+             (sort (remove on-disk (prompt/shipped-prompts)))))))
 
 (deftest every-shipped-prompt-renders
   ;; A template that cannot be parsed fails where it is USED — for a gate
   ;; message that is mid-run, and for the system prompt it is the top of every
   ;; branch. Cheap to check them all here instead.
-  (doseq [n prompt/shipped-prompts]
+  (doseq [n (prompt/shipped-prompts)]
     (is (string? (prompt/render-str (prompt/prompt n) {}))
         (str "prompts/" n ".md does not render"))))
 
@@ -346,7 +346,7 @@
   ;; inserted where the frame names it — so the userspace versions and the
   ;; per-model files that already work per prompt work per section.
   (doseq [[k nm] loop/system-segments]
-    (is (some #{nm} prompt/shipped-prompts) (str nm " ships"))
+    (is (some #{nm} (prompt/shipped-prompts)) (str nm " ships"))
     (is (not (str/blank? (prompt/prompt nm))) (str nm " has a body"))
     (is (str/includes? (prompt/prompt "system") (str "{{" k "}}"))
         (str "the frame names " k))))

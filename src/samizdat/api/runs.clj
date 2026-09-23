@@ -208,8 +208,14 @@
      :count (count steps)
      :dropped dropped}))
 
-(defn branch-detail [conn run-id branch-id]
+(defn branch-detail
+  "A branch, its turns, and — when `note-kinds` names any — the journal notes
+  of those kinds that belong to its story (journal/branch-notes), for a
+  front end drawing who said what beside the turns."
+  ([conn run-id branch-id] (branch-detail conn run-id branch-id nil))
+  ([conn run-id branch-id note-kinds]
   (when-let [b (runs/get-branch conn run-id branch-id)]
+    (cond->
     {:branch (update b :thesis parse-json)
      :turns (journal/branch-turns conn run-id branch-id)
      ;; Gates that fired but whose predictions never settled — the run's own
@@ -217,4 +223,8 @@
      ;; targeted are read.
      :unsettled-gates (journal/unsettled-gates conn run-id branch-id)
      :artifacts (mapv #(update % :witness parse-json)
-                      (journal/artifacts conn run-id branch-id))}))
+                      (journal/artifacts conn run-id branch-id))}
+      (seq note-kinds)
+      (assoc :notes (mapv #(update % :data parse-json)
+                          (journal/branch-notes conn run-id branch-id note-kinds
+                                                (gates/threshold :branch-notes-shown))))))))

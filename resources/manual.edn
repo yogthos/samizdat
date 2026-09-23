@@ -108,7 +108,29 @@
    {:name samizdat.agent.files/reference-roots
     :summary "The READ-ONLY roots a project declared beside its own (.samizdat/config.edn :run :reference-paths). read_file and grep resolve against them; writes stay confined to the root."}
    {:name samizdat.config/file-config
-    :summary "Both config files as one map: ~/.config/samizdat/config.edn ($XDG_CONFIG_HOME honoured) with the project's .samizdat/config.edn merged on top, key by key. Every reader of on-disk config comes through here."}
+    :summary "Every config.edn file as one map, through samizdat.layers: the file SAMIZDAT_CONFIG_FILE names, over the project's .samizdat/config.edn, over ~/.config/samizdat/config.edn ($XDG_CONFIG_HOME honoured), merged key by key. Every reader of on-disk config comes through here."}
+   {:name samizdat.layers/resolve
+    :summary "Assemble a LAYERED settings file — config.edn, tui.edn, and any other front end's — from env file > .samizdat/<name>.edn > a served copy > ~/.config/samizdat/<name>.edn > shipped, deep-merged (maps key by key, a vector such as a hiccup :layout replaced whole). Returns the value, its text, the layers that contributed and the ones dropped with why. Any name resolves, so a new front end needs no loader."}
+   {:name samizdat.userspace/seed-project!
+    :summary "Copy the shipped role map (resources/userspace.edn) and every file it names into a project's .samizdat/ on its first run. From then on the project's map and files are its workflow and the store keeps their history. Older stored versions that differ are queued in .samizdat/adoption.edn for the supervisor."}
+   {:name samizdat.api.stream/response
+    :summary "A run's events pushed as server-sent events: GET /v1/runs/:id/events (GET /v1/events for every run). Each journal event after the cursor — Last-Event-ID, ?since=<id>, or ?since=now — with its kind as the event name and the row as JSON, then each one as it lands; plus the steps and approval changes that are never journalled. Numbers in gates.edn :event-stream. samizdat.api.sse/follow! is the client."}
+   {:name samizdat.agent.live/apply-to
+    :summary "What a person switched on a RUNNING run: the `model` and `effort` intervention kinds apply on arrival (POST /v1/runs/:id/interventions {kind: \"model\", payload: id}), and loop/call-model merges them over the run's llm config on every request, so every branch's next turn uses them. Each switch is journalled as :llm-switch. Forgotten when the run ends."}
+   {:name samizdat.approval/set-mode!
+    :summary "The approval mode for this server session — :refuse or :block — over gates.edn :approval :mode, which stays the project's default. POST /v1/harness/approval-mode; the TUI's /mode. In memory: who is at the keyboard now is not a fact about the project."}
+   {:name samizdat.approval/session-grants
+    :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
+   {:name samizdat.userspace/offers
+    :summary "What this project has not taken yet: a role the shipped map has and the project's lacks (:new), a shipped template that changed since the project saw it (:updated, :edited? when the project changed its copy too), a version stored before the workflow lived in files (:pending). Never applied on its own; the supervisor answers each with the `adopt` tool, and .samizdat/adoption.edn remembers the answer."}
+   {:name samizdat.userspace/role-path
+    :summary "Which file serves a role: the project's .samizdat/userspace.edn maps each manifest, prompt and policy role to a file and lists the cells in load order. Repoint a role, add one, or drop one by editing that map; a role the map lacks is refused, not answered by the shipped template."}
+   {:name samizdat.userspace/rejections
+    :summary "Edits to the project's workflow files that did not pass their check and are not running: the file, the role, the stage that failed (:read :compile :render :load :shape), the line and column when known, and whether a branch was told (:by). The last version that passed runs until a passing text replaces the file."}
+   {:name samizdat.userspace/register-validator!
+    :summary "Install a kind's validator — (fn [name text] -> nil | {:stage :message :line :column}). Manifests compile against the loaded cells, prompts must render, cells must read and load in a registry snapshot, policies must read and pass their table's own verification, the role map must name files that exist. Every read of a changed file goes through it."}
+   {:name samizdat.userspace/roles
+    :summary "Every role of a kind (:manifest :prompt :policy :cell) the project's map has — what the manifest, prompt and policy tools list."}
    {:name samizdat.config/config-sources
     :summary "Which config files this process reads, lowest precedence first, and whether each exists — what the boot log and /health show so a surprising value can be traced to its file."}
    {:name samizdat.config/db-location
@@ -116,7 +138,7 @@
    {:name samizdat.userspace/bind-model!
     :summary "Which {:provider :model} the prompt FILE layer serves. Bound once at start from the run config, after the endpoint probe has said what a local server actually loaded — :local's configured model is only a placeholder."}
    {:name samizdat.userspace/prompt-source
-    :summary "Where a prompt's text comes from — a file under .samizdat/prompts/ (and which layer: model, provider, project), a stored row, or the shipped template. A file always wins; this is how you see that it did."}
+    :summary "Where a prompt's text comes from — a file under .samizdat/prompts/ (and which layer: model, provider, project), or the shipped template for a name the project has no file for. A stored row answers only when no project directory is bound."}
    {:name samizdat.userspace/prompt-variants
     :summary "Every prompt file the project holds, by name, with the provider/model directory each applies to. The `prompt list` view of the file layer, so a per-model wording is visible rather than a shadow."}]}
 

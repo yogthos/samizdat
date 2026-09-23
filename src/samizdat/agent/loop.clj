@@ -49,6 +49,7 @@
             [samizdat.agent.state :as state]
             [samizdat.agent.storm :as storm]
             [samizdat.agent.thinking :as thinking]
+            [samizdat.agent.live :as live]
             [samizdat.agent.tools :as tools]
             [samizdat.agent.skills :as skills]
             [samizdat.llm.message :as message]
@@ -446,8 +447,12 @@
   (let [off (:off-value (gates/threshold :thinking-budget))
         ctx (update ctx :llm-config
                     (fn [c]
-                      (assoc c :reasoning-effort
-                             (thinking/effort-for branch (:reasoning-effort c) off))))]
+                      ;; A person's live switch first (samizdat.agent.live):
+                      ;; a model or effort changed mid-run lands here, on the
+                      ;; next request, whatever the run started with.
+                      (let [c (live/apply-to c (:run-id ctx))]
+                        (assoc c :reasoning-effort
+                               (thinking/effort-for branch (:reasoning-effort c) off)))))]
     ;; AN INJECTED `complete` WINS. RFC-004 already says the model call is
     ;; "the ONE effect, as an injectable value" and that a test or a probe
     ;; passes its own — but this call site hardcoded the constructor, so the
