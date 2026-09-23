@@ -178,6 +178,19 @@
     (is (= (:content (nth msgs 0)) (:content (nth out 0))) "the head keeps its place")
     (is (= (:content (last msgs)) (:content (last out))) "and the tail follows")))
 
+(deftest a-fold-carries-pinned-messages-through-verbatim
+  ;; The tape's per-message unload never touches a :pinned? message (the
+  ;; current task's statement); the fold must not either, or a long enough
+  ;; task gets summarised away exactly when it matters most (karamazov-d5wo.1).
+  (let [pinned {:role "user" :content "THE TASK" :pinned? true}
+        msgs (assoc (convo 12) 4 pinned)
+        out (cmp/apply-summary msgs [2 8] "MARKER:" "the summary")]
+    (is (= "MARKER:the summary" (:content (nth out 2))) "the summary stands where the window was")
+    (is (= pinned (nth out 3)) "and the pinned message follows it, whole")
+    (is (= (- 12 6 -2) (count out)) "the other five folded messages became the one summary")
+    (is (= [pinned] (cmp/pinned-in msgs [2 8])))
+    (is (= [] (cmp/pinned-in (convo 12) [2 8])))))
+
 (deftest a-later-fold-can-find-the-earlier-one
   (let [msgs [{:role "user" :content "a"}
               {:role "system" :content "MARKER:first summary"}
@@ -444,6 +457,26 @@
       (is (= "system" (fold {:context-window 128000}))))
     (testing "the probe said the template refuses a mid-conversation system role"
       (is (= "user" (fold {:context-window 128000 :fold-role "user"}))))
+    (testing "a pinned message inside the window survives the fold and is not summarised"
+      (let [task {:role "user" :content "PINNED TASK STATEMENT" :pinned? true}
+            msgs' (assoc msgs 7 task)
+            sent (atom nil)
+            out (with-redefs [samizdat.store.journal/note! (fn [& _] nil)
+                              samizdat.llm.client/chat
+                              (fn [& args]
+                                (reset! sent (pr-str args))
+                                {:content "## Active Task\nFinish it.\n## Goal\nShip.\n## Completed Actions\nRead a.\n## Active State\nGreen."})
+                              samizdat.agent.compaction/validate-summary (fn [& _] true)
+                              samizdat.store.knowledge/distil-session! (fn [& _] 0)]
+                  ((:handler (cell/get-cell! :compaction/fold))
+                   {:conn ::conn :run-id "r1"
+                    :llm-adapter ::adapter :llm-config {:context-window 128000}}
+                   (assoc-in data [:branch :messages] msgs')))
+            out-msgs (get-in out [:branch :messages])]
+        (is (some :compaction? out-msgs) "the fold happened")
+        (is (some #(= task %) out-msgs) "the pinned message is still there, whole")
+        (is (not (str/includes? @sent "PINNED TASK STATEMENT"))
+            "and the summarizer never saw it, so it is not duplicated in the summary")))
     (testing "an explicit policy value wins over the probe"
       (with-redefs [gates/threshold (let [orig gates/threshold]
                                       (fn [k] (if (= k :fold-role) "system" (orig k))))]

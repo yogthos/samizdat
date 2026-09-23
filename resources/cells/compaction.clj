@@ -296,11 +296,14 @@
             tail (if (cmp/aggressive? (:compaction/tier data))
                    (:aggressive-tail p) (:protect-tail p))
             [s e] (cmp/compress-window msgs (:protect-head p) tail)]
-        (if (>= s e)
+        ;; Pinned messages ride through the fold verbatim (apply-summary), so
+        ;; the summarizer is not shown them: summarising one would put it in
+        ;; the context twice.
+        (if (or (>= s e) (empty? (cmp/unpinned-in msgs [s e])))
           (do (note! conn run-id data {:tier (some-> (:compaction/tier data) name)
                                   :action "prune-only" :why "no window to fold"})
               data)
-          (let [folded (subvec msgs s e)
+          (let [folded (cmp/unpinned-in msgs [s e])
                 budget (cmp/summary-budget
                         (cmp/estimate-tokens folded (:chars-per-token p))
                         (:summary p))

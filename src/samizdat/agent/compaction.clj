@@ -341,9 +341,26 @@
                           (str/starts-with? (str (:content m)) marker))
                  [i (subs (str (:content m)) (count marker))])))))
 
+(defn pinned-in
+  "The `:pinned?` messages inside `[start end)`, in order.
+
+  A fold must not summarise these any more than the tape's per-message unload
+  does (samizdat.tape/due-indices): a pinned message is the task statement the
+  branch is working on, and it matters more the longer the task runs. They are
+  user messages, so carrying one past the summary never separates a tool call
+  from its result."
+  [messages [start end]]
+  (vec (filter :pinned? (subvec (vec messages) start end))))
+
+(defn unpinned-in
+  "The messages inside `[start end)` that a fold may summarise."
+  [messages [start end]]
+  (vec (remove :pinned? (subvec (vec messages) start end))))
+
 (defn apply-summary
   "The messages with `[start end)` replaced by one message carrying the
-  summary — a system message unless `role` says otherwise.
+  summary — a system message unless `role` says otherwise — followed by any
+  pinned message the window held, verbatim (see `pinned-in`).
 
   The protected head keeps its place, the summary stands where the folded
   region was, and the tail follows — so the conversation's shape is unchanged
@@ -363,4 +380,5 @@
      (vec (concat (take start messages)
                   [{:role (if (contains? fold-roles (str role)) (str role) "system")
                     :content (str marker summary) :compaction? true}]
+                  (pinned-in messages [start end])
                   (drop end messages))))))
