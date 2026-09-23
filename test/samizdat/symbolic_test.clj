@@ -578,6 +578,52 @@
          (sym/widest-beam {:requested 1 :concurrency 1
                            :turn-ms 200000 :deadline-ms 900000}))))
 
+(deftest a-turn-costs-what-the-width-makes-it-cost
+  ;; karamazov-vm3w.1. A constant turn-ms reads the provider's cost as
+  ;; independent of the width being solved for, and on a local llama-server
+  ;; it is not. Measured 2026-09-23 on Bonsai 27B with 4 slots, fixed
+  ;; 300-token generations on a ~8.9k-token prompt: 79.0s alone, 162.5s each
+  ;; with two in flight, 309s each with four — total throughput flat at
+  ;; 3.7-3.9 tok/s, every slot sharing one engine. Told "4 calls at a time, 79s a turn", the scalar model admits a
+  ;; width the deadline then abandons.
+  (let [measured {1 79000 2 162500 4 309000}]
+    (is (= {:width 5 :rounds 2 :bound #{}}
+           (sym/widest-beam {:requested 5 :concurrency 4
+                             :turn-ms 79000 :deadline-ms 300000}))
+        "the scalar model: four slots, one turn-time a round — wrong")
+    (is (= {:width 3 :rounds 1 :bound #{:deadline}}
+           (sym/widest-beam {:requested 5 :concurrency 4 :turn-ms 79000
+                             :turn-ms-at measured :deadline-ms 300000}))
+        "the table: two at 162.5s fit, three interpolate to ~236s and fit,
+         four at 309s do not")
+    (testing "the table alone is enough: every branch in flight at once"
+      (is (= {:width 3 :rounds 1 :bound #{:deadline}}
+             (sym/widest-beam {:requested 5 :turn-ms-at measured
+                               :deadline-ms 300000}))))
+    (testing "past the last measured width the cost keeps rising on the last slope"
+      (is (= {:width 5 :rounds 1 :bound #{}}
+             (sym/widest-beam {:requested 5 :turn-ms-at measured
+                               :deadline-ms 420000})))
+      (is (= {:width 4 :rounds 1 :bound #{:deadline}}
+             (sym/widest-beam {:requested 5 :turn-ms-at measured
+                               :deadline-ms 380000}))
+          "five extrapolates to ~382s"))
+    (testing "and with fewer slots than branches the rest queue behind them"
+      (is (= {:width 4 :rounds 2 :bound #{:deadline}}
+             (sym/widest-beam {:requested 5 :concurrency 2 :turn-ms-at measured
+                               :deadline-ms 340000}))
+          "four is two rounds of two at 162.5s; five is three rounds"))
+    (testing "a table that says more in flight is faster is read as flat —
+              a width cannot make each request cheaper"
+      (is (= {:width 2 :rounds 1 :bound #{:deadline}}
+             (sym/widest-beam {:requested 5 :turn-ms-at {1 100000 2 90000 3 150000}
+                               :deadline-ms 120000}))))
+    (testing "it composes with the budget as the scalar did"
+      (is (= {:width 2 :rounds 1 :bound #{:budget}}
+             (sym/widest-beam {:requested 5 :turn-ms-at measured
+                               :deadline-ms 300000 :turns 40 :turn-tokens 5000
+                               :token-budget 500000}))))))
+
 (deftest a-turn-longer-than-the-deadline-fits-no-width-at-all
   ;; Not zero — a beam of nothing is not a beam — but one, flagged, so the
   ;; caller can say the run will spend its turns being abandoned.

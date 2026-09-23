@@ -25,7 +25,11 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.gates :as gates]
-            [samizdat.agent.trajectory :as trajectory]))
+            [samizdat.agent.trajectory :as trajectory]
+            [samizdat.llm.client :as llm]
+            [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
+            [samizdat.store.runs :as runs]))
 
 ;; --- letter parsing ---------------------------------------------------------
 
@@ -115,3 +119,35 @@
          decision is wired to it")
     (is (seq (:criteria p)) "2-4 narrow criteria, each saying where to look")
     (is (<= 2 (count (:criteria p)) 4))))
+
+(deftest a-branch-is-judged-against-its-own-task
+  ;; karamazov-vm3w.2. score-run judged every branch against the RUN's
+  ;; problem. A board worker or a decompose unit carries its own task on the
+  ;; branch row, and measured against the run's goal it scores whatever the
+  ;; run as a whole has done — a worker that finished its sub-task can read
+  ;; as no progress at all. The validation run that found this scored a
+  ;; supervisor branch 0.00 at every point: it had been working the harness,
+  ;; not the problem.
+  (let [c (db/open! ":memory:")
+        prompts (atom [])]
+    (try
+      (db/migrate! c)
+      (let [rid (runs/start-run! c {:problem "RUN-LEVEL GOAL" :beam-width 1})]
+        (runs/open-branch! c rid {:branch-id "W1" :created-at-turn 0
+                                  :problem "THE WORKER'S OWN TASK"})
+        (runs/open-branch! c rid {:branch-id "B1" :created-at-turn 0})
+        (doseq [b ["W1" "B1"] t (range 1 6)]
+          (journal/record-turn! c rid {:branch-id b :turn t :tool-name "shell"
+                                       :result "ok" :category "success"}))
+        (with-redefs [llm/chat (fn [_ _ msgs]
+                                 (swap! prompts conj (:content (first msgs)))
+                                 {:content "K" :usage {}})
+                      gates/trajectory-policy (fn [] {:repeats 1 :stride 5
+                                                      :criteria ["c"]})]
+          (trajectory/score-run {:conn c} rid "W1")
+          (is (str/includes? (last @prompts) "THE WORKER'S OWN TASK"))
+          (is (not (str/includes? (last @prompts) "RUN-LEVEL GOAL")))
+          (testing "a branch with no task of its own works the run's"
+            (trajectory/score-run {:conn c} rid "B1")
+            (is (str/includes? (last @prompts) "RUN-LEVEL GOAL")))))
+      (finally (db/close c)))))

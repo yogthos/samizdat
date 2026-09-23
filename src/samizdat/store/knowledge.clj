@@ -621,14 +621,19 @@
   lever was tested when it was not. Nor is `confounded`, for the same reason
   and with more at stake: a window the provider ruined would otherwise leave a
   permanent FAILURE against a lever nobody managed to measure, and the next
-  run reads that as settled (karamazov-7mo.1)."
+  run reads that as settled (karamazov-7mo.1). Nor is a `regraded` one,
+  whatever direction it reads: the run moved the weights it was being judged
+  by, so the scale was chosen by the thing being measured. The verdict still
+  shows the direction to the supervisor (7mo.2 detects, it does not refuse);
+  what it must not do is become heredity, carried and ranked by every later
+  run as a lever somebody measured (karamazov-vm3w.4)."
   [conn experiments {:keys [run-id]}]
   ;; reduce, not (vec (for …)): the body writes to the store, and a store
   ;; call under the lazy seq's realization lock is a forbidden park when the
   ;; connection is contended (ADR-001 rule 1). Same as distill-findings!.
   (reduce
-   (fn [acc {:keys [name change hypothesis verdict before after]}]
-     (if-not (and change (not (#{:too-early :confounded} verdict)))
+   (fn [acc {:keys [name change hypothesis verdict before after regraded]}]
+     (if-not (and change (not regraded) (not (#{:too-early :confounded} verdict)))
        acc
        (let [pattern (lever-key change)
              content (str "[lever] " change " — " (clojure.core/name verdict)

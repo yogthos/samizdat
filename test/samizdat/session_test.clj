@@ -580,6 +580,32 @@
     (is (= :unchanged (:verdict v))
         "on one scale the change moved nothing; on two it looked like a win")))
 
+(deftest a-regraded-verdict-teaches-nothing-and-is-not-written
+  ;; karamazov-vm3w.4. 7mo.2 put both halves of a verdict back on one scale
+  ;; and said so, but distillation still wrote the reading as a measured
+  ;; lever: a run that moved the weights it was being judged by, then read
+  ;; `better`, left "changing X helped" in procedural memory for every later
+  ;; run to rank and trust. The scale was chosen by the thing being measured,
+  ;; so the reading is not heredity — it is the run grading itself.
+  (let [c (db/open! ":memory:")
+        policy lexicon/policy
+        heavier (assoc-in (policy :fitness) [:weights :tool-success] 3.0)]
+    (try
+      (dotimes [_ 3] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+      (dotimes [_ 3] (session/observe-turn! {:tool "eval" :category :failure :signals {}}))
+      (session/experiment! "retune" {:change ":fitness :tool-success 1.0 -> 3.0"
+                                     :hypothesis "successes should count for more"})
+      (dotimes [_ 8] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+      (with-redefs [lexicon/policy (fn [k] (if (= k :fitness) heavier (policy k)))]
+        (let [v (first (session/experiments))]
+          (is (:regraded v))
+          (is (= :better (:verdict v))
+              "the block still reports the direction — detection, not refusal")
+          (is (empty? (knowledge/distill-verdicts! c (session/experiments) {:run-id "r1"}))
+              "but a reading on a scale the run chose is not written as a
+               measured lever")))
+      (finally (db/close c)))))
+
 (deftest an-ordinary-verdict-is-not-marked-regraded
   (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
   (session/experiment! "reword" {:change "reworded a prompt" :hypothesis "nothing"})

@@ -791,6 +791,36 @@
 
 (defn- ceil-div [a b] (quot (+ a b -1) b))
 
+(defn turn-ms-in-flight
+  "What one turn costs, in ms, with `k` requests in flight, read off a
+  measured table {in-flight ms} (gates.edn :beam-contention :turn-ms-at).
+
+  Between measured points, linear; past the last, on the last two points'
+  slope (or in proportion, from a single point); below the first, the first.
+  Then a running max over 1..k, because a width cannot make each request
+  CHEAPER — a table saying otherwise is noise, and a non-monotone cost would
+  leave gaps in the set of widths that fit. The parametric form of the
+  contract (karamazov-vm3w.1): a promise at every width, not a constant read
+  at width one and assumed at all of them."
+  [table k]
+  (let [pts (sort-by key (filter (fn [[n ms]] (and (pos-int? n) (number? ms) (pos? ms)))
+                                 table))
+        raw (fn [x]
+              (let [[lo hi] (reduce (fn [[lo hi] [n _ :as p]]
+                                      [(if (<= n x) p lo) (if (and (nil? hi) (>= n x)) p hi)])
+                                    [nil nil] pts)]
+                (cond
+                  (and lo hi (= (key lo) (key hi))) (val lo)
+                  (and lo hi) (+ (val lo) (* (- x (key lo))
+                                             (/ (- (val hi) (val lo))
+                                                (- (key hi) (key lo)))))
+                  hi (val hi)
+                  (next pts) (let [[[n1 m1] [n2 m2]] (take-last 2 pts)]
+                               (+ m2 (* (- x n2) (/ (- m2 m1) (- n2 n1)))))
+                  :else (* x (/ (val lo) (key lo))))))]
+    (when (seq pts)
+      (long (Math/ceil (double (apply max (map raw (range 1 (inc k))))))))))
+
 (defn widest-beam
   "The widest beam `requested` or narrower that fits every limit it is given:
   {:width w :bound #{...}}, plus :rounds when the deadline is known, or
@@ -812,13 +842,33 @@
     actually spent; this only keeps the beam from opening wider than the
     budget could ever carry.
 
+  - the turn deadline against a MEASURED cost (karamazov-vm3w.1): with
+    `turn-ms-at`, a table {in-flight ms}, a turn's cost is what the width
+    makes it — `turn-ms-in-flight` — rather than a constant. A round of w is
+    ceil(w / c) waves of min(w, c) requests each costing T(min(w, c)); with no
+    concurrency every branch is in flight at once, one wave at T(w). This is
+    the form that is right for a llama-server whose slots share one engine:
+    measured on Bonsai 27B, four slots, one request 79s and two 162.5s EACH,
+    so \"serves 4 at a time\" with a width-one turn-ms admits four branches
+    in a round that takes four times as long as it assumed.
+
   One integer variable and a handful of products — nothing a solver is
   needed for, which is the point: fd is in process, and a third limit joins
-  the same way. Measured ~40ms a solve, once per run start."
-  [{:keys [requested concurrency turn-ms deadline-ms
+  the same way. Measured ~40ms a solve, once per run start. The table's
+  widths are checked outside fd and handed in as the [w rounds] pairs that
+  fit, since a lookup is not an fd relation; the budget composes with them
+  unchanged."
+  [{:keys [requested concurrency turn-ms turn-ms-at deadline-ms
            turns turn-tokens token-budget]}]
-  (let [deadline? (boolean (and concurrency turn-ms deadline-ms
+  (let [table? (boolean (and (seq turn-ms-at) deadline-ms
+                             (turn-ms-in-flight turn-ms-at 1)
+                             (or (nil? concurrency) (pos? concurrency))))
+        deadline? (boolean (and (not table?) concurrency turn-ms deadline-ms
                                 (pos? concurrency) (pos? turn-ms)))
+        waves (fn [w] (if concurrency (ceil-div w concurrency) 1))
+        round-ms (fn [w] (* (waves w)
+                            (turn-ms-in-flight turn-ms-at
+                                               (if concurrency (min w concurrency) w))))
         budget? (boolean (and turns turn-tokens token-budget
                               (pos? turns) (pos? turn-tokens)))
         per-branch (when budget? (* turns turn-tokens))
@@ -827,14 +877,23 @@
                   (and deadline?
                        (> (* (ceil-div (inc w) concurrency) turn-ms) deadline-ms))
                   (conj :deadline)
+                  (and table? (> (round-ms (inc w)) deadline-ms))
+                  (conj :deadline)
                   (and budget? (> (* (inc w) per-branch) token-budget))
-                  (conj :budget)))]
-    (if-not (and requested (pos? requested) (or deadline? budget?))
+                  (conj :budget)))
+        measured-fits (when table?
+                        (vec (for [w (range 1 (inc requested))
+                                   :when (<= (round-ms w) deadline-ms)]
+                               [w (waves w)])))]
+    (if-not (and requested (pos? requested) (or table? deadline? budget?))
       {:width requested}
       (let [fits (l/run* [q]
                    (l/fresh [w r rp rc rpc rt wt]
                      (fd/in w (fd/interval 1 requested))
-                     (if deadline?
+                     (cond
+                       table?
+                       (l/membero [w r] measured-fits)
+                       deadline?
                        (l/all
                         (fd/in r rp (fd/interval 0 requested))
                         (fd/>= r 1)
@@ -847,6 +906,7 @@
                         (fd/< rpc w)
                         (fd/* r turn-ms rt)
                         (fd/<= rt deadline-ms))
+                       :else
                        (l/== r 0))
                      (if budget?
                        (l/all
@@ -858,5 +918,5 @@
         (if (seq fits)
           (let [[w r] (apply max-key first fits)]
             (cond-> {:width w :bound (if (< w requested) (bound w) #{})}
-              deadline? (assoc :rounds r)))
+              (or deadline? table?) (assoc :rounds r)))
           {:width 1 :infeasible? true :bound (bound 0)})))))

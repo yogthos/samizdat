@@ -65,7 +65,10 @@
     (jdbc/execute! conn "PRAGMA busy_timeout = 5000")
     conn))
 
-(def ^:private conn-lock (Object.))
+;; Public because `with-conn` expands to it at every call site: a macro that
+;; expands to a private var is refused where it is used (jolt 0.8.11, as JVM
+;; Clojure does). Nothing but the macro should touch it.
+(def conn-lock (Object.))
 
 (defmacro with-conn
   "Serialize ALL access to the connection, reads included.

@@ -129,7 +129,9 @@
    {:name samizdat.symbolic.dispatch/report
     :summary "analyse over a whole :dispatches map, each finding carrying its cell: {:order-dependent :opaque}. What manifest show and save render as their two report paragraphs; neither is a refusal."}
    {:name samizdat.symbolic/widest-beam
-    :summary "The widest beam that fits one turn deadline against a provider serving N calls at a time, and the run's token budget at the turn cap, in core.logic.fd; gates.edn :beam-contention and :run :token-budget feed it."}
+    :summary "The widest beam that fits one turn deadline against a provider serving N calls at a time — or against a measured turn cost by calls in flight (:turn-ms-at), which is what a local server whose slots share one engine needs — and the run's token budget at the turn cap, in core.logic.fd; gates.edn :beam-contention and :run :token-budget feed it."}
+   {:name samizdat.symbolic/turn-ms-in-flight
+    :summary "One turn's cost with k calls in flight, read off a measured {in-flight ms} table: interpolated, extrapolated on the last slope, never cheaper at a wider width."}
    {:name samizdat.repl.guard/rules
     :summary "The eval guard's rules — what an eval may not do in the live image — with the clauses that decide each. Enumerable, not editable: a guard the guarded thing can edit is not a guard."}
    {:name samizdat.security.policy/rules
