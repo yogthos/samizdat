@@ -159,8 +159,8 @@
                    ;; selection.
                    jolt-lang/glimmer
                    {:git/url "https://github.com/jolt-lang/glimmer.git"
-                    :git/tag "v0.1.0"
-                    :git/sha "5581c331c51aff989259b9e8e92ec920fe5e6741"}
+                    :git/tag "v0.1.3"
+                    :git/sha "93758e82548daf75e357274558fc3e81bb754c9a"}
                    ;; The GTK4 backend: the widgets, the prop/signal wiring and
                    ;; the app loop, registered through glimmer.backend. It also
                    ;; owns the GTK/GLib :jolt/native declarations, which is why
@@ -168,16 +168,16 @@
                    ;; here now as `glimmer-gtk.ffi` and `glimmer-gtk.widget`.
                    jolt-lang/glimmer-gtk
                    {:git/url "https://github.com/jolt-lang/glimmer-gtk.git"
-                    :git/tag "v0.1.0"
-                    :git/sha "ce79d45698d36ccf496397bb85974e3cce6abfd8"}
+                    :git/tag "v0.1.1"
+                    :git/sha "5d48f24ebb9e42bacd602aad177340cf4d623eed"}
                    ;; Pinned past the split too: glimmer-gl.gtk registers
                    ;; :gl-area and :scale into the widget registry, which now
                    ;; lives in glimmer-gtk, so an older glimmer-gl fails to
                    ;; load with `Could not locate glimmer/ffi`.
                    jolt-lang/glimmer-gl
                    {:git/url "https://github.com/jolt-lang/glimmer-gl.git"
-                    :git/tag "v0.1.0"
-                    :git/sha "ae9a53291c553e89dde79a90389224f46e5e7fa8"}}
+                    :git/tag "v0.1.1"
+                    :git/sha "ccace7b3b503634eded78a4f9633fb1100887ba2"}}
                   :main-opts ["-m" "samizdat.gui.core"]}
 
            ;; The TUI, on the same terms as the GUI: its own source root, its
