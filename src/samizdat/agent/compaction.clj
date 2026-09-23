@@ -382,3 +382,42 @@
                     :content (str marker summary) :compaction? true}]
                   (pinned-in messages [start end])
                   (drop end messages))))))
+
+;; --- the task fold (karamazov-d5wo.5) -----------------------------------------
+;;
+;; A closed task is a natural place to fold: what it did is settled, and the
+;; next task needs its outcome, not its transcript. The pressure ladder folds
+;; by age and size; this folds by the work's own boundary. Mechanism only —
+;; the :tool/dispatch cell decides when, gates.edn :task-fold says how big a
+;; span has to be to be worth the cache rewrite.
+
+(defn task-span
+  "The `[start end)` of `task-id`'s work in `messages`: from its statement
+  (the message stamped `:task-id`) up to, not including, the last message —
+  the call that closed it, which keeps its place so its result has a call to
+  answer. nil when the statement is gone or nothing lies between."
+  [messages task-id]
+  (let [v (vec messages)
+        start (first (keep-indexed (fn [i m] (when (= task-id (:task-id m)) i)) v))
+        end (dec (count v))]
+    (when (and start (< start end))
+      [start end])))
+
+(defn turn-range
+  "The first and last `:turn` stamped on `messages`, or nil when none is."
+  [messages]
+  (let [ts (keep :turn messages)]
+    (when (seq ts) [(apply min ts) (apply max ts)])))
+
+(defn fold-task
+  "`messages` with `[start end)` replaced by one user message carrying `text`,
+  followed by any pinned message the span held (see `pinned-in`). A user
+  message, not a system one: it lands mid-conversation, where some chat
+  templates refuse a system role."
+  [messages [start end] text]
+  (let [v (vec messages)
+        task-id (:task-id (nth v start))]
+    (vec (concat (subvec v 0 start)
+                 [{:role "user" :content text :task-fold task-id}]
+                 (pinned-in v [start end])
+                 (subvec v end)))))

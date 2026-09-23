@@ -851,7 +851,17 @@
   reads as `not judged`, never as `diverged`."
   ["ALTER TABLE turns ADD COLUMN request_hash INTEGER"])
 
+(def v35
+  "WHICH TASK a turn worked on (karamazov-d5wo.5).
+
+  Turns carried run, branch and number, and nothing tied one to the task it
+  served, so a question about one task was a scan of the whole run. task_id
+  is the task the branch held when the turn started, or the one the turn
+  claimed. NULL for a turn no task held and on every row from before this
+  column."
+  ["ALTER TABLE turns ADD COLUMN task_id TEXT"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34])
+   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35])

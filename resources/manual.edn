@@ -35,7 +35,11 @@
    {:name samizdat.tape/within-band?
     :summary "Whether a replacement is small enough to accept: |new| <= max(|original|, floor)."}
    {:name samizdat.tape/apply-fold
-    :summary "Collapse a finished conversation into one block plus a verbatim tail, or reject it. Pure: you supply the summary; the harness never calls it on its own."}]}
+    :summary "Collapse a finished conversation into one block plus a verbatim tail, or reject it. Pure: you supply the summary; the harness never calls it on its own."}
+   {:name samizdat.agent.compaction/task-span
+    :summary "Where a task's work sits in the tape: from its statement to, not including, the call that closed it."}
+   {:name samizdat.agent.compaction/fold-task
+    :summary "Replace a span with one line, carrying its pinned messages through. The :tool/dispatch cell folds a closed task this way when its span passes gates.edn :task-fold :min-messages; turns.task_id keeps every folded turn findable."}]}
 
  {:group "Probing without committing"
   :entries

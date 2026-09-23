@@ -2525,6 +2525,32 @@
         Not capability-tunable: it is what the project says, not a knob on
         the branch."}
 
+ :task-fold
+ {:value {:enabled? true :min-messages 12}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-d5wo.5"]
+  :doc "FOLD A TASK'S WORK WHEN IT CLOSES (the :tool/dispatch cell;
+        compaction/task-span and fold-task are the mechanism;
+        prompts/task-folded.md is the line left behind).
+
+        The pressure ladder folds by age and size, and a summary of an
+        arbitrary window has to guess what the next turn will need. A closed
+        task is a boundary the work drew itself: what it did is settled, the
+        task row has the outcome, and every turn it took is a journal row
+        (turns.task_id) that fetch_turn reopens. So its span, from the
+        pinned statement to the closing call, becomes one line naming the
+        task, its status and its turn range, with no model call. Pinned
+        messages inside it (a directory's instructions) ride through.
+
+        :min-messages   the span has to be at least this long. Rewriting
+                        the middle of the tape invalidates the provider's
+                        prefix cache from that point on, which costs a
+                        re-prefill (65 s for 8.8k tokens on the local
+                        model); a short task is cheaper left to age out one
+                        digest line at a time.
+
+        Not capability-tunable: it is a cache trade, not a branch's knob."}
+
  :local-reasoning-budget
  {:value {:turn nil :forced nil}
   :kind :cost-ceiling :capability-tunable? false

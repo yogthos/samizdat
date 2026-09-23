@@ -14,6 +14,7 @@
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.compaction :as cmp]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.loop]
             [samizdat.cells :as cells]
             [samizdat.manifests :as manifests]
             [mycelium.cell :as cell]
@@ -190,6 +191,65 @@
     (is (= (- 12 6 -2) (count out)) "the other five folded messages became the one summary")
     (is (= [pinned] (cmp/pinned-in msgs [2 8])))
     (is (= [] (cmp/pinned-in (convo 12) [2 8])))))
+
+;; --- the task fold (karamazov-d5wo.5) -----------------------------------------
+
+(defn- task-convo
+  "sys, problem, the claim call, then the task's statement and six turns,
+  ending on the call that closes it."
+  []
+  (vec (concat
+        [{:role "system" :content "sys"}
+         {:role "user" :content "problem"}
+         {:role "assistant" :content "task claim T1" :turn 1}
+         {:role "user" :content "[harness] You are now working on T1" :task-id "T1"}
+         {:role "user" :content "claimed" :turn 1}]
+        (mapcat (fn [t] [{:role "assistant" :content (str "call " t) :turn t}
+                         {:role "user" :content (str "result " t) :turn t}])
+                (range 2 5))
+        [{:role "user" :content "DIR RULES" :pinned? true :instructions "a"}
+         {:role "assistant" :content "task close T1" :turn 5}])))
+
+(deftest a-closed-tasks-span-runs-from-its-statement-to-the-closing-call
+  (let [msgs (task-convo)]
+    (is (= [3 (dec (count msgs))] (cmp/task-span msgs "T1"))
+        "the statement starts it, and the closing call stays for its result")
+    (is (nil? (cmp/task-span msgs "T9")) "no statement, no span")))
+
+(deftest a-task-fold-leaves-one-line-and-the-pinned-messages
+  (let [msgs (task-convo)
+        [s e] (cmp/task-span msgs "T1")
+        out (cmp/fold-task msgs [s e] "T1 folded")]
+    (is (= (take 3 msgs) (take 3 out)) "everything before the task is untouched")
+    (is (= {:role "user" :content "T1 folded" :task-fold "T1"} (nth out 3)))
+    (is (= "DIR RULES" (:content (nth out 4))) "a pinned directory file rides through")
+    (is (= "task close T1" (:content (last out))) "and the closing call is still there")
+    (is (= 6 (count out))))
+  (testing "the turns folded, for the line to name; the closing turn stays whole"
+    (is (= [1 4] (cmp/turn-range (subvec (task-convo) 3 12))))))
+
+(deftest dispatch-folds-the-task-a-call-closed
+  (cells/load-cells!)
+  (let [before {:id "B1" :task {:id "T1" :title "the task"} :messages (task-convo)}
+        dispatch (fn [branch-after policy]
+                   (with-redefs [samizdat.agent.loop/tool-step
+                                 (fn [_ _ _ _] {:branch branch-after :result {:ok "closed"} :tool "task"})
+                                 gates/threshold (let [orig gates/threshold]
+                                                   (fn [k] (if (= k :task-fold) policy (orig k))))]
+                     (:branch ((:handler (cell/get-cell! :tool/dispatch))
+                               {}
+                               {:branch before :turn 5
+                                :parsed {:name "task" :args {:action "close" :id "T1"}}}))))
+        closed (assoc before :task nil)]
+    (let [out (dispatch closed {:enabled? true :min-messages 4})]
+      (is (some #(= "T1" (:task-fold %)) (:messages out)) "the span folded")
+      (is (str/includes? (:content (first (filter :task-fold (:messages out)))) "T1")))
+    (testing "a span under the floor is left to age out on its own"
+      (is (= (:messages closed) (:messages (dispatch closed {:enabled? true :min-messages 50})))))
+    (testing "switched off, nothing folds"
+      (is (= (:messages closed) (:messages (dispatch closed {:enabled? false :min-messages 4})))))
+    (testing "a close that did not end the held task folds nothing"
+      (is (= (:messages before) (:messages (dispatch before {:enabled? true :min-messages 4})))))))
 
 (deftest a-later-fold-can-find-the-earlier-one
   (let [msgs [{:role "user" :content "a"}

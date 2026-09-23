@@ -566,7 +566,7 @@
    (journal/record-turn! conn run-id
                          {:branch-id (:id branch) :turn turn
                           :tool-name "__provider_error__" :result error
-                          :category "neutral"})
+                          :category "neutral" :task-id (:id (:task branch))})
    (if (= :context-overflow reason)
      ;; The prompt outgrew the window. 'Try again' is exactly wrong here —
      ;; the failure is upstream of the model seeing anything, the next
@@ -719,6 +719,7 @@
     ;; the branch; see record-outcome.
     (journal/record-turn! conn run-id
                           {:branch-id (:id branch) :turn turn
+                           :task-id (:id (:task branch))
                            :tool-name (or (:name parsed) "__no_call__")
                            :result msg :category "mechanics"
                            :parse-error (:parse-error parsed)
@@ -1027,7 +1028,7 @@
   "The durable record of the turn: the turn row, any artifact (and its entry
   into the shared pool when it qualifies), any failure, any thesis. Side
   effects only; returns nil."
-  [{:keys [conn run-id] :as ctx} branch turn {:keys [parsed result tool said response signals]}]
+  [{:keys [conn run-id] :as ctx} branch turn {:keys [parsed result tool said response signals task-id]}]
   (observe-turn! run-id branch tool result (or signals
                                  ;; A turn that never reached a tool still has
                                  ;; something to say: the parse flags are how
@@ -1038,6 +1039,9 @@
                                   :auto-repaired (:auto-repaired? parsed)}))
   (journal/record-turn! conn run-id
                         {:branch-id (:id branch) :turn turn
+                         ;; The task the turn served: the caller's, else the
+                         ;; one the branch holds now (karamazov-d5wo.5).
+                         :task-id (or task-id (:id (:task branch)))
                          :tool-name tool :args (:args parsed)
                          :result (truncate (:result result))
                          :category (name (:category result))

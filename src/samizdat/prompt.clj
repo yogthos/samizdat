@@ -73,7 +73,7 @@
    "stale-write" "storm" "storm-force" "storm-oscillation"
    "stuck" "suspect-the-test" "system" "system-honesty" "system-structure"
    "system-tools" "system-turn" "task-busy"
-   "task-claimed" "task-current" "task-none" "task-reflection"
+   "task-claimed" "task-current" "task-folded" "task-none" "task-reflection"
    "task-reflection-input" "task-required" "task-tests" "team-worker"
    "thinking-runaway" "trajectory-judge" "turn-deadline" "turn-interrupted"
    "uncertain-effect"
