@@ -65,7 +65,9 @@
     (jdbc/execute! conn "PRAGMA busy_timeout = 5000")
     conn))
 
-(def ^:private conn-lock (Object.))
+;; Public: with-conn expands to (locking conn-lock ...) in the caller's
+;; namespace, where a private var is refused (as on the JVM).
+(def conn-lock (Object.))
 
 (defmacro with-conn
   "Serialize ALL access to the connection, reads included.
