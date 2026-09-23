@@ -44,6 +44,7 @@
             [jdbc.core :as jdbc]
             [samizdat.agent.gates :as gates]
             [samizdat.events :as events]
+            [samizdat.security.policy :as policy]
             [samizdat.session :as session]
             [samizdat.store.db :as db]))
 
@@ -468,6 +469,15 @@
   (try (some-> (json/read-str (str (:args row)) :key-fn keyword) :path str not-empty)
        (catch Throwable _ nil)))
 
+(defn- seen-paths
+  "The paths a recorded turn looked at: its `path` argument, or for a shell
+  turn the files its command printed (policy/read-paths)."
+  [row]
+  (if (= "shell" (:tool_name row))
+    (try (policy/read-paths (:command (json/read-str (str (:args row)) :key-fn keyword)))
+         (catch Throwable _ []))
+    (keep identity [(path-of row)])))
+
 (defn- writing-tools
   "The tools that change a file, from gates.edn's `:file-write` vocabulary.
 
@@ -588,16 +598,18 @@
   (let [tools (writing-tools)
         ;; What counts as having LOOKED: a read, or a write of your own —
         ;; either way this branch has seen the file at that turn.
-        seen-tools (into ["read_file"] tools)
+        ;; A shell statement that prints the file counts too: sed and cat
+        ;; out-read read_file in the campaign dbs (karamazov-d5wo.9).
+        seen-tools (into ["read_file" "shell"] tools)
         reads (db/fetch conn (into [(placeholders
-                                     "SELECT turn, args FROM turns
+                                     "SELECT turn, tool_name, args FROM turns
                                        WHERE run_id = ? AND branch_id = ?
                                          AND tool_name IN (@tools)
                                        ORDER BY turn DESC, id DESC"
                                      (count seen-tools))
                                     run-id (str branch-id)]
                                    seen-tools))
-        last-seen (some (fn [r] (when (= path (path-of r)) (:turn r))) reads)]
+        last-seen (some (fn [r] (when (some #{path} (seen-paths r)) (:turn r))) reads)]
     (when last-seen
       (->> (db/fetch conn (into [(placeholders
                                   "SELECT branch_id, turn, tool_name, args FROM turns

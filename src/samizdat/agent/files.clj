@@ -41,6 +41,7 @@
             [samizdat.lisp :as lisp]
             [samizdat.prompt :as prompt]
             [samizdat.agent.exam :as exam]
+            [samizdat.security.policy :as policy]
             [samizdat.store.journal :as journal]))
 
 (def ^:private clojure-exts #{"clj" "cljc" "cljs" "cljd" "edn" "bb"})
@@ -229,6 +230,20 @@
   :run :verify-cmd and :require-test?, i.e. the ship gates this run is judged
   against."
   ".samizdat/config.edn")
+
+
+(defn large-shell-print?
+  "Whether this shell call prints one whole file of at least `min-lines`
+  lines — a lone `cat FILE` — the shell twin of `large-untargeted-read?`.
+  Measured over the campaign dbs, cat and sed out-read read_file, so a steer
+  that watched only read_file missed most of the reading (karamazov-d5wo.9).
+  A targeted print (sed -n, head, tail, a pipe that cuts it) passes."
+  [{:keys [args] :as ctx} min-lines]
+  (let [cmd (str (:command args))]
+    (boolean (and (policy/whole-file-read? cmd)
+                  (large-untargeted-read?
+                   (assoc ctx :args {:path (first (policy/read-paths cmd))})
+                   min-lines)))))
 
 (defn run-config?
   "Whether the resolved absolute path `abs` IS the root's run config. The

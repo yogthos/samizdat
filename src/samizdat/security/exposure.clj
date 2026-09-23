@@ -15,13 +15,15 @@
   the agent, gates.edn is agent-editable, and .samizdat/config.edn is the one
   file the file tools and the shell policy refuse to let a run write.
 
-  NOT A SANDBOX. `shell` (cat, sed) and `eval` (slurp) read files without
-  naming them as a path argument, and nothing here parses those. It keeps a
-  denied file out of the tools the model reads with by default; a model set
-  on reading it can still reach it through the shell."
+  NOT A SANDBOX. A shell statement that prints a file (cat, sed -n, head,
+  tail) is checked through policy/read-paths, but one that hides what it
+  reads (a substitution, a script, `eval`'s slurp) is not. It keeps a denied
+  file out of the ordinary ways a model reads; a model set on reading it can
+  still reach it."
   (:require [clojure.string :as str]
             [jolt.fs :as fs]
             [samizdat.agent.files :as files]
+            [samizdat.security.policy :as policy]
             [samizdat.prompt :as prompt]))
 
 (defn- glob->re [glob]
@@ -77,9 +79,9 @@
   [{:keys [config root args] :as ctx}]
   (when (get-in config [:run :provider-deny])
     (first
-     (for [k path-args
-           :let [v (get args k)]
-           p (if (sequential? v) v [v])
+     (for [p (concat (mapcat (fn [k] (let [v (get args k)] (if (sequential? v) v [v]))) path-args)
+                     ;; What a shell statement prints (karamazov-d5wo.9).
+                     (when (= "shell" (:tool-name ctx)) (policy/read-paths (:command args))))
            :when (and (string? p) (not (str/blank? p)))
            provider (providers-for ctx)
            :let [pat (denied config provider (relative root p))]

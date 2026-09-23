@@ -509,3 +509,32 @@
     (is (str/includes? (:result r) "Rule: `malformed 5`")))
   (testing "a deny still wins over a parse failure — the raw text is judged too"
     (is (= :deny (:effect (policy/decide {} "rm -rf / 'oops"))))))
+
+;; --- reads through the shell (karamazov-d5wo.9) -------------------------------
+
+(deftest a-shell-statement-that-prints-a-file-names-it
+  ;; Measured over the campaign dbs: sed and cat were ~39% of all tool-result
+  ;; characters, more than read_file, and every read-side mechanism saw only
+  ;; read_file.
+  (is (= ["a.clj"] (policy/read-paths "cat a.clj")))
+  (is (= ["a" "b"] (policy/read-paths "cat a b")))
+  (is (= ["src/x.clj"] (policy/read-paths "sed -n '1,40p' src/x.clj")))
+  (is (= ["src/x.clj"] (policy/read-paths "sed -n -e '1,4p' src/x.clj")) "-e carries the script")
+  (is (= ["a.clj"] (policy/read-paths "head -n 20 a.clj")))
+  (is (= ["a.clj"] (policy/read-paths "tail -40 a.clj")))
+  (is (= ["my file.clj"] (policy/read-paths "cat \"my file.clj\"")) "quotes hold a name together")
+  (is (= ["a.clj"] (policy/read-paths "cat a.clj | grep foo")) "the reading half of a pipe")
+  (is (= ["a.clj" "b.clj"] (policy/read-paths "cat a.clj; head b.clj")))
+  (testing "not a read of a file this can name"
+    (is (= [] (policy/read-paths "ls src")))
+    (is (= [] (policy/read-paths "sed -i 's/a/b/' x.clj")) "sed -i writes")
+    (is (= [] (policy/read-paths "cat $(ls)")) "a substitution hides what is read")
+    (is (= [] (policy/read-paths "cd src && cat a.clj")) "a cd moves what a relative path means")
+    (is (= [] (policy/read-paths "grep foo a.clj")) "a match is not the file")))
+
+(deftest a-whole-file-print-is-told-apart-from-a-targeted-one
+  (is (policy/whole-file-read? "cat a.clj"))
+  (is (not (policy/whole-file-read? "sed -n '1,40p' a.clj")))
+  (is (not (policy/whole-file-read? "head -n 20 a.clj")))
+  (is (not (policy/whole-file-read? "cat a.clj | head")) "piped into something that cuts it")
+  (is (not (policy/whole-file-read? "cat a.clj b.clj")) "one file at a time"))

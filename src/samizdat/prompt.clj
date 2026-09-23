@@ -69,7 +69,7 @@
    "residual-report" "retirement" "retry-diagnosis" "review" "rfc-brief"
    "roles/implementor" "roles/reviewer" "roles/supervisor" "run-health"
    "run-start-timeout" "safe-state" "session-block" "shared-artifacts"
-   "shared-tree" "shell-refused" "split-decision" "split-tool"
+   "shared-tree" "shell-read-too-large" "shell-refused" "split-decision" "split-tool"
    "stale-write" "storm" "storm-force" "storm-oscillation"
    "stuck" "suspect-the-test" "system" "system-honesty" "system-structure"
    "system-tools" "system-turn" "task-busy"

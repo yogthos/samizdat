@@ -102,6 +102,17 @@
       (turn! conn rid "W1" 6 "read_file" "src/core.clj" :neutral)
       (is (nil? (files/stale-note ctx))))))
 
+(deftest a-shell-print-of-the-file-counts-as-having-read-it
+  ;; karamazov-d5wo.9: cat and sed out-read read_file across the campaign dbs,
+  ;; and a branch that caught up with `sed -n` was told it had not.
+  (let [[conn rid] (fixture)
+        ctx {:conn conn :run-id rid :branch {:id "W1"} :args {:path "src/core.clj"}}]
+    (is (some? (files/stale-note ctx)))
+    (journal/record-turn! conn rid {:branch-id "W1" :turn 6 :tool-name "shell"
+                                    :args {:command "sed -n '1,80p' src/core.clj"}
+                                    :result "ok" :category :neutral})
+    (is (nil? (files/stale-note ctx)) "the sed read caught it up")))
+
 (deftest the-notice-rides-the-result-and-never-blocks-the-write
   ;; Workers sharing a tree are collaborating. Which version should win is
   ;; exactly the judgement the harness does not have, so it reports and gets

@@ -739,3 +739,75 @@
          ;; the storm window's retry allowance for the call that hung.
          :timeout? (boolean (:timeout r))
          :policy {:effect :allow}}))))
+
+;; --- reads through the shell (karamazov-d5wo.9) -------------------------------
+;;
+;; Measured over the campaign dbs, sed and cat carried ~39% of every tool
+;; result's characters — more than read_file — and every read-side mechanism
+;; (the digest steer, stale-read notices, provider exposure) saw only
+;; read_file. These name the files a statement prints, when it can be known.
+
+(def ^:private content-readers
+  "Heads that print a file's content to the model."
+  #{"cat" "head" "tail" "sed" "less" "more" "nl"})
+
+(defn- words
+  "`s` split into shell words: whitespace outside quotes separates, quotes
+  are removed, a backslash escapes the next character outside single quotes."
+  [s]
+  (loop [cs (seq (str s)) cur nil q nil out []]
+    (let [c (first cs)]
+      (cond
+        (nil? c) (if cur (conj out cur) out)
+        (and (nil? q) (Character/isWhitespace (char c))) (recur (rest cs) nil nil (if cur (conj out cur) out))
+        (and (nil? q) (#{\' \"} c)) (recur (rest cs) (or cur "") c out)
+        (= q c) (recur (rest cs) cur nil out)
+        (and (not= q \') (= c \\) (second cs)) (recur (nnext cs) (str cur (second cs)) q out)
+        :else (recur (rest cs) (str cur c) q out)))))
+
+(defn- flag? [w] (str/starts-with? w "-"))
+
+(defn- segment-reads
+  "The files one statement prints, or nil when it prints none this can name."
+  [seg]
+  (let [[h & args] (words seg)]
+    (case h
+      ("cat" "less" "more" "nl") (vec (remove flag? args))
+      ("head" "tail") (loop [as args out []]
+                        (let [a (first as)]
+                          (cond (nil? a) out
+                                (#{"-n" "-c"} a) (recur (nnext as) out)
+                                (flag? a) (recur (rest as) out)
+                                :else (recur (rest as) (conj out a)))))
+      "sed" (when-not (some #(or (str/starts-with? % "-i") (= % "--in-place")) args)
+              (loop [as args script? false out []]
+                (let [a (first as)]
+                  (cond (nil? a) out
+                        (#{"-e" "-f"} a) (recur (nnext as) true out)
+                        (flag? a) (recur (rest as) script? out)
+                        script? (recur (rest as) true (conj out a))
+                        :else (recur (rest as) true out)))))
+      nil)))
+
+(defn read-paths
+  "The files a shell command prints to the model, as written. Empty when it
+  prints none, and when that cannot be known: a substitution, a redirection,
+  an unparseable string, or a `cd` that moves what a relative path means."
+  [command]
+  (let [raw (str/trim (str command))
+        {:keys [segments redirection? malformed]} (shell-split raw)
+        heads (map #(first (words %)) segments)]
+    (if (or malformed redirection?
+            (some #(re-find % raw) complex-markers)
+            (some #{"cd" "pushd"} heads))
+      []
+      (vec (mapcat #(segment-reads (exec-prefix-stripped %)) segments)))))
+
+(defn whole-file-read?
+  "Whether the command prints one whole file and nothing cuts it: a lone
+  `cat FILE`. The shell twin of files/large-untargeted-read?'s question."
+  [command]
+  (let [{:keys [segments]} (shell-split (str/trim (str command)))]
+    (boolean (and (= 1 (count segments))
+                  (= "cat" (first (words (first segments))))
+                  (= 1 (count (read-paths command)))))))

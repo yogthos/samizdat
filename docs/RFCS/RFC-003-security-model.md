@@ -325,12 +325,12 @@ mechanical catches that omission.
   recognisable shape is caught only by the substring pass, which requires the
   value to be in `known-values` — so a secret the harness never saw in the
   environment is not redactable.
-- `:run :provider-deny` binds the path-argument tools and grep only. `shell`
-  (`cat`, `sed`) and `eval` (`slurp`) read files without naming them as a
-  path argument, so a model set on reading a denied file can still reach it;
-  what it stops is the default read path carrying it to that provider.
-  karamazov-d5wo.9 (recognising shell reads as reads) would let it cover the
-  shell too.
+- `:run :provider-deny` binds the path-argument tools, grep, and a shell
+  statement that prints a file (`policy/read-paths`: cat, head, tail,
+  `sed -n`). A statement that hides what it reads (a substitution, a
+  script, a `cd` first) and `eval`'s `slurp` are not covered, so a model set
+  on reading a denied file can still reach it; what it stops is the
+  ordinary ways of reading carrying it to that provider.
 - Invariant 6 holds on the file-tool and shell paths only. `eval` (and
   `jolt -e`) can still `spit` the run config — the same containment gap as
   every other eval escape, tracked as karamazov-zrq. The invariant's job is

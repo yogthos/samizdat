@@ -203,6 +203,22 @@
     (is (nil? (tools-base/phase-refusal (ctx :tool-name "grep" :args {:pattern "x"})))
         "only reads are steered")))
 
+(deftest a-whole-file-cat-of-a-large-file-is-steered-the-same-way
+  ;; karamazov-d5wo.9: cat and sed out-read read_file in the campaign dbs.
+  (let [min-lines (:min-lines (gates/digest-policy))
+        call (fn [cmd] (tools-base/phase-refusal (ctx :tool-name "shell" :args {:command cmd})))]
+    (file! "src/big.clj" (repeat (+ min-lines 5) "(comment x)"))
+    (file! "src/small.clj" (repeat 3 "(comment x)"))
+    (let [r (call "cat src/big.clj")]
+      (is (some? r) "cat of a large file is refused")
+      (is (:policy-refusal? r))
+      (is (str/includes? (:result r) "read_digest")))
+    (is (nil? (call "sed -n '1,40p' src/big.clj")) "a section passes")
+    (is (nil? (call "head -n 40 src/big.clj")))
+    (is (nil? (call "cat src/big.clj | head")) "so does one cut by a pipe")
+    (is (nil? (call "cat src/small.clj")) "a small file is printed whole")
+    (is (nil? (call "ls src")) "and a command that prints no file is not a read")))
+
 ;; --- the roles ---------------------------------------------------------------
 
 (deftest role-llm-resolves-an-assignment-and-nothing-else

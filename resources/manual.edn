@@ -204,6 +204,13 @@
    {:name samizdat.agent.orient/block
     :summary "The rendered opening block for a problem under a root, with the names taken and those found — computed once per run by the driver, kept on the run row, off with :orient-inject :enabled? false (the arena's control arm)."}]}
 
+ {:group "Reads through the shell"
+  :entries
+  [{:name samizdat.security.policy/read-paths
+    :summary "The files a shell command prints (cat, head, tail, sed -n, less, more, nl), or none when a substitution, redirection or cd makes that unknowable. Stale-read notices, the digest steer and provider exposure count these as reads."}
+   {:name samizdat.agent.files/large-shell-print?
+    :summary "Whether a shell call is a lone `cat FILE` of a file over gates.edn :digest :min-lines — the phases.edn rule :large-shell-print-needs-a-digest refuses it toward read_digest."}]}
+
  {:group "Which providers may see which files"
   :entries
   [{:name samizdat.security.exposure/refusal

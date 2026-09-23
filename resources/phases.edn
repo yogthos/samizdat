@@ -126,6 +126,16 @@
    :tools #{"read_file"}
    :message-file "read-too-large"}
 
+  ;; The same read through the shell. cat and sed out-read read_file across
+  ;; the campaign dbs, so a steer on read_file alone missed most of the
+  ;; reading (karamazov-d5wo.9). Only a lone `cat FILE`: sed -n, head and
+  ;; tail name the section they want, as an offset does.
+  {:rule :large-shell-print-needs-a-digest
+   :when (samizdat.agent.files/large-shell-print?
+          ctx (:min-lines (samizdat.agent.gates/digest-policy)))
+   :tools #{"shell"}
+   :message-file "shell-read-too-large"}
+
   ;; THE REPL SESSION CONTRACT — its two conditions, as refusals rather than
   ;; as advice. Nudges are 0-for-6 across two model tiers (karamazov-qic); a
   ;; withhold is what actually holds.
