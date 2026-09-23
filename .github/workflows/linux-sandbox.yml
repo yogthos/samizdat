@@ -67,7 +67,11 @@ jobs:
           test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
+          # The latest release, looked up with the runner's token: left to
+          # itself the installer asks the API anonymously, and shared runners
+          # are rate-limited into a 403.
+          version="${JOLT_VERSION:-$(gh release view -R jolt-lang/jolt --json tagName -q .tagName)}"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$version"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs
