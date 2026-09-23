@@ -34,6 +34,7 @@ needing cmake and a C++17 compiler). This is also why the TUI is not part of
 |---|---|
 | type + `Enter` | **with no run selected**, start a run on what you typed; **with one**, send it as a directive |
 | `/` + a command | a slash command — see below; `Tab` completes the name, `/help` lists them |
+| `Ctrl-J` | a new line in the compose box, which grows a row per line (up to `:max-lines`, 8); `Enter` sends |
 | `Ctrl-P` / `Ctrl-N` | walk back and forth through what you sent |
 | `PgUp` / `PgDn`, mouse wheel | scroll the conversation; it stops following the bottom |
 | `End`, or `↓` while scrolled up | back to following the bottom |
@@ -62,17 +63,28 @@ rebuild. What they print lands in the conversation as `<sys>`.
 
 | | |
 |---|---|
-| `/model [id]` | list the provider's models, or switch — **live** for the run on screen (every branch's next request), otherwise for the next run started from here |
-| `/effort <level>` | how hard the model thinks, the same way |
+| `/model [role] [model]` | list the provider's models, or switch — **live** for the run on screen, otherwise for the next run started from here. `/model glm-5.3` switches every role; `/model critic glm:glm-5.3` only the critic, and a `provider:` prefix moves it to that provider. Roles: `implementor`, `critic`, `supervisor`, `reviewer`, `planner`, `architect`, `summarizer` |
+| `/effort [role] <level>` | how hard the model thinks, the same way |
 | `/mode [refuse\|block]` | what happens when a run needs you, for this server session: refuse, or block and ask. The footer shows it |
 | `/run <problem>` `/abort` `/resume` | start a run; abort or resume the one on screen |
 | `/runs [id]` `/branch <id>` | list the runs or open one by the start of its id; read another branch |
 | `/steer` `/review` `/cull` `/fork` `/extend` `/pause` `/continue` `/switch` `/budget` `/stop` | the directive kinds the server takes, sent to the run on screen |
 | `/follow` `/clear` `/help` `/quit` | |
 
-A live `/model` or `/effort` is the `model` / `effort` intervention kind:
-applied on arrival rather than queued (samizdat.agent.live), and noted in
-the run's journal as `:llm-switch`, which the conversation shows.
+A live `/model` or `/effort` is the `model` / `effort` intervention kind
+(payload `model` or `role model`): applied on arrival rather than queued
+(samizdat.agent.live), read by every branch's next request and by each
+role's sub-loop (workflow/role-ctx), a role's own switch standing over a
+run-wide one. Each is noted in the run's journal as `:llm-switch`, which the
+conversation shows.
+
+### Notifications
+
+A desktop notification when the run on screen needs you — a permission
+question, an `ask_human` — and when it ends. `tui.edn :notifications`: `:on`
+picks the moments (`"question"`, `"run-finished"`; empty turns them off) and
+`:command`, when set, is the program to run with `{title}` and `{body}`
+filled in; unset, `osascript` on macOS and `notify-send` elsewhere.
 
 ### The dialogs
 
@@ -122,9 +134,10 @@ from one that is not wired up, which is exactly how it got reported.
 ## What is on screen
 
 After dirge's: a top frame naming the three columns; the run's vitals on the
-left; the conversation in the middle, where the room is; the work in
-progress on the right; the avatar beside the compose box; the status line
-under everything.
+left; the conversation in the middle, capped at 120 columns and giving way
+on a narrow terminal, with the side columns sharing any extra room; the work
+in progress on the right; the avatar beside the compose box, which grows
+with what is typed; the status line under everything.
 
 ```
 ──[RUN STATUS]────────[AGENT LOG]───────────────────────────────[HARNESS]────

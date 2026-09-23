@@ -342,3 +342,24 @@
     (is (false? (:live? s)))
     (is (true? (:live? (st/stream-status s 200))))
     (is (false? (:live? (st/stream-status (st/stream-status s 200) nil))))))
+
+;; --- the compose box grows (karamazov-tq7m follow-up) ---------------------------
+
+(deftest enter-in-the-box-sends-rather-than-breaking-the-line
+  ;; The box is a multi-line ftxui input, which answers Enter by inserting a
+  ;; newline AND firing on-enter. The newline is Enter's, not the person's:
+  ;; it is not kept, so what is sent is what was typed.
+  (let [s (st/set-input (st/initial "b") "fix the\nparser")]
+    (is (= "fix the\nparser" (:input s)) "a newline Ctrl+J put there is kept")
+    (is (= "fix the\nparser" (:input (st/set-input s "fix the\nparser\n"))) "Enter's at the end is not")
+    (is (= "fix the\nparser" (:input (st/set-input s "fix\n the\nparser"))) "nor one in the middle")
+    (is (= "fix the\nparsers" (:input (st/set-input s "fix the\nparsers"))) "typing is typing")))
+
+(deftest a-newline-can-be-typed-on-purpose
+  (is (= "one\n" (:input (st/newline (st/set-input (st/initial "b") "one"))))))
+
+(deftest the-box-is-as-tall-as-what-is-in-it
+  (is (= 1 (st/input-lines (st/initial "b") 8)))
+  (is (= 3 (st/input-lines (st/set-input (st/initial "b") "a\nb\nc") 8)))
+  (is (= 8 (st/input-lines (assoc (st/initial "b") :input (apply str (repeat 20 "x\n"))) 8))
+      "and no taller than the cap"))

@@ -683,13 +683,21 @@
         ;; literally, and a key assembled at runtime is a key that ratchet
         ;; cannot see. That is also why the branch is over two whole handlers
         ;; rather than over one name.
+        ;; What the box HOLDS in the state, not ftxui's content: on Enter a
+        ;; multi-line input has just inserted a newline of its own
+        ;; (state/set-input keeps it out).
+        sent (fn [content] (or (not-empty (:input state)) (str/trim (str content))))
         on-enter (if starting?
-                   (fn [s] (when-let [f (get-in state [:on :start])] (f s)))
-                   (fn [s] (when-let [f (get-in state [:on :submit])] (f s))))
+                   (fn [c] (when-let [f (get-in state [:on :start])] (f (sent c))))
+                   (fn [c] (when-let [f (get-in state [:on :submit])] (f (sent c)))))
         ;; The layout's own sizing still applies to the bare row — it is the
         ;; element that stands where the panel used to.
-        row [:hbox (select-keys props [:flex :width :height])
+        ;; As tall as what is in it, like dirge's: one line to start, a row
+        ;; per line up to :max-lines. Ctrl+J breaks a line; Enter sends.
+        rows (st/input-lines state (or (:max-lines props) 8))
+        row [:hbox (merge (select-keys props [:flex :width]) {:height rows})
              [:input {:flex true
+                      :multiline true
                       :value (or (:input state) "")
                       :placeholder (case (:kind (:reply state))
                                      :deny-note "what the agent should do instead — Enter sends"
@@ -711,7 +719,7 @@
       ;; A border and nothing else: the one-row box beside the avatar.
       (:boxed props) [:hbox (merge {:class :panel :border :rounded}
                                    (select-keys props [:flex :width :style]))
-                      (assoc row 1 {:flex true})]
+                      (assoc row 1 {:flex true :height rows})]
       :else row)))
 
 (defn status

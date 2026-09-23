@@ -168,6 +168,7 @@
             [samizdat.tui-timeline-test]
             [samizdat.tui-commands-test]
             [samizdat.live-model-test]
+            [samizdat.tui-notify-test]
             [samizdat.beam-test]
             [samizdat.kanban-test]
             [samizdat.security.policy-test]
@@ -372,6 +373,7 @@
     samizdat.tui-timeline-test
     samizdat.tui-commands-test
     samizdat.live-model-test
+    samizdat.tui-notify-test
     samizdat.beam-test
     samizdat.kanban-test
     samizdat.security.policy-test

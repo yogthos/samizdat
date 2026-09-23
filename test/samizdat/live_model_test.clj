@@ -53,7 +53,7 @@
       (is (= {:model "bigger-model" :reasoning-effort "low"}
              (select-keys (sent-config rid) [:model :reasoning-effort])))
       (testing "the switch is on the record, where the conversation can show it"
-        (is (= {:model "bigger-model"} (first (journal/notes conn rid :llm-switch))))
+        (is (= {:model "bigger-model" :summary "every role → bigger-model"} (first (journal/notes conn rid :llm-switch))))
         (is (= 2 (count (journal/notes conn rid :llm-switch)))))
       (testing "a blank model is not a model"
         (is (= 400 (:status (control/intervene! conn rid {:kind "model" :payload "  "})))))
@@ -68,3 +68,34 @@
     (is (= 409 (:status (control/intervene! conn rid {:kind "model" :payload "m"}))))
     (is (nil? (live/get rid)))
     (db/close conn)))
+
+;; --- per role ---------------------------------------------------------------
+
+(deftest a-switch-can-name-the-role-it-is-for
+  ;; `/model critic glm-5.3`: the critic reviews on a stronger model while
+  ;; the implementors keep theirs. No role names every role.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        base {:run-id rid :llm-config {:provider :local :model "base" :reasoning-effort "high"}}]
+    (try
+      (control/intervene! conn rid {:kind "model" :payload "critic judge-model"})
+      (is (= "judge-model" (:model (:llm-config (live/in-ctx (assoc base :role :critic))))))
+      (is (= "base" (:model (:llm-config (live/in-ctx (assoc base :role :implementor)))))
+          "the implementors are not switched")
+      (testing "a branch's own calls go through the same seam"
+        (is (= "base" (:model (sent-config rid)))))
+      (control/intervene! conn rid {:kind "model" :payload "everyone-model"})
+      (is (= "everyone-model" (:model (:llm-config (live/in-ctx (assoc base :role :implementor))))))
+      (is (= "judge-model" (:model (:llm-config (live/in-ctx (assoc base :role :critic)))))
+          "a role's own switch stands over the run-wide one")
+      (testing "the record says whose model changed"
+        (is (= "critic → judge-model" (:summary (first (journal/notes conn rid :llm-switch))))))
+      (testing "a provider named with the model moves the role to that provider"
+        (control/intervene! conn rid {:kind "model" :payload "reviewer glm:glm-5.3"})
+        (let [c (live/in-ctx (assoc base :role :reviewer))]
+          (is (= :glm (get-in c [:llm-config :provider])))
+          (is (= "glm-5.3" (get-in c [:llm-config :model])))
+          (is (some? (:llm-adapter c)) "and the adapter that speaks it")))
+      (testing "a provider nobody has heard of is refused"
+        (is (= 400 (:status (control/intervene! conn rid {:kind "model" :payload "critic nope:m"})))))
+      (finally (live/forget-run! rid) (db/close conn)))))

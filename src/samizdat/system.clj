@@ -35,7 +35,7 @@
             ;; formatter resolves against; must load before the first log call
             [jolt.time]
             [jolt.http.platform :as platform]
-            [samizdat.net :as net]
+            [ring-chez.adapter :as adapter]
             [samizdat.api.control :as api-control]
             [samizdat.agent.acceptance :as acceptance]
             [samizdat.agent.gates :as gates]
@@ -244,7 +244,7 @@
          ;; it. Started before the server, so a client that connects on the
          ;; first request is not polling a ring nothing is filling yet.
          _ (steps/start-pump!)
-         server (net/run-server handler (select-keys (:http cfg) [:port :worker-threads]))]
+         server (adapter/run-server handler (select-keys (:http cfg) [:port :worker-threads]))]
      (reset! system {:config cfg :conn c :server server})
      (log/info "samizdat up on port" (get-in cfg [:http :port])
                "provider" (get-in cfg [:llm :provider])
@@ -294,7 +294,7 @@
                                (when (= ::hung (deref future 15000 ::hung))
                                  (log/warn "run" rid "did not stop within 15s;"
                                            "closing the system under it")))))]
-                       ["http server" #(net/stop-server (:server s))]
+                       ["http server" #(adapter/stop-server (:server s))]
                        ;; After the server, so a request in flight can still
                        ;; read the trace it was serving; the rings go with it.
                        ["step pump" #(do (steps/stop-pump!) (steps/reset!))]

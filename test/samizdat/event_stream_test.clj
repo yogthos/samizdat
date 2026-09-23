@@ -26,7 +26,7 @@
             [samizdat.api.stream :as stream]
             [samizdat.approval :as approval]
             [samizdat.events :as events]
-            [samizdat.net :as net]
+            [ring-chez.adapter :as adapter]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]))
@@ -172,7 +172,7 @@
         port (with-open [s (java.net.ServerSocket. 0)] (.getLocalPort s))
         handler (fn [req] (stream/response conn rid (stream/cursor req)
                                            {:poll-ms 10 :heartbeat-ms 200 :page 50}))
-        server (net/run-server handler {:port port})
+        server (adapter/run-server handler {:port port})
         got (atom [])
         stop (atom false)
         follow (fn [last-id]
@@ -199,7 +199,7 @@
             (is (not-any? #{"one" "two"} (map :event @got)))
             (reset! stop true)
             (deref f 3000 :timeout))))
-      (finally (net/stop-server server) (db/close conn)))))
+      (finally (adapter/stop-server server) (db/close conn)))))
 
 (deftest the-server-routes-both-streams
   (require 'samizdat.server)

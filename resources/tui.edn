@@ -173,7 +173,7 @@
           "oversight"          {:role :supervisor :say [:notes]}
           "watch-intervention" {:role :supervisor :say [:finding]}
           "compaction"         {:role :system :say [:action]}
-          "llm-switch"         {:role :system :say [:model]}}
+          "llm-switch"         {:role :system :say [:summary]}}
   ;; The argument a tool call is known by in its chamber's header.
   :banner {"read_file" "path" "write_file" "path" "edit_file" "path"
            "read_digest" "path" "patch" "path" "shell" "command"
@@ -191,10 +191,10 @@
  :commands
  {"/help"     {:do :help :doc "these commands"}
   "/quit"     {:do :quit :doc "leave (Ctrl+Q)"}
-  "/model"    {:do :model :args "[id]"
-               :doc "list the models, or switch — live for the run on screen, else for the next run"}
-  "/effort"   {:do :effort :args "<low|medium|high|max>"
-               :doc "how hard the model thinks — live for the run on screen, else the next run"}
+  "/model"    {:do :model :args "[role] [model]"
+               :doc "list the models, or switch: `/model glm-5.3` for every role, `/model critic glm:glm-5.3` for one — live for the run on screen, else the next run"}
+  "/effort"   {:do :effort :args "[role] <low|medium|high|max>"
+               :doc "how hard the model thinks, for every role or one — live for the run on screen, else the next run"}
   "/mode"     {:do :mode :args "[refuse|block]"
                :doc "when a run needs you: refuse, or block and ask"}
   "/run"      {:do :start :args "<problem>" :doc "start a run on a problem"}
@@ -223,6 +223,14 @@
   "/stop"     {:do :intervene :kind "stop" :args "<why>"
                :doc "end the run unsolved at the feature loop's next round"}
   "/q"        {:alias "/quit"}}
+
+ ;; DESKTOP NOTIFICATIONS, after dirge's: when the run on screen needs you
+ ;; (a permission question, ask_human), and when it ends. :on picks the
+ ;; moments — "question", "run-finished" — and an empty set turns them off.
+ ;; :command, when set, is the program to run, with {title} and {body}
+ ;; filled in, e.g. ["terminal-notifier" "-title" "{title}" "-message" "{body}"];
+ ;; unset, osascript on macOS and notify-send elsewhere.
+ :notifications {:on #{"question" "run-finished"}}
 
  ;; The avatar's faces, by mood, and the tools that set one. A mood no tool
  ;; names is :thinking while a run is going.
@@ -253,29 +261,30 @@
  :layout
  [:vbox {:flex true}
 
-  ;; The top frame, one title over each column. Widths match the columns.
-  [:hbox
-   [:widget/rule {:title "RUN STATUS" :width 32}]
-   [:widget/rule {:title "AGENT LOG" :flex true}]
-   [:widget/rule {:title "HARNESS" :width 34}]]
-
+  ;; THE CHAT COLUMN IS CAPPED, as dirge's is: 120 columns, which it gives up
+  ;; on a narrow terminal (:flex :shrink), while the side columns — at least
+  ;; 32 and 34 wide, :grow — share whatever room is left on a wide one. Each
+  ;; column carries its own title in the top frame, so the titles stay over
+  ;; their columns at any width; the bottom strip uses the same widths so the
+  ;; compose box stays under the conversation.
   [:hbox {:flex true}
 
    ;; Left: what the run is spending and doing, and the beam — which branch
    ;; the conversation beside it is.
-   [:vbox {:width 32}
+   [:vbox {:width [:>= 32] :flex :grow}
+    [:widget/rule {:title "RUN STATUS"}]
     [:text {:class :panel-title :align :hcenter} "S A M I Z D A T"]
     [:widget/context {:title "CONTEXT" :height 11}]
     [:widget/activity {:title "ACTIVITY" :flex :grow}]
     [:widget/branches {:title "BEAM" :height 7}]]
 
-   ;; The middle: the conversation; when somebody has to answer, the question
-   ;; under it; and the run's own account of itself — its claims, and the
-   ;; gates it was advised by and has not answered — in a wide short row,
-   ;; since both are short lists of long lines. `:turns` is how far back the
-   ;; conversation draws; every entry is rebuilt each frame, so it is a
-   ;; frame-rate number as much as a history one.
-   [:vbox {:flex true}
+   ;; The middle: the conversation; while a /command is typed, what it could
+   ;; be; when somebody has to answer, the question; and the run's own
+   ;; account of itself — its claims, and the gates it was advised by and
+   ;; has not answered — in a wide short row. `:turns` is how far back the
+   ;; conversation draws.
+   [:vbox {:width 120 :flex :shrink}
+    [:widget/rule {:title "AGENT LOG"}]
     [:widget/conversation {:flex true :turns 60}]
     [:widget/command-hints {}]
     [:widget/approvals {}]
@@ -285,17 +294,18 @@
 
    ;; Right: which run, the board, what has changed, and the tree it is
    ;; changing. GIT needs three rows inside its chrome, hence 7.
-   [:vbox {:width 34}
+   [:vbox {:width [:>= 34] :flex :grow}
+    [:widget/rule {:title "HARNESS"}]
     [:widget/runs {:title "RUNS" :height 6}]
     [:widget/tasks {:title "TASKS" :height 8}]
     [:widget/files {:title "MODIFIED" :flex :grow}]
     [:widget/git {:title "GIT" :height 7}]]]
 
-  ;; The avatar and the compose box. Enter sends a directive to the run on
-  ;; screen, or with no run the words are the problem for a new one.
-  [:hbox {:height 3}
-   [:widget/avatar {:width 32}]
-   [:widget/input {:flex true :boxed true}]
-   [:filler {:width 34}]]
+  ;; The avatar and the compose box. No height: the strip is as tall as the
+  ;; box, which grows a row per line typed (Ctrl+J) up to :max-lines.
+  [:hbox
+   [:widget/avatar {:width [:>= 32] :flex :grow}]
+   [:widget/input {:width 120 :flex :shrink :boxed true :max-lines 8}]
+   [:filler {:width [:>= 34] :flex :grow}]]
 
   [:widget/status {}]]}

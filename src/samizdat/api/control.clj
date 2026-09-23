@@ -260,20 +260,40 @@
   request (samizdat.agent.live), so there is no boundary to queue for."
   {"model" :model "effort" :reasoning-effort})
 
+(defn- parse-switch
+  "A switch's payload: `value`, or `role value` — a model may carry its
+  provider as `provider:model`. {:role :value :provider} or {:error …}."
+  [kind payload]
+  (let [words (remove str/blank? (str/split (str/trim (str payload)) #"\s+"))
+        [role v] (case (count words) 1 [nil (first words)] 2 words [nil nil])
+        [p m] (when (and v (= "model" kind) (str/includes? v ":")) (str/split v #":" 2))
+        provider (some-> p str/lower-case keyword)]
+    (cond
+      (nil? v) {:error (str "a " kind " switch takes `" kind "` or `role " kind "`")}
+      (and provider (not (contains? (set (registry/providers)) provider)))
+      {:error (str "unknown provider " p "; known: "
+                   (str/join ", " (sort (map name (registry/providers)))))}
+      :else {:role (some-> role str/lower-case keyword) :value (if provider m v)
+             :provider provider})))
+
 (defn- live-switch!
   [conn run-id {:keys [kind payload]}]
-  (let [v (some-> payload str str/trim not-empty)
+  (let [{:keys [error role value provider]} (parse-switch kind payload)
         k (get live-kinds kind)]
-    (if-not v
-      {:status 400 :body {:error {:message (str "a " kind " switch needs the " (name k)
-                                                " as its payload")
-                                  :run_id run-id}}}
-      (do (live/set! run-id {k v})
-          ;; On the record, so the run's own account says when it changed
-          ;; and a front end's conversation can show it.
-          (journal/note! conn run-id :llm-switch {:data {k v}})
-          (log/info "run" run-id kind "switched to" v)
-          {:body {:status "switched" (name k) v :run_id run-id}}))))
+    (if error
+      {:status 400 :body {:error {:message error :run_id run-id}}}
+      (let [m (cond-> {k value} provider (assoc :provider provider))
+            summary (str (if role (name role) "every role") " → "
+                         (when provider (str (name provider) ":")) value)]
+        (live/set! run-id role m)
+        ;; On the record, so the run's own account says when it changed
+        ;; and a front end's conversation can show it.
+        (journal/note! conn run-id :llm-switch
+                       {:data (cond-> {k value :summary summary}
+                                role (assoc :role (name role))
+                                provider (assoc :provider (name provider)))})
+        (log/info "run" run-id kind "switched:" summary)
+        {:body {:status "switched" :role (some-> role name) (name k) value :run_id run-id}}))))
 
 (defn intervene!
   "Record a human intervention. Queued kinds (message, cull, fork, …) go on

@@ -23,7 +23,8 @@
             [clojure.test :refer [deftest testing is]]
             [jolt.process :as p]
             [ring-chez.http]
-            [samizdat.net :as net]
+            [ring-chez.adapter :as adapter]
+            [ring-chez.socket :as socket]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.api.control :as control]
             [samizdat.server :as server]
@@ -150,7 +151,7 @@
   ;; live listener, so it fails whenever anything still holds one.
   (let [port 39187
         handler (fn [_] {:status 200 :headers {} :body "ok"})
-        server (net/run-server handler {:port port})
+        server (adapter/run-server handler {:port port})
         ;; Spawned while the server is up, so it forks with the fd open.
         child (p/process ["sleep" "20"] {})]
     (try
@@ -158,15 +159,15 @@
       ;; different reasons and the first version could not tell them apart:
       ;; it passed on macOS and failed on Linux CI with nothing to say about
       ;; whether the flag had been set at all.
-      (is (net/cloexec? (:socket server))
+      (is (socket/cloexec? (:socket server))
           "the listen fd is not marked FD_CLOEXEC — the mechanism itself failed")
-      (net/stop-server server)
-      (let [again (try {:ok true :server (net/run-server handler {:port port})}
+      (adapter/stop-server server)
+      (let [again (try {:ok true :server (adapter/run-server handler {:port port})}
                        (catch Throwable e {:ok false :error (ex-message e)}))]
         (is (:ok again)
             (str "port " port " is still held after the server stopped — a child "
                  "inherited the listen fd: " (:error again)))
-        (when-let [s (:server again)] (net/stop-server s)))
+        (when-let [s (:server again)] (adapter/stop-server s)))
       (finally
         (try (p/destroy-tree child) (catch Throwable _ nil))))))
 

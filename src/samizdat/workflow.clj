@@ -50,6 +50,7 @@
             [samizdat.config :as config]
             [samizdat.manifests :as manifests]
             [samizdat.llm.registry :as registry]
+            [samizdat.agent.live :as live]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
@@ -242,9 +243,12 @@
   (let [ctx (assoc ctx :role role)]
     ;; Resolution is config/role-llm, shared with read_digest, so a role's
     ;; model has one answer whether it runs a sub-loop or one call.
-    (if-let [llm (config/role-llm (:config ctx) (:llm-config ctx) role)]
-      (assoc ctx :llm-adapter (registry/adapter-for (:provider llm)) :llm-config llm)
-      ctx)))
+    ;; Then whatever a person switched for this role mid-run
+    ;; (samizdat.agent.live), over the configured assignment.
+    (live/in-ctx
+     (if-let [llm (config/role-llm (:config ctx) (:llm-config ctx) role)]
+       (assoc ctx :llm-adapter (registry/adapter-for (:provider llm)) :llm-config llm)
+       ctx))))
 
 (defn note-schema-warnings!
   "Record any :mycelium/warnings the pass accumulated, and return `data`.

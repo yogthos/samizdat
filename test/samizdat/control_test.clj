@@ -871,7 +871,7 @@
   ;; binds the port. When a later step threw, all of that stayed: every
   ;; userspace read in the process went on to a project nobody had started.
   (let [root (temp-root)]
-    (with-redefs [samizdat.net/run-server (fn [& _] (throw (ex-info "port taken" {})))]
+    (with-redefs [ring-chez.adapter/run-server (fn [& _] (throw (ex-info "port taken" {})))]
       (is (thrown? Throwable
                    (system/start! (fn [_] {:status 200 :headers {} :body "ok"})
                                   {:db {:path ":memory:"} :http {:port 0} :run {:root root}}))))

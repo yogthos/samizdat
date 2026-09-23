@@ -26,6 +26,7 @@
   The state is one flat map on purpose. A widget takes what it needs from it
   and the layout never has to name data, only widgets; that is what lets a
   user put a panel anywhere without anything being rewired."
+  (:refer-clojure :exclude [newline])
   (:require [clojure.string :as str]))
 
 (def handler-keys
@@ -303,8 +304,34 @@
   (update s :expanded (fn [e] (let [e (set e)]
                                 (if (contains? e id) (disj e id) (conj e id))))))
 
-(defn set-input [s text]
-  (assoc s :input (or text "")))
+(defn- enter-newline?
+  "Whether `after` is `before` with exactly one newline inserted — what ftxui's
+  multi-line input does on Enter, just before it fires on-enter."
+  [before after]
+  (and (= (inc (count before)) (count after))
+       (let [i (count (take-while true? (map = before after)))]
+         (and (= \newline (nth after i nil))
+              (= before (str (subs after 0 i) (subs after (inc i))))))))
+
+(defn set-input
+  "The compose box's text. A change that is only Enter's newline is not
+  kept: Enter sends, and a newline a person wants is Ctrl+J (`newline`)."
+  [s text]
+  (let [text (or text "")]
+    (if (enter-newline? (str (:input s)) text)
+      s
+      (assoc s :input text))))
+
+(defn newline
+  "Ctrl+J: a line break in the compose box, on purpose."
+  [s]
+  (update s :input #(str % "\n")))
+
+(defn input-lines
+  "How many rows the compose box needs for what is in it: one to start,
+  at most `cap`."
+  [s cap]
+  (min cap (inc (count (re-seq #"\n" (str (:input s)))))))
 
 (defn clear-input [s]
   (assoc s :input ""))

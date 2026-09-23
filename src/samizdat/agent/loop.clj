@@ -445,14 +445,15 @@
   ;; because the config belongs to the run and this decision belongs to one
   ;; branch (samizdat.agent.thinking).
   (let [off (:off-value (gates/threshold :thinking-budget))
-        ctx (update ctx :llm-config
-                    (fn [c]
-                      ;; A person's live switch first (samizdat.agent.live):
-                      ;; a model or effort changed mid-run lands here, on the
-                      ;; next request, whatever the run started with.
-                      (let [c (live/apply-to c (:run-id ctx))]
-                        (assoc c :reasoning-effort
-                               (thinking/effort-for branch (:reasoning-effort c) off)))))]
+        ;; A person's live switch first (samizdat.agent.live): a model or
+        ;; effort changed mid-run for this branch's role — or for every role —
+        ;; lands here, on the next request, whatever the run started with.
+        ctx (-> (assoc ctx :role (or (:role ctx) (:role branch) :implementor))
+                live/in-ctx
+                (update :llm-config
+                        (fn [c]
+                          (assoc c :reasoning-effort
+                                 (thinking/effort-for branch (:reasoning-effort c) off)))))]
     ;; AN INJECTED `complete` WINS. RFC-004 already says the model call is
     ;; "the ONE effect, as an injectable value" and that a test or a probe
     ;; passes its own — but this call site hardcoded the constructor, so the

@@ -42,6 +42,7 @@
             [samizdat.api.sse :as sse]
             [samizdat.tui.commands :as cmd]
             [samizdat.tui.layout :as layout]
+            [samizdat.tui.notify :as notify]
             [samizdat.tui.state :as st]
             [samizdat.tui.theme :as theme]
             [samizdat.tui.timeline :as tl]
@@ -169,18 +170,28 @@
   (= "running" (str (get-in s [:detail :run :status]))))
 
 (defn- live-switch!
-  "/model and /effort: live for the run on screen while it runs, otherwise
-  kept for the next run started from here."
-  [kind llm-key value]
-  (let [{:keys [base run-id] :as s} @state]
-    (if (and run-id (running? s))
-      (let [r (client/intervene! base run-id {:kind kind :payload value})]
+  "/model and /effort, `value` or `role value`: live for the run on screen
+  while it runs — for that role, or every role — otherwise kept for the next
+  run started from here (which takes no role)."
+  [kind llm-key arg]
+  (let [{:keys [base run-id] :as s} @state
+        words (str/split (str/trim arg) #"\s+")]
+    (cond
+      (and run-id (running? s))
+      (let [r (client/intervene! base run-id {:kind kind :payload arg})]
         (if (:ok r)
-          (say! (str kind " → " value " for run " (subs run-id 0 (min 8 (count run-id)))
-                     ", from its next turn"))
+          (say! (str kind " → " (if (= 2 (count words))
+                                  (str (second words) " for the " (first words))
+                                  (str (first words) " for every role"))
+                     " on run " (clip-line run-id 9) ", from its next request"))
           (say! (str kind " switch refused: " (:error r)))))
-      (do (swap! state assoc-in [:next-llm llm-key] value)
-          (say! (str kind " → " value " for the next run"))))))
+
+      (= 2 (count words))
+      (say! (str "a " kind " for one role switches a running run; no run is running here"))
+
+      :else
+      (do (swap! state assoc-in [:next-llm llm-key] (first words))
+          (say! (str kind " → " (first words) " for the next run"))))))
 
 (defn- command!
   "Do what a slash line says. Its output goes into the conversation."
@@ -350,7 +361,11 @@
     (swap! state (fn [s] (let [[s' wants] (st/apply-event s e)]
                            (vreset! w wants)
                            s')))
-    (when (seq @w) (swap! wanted into @w))))
+    (when (seq @w) (swap! wanted into @w))
+    ;; A moment a person who looked away wants to hear about.
+    (let [settings (:notifications (layout/current))]
+      (when-let [n (notify/for-event @state e settings)]
+        (notify/notify! settings n)))))
 
 (defonce ^:private workers (atom nil))
 
@@ -488,6 +503,8 @@
       (and (= :key type) (= :tab key) (str/starts-with? (str (:input @state)) "/"))
       (do (swap! state #(st/set-input % (cmd/complete (:input %) (:commands (layout/current)))))
           true)
+      ;; Ctrl+J breaks the line: Enter sends.
+      (and (= :key type) (= :ctrl-j key)) (do (swap! state st/newline) true)
       ;; Ctrl+P / Ctrl+N walk back and forth through what was sent.
       (and (= :key type) (= :ctrl-p key)) (do (swap! state st/history-back) true)
       (and (= :key type) (= :ctrl-n key)) (do (swap! state st/history-forward) true)
