@@ -297,11 +297,12 @@
   every round. Narrowed HERE, before the first branch opens, so the run row
   records the width that will actually run. A turn that cannot fit at all
   runs at width one rather than not at all; the log says so."
-  [width {:keys [provider-concurrency expected-turn-ms expected-turn-tokens]}
+  [width {:keys [provider-concurrency expected-turn-ms turn-ms-at expected-turn-tokens]}
    {:keys [deadline-ms max-turns token-budget]}]
   (sym/widest-beam {:requested width
                     :concurrency provider-concurrency
                     :turn-ms expected-turn-ms
+                    :turn-ms-at turn-ms-at
                     :deadline-ms deadline-ms
                     :turns max-turns
                     :turn-tokens expected-turn-tokens
@@ -1183,7 +1184,10 @@
                 "by" (str/join " and " (map name (sort bound)))
                 "- the provider serves" (:provider-concurrency contention)
                 "call(s) at a time, a turn takes ~" (:expected-turn-ms contention)
-                "ms and ~" (:expected-turn-tokens contention) "tokens, against a"
+                "ms" (if-let [t (:turn-ms-at contention)]
+                       (str "(measured by calls in flight: " (pr-str t) ")")
+                       "")
+                "and ~" (:expected-turn-tokens contention) "tokens, against a"
                 (turn-deadline-ms) "ms turn deadline and a token budget of"
                 token-budget "over" max-turns "turns"
                 "(gates.edn :beam-contention, config :run :token-budget)"))

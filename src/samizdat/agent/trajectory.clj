@@ -110,7 +110,13 @@
   exhausted run and compare the curves before letting anything act on them."
   [{:keys [conn llm-adapter llm-config]} run-id branch-id]
   (let [rows (journal/branch-turns conn run-id branch-id)
-        run (runs/get-run conn run-id)
+        ;; The branch's OWN task where it has one — a board worker's sub-task,
+        ;; a decompose unit's contract — and the run's problem otherwise.
+        ;; Judged against the run's goal, a worker is scored on what the run
+        ;; as a whole has done, and a supervisor working the harness read
+        ;; 0.00 at every point (karamazov-vm3w.2).
+        problem (or (not-empty (:problem (runs/get-branch conn run-id branch-id)))
+                    (:problem (runs/get-run conn run-id)))
         ;; The judge is asked :repeats times per :stride-th step, so this is
         ;; the heaviest of the harness's side models by call count — and every
         ;; one of those calls used to be spent off the books
@@ -125,5 +131,4 @@
                                             :model (:model llm-config)
                                             :usage (:usage answer)})
                 (:content answer)))]
-    (score-rows ask rows (assoc (gates/trajectory-policy)
-                                :problem (:problem run)))))
+    (score-rows ask rows (assoc (gates/trajectory-policy) :problem problem))))

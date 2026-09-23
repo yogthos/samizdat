@@ -408,6 +408,15 @@
       (is (= 5 (width 5 {:provider-concurrency nil :expected-turn-ms nil} deadline))))
     (testing "a turn that cannot fit at all runs at width one rather than not at all"
       (is (= 1 (width 5 {:provider-concurrency 1 :expected-turn-ms 2000000} deadline))))
+    (testing "a measured cost by width beats slots times a width-one turn
+              (karamazov-vm3w.1)"
+      (is (= 5 (width 5 {:provider-concurrency 4 :expected-turn-ms 79000}
+                      {:deadline-ms 300000}))
+          "four slots and a 79s turn: every branch fits, on paper")
+      (is (= 3 (width 5 {:provider-concurrency 4 :expected-turn-ms 79000
+                         :turn-ms-at {1 79000 2 162500 4 309000}}
+                      {:deadline-ms 300000}))
+          "the slots share one engine, and the table says so"))
     (testing "and the token budget narrows it too, saying which limit bound
               (karamazov-aqsr.3)"
       (is (= {:width 3 :bound #{:budget}}

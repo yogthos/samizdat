@@ -148,13 +148,38 @@
     (is (= [] (:shadowed a)))))
 
 (deftest fn-form-entries-are-opaque-to-the-analysis
+  ;; Opaque, and SAID to be: an entry the analysis cannot read is listed
+  ;; under :opaque, so a clean :shadowed and :order-dependent is never
+  ;; mistaken for a table that was checked through. BendTT's rule for its
+  ;; one escape hatch — every use is reported, so a clean report means no
+  ;; claim was waived (karamazov-viht.2).
   (let [a (d/analyse '[[:any (fn [d] true)] [:x {:a 1}]])]
     (is (= [] (:shadowed a)))
-    (is (= [] (:order-dependent a)))))
+    (is (= [] (:order-dependent a)))
+    (is (= [{:label :any :form '(fn [d] true)}] (:opaque a)))))
+
+(deftest a-compiled-function-entry-is-opaque-too
+  ;; A manifest built in code may hand a function object rather than a form;
+  ;; it is just as unreadable to the analysis and is listed the same way.
+  (let [f (fn [_] true)
+        a (d/analyse [[:any f] [:x {:a 1}]])]
+    (is (= [:any] (map :label (:opaque a))))
+    (is (identical? f (:form (first (:opaque a)))))))
 
 (deftest analyse-tolerates-an-empty-or-missing-table
-  (is (= {:shadowed [] :order-dependent []} (d/analyse [])))
-  (is (= {:shadowed [] :order-dependent []} (d/analyse nil))))
+  (is (= {:shadowed [] :order-dependent [] :opaque []} (d/analyse [])))
+  (is (= {:shadowed [] :order-dependent [] :opaque []} (d/analyse nil))))
+
+(deftest report-names-the-opaque-entries-per-cell-beside-the-order-dependent-pairs
+  ;; One report over the whole :dispatches map, each finding carrying its
+  ;; cell, so the manifest tool renders both paragraphs from one call.
+  (let [r (d/report '{:parse [[:x {:a 1}] [:y {:b 2}]]
+                      :route [[:go (fn [d] (:go d))] [:stop {:v :stop}]]})]
+    (is (= [{:cell :parse :labels [:x :y] :patterns [{:a 1} {:b 2}]}]
+           (:order-dependent r)))
+    (is (= [{:cell :route :label :go :form '(fn [d] (:go d))}]
+           (:opaque r)))
+    (is (= {:order-dependent [] :opaque []} (d/report nil)))))
 
 ;;; ----------------------------------------------------------------- check!
 
@@ -175,17 +200,19 @@
 (deftest check-returns-the-analysis-of-a-table-it-accepts
   (is (= [{:labels [:x :y] :patterns [{:a 1} {:b 2}]}]
          (:order-dependent (d/check! :c '[[:x {:a 1}] [:y {:b 2}]]))))
-  (is (= {:shadowed [] :order-dependent []}
+  (is (= {:shadowed [] :order-dependent []
+          :opaque [{:label :x :form '(fn [d] true)}]}
          (d/check! :c '[[:x (fn [d] true)]]))))
 
 ;;; ----------------------------------------------------------------- report
 
 (deftest report-lists-order-dependent-pairs-per-cell
   (is (= [{:cell :c :labels [:x :y] :patterns '[{:a 1} {:b 2}]}]
-         (d/report '{:c [[:x {:a 1}] [:y {:b 2}]]
-                     :d [[:p {:a 1 :b 2}] [:q {:a 1}]]})))
-  (is (= [] (d/report {})))
-  (is (= [] (d/report nil))))
+         (:order-dependent
+          (d/report '{:c [[:x {:a 1}] [:y {:b 2}]]
+                      :d [[:p {:a 1 :b 2}] [:q {:a 1}]]}))))
+  (is (= {:order-dependent [] :opaque []} (d/report {})))
+  (is (= {:order-dependent [] :opaque []} (d/report nil))))
 
 ;;; ------------------------------------------------------------- the loop
 
@@ -202,10 +229,12 @@
             [label spec] table]
       (is (d/pattern-entry? spec) (str cell " " label " is still a fn form")))
     (is (= [] (mapcat (comp :shadowed d/analyse) (vals tables))))
-    (is (= [{:cell :parse :labels [:provider-error :no-call]
-             :patterns '[{:call {:ok false}} {:parsed nil}]}
-            {:cell :parse :labels [:provider-error :no-call]
-             :patterns '[{:call {:ok false}} {:parsed {:name "__parse_error__"}}]}]
+    (is (= {:order-dependent
+            [{:cell :parse :labels [:provider-error :no-call]
+              :patterns '[{:call {:ok false}} {:parsed nil}]}
+             {:cell :parse :labels [:provider-error :no-call]
+              :patterns '[{:call {:ok false}} {:parsed {:name "__parse_error__"}}]}]
+            :opaque []}
            (d/report tables)))))
 
 (deftest no-shipped-manifest-dispatches-on-a-form

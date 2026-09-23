@@ -119,7 +119,7 @@
   {:doc "Phase policy first, then the tool, then the branch bookkeeping the
         outcome demands (outcome counters, artifact banking, repeat-failure
         escalation)."
-   :effects [:db :fs :proc]
+   :effects [:db :fs :proc :net]
    :requires []
    :input  [:map [:branch :map] [:turn :int] [:parsed :any]]
    :output [:map [:branch :map] [:result :any] [:tool :any]]}

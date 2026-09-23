@@ -388,6 +388,82 @@
             checking this at compile time was wrong and caught it"
     (is (some? (manifests/compiled-manifest "beam")))))
 
+(deftest a-cycle-that-cannot-change-its-own-exit-is-warned-about-at-compile
+  ;; BendTT 2.5: recursion passes one syntactic descent test — a self-call
+  ;; must shrink a column — with no sizes computed, so an auditor can read
+  ;; it in an afternoon. The manifest dialect's counterpart: a cycle is
+  ;; GUARDED when some dispatch on it, one with an edge leaving the cycle,
+  ;; reads a key that a cell on the cycle promises in its :output — the loop
+  ;; recomputes its own exit condition each time round. A cycle whose exit
+  ;; reads a key nothing on it writes was decided before the loop was
+  ;; entered: it leaves at once or never. mycelium already refuses a cycle
+  ;; with no exit at all (no path to :end); this is the next question, and
+  ;; a warning rather than a refusal, on the same channel as
+  ;; :undeclared-effects (karamazov-viht.4). Termination itself stays
+  ;; dynamic — max-turns, the turn deadline, the soak's budget.
+  (cell/defcell :guard-test/step {:doc "t" :pure true :output [:map [:n :int]]}
+    (fn [_ d] (update d :n (fnil inc 0))))
+  (cell/defcell :guard-test/route-blind {:doc "t" :pure true :output [:map]}
+    (fn [_ d] d))
+  (cell/defcell :guard-test/route-seeing {:doc "t" :pure true :output [:map [:verdict :keyword]]}
+    (fn [_ d] (assoc d :verdict (if (> (:n d 0) 2) :done :again))))
+  (let [shape (fn [router]
+                {:cells {:start :guard-test/step :route router}
+                 :edges {:start :route :route {:again :start :done :end}}
+                 :dispatches '{:route [[:done {:verdict :done}] [:again _]]}})
+        warnings (fn [definition]
+                   (filter #(= :unguarded-cycle (:type %))
+                           (:mycelium/compile-warnings
+                            (:compiled-fsm (manifests/compile-definition definition)))))]
+    (testing "the exit reads :verdict and nothing on the cycle writes it"
+      (let [blind (manifests/unguarded-cycles (shape :guard-test/route-blind))]
+        (is (= 1 (count blind)))
+        (is (= [:route :start] (sort-by str (:cycle (first blind)))) "names the cycle")
+        (is (= #{:verdict} (:reads (first blind))) "what its exit reads")
+        (is (= #{:n} (:produces (first blind))) "and what the cycle actually writes"))
+      (is (= 1 (count (warnings (shape :guard-test/route-blind))))
+          "and the compile carries it as a warning, not a refusal"))
+    (testing "the same shape with a router that promises :verdict is guarded"
+      (is (= [] (manifests/unguarded-cycles (shape :guard-test/route-seeing))))
+      (is (= [] (warnings (shape :guard-test/route-seeing)))))
+    (testing "a dispatch that reads the key but has no edge out of the cycle
+              does not count — the decision it makes cannot end the loop"
+      (let [inner {:cells {:start :guard-test/step :a :guard-test/route-seeing
+                           :b :guard-test/route-blind}
+                   :edges {:start :a :a {:x :b :y :start} :b {:again :start :done :end}}
+                   :dispatches '{:a [[:x {:verdict :done}] [:y _]]
+                                 :b [[:done {:done true}] [:again _]]}}]
+        (is (seq (manifests/unguarded-cycles inner))
+            ":a reads :verdict but both its edges stay inside; :b exits on :done, which nothing writes")))))
+
+(deftest no-shipped-manifest-has-an-unguarded-cycle
+  ;; The pin: every shipped cycle is guarded, so the warning only ever names
+  ;; an agent-authored shape. The one that is not would have to say why here.
+  (cells/load-cells!)
+  (doseq [nm manifests/shipped-manifests
+          :let [definition (shipped-definition nm)]]
+    (is (= [] (manifests/unguarded-cycles definition)) nm)))
+
+(deftest saving-a-manifest-reports-an-unguarded-cycle-to-its-author
+  ;; The compile warning goes to the log, which the author of an edit does
+  ;; not read; the save result is where they are looking (same moment as the
+  ;; dispatch-order and not-analysed paragraphs).
+  (with-db
+    (fn [conn]
+      (cells/load-cells!)
+      (cell/defcell :guard-test/blind {:doc "t" :pure true :output [:map]} (fn [_ d] d))
+      (let [text (pr-str {:description "a loop that cannot end itself"
+                          :cells {:start :loop/assemble :route :guard-test/blind}
+                          :edges {:start :route :route {:again :start :done :end}}
+                          :dispatches '{:route [[:done {:verdict :done}] [:again _]]}})
+            saved (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                  :args {:action "save" :name "blind" :edn text
+                                         :rationale "an unguarded cycle, on purpose"}})]
+        (is (= :neutral (:category saved)) (str (:result saved)))
+        (is (str/includes? (str (:result saved)) "cannot change its own exit")
+            "saved — it is a warning — and the report says what is wrong")
+        (is (str/includes? (str (:result saved)) ":verdict"))))))
+
 (deftest the-beam-driver-runs-a-whole-run-manifest-end-to-end
   ;; THE STRUCTURAL BLIND SPOT karamazov-emw names: every other test of these
   ;; flows drives workflow/run!, which carries data across a back edge, while
@@ -510,6 +586,38 @@
         (is (str/includes? (str (:result saved)) "Order-dependent"))
         (is (str/includes? (str (:result saved)) ":provider-error"))
         (is (str/includes? (str (:result shown)) "Order-dependent"))))))
+
+(deftest show-and-save-name-every-dispatch-entry-the-analysis-could-not-read
+  ;; A (fn [d] ...) entry is legal and opaque: it is checked for neither
+  ;; shadowing nor order, and until now nothing said so — a table with three
+  ;; forms and no overlapping patterns showed clean and read as checked
+  ;; through. BendTT's rule for its one escape hatch: every use is reported,
+  ;; so a clean report means no claim was waived (karamazov-viht.2). The
+  ;; paragraph is present exactly when an entry was waived; the same table
+  ;; as patterns prints nothing of the kind.
+  (with-db
+    (fn [conn]
+      (let [patterns (slurp (io/resource "manifests/loop.edn"))
+            _ (is (str/includes? patterns "[:tool _]") "the fixture's target is present")
+            forms (str/replace patterns "[:tool _]" "[:tool (fn [d] true)]")
+            run (fn [args] (base/run-tool {:branch {:id "B1"} :conn conn
+                                            :tool-name "manifest" :args args}))
+            saved (run {:action "save" :name "loop5" :edn forms
+                        :rationale "one entry as a form, on purpose"})
+            shown (run {:action "show" :name "loop5"})
+            clean (run {:action "save" :name "loop6" :edn patterns
+                        :rationale "the same table as patterns"})]
+        (is (= :neutral (:category saved)) (str (:result saved)))
+        (doseq [r [saved shown]]
+          (is (str/includes? (str (:result r)) "not analysed")
+              "the waiver is disclosed on save and on show")
+          (is (str/includes? (str (:result r)) ":parse")
+              "naming the table")
+          (is (str/includes? (str (:result r)) ":tool")
+              "and the entry"))
+        (is (= :neutral (:category clean)))
+        (is (not (str/includes? (str (:result clean)) "not analysed"))
+            "no waiver, no paragraph — absence means every entry was analysed")))))
 
 (deftest a-manifests-prompt-reaches-the-driver-that-production-uses
   ;; karamazov-ioo.20's leftover, and the same shape its own commit message

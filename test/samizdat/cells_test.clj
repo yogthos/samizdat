@@ -237,3 +237,110 @@
         (db/close c)
         ;; restore the template registry for whatever runs next
         (cells/load-cells!)))))
+
+;; --- earned effect marks (karamazov-viht.1) ----------------------------------
+;;
+;; BendTT 2.4: a type declares its kind and the checker EARNS it by walking
+;; every constructor. A cell's :pure / :effects mark is the thing the mutation
+;; soak stubs by, and until now it was checked for shape and never against
+;; the body — a cell marked :pure that calls slurp ran its IO inside the soak.
+;; `implied-effects` walks the body and says what it reaches, by a catalog
+;; that is data (gates.edn :effect-symbols), so the mark can be checked.
+
+(def ^:private catalog
+  '{:fs   [slurp spit clojure.java.io samizdat.agent.files]
+    :net  [samizdat.llm.client samizdat.agent.loop/call-model]
+    :db   [samizdat.store samizdat.userspace/save!]
+    :proc [samizdat.engine.proc clojure.java.shell]})
+
+(defn- one-cell [decl body & [requires]]
+  (str "(ns cells.gen.t (:require [mycelium.cell :as cell]" requires "))\n"
+       "(cell/defcell :t/x {:doc \"t\" " decl "}\n  " body ")\n"))
+
+(deftest a-bare-core-call-implies-its-effect
+  (let [r (cells/implied-effects (one-cell ":pure true" "(fn [_ d] (assoc d :s (slurp \"f\")))") catalog)]
+    (is (= {:pure true} (get-in r [:t/x :declared])))
+    (is (= {:fs #{'slurp}} (get-in r [:t/x :implied])))))
+
+(deftest an-aliased-call-resolves-through-the-ns-form
+  ;; The body says llm/chat; the catalog names samizdat.llm.client. The
+  ;; ns form's :require is what connects them, so the walk reads it.
+  (let [r (cells/implied-effects
+           (one-cell ":effects [:net]" "(fn [ctx d] (llm/chat (:llm-adapter ctx) {} []))"
+                     " [samizdat.llm.client :as llm]")
+           catalog)]
+    (is (= {:net #{'samizdat.llm.client/chat}} (get-in r [:t/x :implied])))))
+
+(deftest a-namespace-entry-covers-its-sub-namespaces
+  ;; samizdat.store in the catalog matches samizdat.store.journal/note!: the
+  ;; store's namespaces are many and every one of them is the database.
+  (let [r (cells/implied-effects
+           (one-cell ":effects [:db]" "(fn [ctx d] (journal/note! (:conn ctx) 1 :k {}) d)"
+                     " [samizdat.store.journal :as journal]")
+           catalog)]
+    (is (= {:db #{'samizdat.store.journal/note!}} (get-in r [:t/x :implied])))))
+
+(deftest a-single-var-entry-does-not-taint-its-namespace
+  ;; samizdat.agent.loop is mixed: call-model is the provider, absorb-response
+  ;; is pure. Only the named var is a hit.
+  (let [pure (cells/implied-effects
+              (one-cell ":pure true" "(fn [ctx d] (turn/absorb-response d))"
+                        " [samizdat.agent.loop :as turn]")
+              catalog)
+        net (cells/implied-effects
+             (one-cell ":pure true" "(fn [ctx d] (turn/call-model ctx d))"
+                       " [samizdat.agent.loop :as turn]")
+             catalog)]
+    (is (= {} (get-in pure [:t/x :implied])))
+    (is (= {:net #{'samizdat.agent.loop/call-model}} (get-in net [:t/x :implied])))))
+
+(deftest a-local-helper-hands-its-effects-to-the-cells-that-call-it
+  ;; The IO is in a defn beside the cell; the cell calls the defn. Attributed
+  ;; transitively within the file, or the mark could be laundered through one
+  ;; indirection.
+  (let [src (str "(ns cells.gen.t (:require [mycelium.cell :as cell]))\n"
+                 "(defn- read-it [p] (slurp p))\n"
+                 "(defn- via [p] (read-it p))\n"
+                 "(cell/defcell :t/x {:doc \"t\" :pure true}\n  (fn [_ d] (assoc d :s (via \"f\"))))\n"
+                 "(cell/defcell :t/y {:doc \"t\" :pure true}\n  (fn [_ d] d))\n")
+        r (cells/implied-effects src catalog)]
+    (is (= {:fs #{'slurp}} (get-in r [:t/x :implied])))
+    (is (= {} (get-in r [:t/y :implied])) "the helper's effects reach only its callers")))
+
+(deftest a-quoted-form-is-data-not-a-call
+  (let [r (cells/implied-effects (one-cell ":pure true" "(fn [_ d] (assoc d :ops '(slurp spit)))") catalog)]
+    (is (= {} (get-in r [:t/x :implied])))))
+
+(deftest an-unknown-symbol-is-not-a-hit
+  ;; A scan cannot be complete, so it errs toward accepting: that is why the
+  ;; mark stays REQUIRED rather than inferred.
+  (let [r (cells/implied-effects (one-cell ":pure true" "(fn [_ d] (frobnicate d))") catalog)]
+    (is (= {} (get-in r [:t/x :implied])))))
+
+(deftest effect-problems-names-what-the-mark-fails-to-cover
+  (let [pure (cells/effect-problems (one-cell ":pure true" "(fn [_ d] (assoc d :s (slurp \"f\")))") catalog)
+        under (cells/effect-problems
+               (one-cell ":effects [:fs]" "(fn [ctx d] (llm/chat (:llm-adapter ctx) {} []))"
+                         " [samizdat.llm.client :as llm]")
+               catalog)
+        honest (cells/effect-problems
+                (one-cell ":effects [:fs :net]" "(fn [ctx d] (slurp \"f\") (llm/chat (:llm-adapter ctx) {} []))"
+                          " [samizdat.llm.client :as llm]")
+                catalog)
+        undeclared (cells/effect-problems (one-cell "" "(fn [_ d] (slurp \"f\"))") catalog)]
+    (is (= [{:id :t/x :declared {:pure true} :missing #{:fs} :evidence {:fs #{'slurp}}}] pure))
+    (is (= [{:id :t/x :declared {:effects #{:fs}} :missing #{:net}
+             :evidence {:net #{'samizdat.llm.client/chat}}}] under))
+    (is (= [] honest))
+    (is (= [] undeclared) "an undeclared cell is the existing warning's business, not a second complaint")))
+
+(deftest every-shipped-cell-earns-its-mark-against-the-shipped-catalog
+  ;; The pin that keeps the catalog and the cells agreeing: a shipped cell
+  ;; whose body reaches an effect its mark does not name, or a catalog entry
+  ;; too broad for a shipped pure cell, fails here and names both.
+  (let [cat (samizdat.agent.gates/threshold :effect-symbols)]
+    (is (map? cat) "the catalog is read from gates.edn, not a constant")
+    (is (= #{:fs :net :db :proc} (set (keys cat))) "one entry per effect in the cell vocabulary")
+    (doseq [n cells/shipped-cells
+            :let [content (slurp (clojure.java.io/resource n))]]
+      (is (= [] (cells/effect-problems content cat)) n))))

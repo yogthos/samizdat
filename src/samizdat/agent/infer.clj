@@ -152,6 +152,21 @@
           [(hash [(str role) (str content)]) (count (str content)) (str role)])
         messages))
 
+(defn request-digest
+  "One number for a whole request: the wire fingerprint hashed again.
+
+  The per-message fingerprint answers HOW MUCH of a request changed since
+  the last one; this answers WHICH request it was, which is the question a
+  replay asks (karamazov-luqc.2): is the tape the candidate renders at turn
+  k the tape the recorded reply answered? Written to the journal beside the
+  prefix columns and read back by a later process, so it has to be stable
+  across processes — jolt's `hash` is, and there is no digest library on
+  this runtime. A runtime whose `hash` changed would make every old case
+  read as diverged at turn 1, which is loud rather than wrong: nothing is
+  scored on a comparison that was never made."
+  [wire]
+  (hash (vec wire)))
+
 (defn prefix-stats
   "What this call's render shares with the previous one, from the front.
 

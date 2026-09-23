@@ -45,6 +45,34 @@
     (is (= ["run completes" "milestone fires" "milestone is met" "calls done"]
            (mapv :name (:targets r))))))
 
+(deftest a-run-that-diverged-from-its-recording-says-where
+  ;; karamazov-luqc.2. A replay that rendered a different tape at turn k than
+  ;; the recorded reply answered noted it (replay-test); the reading carries
+  ;; the turn so a verdict can say the harness side alone was measured from
+  ;; there, and a case may pin faithfulness as a target of its own.
+  (let [c (db/open! ":memory:")
+        rid (a-run c)]
+    (testing "nothing noted: faithful, and the reading says so"
+      (let [r (battery/check c rid [{:name "replays faithfully" :assert [:replay-faithful]}])]
+        (is (true? (:ok? r)))
+        (is (nil? (:diverged-at r)))))
+    (testing "a divergence note: the turn is on the result and the target fails"
+      (journal/note! c rid :replay-diverged {:branch-id "T0"
+                                             :data {:branch "T0" :turn 3
+                                                    :recorded 1 :rendered 2}})
+      (let [r (battery/check c rid [{:name "run completes" :assert [:status :completed]}
+                                    {:name "replays faithfully" :assert [:replay-faithful]}])]
+        (is (= 3 (:diverged-at r)))
+        (is (true? (:ok? (first (:targets r)))) "the run's own outcomes still read")
+        (let [t (second (:targets r))]
+          (is (false? (:ok? t)))
+          (is (= 3 (:actual t)) "and the target reports the turn it happened"))))
+    (testing "the earliest divergence is the one that counts"
+      (journal/note! c rid :replay-diverged {:branch-id "T1"
+                                             :data {:branch "T1" :turn 2
+                                                    :recorded 1 :rendered 9}})
+      (is (= 2 (:diverged-at (battery/check c rid [])))))))
+
 (deftest a-failing-target-names-itself-and-what-it-saw
   (let [c (db/open! ":memory:")
         rid (a-run c)

@@ -125,8 +125,8 @@
                                         cache_hit_tokens, cache_miss_tokens,
                                         policy_refusal,
                                         prefix_stable_chars, prefix_chars, prefix_change,
-                                        forced_tool, forced_via, elapsed_ms)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                        forced_tool, forced_via, elapsed_ms, request_hash)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (str tool-name) (js (or args {}))
                     (str result) (some-> category name) parse-error
                     (if auto-repaired 1 0)
@@ -154,7 +154,10 @@
                     ;; Wall clock of the call (migration v33): nil, not 0,
                     ;; when there was no call to time — a provider error, a
                     ;; replay — since a 0 reads as an instant reply.
-                    (some-> elapsed-ms long)]))
+                    (some-> elapsed-ms long)
+                    ;; WHICH request this turn answered (migration v34):
+                    ;; nil when the call carried no fingerprint.
+                    (:request-hash prefix)]))
   ;; WHAT THE BRANCH IS RUNNING ON, on the turn it learned it
   ;; (karamazov-a28w). The loop marks the branch when the provider-reported
   ;; model is first seen or changes, so this is once per agent rather than a

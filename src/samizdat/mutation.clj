@@ -176,6 +176,34 @@
     (catch Throwable e
       (str "validate: the loop no longer compiles — " (or (ex-message e) (str e))))))
 
+(defn- unearned-marks
+  "The refusal for a body whose :pure / :effects marks its cells' bodies do
+  not earn (cells/effect-problems against gates.edn :effect-symbols), or nil
+  when every mark is covered.
+
+  WHY BEFORE INSTALLING, like a shadowed id. The mark is what the soak stubs
+  by: a :pure cell that reads the filesystem would run that read inside the
+  \"dry\" run, and an :effects cell missing :net would be stubbed as if the
+  provider were not in it. Neither is an error the soak can see — the body
+  compiles, the cells register, the run passes — so the check is on the
+  source, before load-string, and nothing is rolled back because nothing was
+  installed (karamazov-viht.1).
+
+  Best effort on a body that will not read: load-string reports that far
+  better, so a reader failure here is nil, not a second complaint."
+  [body]
+  (try
+    (when-let [problems (seq (cells/effect-problems body (gates/threshold :effect-symbols)))]
+      (prompt/render "cell-effects"
+                     {:cells (for [{:keys [id declared missing evidence]} problems]
+                               {:id (str id)
+                                :pure (boolean (:pure declared))
+                                :declared (str/join " " (map str (sort (:effects declared))))
+                                :missing (str/join ", "
+                                                   (for [e (sort missing)]
+                                                     (str e " — " (str/join ", " (map str (sort (get evidence e)))))))})}))
+    (catch Throwable _ nil)))
+
 (defn- rollback!
   [{:keys [conn run-id dirs]} {:keys [registry files]} reason]
   ;; Undo the edit on disk, restore the registry, then reload from the restored
@@ -248,8 +276,12 @@
       ;; error throws here and the loader has already restored the registry;
       ;; we still restore the file below.
       (cells/load-cells! dirs)
-      ;; VALIDATE — does the loop still compile with the edited cells?
-      (if-let [reason (validate compile-fn loop-def)]
+      ;; VALIDATE — does the loop still compile with the edited cells, and
+      ;; does every cell's :pure / :effects mark cover what its body reaches?
+      ;; The second is over what was just loaded, before the soak that
+      ;; trusts the mark (karamazov-viht.1).
+      (if-let [reason (or (some unearned-marks (vals (cells/loaded-file-content)))
+                          (validate compile-fn loop-def))]
         (rollback! opts checkpoint reason)
         ;; SOAK — does the edited cell actually run without throwing?
         (if-let [reason (soak-fn compile-fn loop-def soak-input)]
@@ -353,6 +385,7 @@
   [{:keys [name body loop-def extra-defs soak-input compile-fn rationale conn run-id]}]
   (let [compile-fn (or compile-fn myc/pre-compile)
         shadowing (shadowed-cells name body)
+        unearned (unearned-marks body)
         snapshot (cell/registry-snapshot)
         fail (fn [reason]
                (cell/registry-restore! snapshot)
@@ -361,7 +394,8 @@
                                 {:data {:cell name :reason reason}}))
                (log/warn "cell proposal rejected:" name reason)
                {:status :rolled-back :reason reason})]
-    (if (seq shadowing)
+    (cond
+      (seq shadowing)
       ;; REFUSED BEFORE INSTALLING. A save under the wrong name is not a bad
       ;; edit that a soak can catch — the body compiles, the cells register,
       ;; the soak passes, and the damage only appears later when the canonical
@@ -372,6 +406,13 @@
                             :one (= 1 (count shadowing))
                             :owners (str/join ", " (distinct (map second shadowing)))
                             :name name}))
+
+      ;; REFUSED BEFORE INSTALLING, for the same reason: a mark the body does
+      ;; not earn is invisible to the soak, which trusts the mark.
+      unearned
+      (fail unearned)
+
+      :else
     (try
       ;; INSTALL the candidate into the live image, on top of the project's
       ;; other cells. Syntax errors surface here.

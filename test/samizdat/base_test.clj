@@ -328,6 +328,16 @@
                        — an agent able to raise its own soak timeout can hang
                        the process with one cell and one edit."}}
 
+   "src/samizdat/manifests.clj"
+   {:threshold {500 "`cycle-cap`: where the loop-guard analysis stops
+                     enumerating simple cycles (karamazov-viht.4). The same
+                     reasoning as mutation.clj's soak timeout: an
+                     agent-authored manifest compiles at runtime, through the
+                     protocol that validates the agent's edits, and a bound on
+                     that compile must not be reachable from inside it — a
+                     dense enough graph would otherwise turn a save into a
+                     compile that never returns."}}
+
    "src/samizdat/repl.clj"
    {:threshold {10000 "The default eval timeout, as mutation.clj's soak:
                        in-process eval is the substrate the mutation protocol
@@ -417,6 +427,16 @@
 
    "src/samizdat/store/db.clj"
    {:threshold {120 "Busy-timeout clamp for SQLite."}}
+
+   "src/samizdat/agent/webfetch.clj"
+   {:threshold
+    {4 "An IPv4 address has four parts — the address FORMAT the confinement
+        parses (inet_aton's grammar), which is what lets it refuse
+        `2130706433` as 127.0.0.1. A guard the agent could retune is not a
+        guard (karamazov-luqc.1); the redirect budget, which IS policy, lives
+        in gates.edn :webfetch."
+     255 "The largest value of one byte of that address."
+     8 "Bits in one byte of that address."}}
 
    "src/samizdat/store/knowledge.clj"
    {:threshold {5 "Id-collision retry count. A UNIQUE collision is

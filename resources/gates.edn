@@ -196,6 +196,61 @@
         iteration 1 propose something different and be accepted. samizdat kept
         the reason and restored the files over the attempt (karamazov-mpd)."}
 
+ :effect-symbols
+ {:value {:fs   [slurp spit clojure.java.io java.nio.file.Files
+                 samizdat.agent.files
+                 samizdat.agent.skills/discover samizdat.agent.skills/load-skill
+                 samizdat.agent.loop/tool-step samizdat.agent.beam/advance-all]
+          :net  [samizdat.llm.client
+                 samizdat.agent.webfetch samizdat.agent.websearch
+                 samizdat.agent.infer/ab samizdat.agent.infer/trampoline
+                 samizdat.agent.loop/call-model samizdat.agent.loop/tool-step
+                 samizdat.agent.beam/advance-all samizdat.agent.beam/ensure-scored
+                 samizdat.agent.reflect/distil-task!]
+          :db   [samizdat.store
+                 samizdat.userspace/save!
+                 samizdat.agent.loop/journal-step! samizdat.agent.loop/no-call-step
+                 samizdat.agent.loop/provider-error-step samizdat.agent.loop/settle-step
+                 samizdat.agent.loop/steer-step samizdat.agent.loop/tool-step
+                 samizdat.agent.beam/advance-all samizdat.agent.beam/ensure-scored
+                 samizdat.agent.beam/drain-directives! samizdat.agent.beam/record-inactive!
+                 samizdat.agent.beam/spawn-children! samizdat.agent.beam/await-resume!
+                 samizdat.agent.reflect/distil-task!]
+          :proc [clojure.java.shell samizdat.engine.proc
+                 samizdat.agent.gitdiff/baseline samizdat.agent.gitdiff/snapshot
+                 samizdat.agent.gitdiff/changed-files samizdat.agent.gitdiff/changed-lines
+                 samizdat.agent.gitdiff/diff
+                 samizdat.agent.verify/run-verify
+                 samizdat.agent.loop/tool-step samizdat.agent.beam/advance-all]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-viht.1"]
+  :doc "WHAT A CALL IN A CELL BODY IMPLIES ABOUT ITS EFFECTS. The catalog
+        cells/effect-problems reads when the mutation protocol checks a
+        cell's :pure / :effects mark against its body, before installing it.
+
+        The mark is what the soak stubs by, and until this catalog it was
+        checked for shape and never for truth: a :pure cell that called
+        slurp ran its read inside the dry run. BendTT's rule for the same
+        situation is that a kind is declared and then EARNED at every
+        constructor; this is the walk that earns a cell's.
+
+        One entry per effect in the cell vocabulary, each a vector of
+        symbols of three kinds: a bare name for a core fn (slurp); a
+        namespace for one whose every var is that effect (samizdat.store
+        covers samizdat.store.journal and the rest); a qualified var for one
+        in a MIXED namespace (samizdat.agent.loop/call-model is the provider,
+        samizdat.agent.loop/absorb-response is pure, so the namespace as a
+        whole names nothing). A var that reaches several effects is listed
+        under each — tool-step dispatches every tool, so it is all four.
+
+        What is NOT here is not a hit. A scan cannot be complete, so it errs
+        toward accepting, which is why the mark stays required rather than
+        inferred; reads of config, prompts and userspace bodies are cached
+        lookups and are not counted. Extend it when a call is added that
+        does IO the catalog does not name, and narrow it if a shipped pure
+        cell is refused for a helper that does none — cells-test pins the
+        shipped cells against this catalog so the two cannot drift apart."}
+
  :max-suspect-test-nudges
  {:value 2 :kind :re-fire-guard :capability-tunable? true
   :doc "How often suspect-the-test may re-fire in one episode — and an episode
@@ -641,7 +696,7 @@
      builds on the previous step's result. LOW: repeats of the same call,
      alternation between two calls, or unconnected jumps. Ignore verbosity."]}
   :kind :threshold :capability-tunable? true
-  :provenance ["karamazov-fut"]
+  :provenance ["karamazov-fut" "karamazov-vm3w.2"]
   :doc "Continuous trajectory scoring (karamazov-fut, llm-as-a-verifier's
         ProgressTracker): every :stride-th step judged on steps-so-far,
         :repeats letter-scale asks averaged, criteria per the verifier
@@ -651,7 +706,25 @@
         shipped as data from day one, CONSULTED BY NOTHING until the signal
         is validated on baseline runs (samizdat.agent.trajectory/score-run):
         a completed and an exhausted run must actually separate before any
-        gate or cull reads the number."}
+        gate or cull reads the number.
+
+        FIRST READING, 2026-09-23 (karamazov-vm3w.2), and it says do not wire
+        this number yet. Seven campaign branches at stride 10, 2 repeats,
+        deepseek-v4-flash judging, the first 160 turns each: the three that
+        shipped CLIMB (to 0.66, 0.79, 0.95-1.00); the four that parked —
+        hundreds of turns of varied, successful calls writing nothing — stay
+        FLAT, but at different heights: one at 0.00-0.13, the others at
+        0.2-0.55. So :abandon-below 0.05 would catch the one extreme case and
+        none of the rest, and a flat rule high enough to catch them catches a
+        shipped branch too: that one sat at 0.26-0.29 for turns 30-90 and
+        shipped at 210. The cheap signals were read first and do NOT separate
+        these at all: tool-call and result diversity, the category mix and
+        per-branch fitness are the same on parked and shipping branches,
+        because a parked branch is busy and its calls succeed. Judge
+        replies were unparseable at 6 of 108 points. A role branch judged
+        against the run's problem reads 0.00 throughout (a supervisor working
+        the harness), which is why score-run now judges a branch against its
+        own task."}
 
  :max-branch-theses
  {:value 4 :kind :cost-ceiling :capability-tunable? false
@@ -1380,9 +1453,10 @@
         the set of machinery it may be driven by."}
 
  :beam-contention
- {:value {:provider-concurrency nil :expected-turn-ms nil :expected-turn-tokens nil}
+ {:value {:provider-concurrency nil :expected-turn-ms nil :turn-ms-at nil
+          :expected-turn-tokens nil}
   :kind :policy :capability-tunable? false
-  :provenance ["karamazov-aqsr.3"]
+  :provenance ["karamazov-aqsr.3" "karamazov-vm3w.1"]
   :doc "WHAT THE PROVIDER CAN SERVE AT ONCE, and what a turn costs, so the
         beam is no wider than one turn deadline can carry or the run's token
         budget could ever pay for.
@@ -1410,8 +1484,30 @@
         :provider-concurrency  calls the endpoint serves concurrently
         :expected-turn-ms      a typical turn's wall time against it, which
                                the events table can tell you for a past run
+        :turn-ms-at            a turn's wall time BY HOW MANY CALLS ARE IN
+                               FLIGHT, {1 ms 2 ms 4 ms}; when set it replaces
+                               :expected-turn-ms in the deadline limit
         :expected-turn-tokens  a typical turn's total_tokens, which the turns
                                table can tell you for a past run
+
+        THE TABLE, and why a constant is wrong for a local server
+        (karamazov-vm3w.1). A constant turn-ms reads the provider's cost as
+        independent of the width being solved for. llama-server's slots
+        share one engine: measured 2026-09-23 on Bonsai 27B with 4 slots,
+        fixed 300-token generations on a ~8.9k-token prompt, one request
+        took 79.0s, two took 162.5s EACH, four took 309s each — total
+        throughput flat at 3.7-3.9 tok/s. So :provider-concurrency is how
+        many calls it serves at FULL SPEED, not how many slots it has: 4
+        with a width-one turn-ms admits four branches in a round that takes
+        four times what was assumed, and the deadline abandons them. The
+        table says it directly; with it, a round of w is ceil(w / c) waves of
+        T(min(w, c)), or one wave of T(w) with no concurrency set. Widths
+        between entries interpolate, widths past the last extrapolate on its
+        slope, and a table claiming more in flight is cheaper is read as
+        flat. For that server: {1 79000 2 162500 4 309000}. The hosted GLM
+        endpoint's per-turn time does not rise with in-flight count
+        (campaign dbs: medians 9.0s, 8.4s, 10.5s, 5.1s at 1-4), which is why
+        the default is nil rather than that table.
 
         Not capability-tunable: it describes the provider, not the branch."}
 
@@ -1637,12 +1733,20 @@
  {:value {:timeout-ms 30000
           :max-timeout-ms 120000
           :max-chars 60000
+          :max-redirects 5
           :user-agent "samizdat"}
   :kind :threshold :capability-tunable? false
-  :provenance ["karamazov-fn68.2" "opencode webfetch.ts"]
+  :provenance ["karamazov-fn68.2" "opencode webfetch.ts" "karamazov-luqc.1"]
   :doc "What one `webfetch` may spend. opencode's numbers, converted to this
         harness's units: 30 s default and 120 s ceiling on the request, and a
         cap on what comes back.
+
+        :max-redirects is how many hops the fetch follows BY HAND, each one
+        checked against the confinement before it is requested — the client
+        is told not to follow on its own, because a client that follows
+        presents only the last response and the check on it passes whatever
+        the first URL was (karamazov-luqc.1). Past the cap the chain is
+        reported, not the page.
 
         :max-chars is in CHARACTERS rather than opencode's 5 MB of bytes,
         because the reader is a context window and not a disk — 60k characters

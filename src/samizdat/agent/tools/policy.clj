@@ -65,6 +65,23 @@
 
 (defn- usage [] (msg {:usage true}))
 
+(defn- waiver-line
+  "What the gates table's check did NOT do, said at the two moments the
+  table is in front of its author — show and save. Every gate's :when is an
+  evaluated form (gates/compile-form), so a save proves the forms compile
+  and nothing else; a manifest's dispatch patterns are analysed for
+  shadowing and order, and these are not. RFC-014 chose patterns for the
+  procedural graph on exactly this ground, and nothing said it where an
+  edit is made. The escape hatch is disclosed every time it is used, so a
+  report without the line means nothing was waived (karamazov-viht.2).
+  nil for every other table and for a body that does not read."
+  [name body-text]
+  (when (= "gates" name)
+    (when-let [n (try (some-> body-text str edn/read-string :gates count)
+                      (catch Throwable _ nil))]
+      (when (pos? n)
+        (str "\n\n" (msg {:when-forms n}))))))
+
 (defn reload-and-verify!
   "Reload whatever caches serve `name`, and force the derived tables to
   recompile so a semantically broken body fails HERE, inside the save's
@@ -187,7 +204,8 @@
                                :body)
                        (userspace/body :policy name))]
             (if body
-              (base/ok branch (str name (when v (str " v" v)) ":\n\n" body))
+              (base/ok branch (str name (when v (str " v" v)) ":\n\n" body
+                                   (waiver-line name body)))
               (base/malformed branch (msg {:no-policy true :name name
                                            :names (str/join ", " shipped-policies)})))))
 
@@ -246,7 +264,8 @@
                         (base/fail branch (msg {:unbound true :name name}))
                         (try
                           (reload-and-verify! name)
-                          (base/ok branch (msg {:saved true :name name :version v})
+                          (base/ok branch (str (msg {:saved true :name name :version v})
+                                               (waiver-line name body))
                                    :progress? true)
                           (catch Throwable e
                             (rollback! name v)

@@ -66,7 +66,8 @@
     conn))
 
 ;; Public: with-conn expands to (locking conn-lock ...) in the caller's
-;; namespace, where a private var is refused (as on the JVM).
+;; namespace, where a private var is refused (as on the JVM; jolt 0.8.11).
+;; Nothing but the macro should touch it.
 (def conn-lock (Object.))
 
 (defmacro with-conn
