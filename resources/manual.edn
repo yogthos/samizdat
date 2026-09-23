@@ -35,7 +35,7 @@
    {:name samizdat.tape/within-band?
     :summary "Whether a replacement is small enough to accept: |new| <= max(|original|, floor)."}
    {:name samizdat.tape/apply-fold
-    :summary "Collapse a finished conversation into one block plus a verbatim tail, or reject it."}]}
+    :summary "Collapse a finished conversation into one block plus a verbatim tail, or reject it. Pure: you supply the summary; the harness never calls it on its own."}]}
 
  {:group "Probing without committing"
   :entries

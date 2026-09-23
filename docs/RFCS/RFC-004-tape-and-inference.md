@@ -196,8 +196,12 @@ to the agent in `manual.edn`, so an agent can legitimately call `apply-fold`
 with a summary it writes itself — which is coherent, and is why they are kept.
 But the harness does not fold at a session boundary, and the obvious place for
 it (`artifacts/seed-from-run!`, which seeds a new run from an old one) carries
-artifacts and not tapes. Wiring it needs a compactor that produces the summary;
-samizdat's compactor is deterministic and produces digest lines, not prose.
+artifacts and not tapes. It was first left unwired because the only compactor
+then was deterministic and produced digest lines, not prose. That no longer
+holds: the fold rung of the context ladder (`resources/cells/compaction.clj`,
+`:compaction/fold`) gets a prose summary from the `:summarizer` role, so a
+boundary fold could reuse it. What is missing is a caller that decides a
+session has ended, which is a cell's decision, not the tape's.
 
 The compaction *scheduler* upstream (`compact-next`, `needs-compaction?`,
 `backlog-count`, `declined-count`) was **removed** for the same reason inverted:
