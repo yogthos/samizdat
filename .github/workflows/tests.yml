@@ -7,22 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# One jolt for every job, pinned. The installer takes the latest release when
-# given nothing, and that is how a release broke CI with no change here:
-# jolt 0.8.5 (2026-09-07) built a binary of this project that aborted inside
-# Chez's boot-image load — Sbuild_heap → fasl_entry → S_error3 → abort —
-# before a line of the harness ran, while 0.8.4 built one that boots
-# (karamazov-vhkj). 0.8.6 fixes it upstream: 0.8.5 made vfasl combine each
-# boot file into ONE LZ4 entry, and Chez's c/new-io.c returns an entry's
-# decompressed length through Sfixnum, whose (x)*8 overflows int at 2^28, so
-# an image that big could never match its own length check. jolt now
-# re-encodes such an entry with gzip (jolt-lang/jolt#886, #889). Pin moved
-# 0.8.4 → 0.8.6.
-#
-# The canary job at the bottom builds on the latest release and says when
-# this can move again.
+# Every job installs the LATEST jolt release (an empty --version means latest).
+# samizdat tracks jolt: a release that breaks the build is fixed here, not
+# pinned around. The 0.8.6 pin this replaces had fallen behind main, which
+# already needed 0.8.11 (conn-lock, #47; java.net.URI in webfetch).
 env:
-  JOLT_VERSION: "0.8.6"
+  JOLT_VERSION: ""
 
 # Cancel in-progress runs on the same ref when a new commit lands.
 concurrency:
@@ -297,10 +287,8 @@ jobs:
           grep -q 'nrepl  127.0.0.1' boot.log
 
   canary:
-    # The JOLT_VERSION pin's exit. The same build and boot on the LATEST jolt
-    # release, allowed to fail: red means the pin still stands and the head of
-    # this boot log is the upstream report; green means the pin can move. Never
-    # a required check.
+    # Was the exit for a JOLT_VERSION pin; with no pin it repeats the
+    # standalone-binary job on the same latest release. Never a required check.
     name: standalone binary on latest jolt (canary)
     runs-on: ubuntu-latest
     timeout-minutes: 20
