@@ -2491,6 +2491,123 @@
         Not capability-tunable: it is the opening, decided before any
         branch has a tier."}
 
+ :instructions
+ {:value {:enabled? true
+          :file-names ["AGENTS.md" "CLAUDE.md"]
+          :max-chars 12000
+          :path-args ["path" "file" "paths"]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-d5wo.4"]
+  :doc "THE PROJECT'S OWN INSTRUCTION FILES (samizdat.agent.instructions;
+        prompts/instructions-root.md and instructions-dir.md are the prose).
+
+        Before this, a run on another project never read that project's
+        AGENTS.md or CLAUDE.md: the rules its owner wrote for agents reached
+        every agent but this one. The root file now opens the run, ahead of
+        the orient block, in the problem turn: the protected head, kept on
+        the run row, read back by a resume. A subdirectory's file is loaded
+        the first time a tool call names a path under it, by the
+        :tool/dispatch cell, as a PINNED message, so compaction keeps it
+        however long the run works there. Each directory is checked once per
+        branch, whether or not it had a file.
+
+        :file-names   per directory, the FIRST of these that exists is read
+                      and the rest are not. AGENTS.md leads because a
+                      CLAUDE.md is often only `@AGENTS.md`, and reading both
+                      would pay for the same rules twice.
+        :max-chars    per file. A longer file is cut and says where the rest
+                      is; the model can read it.
+        :path-args    the call arguments that name a path: path (the file
+                      tools, grep), file (lsp), paths (read_digest). A shell
+                      command's paths are not parsed out; a run that only
+                      shells into a directory does not get its file.
+
+        Not capability-tunable: it is what the project says, not a knob on
+        the branch."}
+
+ :cost-fold
+ {:value {:enabled? true :cached-weight nil :min-ratio 0.4 :horizon 40}
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-d5wo.6"]
+  :doc "FOLD BELOW THE LADDER WHEN IT PAYS (the :compaction/measure cell;
+        compaction/fold-cost and fold-pays? are the arithmetic).
+
+        The ladder folds on pressure alone. Under it, every turn still pays
+        for the old window at the cached-token price, and a fold costs one
+        re-prefill of everything after the fold point plus the summarizer
+        reading the window. Measured across the campaign dbs, prompt tokens
+        processed outnumber completion tokens 28:1, so carrying is the
+        larger bill. When carrying the window for the turns left costs more
+        than folding it now, measure asks for an ordinary :fold, notes
+        :compaction/why :cost, and every later rung runs as it would.
+
+        :cached-weight  what a cached prompt token costs relative to a fresh
+                        one. THE PROVIDER'S FACT, so the provider's config
+                        (:cached-token-weight in its :llm knobs) wins over
+                        this, and nil here means no fold on cost where a
+                        provider declares nothing. A hosted API's cache
+                        discount is roughly 0.1; a local llama.cpp prefix
+                        cache makes a cached token close to free in time,
+                        where a re-prefill is 135 tok/s, so a local model
+                        should declare nothing or near zero.
+        :min-ratio      never below this pressure: a small context is cheap
+                        to carry and its fold is all loss.
+        :horizon        how many of the turns left count toward the saving;
+                        a run seldom uses its whole budget.
+
+        A cost ceiling, so the capability tier may never raise it."}
+
+ :outline
+ {:value {:patterns ["^\\((?:defn-?|def|defmacro|defmulti|defmethod|defprotocol|defrecord|deftype|defonce|ns)\\s+([^\\s()\\[\\]]+)"
+                     "^\\s*(?:async\\s+)?(?:def|class)\\s+(\\w+)"
+                     "^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function\\*?|func|interface|type|enum)\\s+(\\w+)"
+                     "^\\s*(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?(?:fn|struct|enum|trait|impl|mod)\\s+(\\w+)"]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-d5wo.10"]
+  :doc "WHAT COUNTS AS A DEFINITION in read_file({path, outline: true})
+        (samizdat.agent.outline).
+
+        Measured over the campaign dbs, reading was ~70% of tool-result
+        characters and most of it whole files (read_file median 2.1k chars,
+        p90 at the page cap; shell cat and sed 3.3M chars). An outline is
+        each definition's name and line range, so the next read can ask for
+        the one range it needs. The digest refusals name it as a third way
+        forward.
+
+        :patterns   one regex per language shape, tried in order on every
+                    line; the first group is the name. Clojure's top-level
+                    def forms; Python def and class at any depth; JS/TS/Go
+                    function, interface, type and enum; Rust items. A line
+                    none matches is part of the definition above it.
+
+        Not capability-tunable: it describes source files, not a branch."}
+
+ :task-fold
+ {:value {:enabled? true :min-messages 12}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-d5wo.5"]
+  :doc "FOLD A TASK'S WORK WHEN IT CLOSES (the :tool/dispatch cell;
+        compaction/task-span and fold-task are the mechanism;
+        prompts/task-folded.md is the line left behind).
+
+        The pressure ladder folds by age and size, and a summary of an
+        arbitrary window has to guess what the next turn will need. A closed
+        task is a boundary the work drew itself: what it did is settled, the
+        task row has the outcome, and every turn it took is a journal row
+        (turns.task_id) that fetch_turn reopens. So its span, from the
+        pinned statement to the closing call, becomes one line naming the
+        task, its status and its turn range, with no model call. Pinned
+        messages inside it (a directory's instructions) ride through.
+
+        :min-messages   the span has to be at least this long. Rewriting
+                        the middle of the tape invalidates the provider's
+                        prefix cache from that point on, which costs a
+                        re-prefill (65 s for 8.8k tokens on the local
+                        model); a short task is cheaper left to age out one
+                        digest line at a time.
+
+        Not capability-tunable: it is a cache trade, not a branch's knob."}
+
  :local-reasoning-budget
  {:value {:turn nil :forced nil}
   :kind :cost-ceiling :capability-tunable? false

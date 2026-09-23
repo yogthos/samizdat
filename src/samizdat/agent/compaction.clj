@@ -341,9 +341,26 @@
                           (str/starts-with? (str (:content m)) marker))
                  [i (subs (str (:content m)) (count marker))])))))
 
+(defn pinned-in
+  "The `:pinned?` messages inside `[start end)`, in order.
+
+  A fold must not summarise these any more than the tape's per-message unload
+  does (samizdat.tape/due-indices): a pinned message is the task statement the
+  branch is working on, and it matters more the longer the task runs. They are
+  user messages, so carrying one past the summary never separates a tool call
+  from its result."
+  [messages [start end]]
+  (vec (filter :pinned? (subvec (vec messages) start end))))
+
+(defn unpinned-in
+  "The messages inside `[start end)` that a fold may summarise."
+  [messages [start end]]
+  (vec (remove :pinned? (subvec (vec messages) start end))))
+
 (defn apply-summary
   "The messages with `[start end)` replaced by one message carrying the
-  summary — a system message unless `role` says otherwise.
+  summary — a system message unless `role` says otherwise — followed by any
+  pinned message the window held, verbatim (see `pinned-in`).
 
   The protected head keeps its place, the summary stands where the folded
   region was, and the tail follows — so the conversation's shape is unchanged
@@ -363,4 +380,69 @@
      (vec (concat (take start messages)
                   [{:role (if (contains? fold-roles (str role)) (str role) "system")
                     :content (str marker summary) :compaction? true}]
+                  (pinned-in messages [start end])
                   (drop end messages))))))
+
+;; --- the task fold (karamazov-d5wo.5) -----------------------------------------
+;;
+;; A closed task is a natural place to fold: what it did is settled, and the
+;; next task needs its outcome, not its transcript. The pressure ladder folds
+;; by age and size; this folds by the work's own boundary. Mechanism only —
+;; the :tool/dispatch cell decides when, gates.edn :task-fold says how big a
+;; span has to be to be worth the cache rewrite.
+
+(defn task-span
+  "The `[start end)` of `task-id`'s work in `messages`: from its statement
+  (the message stamped `:task-id`) up to, not including, the last message —
+  the call that closed it, which keeps its place so its result has a call to
+  answer. nil when the statement is gone or nothing lies between."
+  [messages task-id]
+  (let [v (vec messages)
+        start (first (keep-indexed (fn [i m] (when (= task-id (:task-id m)) i)) v))
+        end (dec (count v))]
+    (when (and start (< start end))
+      [start end])))
+
+(defn turn-range
+  "The first and last `:turn` stamped on `messages`, or nil when none is."
+  [messages]
+  (let [ts (keep :turn messages)]
+    (when (seq ts) [(apply min ts) (apply max ts)])))
+
+(defn fold-task
+  "`messages` with `[start end)` replaced by one user message carrying `text`,
+  followed by any pinned message the span held (see `pinned-in`). A user
+  message, not a system one: it lands mid-conversation, where some chat
+  templates refuse a system role."
+  [messages [start end] text]
+  (let [v (vec messages)
+        task-id (:task-id (nth v start))]
+    (vec (concat (subvec v 0 start)
+                 [{:role "user" :content text :task-fold task-id}]
+                 (pinned-in v [start end])
+                 (subvec v end)))))
+
+;; --- the cost fold (karamazov-d5wo.6) -----------------------------------------
+;;
+;; The ladder folds on pressure alone. Below it, carrying an old window still
+;; costs something every turn — a cached token is cheaper than a fresh one,
+;; not free — and folding it costs a re-prefill of everything after the fold
+;; point, once. These say which is larger, in fresh-token equivalents; the
+;; measure cell decides whether to ask, and gates.edn :cost-fold holds the
+;; numbers.
+
+(defn fold-cost
+  "What a fold costs in fresh tokens: the summarizer reads the window once,
+  and everything after the fold point is re-prefilled because the prefix
+  cache no longer matches it."
+  [{:keys [window-tokens after-tokens]}]
+  (double (+ window-tokens after-tokens)))
+
+(defn fold-pays?
+  "Whether carrying `window-tokens` for the turns left (capped at `horizon`)
+  at `cached-weight` per token costs more than folding it now."
+  [{:keys [window-tokens remaining] :as sizes} {:keys [cached-weight horizon]}]
+  (boolean
+   (and cached-weight (pos? window-tokens) (pos? remaining)
+        (> (* cached-weight window-tokens (min remaining horizon))
+           (fold-cost sizes)))))

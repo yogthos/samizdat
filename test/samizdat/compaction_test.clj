@@ -14,6 +14,7 @@
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.compaction :as cmp]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.loop]
             [samizdat.cells :as cells]
             [samizdat.manifests :as manifests]
             [mycelium.cell :as cell]
@@ -177,6 +178,129 @@
     (is (:compaction? (nth out 2)))
     (is (= (:content (nth msgs 0)) (:content (nth out 0))) "the head keeps its place")
     (is (= (:content (last msgs)) (:content (last out))) "and the tail follows")))
+
+(deftest a-fold-carries-pinned-messages-through-verbatim
+  ;; The tape's per-message unload never touches a :pinned? message (the
+  ;; current task's statement); the fold must not either, or a long enough
+  ;; task gets summarised away exactly when it matters most (karamazov-d5wo.1).
+  (let [pinned {:role "user" :content "THE TASK" :pinned? true}
+        msgs (assoc (convo 12) 4 pinned)
+        out (cmp/apply-summary msgs [2 8] "MARKER:" "the summary")]
+    (is (= "MARKER:the summary" (:content (nth out 2))) "the summary stands where the window was")
+    (is (= pinned (nth out 3)) "and the pinned message follows it, whole")
+    (is (= (- 12 6 -2) (count out)) "the other five folded messages became the one summary")
+    (is (= [pinned] (cmp/pinned-in msgs [2 8])))
+    (is (= [] (cmp/pinned-in (convo 12) [2 8])))))
+
+;; --- the cost fold (karamazov-d5wo.6) -----------------------------------------
+
+(deftest a-fold-pays-when-carrying-the-window-costs-more-than-rebuilding
+  (let [p {:cached-weight 0.1 :horizon 40}]
+    (testing "fold cost: re-prefill what follows the fold, plus the summarizer reading the window"
+      (is (= 26000.0 (cmp/fold-cost {:window-tokens 12000 :after-tokens 14000}))))
+    (is (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 30} p)
+        "0.1 x 12000 x 30 = 36000 carried against 26000 to fold")
+    (is (not (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 10} p))
+        "near the end of the budget there is not enough run left to earn it back")
+    (is (not (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 30}
+                             (assoc p :cached-weight 0.01)))
+        "where a cached token is nearly free (a local prefix cache) it never pays")
+    (is (not (cmp/fold-pays? {:window-tokens 12000 :after-tokens 14000 :remaining 500} (assoc p :horizon 20)))
+        "the horizon caps how far ahead the saving is counted")
+    (is (not (cmp/fold-pays? {:window-tokens 0 :after-tokens 100 :remaining 30} p)))))
+
+(deftest measure-asks-for-a-fold-below-the-ladder-when-it-pays
+  (cells/load-cells!)
+  (let [big (apply str (repeat 4000 "x"))
+        msgs (into [{:role "system" :content "sys"} {:role "user" :content "go"}]
+                   (mapcat (fn [i] [{:role "assistant" :content (str "call " i)}
+                                    {:role "user" :content big}])
+                           (range 10)))
+        ;; ~10k tokens at 4 chars/token in a 20k window: 0.5, under every rung.
+        measure (fn [cost-fold turn]
+                  (with-redefs [gates/threshold (let [orig gates/threshold]
+                                                  (fn [k] (if (= k :cost-fold) cost-fold (orig k))))]
+                    ((:handler (cell/get-cell! :compaction/measure))
+                     {:llm-config {:context-window 20000} :max-turns 60}
+                     {:branch {:messages msgs} :turn turn})))
+        on {:enabled? true :min-ratio 0.4 :cached-weight 0.5 :horizon 40}]
+    (let [out (measure on 2)]
+      (is (= :fold (:compaction/tier out)))
+      (is (= :cap (:compaction/route out)))
+      (is (= :cost (:compaction/why out))))
+    (testing "off, or below the floor, or cheap to carry: the ladder alone decides"
+      (is (= :none (:compaction/route (measure (assoc on :enabled? false) 2))))
+      (is (= :none (:compaction/route (measure (assoc on :min-ratio 0.9) 2))))
+      (is (= :none (:compaction/route (measure (assoc on :cached-weight 0.001) 2))))
+      (is (= :none (:compaction/route (measure on 59))) "one turn left earns nothing back")
+      (is (= :none (:compaction/route (measure (assoc on :cached-weight nil) 2)))
+          "no declared price for a cached token, no cost fold"))
+    (testing "the provider's declared weight is the one used"
+      (with-redefs [gates/threshold (let [orig gates/threshold]
+                                      (fn [k] (if (= k :cost-fold) (assoc on :cached-weight nil) (orig k))))]
+        (is (= :fold (:compaction/tier
+                      ((:handler (cell/get-cell! :compaction/measure))
+                       {:llm-config {:context-window 20000 :cached-token-weight 0.5} :max-turns 60}
+                       {:branch {:messages msgs} :turn 2}))))))))
+
+;; --- the task fold (karamazov-d5wo.5) -----------------------------------------
+
+(defn- task-convo
+  "sys, problem, the claim call, then the task's statement and six turns,
+  ending on the call that closes it."
+  []
+  (vec (concat
+        [{:role "system" :content "sys"}
+         {:role "user" :content "problem"}
+         {:role "assistant" :content "task claim T1" :turn 1}
+         {:role "user" :content "[harness] You are now working on T1" :task-id "T1"}
+         {:role "user" :content "claimed" :turn 1}]
+        (mapcat (fn [t] [{:role "assistant" :content (str "call " t) :turn t}
+                         {:role "user" :content (str "result " t) :turn t}])
+                (range 2 5))
+        [{:role "user" :content "DIR RULES" :pinned? true :instructions "a"}
+         {:role "assistant" :content "task close T1" :turn 5}])))
+
+(deftest a-closed-tasks-span-runs-from-its-statement-to-the-closing-call
+  (let [msgs (task-convo)]
+    (is (= [3 (dec (count msgs))] (cmp/task-span msgs "T1"))
+        "the statement starts it, and the closing call stays for its result")
+    (is (nil? (cmp/task-span msgs "T9")) "no statement, no span")))
+
+(deftest a-task-fold-leaves-one-line-and-the-pinned-messages
+  (let [msgs (task-convo)
+        [s e] (cmp/task-span msgs "T1")
+        out (cmp/fold-task msgs [s e] "T1 folded")]
+    (is (= (take 3 msgs) (take 3 out)) "everything before the task is untouched")
+    (is (= {:role "user" :content "T1 folded" :task-fold "T1"} (nth out 3)))
+    (is (= "DIR RULES" (:content (nth out 4))) "a pinned directory file rides through")
+    (is (= "task close T1" (:content (last out))) "and the closing call is still there")
+    (is (= 6 (count out))))
+  (testing "the turns folded, for the line to name; the closing turn stays whole"
+    (is (= [1 4] (cmp/turn-range (subvec (task-convo) 3 12))))))
+
+(deftest dispatch-folds-the-task-a-call-closed
+  (cells/load-cells!)
+  (let [before {:id "B1" :task {:id "T1" :title "the task"} :messages (task-convo)}
+        dispatch (fn [branch-after policy]
+                   (with-redefs [samizdat.agent.loop/tool-step
+                                 (fn [_ _ _ _] {:branch branch-after :result {:ok "closed"} :tool "task"})
+                                 gates/threshold (let [orig gates/threshold]
+                                                   (fn [k] (if (= k :task-fold) policy (orig k))))]
+                     (:branch ((:handler (cell/get-cell! :tool/dispatch))
+                               {}
+                               {:branch before :turn 5
+                                :parsed {:name "task" :args {:action "close" :id "T1"}}}))))
+        closed (assoc before :task nil)]
+    (let [out (dispatch closed {:enabled? true :min-messages 4})]
+      (is (some #(= "T1" (:task-fold %)) (:messages out)) "the span folded")
+      (is (str/includes? (:content (first (filter :task-fold (:messages out)))) "T1")))
+    (testing "a span under the floor is left to age out on its own"
+      (is (= (:messages closed) (:messages (dispatch closed {:enabled? true :min-messages 50})))))
+    (testing "switched off, nothing folds"
+      (is (= (:messages closed) (:messages (dispatch closed {:enabled? false :min-messages 4})))))
+    (testing "a close that did not end the held task folds nothing"
+      (is (= (:messages before) (:messages (dispatch before {:enabled? true :min-messages 4})))))))
 
 (deftest a-later-fold-can-find-the-earlier-one
   (let [msgs [{:role "user" :content "a"}
@@ -444,6 +568,26 @@
       (is (= "system" (fold {:context-window 128000}))))
     (testing "the probe said the template refuses a mid-conversation system role"
       (is (= "user" (fold {:context-window 128000 :fold-role "user"}))))
+    (testing "a pinned message inside the window survives the fold and is not summarised"
+      (let [task {:role "user" :content "PINNED TASK STATEMENT" :pinned? true}
+            msgs' (assoc msgs 7 task)
+            sent (atom nil)
+            out (with-redefs [samizdat.store.journal/note! (fn [& _] nil)
+                              samizdat.llm.client/chat
+                              (fn [& args]
+                                (reset! sent (pr-str args))
+                                {:content "## Active Task\nFinish it.\n## Goal\nShip.\n## Completed Actions\nRead a.\n## Active State\nGreen."})
+                              samizdat.agent.compaction/validate-summary (fn [& _] true)
+                              samizdat.store.knowledge/distil-session! (fn [& _] 0)]
+                  ((:handler (cell/get-cell! :compaction/fold))
+                   {:conn ::conn :run-id "r1"
+                    :llm-adapter ::adapter :llm-config {:context-window 128000}}
+                   (assoc-in data [:branch :messages] msgs')))
+            out-msgs (get-in out [:branch :messages])]
+        (is (some :compaction? out-msgs) "the fold happened")
+        (is (some #(= task %) out-msgs) "the pinned message is still there, whole")
+        (is (not (str/includes? @sent "PINNED TASK STATEMENT"))
+            "and the summarizer never saw it, so it is not duplicated in the summary")))
     (testing "an explicit policy value wins over the probe"
       (with-redefs [gates/threshold (let [orig gates/threshold]
                                       (fn [k] (if (= k :fold-role) "system" (orig k))))]

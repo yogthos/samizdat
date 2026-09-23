@@ -44,6 +44,7 @@
             [jdbc.core :as jdbc]
             [samizdat.agent.gates :as gates]
             [samizdat.events :as events]
+            [samizdat.security.policy :as policy]
             [samizdat.session :as session]
             [samizdat.store.db :as db]))
 
@@ -115,7 +116,7 @@
   [conn run-id {:keys [branch-id turn tool-name args result category
                        parse-error auto-repaired assistant-text reasoning-text
                        usage policy-refusal? prefix forced-tool forced-via
-                       elapsed-ms model-change]}]
+                       elapsed-ms model-change task-id]}]
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO turns (run_id, branch_id, turn, tool_name, args, result,
@@ -125,8 +126,9 @@
                                         cache_hit_tokens, cache_miss_tokens,
                                         policy_refusal,
                                         prefix_stable_chars, prefix_chars, prefix_change,
-                                        forced_tool, forced_via, elapsed_ms, request_hash)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                        forced_tool, forced_via, elapsed_ms, request_hash,
+                                        task_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (str tool-name) (js (or args {}))
                     (str result) (some-> category name) parse-error
                     (if auto-repaired 1 0)
@@ -157,7 +159,10 @@
                     (some-> elapsed-ms long)
                     ;; WHICH request this turn answered (migration v34):
                     ;; nil when the call carried no fingerprint.
-                    (:request-hash prefix)]))
+                    (:request-hash prefix)
+                    ;; The task it served (migration v35): nil when none
+                    ;; was held.
+                    (some-> task-id str not-empty)]))
   ;; WHAT THE BRANCH IS RUNNING ON, on the turn it learned it
   ;; (karamazov-a28w). The loop marks the branch when the provider-reported
   ;; model is first seen or changes, so this is once per agent rather than a
@@ -464,6 +469,15 @@
   (try (some-> (json/read-str (str (:args row)) :key-fn keyword) :path str not-empty)
        (catch Throwable _ nil)))
 
+(defn- seen-paths
+  "The paths a recorded turn looked at: its `path` argument, or for a shell
+  turn the files its command printed (policy/read-paths)."
+  [row]
+  (if (= "shell" (:tool_name row))
+    (try (policy/read-paths (:command (json/read-str (str (:args row)) :key-fn keyword)))
+         (catch Throwable _ []))
+    (keep identity [(path-of row)])))
+
 (defn- writing-tools
   "The tools that change a file, from gates.edn's `:file-write` vocabulary.
 
@@ -584,16 +598,18 @@
   (let [tools (writing-tools)
         ;; What counts as having LOOKED: a read, or a write of your own —
         ;; either way this branch has seen the file at that turn.
-        seen-tools (into ["read_file"] tools)
+        ;; A shell statement that prints the file counts too: sed and cat
+        ;; out-read read_file in the campaign dbs (karamazov-d5wo.9).
+        seen-tools (into ["read_file" "shell"] tools)
         reads (db/fetch conn (into [(placeholders
-                                     "SELECT turn, args FROM turns
+                                     "SELECT turn, tool_name, args FROM turns
                                        WHERE run_id = ? AND branch_id = ?
                                          AND tool_name IN (@tools)
                                        ORDER BY turn DESC, id DESC"
                                      (count seen-tools))
                                     run-id (str branch-id)]
                                    seen-tools))
-        last-seen (some (fn [r] (when (= path (path-of r)) (:turn r))) reads)]
+        last-seen (some (fn [r] (when (some #{path} (seen-paths r)) (:turn r))) reads)]
     (when last-seen
       (->> (db/fetch conn (into [(placeholders
                                   "SELECT branch_id, turn, tool_name, args FROM turns

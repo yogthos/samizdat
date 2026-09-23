@@ -14,9 +14,13 @@
 ;; glob-scoped interceptors match on.
 (ns cells.loop
   (:require [mycelium.cell :as cell]
+            [samizdat.agent.compaction :as cmp]
+            [samizdat.agent.gates :as gates]
+            [samizdat.agent.instructions :as instr]
             [samizdat.agent.loop :as turn]
             [samizdat.agent.reflect :as reflect]
             [samizdat.agent.state :as state]
+            [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]))
 
@@ -115,16 +119,59 @@
                                            {:parsed parsed :signals signals
                                             :said said :response (:response call)}))))
 
+(defn- load-instructions
+  "Pin the instruction file of every directory this call touched for the
+  first time (gates.edn :instructions). The call's own result is not in the
+  tape yet, so the file lands just before it, where a claimed task's
+  statement lands too."
+  [{:keys [root]} parsed branch]
+  (let [p (gates/threshold :instructions)
+        paths (instr/touched-paths parsed p)]
+    (if (or (nil? root) (empty? paths))
+      branch
+      (let [{:keys [found seen]} (instr/pending root paths (:instructions-seen branch) p)]
+        (-> (reduce (fn [b f] (update b :messages conj (instr/pin-message f))) branch found)
+            (assoc :instructions-seen seen))))))
+
+(defn- fold-closed-task
+  "Fold the task this call closed down to one line, when its span is long
+  enough to be worth the cache rewrite (gates.edn :task-fold). Only a close of
+  the HELD task: a close of someone's backlog row, or one the tool refused,
+  leaves the held task in place and folds nothing."
+  [parsed before branch]
+  (let [{:keys [enabled? min-messages]} (gates/threshold :task-fold)
+        held (:task before)
+        args (:args parsed)
+        closed? (and enabled? held (nil? (:task branch))
+                     (= "task" (:name parsed))
+                     (= "close" (str (or (:action args) (get args "action")))))
+        span (when closed? (cmp/task-span (:messages branch) (:id held)))]
+    (if (and span (>= (- (second span) (first span)) min-messages))
+      (let [[from to] (cmp/turn-range (subvec (vec (:messages branch)) (first span) (second span)))
+            text (str "[harness] "
+                      (prompt/render "task-folded"
+                                     {:id (:id held) :title (:title held)
+                                      :status (str (or (:status args) (get args "status") "done"))
+                                      :from from :to to}))]
+        (update branch :messages cmp/fold-task span text))
+      branch)))
+
 (cell/defcell :tool/dispatch
   {:doc "Phase policy first, then the tool, then the branch bookkeeping the
         outcome demands (outcome counters, artifact banking, repeat-failure
-        escalation)."
+        escalation), then the fold of a task the call closed, then the
+        instruction file of any directory the call reached for the first
+        time."
    :effects [:db :fs :proc :net]
    :requires []
    :input  [:map [:branch :map] [:turn :int] [:parsed :any]]
    :output [:map [:branch :map] [:result :any] [:tool :any]]}
   (fn [ctx {:keys [branch turn parsed] :as data}]
-    (merge data (turn/tool-step ctx branch turn parsed))))
+    (let [out (turn/tool-step ctx branch turn parsed)]
+      (merge data (update out :branch
+                          #(->> %
+                                (fold-closed-task parsed branch)
+                                (load-instructions ctx parsed)))))))
 
 (cell/defcell :journal/record
   {:doc "The durable record of the turn: the turn row, any artifact and its
@@ -140,13 +187,18 @@
             [:result {:optional true} :any]
             [:tool {:optional true} :any]
             [:said {:optional true} :any]
-            [:call {:optional true} :map]]
+            [:call {:optional true} :map]
+            [:before {:optional true} :map]]
    ;; Returns `data`: the record is a side effect, not a product.
    :output [:map]}
   (fn [ctx {:keys [branch turn parsed result tool said call] :as data}]
     (turn/journal-step! ctx branch turn {:parsed parsed :result result
                                          :tool tool :said said
-                                         :response (:response call)})
+                                         :response (:response call)
+                                         ;; The task held when the turn
+                                         ;; STARTED, so the call that closes a
+                                         ;; task is one of its turns.
+                                         :task-id (:id (:task (:before data)))})
     data))
 
 (cell/defcell :gate/settle

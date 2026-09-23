@@ -35,7 +35,13 @@
    {:name samizdat.tape/within-band?
     :summary "Whether a replacement is small enough to accept: |new| <= max(|original|, floor)."}
    {:name samizdat.tape/apply-fold
-    :summary "Collapse a finished conversation into one block plus a verbatim tail, or reject it."}]}
+    :summary "Collapse a finished conversation into one block plus a verbatim tail, or reject it. Pure: you supply the summary; the harness never calls it on its own."}
+   {:name samizdat.agent.compaction/fold-pays?
+    :summary "Whether folding a window now costs less than carrying it at the cached-token price for the turns left. The measure cell asks for a fold below the ladder when it does (gates.edn :cost-fold; the weight is the provider's :cached-token-weight)."}
+   {:name samizdat.agent.compaction/task-span
+    :summary "Where a task's work sits in the tape: from its statement to, not including, the call that closed it."}
+   {:name samizdat.agent.compaction/fold-task
+    :summary "Replace a span with one line, carrying its pinned messages through. The :tool/dispatch cell folds a closed task this way when its span passes gates.edn :task-fold :min-messages; turns.task_id keeps every folded turn findable."}]}
 
  {:group "Probing without committing"
   :entries
@@ -197,6 +203,29 @@
     :summary "Where each name is defined under the root: path, line and a snippet, by a bounded walk and the :definition-patterns. A named file is shown from its top."}
    {:name samizdat.agent.orient/block
     :summary "The rendered opening block for a problem under a root, with the names taken and those found — computed once per run by the driver, kept on the run row, off with :orient-inject :enabled? false (the arena's control arm)."}]}
+
+ {:group "Reads through the shell"
+  :entries
+  [{:name samizdat.security.policy/read-paths
+    :summary "The files a shell command prints (cat, head, tail, sed -n, less, more, nl), or none when a substitution, redirection or cd makes that unknowable. Stale-read notices, the digest steer and provider exposure count these as reads."}
+   {:name samizdat.agent.outline/outline
+    :summary "A file's definitions with the line ranges they span, by gates.edn :outline :patterns. read_file({path, outline: true}) returns it, so the next read can take one range instead of the whole file."}
+   {:name samizdat.agent.files/large-shell-print?
+    :summary "Whether a shell call is a lone `cat FILE` of a file over gates.edn :digest :min-lines — the phases.edn rule :large-shell-print-needs-a-digest refuses it toward read_digest."}]}
+
+ {:group "Which providers may see which files"
+  :entries
+  [{:name samizdat.security.exposure/refusal
+    :summary "Why a read is refused: the project's .samizdat/config.edn :run :provider-deny keeps files matching a glob from a named provider, and read_file, read_digest (the reader's provider too), lsp and grep honour it. Operator policy, not yours to change."}]}
+
+ {:group "The project's instruction files"
+  :entries
+  [{:name samizdat.agent.instructions/opening-context
+    :summary "The run's opening: the root's AGENTS.md (or the first of gates.edn :instructions :file-names that exists), then the orient block. On the run row, so a resume reopens on it."}
+   {:name samizdat.agent.instructions/pending
+    :summary "Which subdirectory instruction files touching some paths should load, and which directories that checked. The :tool/dispatch cell pins each found file into the tape once per branch."}
+   {:name samizdat.agent.instructions/touched-paths
+    :summary "The paths a parsed tool call names, by the argument names in gates.edn :instructions :path-args."}]}
 
  {:group "Reading and writing Clojure"
   :entries

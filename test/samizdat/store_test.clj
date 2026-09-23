@@ -172,6 +172,18 @@
                                      :result "boom" :category :neutral})
         (is (nil? (:elapsed_ms (first (journal/turns c rid)))))))))
 
+(deftest a-turn-records-the-task-it-belongs-to
+  ;; karamazov-d5wo.5: history labelled by task, so a question about one task
+  ;; is a query on its turns rather than a scan of the run.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "read_file"
+                                   :result "ok" :category :neutral :task-id "T7"})
+      (journal/record-turn! c rid {:branch-id "B1" :turn 2 :tool-name "read_file"
+                                   :result "ok" :category :neutral})
+      (is (= ["T7" nil] (mapv :task_id (journal/turns c rid)))
+          "and NULL for a turn no task held"))))
+
 (deftest a-branch-notes-the-model-that-answered-when-it-learns-it
   ;; karamazov-a28w. Once per agent, not per call: the loop marks the branch
   ;; when the reported model is first seen or changes, and the turn row that

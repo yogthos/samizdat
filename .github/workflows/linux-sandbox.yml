@@ -16,15 +16,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Pinned, like tests.yml, and for the reason that workflow learned: the
-# installer takes the LATEST release when given nothing, so a jolt release
-# breaks CI here with no change in this repo. This battery does not build a
-# binary and so never hit the 0.8.5 boot-image abort, but it runs on every
-# push and had no reason to be the one workflow that tracks whatever shipped
-# this morning. Keep in step with tests.yml, which has the latest-release
-# canary that says when the pin can move.
+# The latest jolt release, as in tests.yml (an empty --version means latest):
+# samizdat tracks jolt rather than pinning it.
 env:
-  JOLT_VERSION: "0.8.6"
+  JOLT_VERSION: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -72,7 +67,11 @@ jobs:
           test -s /tmp/jolt-install || { echo "could not fetch the jolt installer" >&2; exit 1; }
           head -1 /tmp/jolt-install | grep -q '^#!' \
             || { echo "fetched file is not a script:" >&2; head -3 /tmp/jolt-install >&2; exit 1; }
-          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$JOLT_VERSION"
+          # The latest release, looked up with the runner's token: left to
+          # itself the installer asks the API anonymously, and shared runners
+          # are rate-limited into a 403.
+          version="${JOLT_VERSION:-$(gh release view -R jolt-lang/jolt --json tagName -q .tagName)}"
+          bash /tmp/jolt-install --dir "$HOME/.local/bin" --version "$version"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Cache jolt gitlibs

@@ -246,6 +246,19 @@ beyond the one escape.
 
 `(config/redacted m)` redacts a config map for the HTTP surface.
 
+### `samizdat.security.exposure`
+
+Which providers may see which files. The project's `.samizdat/config.edn`
+names glob patterns per provider under `:run :provider-deny`, e.g.
+`{:deepseek ["secrets/**" "**/*.pem"]}`. In config rather than `gates.edn`
+because it confines the agent, and the run config is the file the file tools
+and the shell policy refuse to let a run write.
+
+| fn | contract |
+|---|---|
+| `(refusal ctx)` | The refusal text when a call's path argument (`:path`, `:file`, `:paths`) matches a pattern denied to a provider its result reaches: the branch's own, plus the `:reader` role's for `read_digest`. `run-tool` returns it as `:mechanics` before the tool runs. |
+| `(visible ctx hits)` | grep's hits without those in denied files. |
+
 ## Rule tables
 
 **Secrets and redaction** (dirge `src/sandbox/mod.rs`):
@@ -312,6 +325,12 @@ mechanical catches that omission.
   recognisable shape is caught only by the substring pass, which requires the
   value to be in `known-values` — so a secret the harness never saw in the
   environment is not redactable.
+- `:run :provider-deny` binds the path-argument tools, grep, and a shell
+  statement that prints a file (`policy/read-paths`: cat, head, tail,
+  `sed -n`). A statement that hides what it reads (a substitution, a
+  script, a `cd` first) and `eval`'s `slurp` are not covered, so a model set
+  on reading a denied file can still reach it; what it stops is the
+  ordinary ways of reading carrying it to that provider.
 - Invariant 6 holds on the file-tool and shell paths only. `eval` (and
   `jolt -e`) can still `spit` the run config — the same containment gap as
   every other eval escape, tracked as karamazov-zrq. The invariant's job is

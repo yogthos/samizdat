@@ -69,6 +69,7 @@
             [samizdat.agent.tools.skills]
             [samizdat.agent.tools.introspect]
             [samizdat.agent.tools.lsp]
+            [samizdat.security.exposure :as exposure]
             [samizdat.security.secrets :as secrets]))
 
 ;; --- the dispatch seam ------------------------------------------------------
@@ -198,8 +199,13 @@
   3. The model-bound strings are redacted. See the note above the delay."
   [{:keys [branch tool-name] :as ctx}]
   (let [known (known-values-for ctx)
-        outcome (try {:ok (retrying ctx)}
-                     (catch Throwable e {:threw e}))]
+        ;; A path the project keeps from this provider is refused before the
+        ;; tool reads it (samizdat.security.exposure, karamazov-d5wo.8).
+        denied (exposure/refusal ctx)
+        outcome (if denied
+                  {:ok (base/malformed branch denied)}
+                  (try {:ok (retrying ctx)}
+                       (catch Throwable e {:threw e})))]
     (if-let [e (:threw outcome)]
       (do (log/warn "tool" tool-name "threw:" (ex-message e))
           (redact-result

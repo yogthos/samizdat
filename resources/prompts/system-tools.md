@@ -72,7 +72,7 @@ manual({name?})
 ### Doing work
 
 ```
-read_file({path, offset, limit})
+read_file({path, offset, limit, outline})
 {% if reference-paths %}    Also reads the project's declared reference paths, by absolute path:
 {% for p in reference-paths %}      {{p}}
 {% endfor %}    They are READ-ONLY reference material — worked examples, a language
@@ -85,6 +85,8 @@ read_file({path, offset, limit})
     from the start returns the same first page again. Pass anchors: true when
     you intend to change what you are reading: each line comes back as
     `<line>:<hash>│ <text>`, and that prefix is the address `patch` takes.
+    Pass outline: true to get the file's definitions and the lines each
+    spans instead of its text — then read just the one you need.
 webfetch({url, format?, timeout?})
     Read a named web page. Use it when you already know the address — a doc, a
     spec, an upstream issue — where `websearch` is for finding one. HTML comes
