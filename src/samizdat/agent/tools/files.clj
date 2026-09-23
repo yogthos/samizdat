@@ -24,7 +24,8 @@
   helpers and the run-tool multimethod."
   (:require [clojure.string :as str]
             [samizdat.agent.files :as files]
-            [samizdat.agent.tools.base :as base]))
+            [samizdat.agent.tools.base :as base]
+            [samizdat.security.exposure :as exposure]))
 
 (defmethod base/run-tool "read_file" [ctx]
   (files/read-file ctx))
@@ -97,7 +98,12 @@
                                          ;; So "grep the examples" is one call
                                          ;; rather than a shell loop.
                                          :refs (files/ctx-reference-roots ctx)})
-                    (catch Throwable e [::error (ex-message e)]))]
+                    (catch Throwable e [::error (ex-message e)]))
+          ;; Hits in files the project keeps from this provider are dropped
+          ;; (samizdat.security.exposure).
+          hits (if (and (vector? hits) (= ::error (first hits)))
+                 hits
+                 (vec (exposure/visible ctx hits)))]
       (cond
         (and (vector? hits) (= ::error (first hits)))
         (base/malformed branch (files/grep-msg {:bad-pattern true :detail (second hits)}))

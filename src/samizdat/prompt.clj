@@ -50,7 +50,7 @@
    "design-brief" "digest-tool" "directive-refused" "directive-rejected" "dispatch-opaque" "dispatch-order"
    "dispatch-refused" "drift" "emergency-review" "eval-calls-main"
    "eval-error" "eval-image" "eval-syntax" "eval-terminates-process"
-   "experiment-line" "experiment-tool" "explore-cap" "failure-log"
+   "experiment-line" "exposure-refused" "experiment-tool" "explore-cap" "failure-log"
    "fetch-turn-miss" "file-thrash" "file-tool" "fork-thesis"
    "glob-tool" "grep-tool" "image-denied" "image-down" "image-off"
    "image-timeout" "instructions-dir" "instructions-root" "intervene-tool" "judge" "judge-exemptions" "judge-plan" "judge-verify"

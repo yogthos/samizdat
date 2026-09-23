@@ -204,6 +204,11 @@
    {:name samizdat.agent.orient/block
     :summary "The rendered opening block for a problem under a root, with the names taken and those found — computed once per run by the driver, kept on the run row, off with :orient-inject :enabled? false (the arena's control arm)."}]}
 
+ {:group "Which providers may see which files"
+  :entries
+  [{:name samizdat.security.exposure/refusal
+    :summary "Why a read is refused: the project's .samizdat/config.edn :run :provider-deny keeps files matching a glob from a named provider, and read_file, read_digest (the reader's provider too), lsp and grep honour it. Operator policy, not yours to change."}]}
+
  {:group "The project's instruction files"
   :entries
   [{:name samizdat.agent.instructions/opening-context
