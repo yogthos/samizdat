@@ -303,7 +303,13 @@
   base_bash_rules. Ordered; last match wins. Interpreters (python/node/npx),
   git push, destructive git, package installs, sudo, and curl/wget are
   deliberately absent — they fall through to the default `ask`. Hard denies
-  come last so they win over any allow."
+  come last so they win over any allow.
+
+  In src/ rather than resources/ on purpose, and not an exception to the
+  behaviour-lives-in-resources rule: this table confines the agent, and
+  resources are agent-editable, so a table there could be widened by the
+  party it constrains (the same reasoning as `protected-paths`). A human
+  widens it with a grant (samizdat.store.grants)."
   [;; read-only inspection
    ["ls **" :allow] ["cd **" :allow] ["pwd" :allow] ["echo **" :allow]
    ["which **" :allow] ["type **" :allow] ["cat **" :allow] ["head **" :allow]
