@@ -34,7 +34,7 @@ needing cmake and a C++17 compiler). This is also why the TUI is not part of
 |---|---|
 | type + `Enter` | **with no run selected**, start a run on what you typed; **with one**, send it as a directive |
 | `/` + a command | a slash command — see below; `Tab` completes the name, `/help` lists them |
-| `Ctrl-J` | a new line in the compose box, which grows a row per line (up to `:max-lines`, 8); `Enter` sends |
+| `Ctrl-J` | a new line in the compose box, which grows a row per line, typed or soft-wrapped at its width (up to `:max-lines`, 8, then it scrolls); `Enter` sends |
 | `Ctrl-P` / `Ctrl-N` | walk back and forth through what you sent |
 | `PgUp` / `PgDn`, mouse wheel | scroll the conversation; it stops following the bottom |
 | `End`, or `↓` while scrolled up | back to following the bottom |
@@ -137,7 +137,9 @@ After dirge's: a top frame naming the three columns; the run's vitals on the
 left; the conversation in the middle, capped at 120 columns and giving way
 on a narrow terminal, with the side columns sharing any extra room; the work
 in progress on the right; the avatar beside the compose box, which grows
-with what is typed; the status line under everything.
+with what is typed; the status line under everything. Long lines wrap at
+the width they are given, in the conversation and the compose box alike —
+nothing runs off the side.
 
 ```
 ──[RUN STATUS]────────[AGENT LOG]───────────────────────────────[HARNESS]────

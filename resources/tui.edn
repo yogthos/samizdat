@@ -302,7 +302,8 @@
     [:widget/git {:title "GIT" :height 7}]]]
 
   ;; The avatar and the compose box. No height: the strip is as tall as the
-  ;; box, which grows a row per line typed (Ctrl+J) up to :max-lines.
+  ;; box, which grows a row per line — typed (Ctrl+J) or wrapped — up to
+  ;; :max-lines.
   [:hbox
    [:widget/avatar {:width [:>= 32] :flex :grow}]
    [:widget/input {:width 120 :flex :shrink :boxed true :max-lines 8}]

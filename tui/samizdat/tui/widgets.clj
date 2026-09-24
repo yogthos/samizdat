@@ -178,10 +178,10 @@
   tells an edit that landed from one that replaced the wrong thing."
   [line]
   (cond
-    (str/starts-with? line "+") [:text {:class :diff-add} line]
-    (str/starts-with? line "-") [:text {:class :diff-del} line]
-    (str/starts-with? line "@@") [:text {:class :diff-hunk} line]
-    :else [:text line]))
+    (str/starts-with? line "+") [:wrapped {:class :diff-add} line]
+    (str/starts-with? line "-") [:wrapped {:class :diff-del} line]
+    (str/starts-with? line "@@") [:wrapped {:class :diff-hunk} line]
+    :else [:wrapped line]))
 
 (defn- request-cost
   "`  ctx 43k · hit 93%`, and what busted the cache when something did: the
@@ -209,27 +209,28 @@
 
 (defn- say-entry
   "A line in a role's voice, dirge-style: `<agent> ` and the words wrapped
-  under it with a hanging indent."
+  under it with a hanging indent. `:wrapped` rather than `:paragraph`: a
+  path or a token wider than the pane breaks instead of being cut off."
   [{:keys [role text pending?]} handles]
   [:hbox
    [:text {:class role} (str "<" (get handles role (name role)) "> ")]
-   [:paragraph {:class role :flex true}
+   [:wrapped {:class role :flex true}
     (str text (when pending? "  (not applied yet)"))]])
 
 (defn- thinking-entry [state e]
   (fold state (tl/fold-id e)
         (str "◇ thinking (" (count (:text e)) " chars)")
-        #(vector :paragraph {:class :thinking} (:text e))))
+        #(vector :wrapped {:class :thinking} (:text e))))
 
 (defn- tool-entry
   "A tool call as a CHAMBER, dirge's word: a box headed by the tool and the
   one argument it is known by, the first lines of what came back, and the
-  rest a click (or Ctrl+O) away."
+  rest a click (or Ctrl+O) away. A line wider than the pane wraps."
   [state {:keys [tool arg result failed? turn turn-row] :as e} {:keys [result-lines]}]
   (let [lines (str/split-lines (str result))
         shown (take (or result-lines 4) lines)
         more (- (count lines) (count shown))
-        line-of (if (contains? writing-tools tool) diff-line (fn [l] [:text {:class :result} l]))]
+        line-of (if (contains? writing-tools tool) diff-line (fn [l] [:wrapped {:class :result} l]))]
     (into [:vbox {:class (if failed? [:tool-box :error-box] :tool-box) :border :rounded}
            (cond-> [:hbox
                     [:text {:class (if failed? :error :tool-name)}
@@ -692,12 +693,14 @@
                    (fn [c] (when-let [f (get-in state [:on :submit])] (f (sent c)))))
         ;; The layout's own sizing still applies to the bare row — it is the
         ;; element that stands where the panel used to.
-        ;; As tall as what is in it, like dirge's: one line to start, a row
-        ;; per line up to :max-lines. Ctrl+J breaks a line; Enter sends.
-        rows (st/input-lines state (or (:max-lines props) 8))
+        ;; As tall as what is in it, like dirge's: one row to start, and a
+        ;; row per line — typed (Ctrl+J) or wrapped at the box's width — up
+        ;; to :max-lines, past which it scrolls. Enter sends.
+        rows [:<= (or (:max-lines props) 8)]
         row [:hbox (merge (select-keys props [:flex :width]) {:height rows})
              [:input {:flex true
                       :multiline true
+                      :wrap true
                       :value (or (:input state) "")
                       :placeholder (case (:kind (:reply state))
                                      :deny-note "what the agent should do instead — Enter sends"

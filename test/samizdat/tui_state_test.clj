@@ -357,9 +357,3 @@
 
 (deftest a-newline-can-be-typed-on-purpose
   (is (= "one\n" (:input (st/newline (st/set-input (st/initial "b") "one"))))))
-
-(deftest the-box-is-as-tall-as-what-is-in-it
-  (is (= 1 (st/input-lines (st/initial "b") 8)))
-  (is (= 3 (st/input-lines (st/set-input (st/initial "b") "a\nb\nc") 8)))
-  (is (= 8 (st/input-lines (assoc (st/initial "b") :input (apply str (repeat 20 "x\n"))) 8))
-      "and no taller than the cap"))

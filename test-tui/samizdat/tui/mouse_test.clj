@@ -317,3 +317,22 @@
         (ui/send-mouse! s {:button :left :motion :pressed :x 3 :y y})
         (ui/send-mouse! s {:button :left :motion :released :x 3 :y y})
         (is (= #{1} (:question-selected @state)) "the click ticked it")))))
+
+(def ^:private long-words
+  "Long enough to need several rows at 40 columns, first and last word findable."
+  (str "FIRSTWORD " (str/join " " (repeat 24 "word")) " LASTWORD"))
+
+(deftest the-compose-box-soft-wraps-and-grows-with-it
+  ;; A directive longer than the box used to run off its right edge, one row
+  ;; tall. It wraps at the width the box is given, every word on screen, and
+  ;; the box is as tall as the rows it took.
+  (let [frame (ui/render-text (w/input {:input long-words :on {}} {:boxed true}) 40 12)]
+    (is (some? (row-of frame "LASTWORD")) (str "the end of the text is on screen: " frame))
+    (is (> (row-of frame "LASTWORD") (row-of frame "FIRSTWORD")) "on a later row than its start")))
+
+(deftest the-conversation-soft-wraps-a-long-line
+  (let [turns [{:turn 1 :tool_name "shell" :result long-words}]
+        frame (ui/render-text (w/conversation (assoc (st/initial "b") :branch {:turns turns}) {})
+                              40 20)]
+    (is (some? (row-of frame "LASTWORD")) (str "a tool's long output line wraps rather than clips: " frame))
+    (is (> (row-of frame "LASTWORD") (row-of frame "FIRSTWORD")))))

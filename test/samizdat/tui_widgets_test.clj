@@ -228,7 +228,7 @@
   ;; +/- lines are the one result shape worth colouring: it is how a reader
   ;; tells an edit that landed from one that replaced the wrong thing.
   (let [out (conv {:branch {:turns turns} :turn-text turn-text} {})
-        classed (filter #(:class (props-of %)) (nodes-of :text out))
+        classed (filter #(:class (props-of %)) (nodes-of :wrapped out))
         by-class (group-by #(:class (props-of %)) classed)]
     (is (seq (get by-class :diff-add)) "additions")
     (is (seq (get by-class :diff-del)) "removals")))
@@ -548,6 +548,16 @@
     (is (= "do the thing" (:value (props-of input))))
     ((:on-enter (props-of input)) "do the thing")
     (is (= "do the thing" @sent))))
+
+(deftest the-compose-box-wraps-and-grows-up-to-a-cap
+  ;; How tall the box is depends on the width FTXUI gives it, so the widget
+  ;; does not count rows: it asks the input to wrap and caps the row. That
+  ;; the rows really appear is mouse_test's claim, through the toolkit.
+  (let [out (render :widget/input {:input "x"} {:max-lines 5})
+        input (first (nodes-of :input out))]
+    (is (true? (:wrap (props-of input))))
+    (is (some #(= [:<= 5] (:height (props-of %))) (nodes-of :hbox out))
+        "no taller than :max-lines")))
 
 ;; --- the modals --------------------------------------------------------------
 

@@ -327,12 +327,6 @@
   [s]
   (update s :input #(str % "\n")))
 
-(defn input-lines
-  "How many rows the compose box needs for what is in it: one to start,
-  at most `cap`."
-  [s cap]
-  (min cap (inc (count (re-seq #"\n" (str (:input s)))))))
-
 (defn clear-input [s]
   (assoc s :input ""))
 
