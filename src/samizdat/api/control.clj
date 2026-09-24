@@ -29,11 +29,13 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [samizdat.agent.beam :as beam]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.live :as live]
             [samizdat.agent.resume :as resume]
             [samizdat.approval :as approval]
             [samizdat.cancel :as cancel]
             [samizdat.config :as config]
+            [samizdat.llm.client :as llm]
             [samizdat.llm.registry :as registry]
             [samizdat.prompt :as prompt]
             [samizdat.store.grants :as grants]
@@ -95,6 +97,38 @@
        model (assoc :model model)
        effort (assoc :reasoning-effort effort)))))
 
+;; A run's endpoint is asked what it is before the run starts (llm/with-
+;; discovery — remembered per endpoint once it answers), and one that does not
+;; answer at all refuses the run here rather than letting every branch retry
+;; into :provider-error-limit (karamazov-rhrf). Whether to refuse is policy.
+;;
+;; A project's gates.edn and role map are its OWN copies, and what a later
+;; release adds reaches one only when it adopts the new file — endless-flight
+;; had neither the key nor the prompt, and a throwing read made every run
+;; start a 500. So an absent key is gates/threshold's nil, the behaviour from
+;; before the key existed, and absent prose falls back to what the endpoint
+;; itself said.
+(defn- unreachable-message [url why]
+  (try (str/trim (prompt/render "endpoint-unreachable" {:url url :reason why}))
+       (catch Throwable e
+         (log/warn "endpoint-unreachable prompt:" (ex-message e))
+         (str url " - " why))))
+
+(defn discovered
+  "`llm-config` with what its endpoint said about itself, and the refusal to
+  answer with when it said nothing and gates.edn :endpoint-preflight is on:
+  `[llm-config refusal-or-nil]`. The llm config never carries :unreachable
+  onward — that is this check's, not the run's."
+  [llm-config]
+  (let [probed (llm/with-discovery llm-config)
+        why (:unreachable probed)]
+    [(dissoc probed :unreachable)
+     (when (and why (gates/threshold :endpoint-preflight))
+       (log/warn "refusing a run: model endpoint" (:base-url probed) "-" why)
+       {:status 503
+        :body {:error {:message (unreachable-message (:base-url probed) why)
+                       :type "endpoint_unreachable"}}})]))
+
 (defn start-run!
   "Kick off a run in the background and return its id immediately.
 
@@ -117,8 +151,9 @@
     {:status 400
      :body {:error {:message "a run needs a non-blank `problem`"
                     :type "invalid_request_error"}}}
-  (let [llm-config (run-llm-config config (:llm config) body)
-        adapter (registry/adapter-for (:provider llm-config))
+  (let [[llm-config refusal] (discovered (run-llm-config config (:llm config) body))]
+  (or refusal
+  (let [adapter (registry/adapter-for (:provider llm-config))
         abort (atom false)
         promised (promise)
         cancel* (atom nil)
@@ -182,7 +217,7 @@
       {:status 503
        :body {:error {:message (str/trim
                                 (prompt/render "run-start-timeout"
-                                               {:seconds (quot start-deadline 1000)}))}}})))))
+                                               {:seconds (quot start-deadline 1000)}))}}})))))))
 
 (defn abort!
   "Stop a run without asking it to cooperate. Cancels the run task, which is
@@ -241,8 +276,10 @@
       :else
     ;; A resume may name an arm too — a run that crashed on one model can be
     ;; picked up on another, and saying nothing keeps the original.
-    (let [llm-config (run-llm-config config (or recorded (:llm config)) body)
-          adapter (registry/adapter-for (:provider llm-config))
+    (let [[llm-config refusal] (discovered (run-llm-config config (or recorded (:llm config)) body))]
+    (if refusal
+      (assoc-in refusal [:body :run_id] run-id)
+    (let [adapter (registry/adapter-for (:provider llm-config))
           abort (atom false)
           max-turns (or (:max_turns body) (:max-turns body))
           ;; A run already driven by this process is not resumed: a second
@@ -283,7 +320,7 @@
       ;; max_turns extension was reported as the old budget more often than
       ;; not.
       {:body {:run_id run-id :status "resuming"
-              :max_turns (or max-turns (:max_turns (runs/get-run conn run-id)))}}))))))
+              :max_turns (or max-turns (:max_turns (runs/get-run conn run-id)))}}))))))))
 (defn- grant-pattern
   "The pattern from a grant payload. Accepts a map (what body-json yields), a
   bare string, or nil. Blank is not a pattern — an unset form posts empty

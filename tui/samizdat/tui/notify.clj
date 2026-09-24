@@ -24,10 +24,12 @@
   Which moments, and how to raise one, are tui.edn `:notifications`: `:on`
   names the moments (\"question\", \"run-finished\"), and `:command`, when
   set, is the program to run with {title} and {body} filled in. Unset, the
-  platform's own: osascript on macOS, notify-send elsewhere.
+  TERMINAL raises it when it knows how (`escape`) — then the notification is
+  the terminal's, and clicking it goes to the tab. osascript's belonged to
+  Script Editor: it showed as a script and a click opened Script Editor.
+  Past that, the platform's own: osascript on macOS, notify-send elsewhere.
 
-  Pure, bar `notify!`, which runs the command and never lets a failure
-  reach the UI."
+  Pure, bar `notify!`, which does it and never lets a failure reach the UI."
   (:require [clojure.string :as str]
             [jolt.process :as proc]))
 
@@ -77,11 +79,58 @@
 
     :else nil))
 
+(defn- clean
+  "`s` fit to ride inside an escape sequence: a line break is a space and any
+  other control character — BEL or ESC would end the sequence — is gone."
+  [s]
+  (-> (str s)
+      (str/replace #"[\n\r\t]" " ")
+      (str/replace #"[\x00-\x1f\x7f]" "")))
+
+(defn escape
+  "The sequence that has the terminal named by `env` (a map of environment
+  variables) raise `n` itself, or nil when it would not be understood.
+  Ghostty and WezTerm take OSC 777 with a title, iTerm2 OSC 9, kitty OSC 99.
+  Under tmux nothing: it keeps OSC sequences to itself unless configured to
+  pass them through, and a notification that silently never arrives is worse
+  than the platform's."
+  [env {:keys [title body]}]
+  (let [program (str (get env "TERM_PROGRAM"))
+        term (str (get env "TERM"))
+        title (clean title)
+        body (clean body)
+        joined (str title ": " body)]
+    (cond
+      (not (str/blank? (get env "TMUX"))) nil
+      (#{"ghostty" "WezTerm"} program)
+      (str "\u001b]777;notify;" (str/replace title ";" ",") ";" body "\u0007")
+      (= "iTerm.app" program) (str "\u001b]9;" joined "\u0007")
+      (str/includes? term "kitty") (str "\u001b]99;;" joined "\u001b\\")
+      :else nil)))
+
+(defn raise!
+  "Raise `n` by the first way that applies: the configured command, the
+  terminal's own sequence (`write` sends it), the platform's command (`run`
+  runs an argv). The effects are passed in so the choice is testable."
+  [settings n {:keys [env os write run]}]
+  (let [configured (:command settings)
+        esc (when (empty? configured) (escape env n))]
+    (if esc
+      (write esc)
+      (when-let [argv (command os configured n)] (run argv)))
+    nil))
+
 (defn notify!
   "Raise `n`, off the caller's thread. Best effort: a notifier that is not
-  installed or fails costs the notification, nothing else."
-  [settings n]
-  (when-let [argv (command (System/getProperty "os.name") (:command settings) n)]
-    (future
-      (try (deref (proc/process argv {})) (catch Throwable _ nil)))
-    nil))
+  installed or fails costs the notification, nothing else. `write` sends an
+  escape sequence to the terminal (the toolkit's, which puts it between
+  frames)."
+  [settings n write]
+  (future
+    (try
+      (raise! settings n {:env (into {} (System/getenv))
+                          :os (System/getProperty "os.name")
+                          :write write
+                          :run #(deref (proc/process % {}))})
+      (catch Throwable _ nil)))
+  nil)

@@ -833,3 +833,11 @@
            (assoc ctx :run-id rid2)
            {:oversight/idle 30 :oversight/unmet 2 :oversight/turns [] :oversight/firings []}))
         (is (= {:turn 1 :max-turns 40} @seen))))))
+
+(deftest the-measurement-in-a-notice-reads-as-words-not-edn
+  ;; Run 0f4b9b55's notice said `Measured over this session: {:turns 1,
+  ;; :retried 10}` — a map printed at whoever reads the agent log
+  ;; (karamazov-8cih).
+  (is (= "turns 1, retried 10, call failed 2"
+         (ov/evidence-text (array-map :turns 1 :retried 10 :call-failed 2))))
+  (is (= "" (ov/evidence-text nil))))

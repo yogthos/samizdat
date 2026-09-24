@@ -45,6 +45,7 @@
             [ebb.core :as ebb]
             [jolt.http-client :as http]
             [samizdat.cancel :as cancel]
+            [samizdat.config :as config]
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.message :as message]
@@ -441,10 +442,23 @@
                             ;; transient blip.
                             {:outcome :fatal :reason :timeout
                              :error (str "read timeout: " m)}
-                            ;; A real transport failure — connection reset, TLS
-                            ;; error, connect timeout — is what retrying exists
-                            ;; for.
-                            {:outcome :retry :error (str "transport: " m)}))))
+                            (cond
+                              ;; A cancel is the run being told to stop, and
+                              ;; the ladder is not the place to answer it.
+                              (cancel/control-signal? e) (throw e)
+                              ;; A real transport failure — connection reset,
+                              ;; refused, TLS error, connect timeout — is an
+                              ;; IOException, and is what retrying exists for.
+                              (instance? java.io.IOException e)
+                              {:outcome :retry :error (str "transport: " m)}
+                              ;; Anything else was raised by the harness's own
+                              ;; code inside the call. Run 74ddebb8 retried an
+                              ;; ebb fork-in-finally error as `transport:` 2004
+                              ;; times and read it as an unreliable provider
+                              ;; (karamazov-q8dy); a retry only reproduces a bug.
+                              :else
+                              {:outcome :fatal :reason :harness-error
+                               :error (str "harness: " m)})))))
              errors (conj errors (:error result))]
          (cond
            (= :ok (:outcome result))
@@ -538,9 +552,12 @@
   cannot make a single request. A probe asks; it does not hope.
 
   `/props` is llama.cpp's own endpoint and `total_slots` is the field only it
-  serves. Anything else — a 404, a hosted provider's error page, a connection
-  refused — is `nil`, meaning `not llama.cpp`, which is the safe answer in
-  every direction.
+  serves. Any other ANSWER — a 404, a hosted provider's error page — is
+  `nil`, meaning `not llama.cpp`. No answer at all (refused, unresolvable,
+  timed out) is `{:unreachable message}`: it says nothing about what the
+  endpoint is, and reading it as `not llama.cpp` cost a harness started
+  before its model server its prefix caching and fold role for the life of
+  the process (karamazov-k9q3).
 
   `total_slots` is worth having on its own: RFC-005 said an explicit `:slots`
   table was the only option because `a slot count is a property of how the
@@ -556,10 +573,12 @@
                           :throw-exceptions false})]
       (when (<= 200 (:status resp) 299)
         (llama-props->probe (decode (:body resp)))))
+    (catch java.io.IOException e
+      {:unreachable (str (ex-message e))})
     (catch Throwable _
-      ;; Unreachable, not-llama.cpp and malformed are the same answer here, and
-      ;; none of them is a reason not to start: the harness must come up
-      ;; against an endpoint that is merely slow to boot.
+      ;; A malformed answer is still an answer, and not llama.cpp's. None of
+      ;; these is a reason not to start: the harness must come up against an
+      ;; endpoint that is merely slow to boot.
       nil)))
 
 (def ^:private fold-role-refusal-re
@@ -614,6 +633,51 @@
                                :throw-exceptions false})]
       (fold-role-from-status (:status resp) (:body resp)))
     (catch Throwable _ nil)))
+
+;; What each endpoint said about itself, by base URL: the probe's facts plus
+;; the fold role, or {} for an endpoint that answered and is not llama.cpp.
+;; Only ANSWERS are kept. An endpoint that was down when asked is asked again
+;; the next time, so a model server started after the harness is found by the
+;; next run rather than never (karamazov-k9q3).
+(defonce ^:private discoveries (atom {}))
+
+(defn forget-discoveries!
+  "Drop every remembered endpoint answer — a test's reset, or a REPL's after
+  swapping the model behind a server."
+  []
+  (reset! discoveries {}))
+
+(defn- discover
+  "Ask the endpoint what it is. `{:unreachable message}` when nothing answered,
+  else the facts to merge into its llm config."
+  [llm]
+  (let [probed (probe-llama-cpp llm)]
+    (if (:unreachable probed)
+      probed
+      (let [fold-role (when (:llama-cpp? probed)
+                        (probe-fold-role (config/apply-discovery llm probed)))]
+        (cond-> (or probed {})
+          fold-role (assoc :fold-role fold-role))))))
+
+(defn with-discovery
+  "`llm` with what its endpoint said about itself merged in (see
+  `config/apply-discovery`), asking it once per endpoint per process. When it
+  did not answer, `llm` comes back carrying `:unreachable` — the reason — and
+  nothing is remembered. An llm with no :base-url is not asked."
+  [llm]
+  (let [url (:base-url llm)]
+    (if (str/blank? (str url))
+      llm
+      (let [facts (or (get @discoveries url)
+                      (let [found (discover llm)]
+                        (when-not (:unreachable found)
+                          (swap! discoveries assoc url found))
+                        found))]
+        (if (:unreachable facts)
+          (assoc llm :unreachable (:unreachable facts))
+          (let [fold-role (:fold-role facts)]
+            (cond-> (config/apply-discovery llm (not-empty (dissoc facts :fold-role)))
+              fold-role (assoc :fold-role fold-role))))))))
 
 (defn list-models
   "Model ids the endpoint advertises, or [] when it has no such endpoint."

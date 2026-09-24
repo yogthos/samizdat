@@ -97,7 +97,8 @@
   OFF THE UI THREAD, and that is not optional: the endpoint does not answer
   when the run row is written — beam/run! opens every branch first — so a
   start legitimately takes tens of seconds, which is why the client allows
-  it 40. A UI that stopped redrawing for that long is the frozen-but-alive
+  it longer than the server's own deadline (api.client/start-timeout-ms). A
+  UI that stopped redrawing for that long is the frozen-but-alive
   failure this project keeps finding."
   [text]
   (let [{:keys [base]} @state]
@@ -295,7 +296,9 @@
    :resume        resume!
    :reply         (fn [kind id] (swap! state st/start-reply kind id))
    :toggle-option #(swap! state st/toggle-option %)
-   :scroll        (fn [pane view] (swap! state st/scrolled pane view))})
+   :scroll        (fn [pane view] (swap! state st/scrolled pane view))
+   :history-back    #(swap! state st/history-back)
+   :history-forward #(swap! state st/history-forward)})
 
 ;; --- the feeds ----------------------------------------------------------------
 ;;
@@ -370,7 +373,7 @@
     ;; A moment a person who looked away wants to hear about.
     (let [settings (:notifications (layout/current))]
       (when-let [n (notify/for-event @state e settings)]
-        (notify/notify! settings n)))))
+        (notify/notify! settings n ui/write-raw!)))))
 
 (defonce ^:private workers (atom nil))
 
@@ -525,6 +528,16 @@
 
       :else false)))
 
+(defn- on-select
+  "A mouse drag selected text — in the compose box, the conversation, any
+  pane: put it on the clipboard. Through the terminal (OSC 52), since the
+  terminal is the one thing between here and the clipboard in every setup,
+  ssh included; one that refuses the sequence leaves Shift/Option-drag, the
+  terminal's own selection, as it always was."
+  [text]
+  (ui/copy! text)
+  (swap! state st/note-notice (str "copied " (count text) " characters")))
+
 (defn run-ui!
   "Draw the TUI against the server at `base` until the user quits. Blocks."
   [base]
@@ -533,7 +546,7 @@
   (try
     ;; Mouse on: the folds in the conversation are ftxui collapsibles and
     ;; clicking one is how they open.
-    (ui/run root :mode :fullscreen :mouse true :on-event on-event)
+    (ui/run root :mode :fullscreen :mouse true :on-event on-event :on-select on-select)
     (finally (stop-polling!))))
 
 (defn -main [& args]

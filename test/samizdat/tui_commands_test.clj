@@ -87,3 +87,15 @@
     (is (= "two" (:input (-> s st/history-back st/history-back st/history-forward))))
     (is (= "" (:input (-> s st/history-back st/history-forward))) "past the newest, an empty line")
     (is (= ["one" "two"] (:history (st/remember-input s "two"))) "a repeat is not stored twice")))
+
+(deftest walking-the-history-keeps-the-line-being-typed
+  ;; Up from a half-typed line, then back down past the newest, is the line
+  ;; again — as a shell keeps it — not an empty box.
+  (let [s (-> (st/initial "b") (st/remember-input "one") (st/set-input "half"))]
+    (is (= "one" (:input (st/history-back s))))
+    (is (= "half" (:input (-> s st/history-back st/history-forward))))
+    (is (nil? (:history-draft (-> s st/history-back st/history-forward))))
+    (testing "sending drops the draft"
+      (is (nil? (:history-draft (-> s st/history-back (st/remember-input "one"))))))
+    (testing "down with nothing recalled is nothing"
+      (is (= s (st/history-forward s))))))

@@ -97,9 +97,13 @@
                         "— available:" (pr-str (take 10 models)))
               :model-missing)))
       (catch Throwable e
-        (log/warn "provider warm-up failed:" (ex-message e)
-                  "— the harness will start, but https is expected to stay broken"
-                  "in this process once nREPL loads")
+        ;; This used to say https would stay broken once nREPL loaded — true
+        ;; of an ordering bug fixed upstream long ago (see the ns docstring),
+        ;; and wrong about the usual cause, a model server not started yet
+        ;; (karamazov-mxf9).
+        (log/warn "provider" provider "is not reachable:" (ex-message e)
+                  "— the harness will start; with gates.edn :endpoint-preflight on,"
+                  "a run is refused until the endpoint answers")
         :failed))))
 
 (defn start-nrepl!

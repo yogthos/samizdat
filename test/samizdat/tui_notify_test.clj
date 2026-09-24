@@ -59,3 +59,38 @@
 
 (deftest the-shipped-settings-turn-them-on
   (is (= #{"question" "run-finished"} (set (:on (:notifications (layout/template)))))))
+
+(deftest the-terminal-raises-it-when-it-can
+  ;; osascript's `display notification` belongs to Script Editor: it showed as
+  ;; a script, and clicking it opened Script Editor. A notification the
+  ;; terminal raises is the terminal's, and clicking it goes to the tab.
+  (let [n {:title "samizdat · proj" :body "run done: fix it"}]
+    (is (= "\u001b]777;notify;samizdat · proj;run done: fix it\u0007"
+           (notify/escape {"TERM_PROGRAM" "ghostty"} n)))
+    (is (= "\u001b]777;notify;samizdat · proj;run done: fix it\u0007"
+           (notify/escape {"TERM_PROGRAM" "WezTerm"} n)))
+    (is (= "\u001b]9;samizdat · proj: run done: fix it\u0007"
+           (notify/escape {"TERM_PROGRAM" "iTerm.app"} n)))
+    (is (= "\u001b]99;;samizdat · proj: run done: fix it\u001b\\"
+           (notify/escape {"TERM" "xterm-kitty"} n)))
+    (testing "tmux keeps the sequence to itself, and an unknown terminal may not know it"
+      (is (nil? (notify/escape {"TERM_PROGRAM" "tmux" "TMUX" "/tmp/x"} n)))
+      (is (nil? (notify/escape {"TERM_PROGRAM" "ghostty" "TMUX" "/tmp/x"} n)))
+      (is (nil? (notify/escape {"TERM_PROGRAM" "Apple_Terminal"} n))))
+    (testing "the text cannot end the sequence or split the title from the body"
+      (is (= "\u001b]777;notify;a,b;line one line two x\u0007"
+             (notify/escape {"TERM_PROGRAM" "ghostty"}
+                            {:title "a;b" :body "line one\nline two \u0007x\u001b"}))))))
+
+(deftest a-configured-command-still-wins-then-the-terminal-then-the-platform
+  (let [n {:title "t" :body "b"}
+        ran (atom nil) wrote (atom nil)
+        go (fn [settings env os]
+             (reset! ran nil) (reset! wrote nil)
+             (notify/raise! settings n {:env env :os os
+                                        :write #(reset! wrote %)
+                                        :run #(reset! ran %)})
+             [@ran @wrote])]
+    (is (= [["say" "b"] nil] (go {:command ["say" "{body}"]} {"TERM_PROGRAM" "ghostty"} "Mac OS X")))
+    (is (= [nil "\u001b]777;notify;t;b\u0007"] (go {} {"TERM_PROGRAM" "ghostty"} "Mac OS X")))
+    (is (= "osascript" (first (first (go {} {"TERM_PROGRAM" "Apple_Terminal"} "Mac OS X")))))))

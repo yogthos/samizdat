@@ -40,7 +40,7 @@
   that called them, which no test could see because each half was correct on
   its own."
   #{:decide :answer :toggle :select-run :select-branch :input :submit :start
-    :abort :resume :reply :toggle-option :scroll})
+    :abort :resume :reply :toggle-option :scroll :history-back :history-forward})
 
 (def max-trace
   "How many steps the UI holds. The server's ring is bounded and so is this:
@@ -79,8 +79,9 @@
    ;; What this TUI printed — command output, /help — drawn in the
    ;; conversation as the harness's voice. Local: nothing the server holds.
    :local-notes []
-   ;; What was sent from the compose box, oldest first, and where Ctrl+P /
-   ;; Ctrl+N have walked to in it (nil when not walking).
+   ;; What was sent from the compose box, oldest first, and where Up / Down
+   ;; (or Ctrl+P / Ctrl+N) have walked to in it (nil when not walking); the
+   ;; line being typed when the walk began is :history-draft.
    :history []
    :history-at nil
    ;; The model and effort a /model or /effort with no run on screen set for
@@ -558,11 +559,11 @@
 (def ^:private history-cap 500)
 
 (defn remember-input
-  "Keep what was sent, for Ctrl+P. A repeat of the last line is not kept
+  "Keep what was sent, for Up / Ctrl+P. A repeat of the last line is not kept
   twice."
   [s text]
   (let [t (str/trim (str text))]
-    (cond-> (assoc s :history-at nil)
+    (cond-> (-> s (assoc :history-at nil) (dissoc :history-draft))
       (and (seq t) (not= t (peek (:history s))))
       (update :history (fn [h] (let [h (conj (vec h) t)]
                                  (if (> (count h) history-cap)
@@ -570,20 +571,25 @@
                                    h)))))))
 
 (defn history-back
-  "Ctrl+P: the line before the one on show."
+  "Up on the box's top row, or Ctrl+P: the line before the one on show. The
+  line being typed when the walk starts is kept, for coming back down to."
   [s]
   (let [h (:history s)]
     (if (empty? h)
       s
       (let [i (max 0 (dec (or (:history-at s) (count h))))]
-        (assoc s :history-at i :input (nth h i))))))
+        (cond-> (assoc s :history-at i :input (nth h i))
+          (nil? (:history-at s)) (assoc :history-draft (:input s)))))))
 
 (defn history-forward
-  "Ctrl+N: the line after; past the newest, an empty line."
+  "Down on the box's bottom row, or Ctrl+N: the line after; past the newest,
+  the line that was being typed."
   [s]
   (if-let [i (:history-at s)]
     (let [j (inc i)]
       (if (< j (count (:history s)))
         (assoc s :history-at j :input (nth (:history s) j))
-        (assoc s :history-at nil :input "")))
+        (-> s
+            (assoc :history-at nil :input (or (:history-draft s) ""))
+            (dissoc :history-draft))))
     s))

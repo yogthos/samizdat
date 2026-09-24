@@ -165,24 +165,22 @@
 (def start-timeout-ms
   "How long to wait for POST /v1/runs.
 
-  Deliberately longer than the 30s api.control/start-run! itself waits on
-  (deref promised 30000). That endpoint does not answer when the run row is
-  written — beam/run! opens every branch in the beam first and only then
-  calls on-start — so a start can legitimately take tens of seconds, and how
-  long depends on the beam width and on what else the machine is doing.
-
-  Under the shared 10s default this reported a failure for a run that was
-  starting normally: the row was already committed, so the user was told the
-  run had failed AND left with a live run consuming provider spend, with the
-  same request succeeding under curl. Any client bound tighter than the
-  server's own budget has that bug; this one has to outlast it."
-  40000)
+  Longer than the server's own wait, gates.edn :run-start-deadline-ms (120 s
+  shipped), because a start can legitimately take that long and the server
+  answers when the run row exists, not before. A client bound tighter than
+  the server reports a failure for a run that started normally — the row
+  already committed, the run already spending — and a re-post starts a
+  second one (karamazov-5fyo). This stayed at 40 s after the server's wait
+  went to 120 s; control-test pins the ordering against the shipped policy.
+  A project that raises its deadline past this has to raise it here too."
+  150000)
 
 (defn start-run!
   "Start a fresh run and return its id in the body.
 
-  The server answers 503 when the beam does not come up inside its 30s window,
-  which `result` already turns into {:ok false}. It used to answer 200 with an
+  The server answers 503 when the run row does not exist inside its deadline
+  or the model endpoint does not answer, which `result` already turns into
+  {:ok false}. It used to answer 200 with an
   `{:error ...}` body instead, so a plain 2xx was not proof a run existed; the
   unwrap below is kept as a belt-and-braces check on that older shape, since a
   caller that mistakes a refusal for a started run goes on to poll a run id
