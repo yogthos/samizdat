@@ -41,3 +41,7 @@ PLAN.md
 
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
+
+# A project's own workflow and state (cells, manifests, prompts, policy,
+# its database): per-project, written by samizdat on the first run.
+.samizdat/

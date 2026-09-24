@@ -50,6 +50,7 @@
             [samizdat.config :as config]
             [samizdat.manifests :as manifests]
             [samizdat.llm.registry :as registry]
+            [samizdat.agent.live :as live]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.loop :as branch-loop]
@@ -116,9 +117,18 @@
   ([conn] (load-loop! conn loop-name))
   ([conn name]
    (let [res (manifest-resource name)
-         row (if-let [r (io/resource res)]
-               (us/seed! conn :manifest name (slurp r))
-               (us/load-latest conn :manifest name))]
+         row (if (userspace/files?)
+               ;; A project with files runs the file its role map names —
+               ;; checked, so a broken edit is the last good version — and
+               ;; the version is the history that read just brought up to
+               ;; date. Reading the store row here started every run on
+               ;; whatever the store last held, not on the file.
+               (let [body (userspace/body! :manifest name)]
+                 {:body body
+                  :version (:version (us/load-latest conn :manifest name))})
+               (if-let [r (io/resource res)]
+                 (us/seed! conn :manifest name (slurp r))
+                 (us/load-latest conn :manifest name)))]
      (when-not row
        (throw (ex-info (str "no loop manifest named '" name
                             "' — no resource at " res " and nothing stored")
@@ -233,9 +243,12 @@
   (let [ctx (assoc ctx :role role)]
     ;; Resolution is config/role-llm, shared with read_digest, so a role's
     ;; model has one answer whether it runs a sub-loop or one call.
-    (if-let [llm (config/role-llm (:config ctx) (:llm-config ctx) role)]
-      (assoc ctx :llm-adapter (registry/adapter-for (:provider llm)) :llm-config llm)
-      ctx)))
+    ;; Then whatever a person switched for this role mid-run
+    ;; (samizdat.agent.live), over the configured assignment.
+    (live/in-ctx
+     (if-let [llm (config/role-llm (:config ctx) (:llm-config ctx) role)]
+       (assoc ctx :llm-adapter (registry/adapter-for (:provider llm)) :llm-config llm)
+       ctx))))
 
 (defn note-schema-warnings!
   "Record any :mycelium/warnings the pass accumulated, and return `data`.

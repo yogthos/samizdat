@@ -23,6 +23,7 @@
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
+            [samizdat.userspace :as userspace]
             [samizdat.agent.oversight :as ov]))
 
 ;; --- when a pass is due -----------------------------------------------------
@@ -630,6 +631,64 @@
     (is (= (:timeout-ms (gates/threshold :oversight))
            (get-in @seen [:llm-config :timeout-ms]))
         "gates.edn :oversight :timeout-ms reaches the pass's provider calls")))
+
+;; --- rejected edits to the project's files (karamazov-1a51.8) ---------------
+
+(deftest a-rejected-edit-nobody-was-told-about-reaches-the-supervisor
+  ;; A person's edit, or a shell command's, that did not pass its check: no
+  ;; branch heard about it in a tool result, so the supervisor is asked to fix
+  ;; it — and it is worth waking for. An edit a file tool made was rejected
+  ;; back to its writer already, and is not the supervisor's.
+  (let [root (str (java.nio.file.Files/createTempDirectory
+                   "oversight-rejected" (make-array java.nio.file.attribute.FileAttribute 0)))
+        conn (db/open! ":memory:")
+        prev-root (userspace/bind-root! root)]
+    (userspace/bind! conn)
+    (try
+      (userspace/seed-project!)
+      (let [rid (runs/start-run! conn {:problem "p"})
+            f (java.io.File. root ".samizdat/manifests/review.edn")]
+        (spit f "{:cells {:start :no-such/cell}}")
+        (userspace/body :manifest "review")
+        (let [{:keys [gather prob]} (reasoning-over conn rid)]
+          (is (= 1 (count (:oversight/rejected gather))))
+          (is (true? (:oversight/worth-a-look? gather)))
+          (is (str/includes? (str prob) "manifests/review.edn"))
+          (is (str/includes? (str prob) "no-such/cell"))
+          (is (str/includes? (str prob) "Fix each one in place")))
+        (testing "an edit already rejected back to the branch that wrote it is not"
+          (userspace/check-written! (.getPath f) {:branch-id "B1"})
+          (let [g ((:handler (cell/get-cell! :oversight/gather))
+                   {:conn conn :run-id rid :config {}} {})]
+            (is (empty? (:oversight/rejected g))))))
+      (finally (userspace/unbind!) (userspace/bind-root! prev-root) (db/close conn)))))
+
+;; --- what is on offer to the project (karamazov-1a51.6) ----------------------
+
+(deftest what-is-on-offer-wakes-the-supervisor-once-per-run
+  ;; Nothing applies a template a later release shipped, or a version the
+  ;; project stored before its files, except the supervisor — so the first
+  ;; pass of a run shows them, and later passes do not wake for them again.
+  (let [root (str (java.nio.file.Files/createTempDirectory
+                   "oversight-offers" (make-array java.nio.file.attribute.FileAttribute 0)))
+        conn (db/open! ":memory:")
+        prev-root (userspace/bind-root! root)]
+    (userspace/bind! conn)
+    (try
+      (userspace/seed-project! (update (userspace/template-map) :prompts dissoc :critic))
+      (let [rid (runs/start-run! conn {:problem "p"})
+            {:keys [gather prob]} (reasoning-over conn rid)]
+        (is (= [["prompt" "critic"]]
+               (mapv (juxt (comp name :kind) :name) (:oversight/offers gather))))
+        (is (true? (:oversight/worth-a-look? gather)))
+        (is (str/includes? (str prob) "On offer to this project"))
+        (is (str/includes? (str prob) "prompt `critic` — new"))
+        (testing "a later pass of the same run is not woken by the same offers"
+          (let [g ((:handler (cell/get-cell! :oversight/gather))
+                   {:conn conn :run-id rid :config {}} {})]
+            (is (empty? (:oversight/offers g)))
+            (is (false? (:oversight/worth-a-look? g))))))
+      (finally (userspace/unbind!) (userspace/bind-root! prev-root) (db/close conn)))))
 
 ;; --- rejection memory (karamazov-ylte.2) ------------------------------------
 

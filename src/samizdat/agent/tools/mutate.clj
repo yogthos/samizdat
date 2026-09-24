@@ -74,7 +74,7 @@
   untouched (karamazov-blt.2)."
   [active]
   (into {}
-        (for [nm (distinct (concat manifests/shipped-manifests
+        (for [nm (distinct (concat (userspace/roles :manifest)
                                    (map :name (userspace/names :manifest))))
               :when (not= nm active)
               :let [body (manifests/manifest-body nm)]

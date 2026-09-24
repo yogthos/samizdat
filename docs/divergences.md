@@ -17,17 +17,6 @@ the upstream as an oracle, and none of them run under jolt.
 | mycelium | [mycelium-clj/mycelium](https://github.com/mycelium-clj/mycelium), sha not recorded when vendored; `patch.clj`, `fragment.clj`, `manifest.clj` and `dev.clj` synced to `b7c8c6e` (2026-09-19) | `src/mycelium/` | as upstream |
 | maestro | [yogthos/maestro](https://github.com/yogthos/maestro) `src/maestro/core.cljc` | `src/maestro/` | as upstream |
 | parinferish | [oakes/parinferish](https://github.com/oakes/parinferish) `src/parinferish/core.cljc` | `src/parinferish/` | public domain, not ours to relicense |
-| ring-chez-adapter | jolt-lang/ring-chez-adapter `@07f14d9` | `src/ring_chez/` | EPL-2.0, not ours to relicense |
-
-## ring-chez-adapter
-
-<!-- divergence: ring-chez-connection-off-the-accept-loop -->
-**Each connection is served off the accept loop.** Upstream serves one
-connection at a time on the accept thread, so a long request blocked `/health`
-and every other request until it finished. The vendored copy hands each
-accepted connection off the loop, marked inline in `adapter.clj`. Worth
-offering upstream; vendored until then. Probed by the smoke task's `/slow`
-check; no unit test isolates the accept loop.
 
 ## maestro
 

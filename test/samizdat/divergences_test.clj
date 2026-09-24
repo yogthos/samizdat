@@ -29,7 +29,7 @@
   (doseq [e (registry)]
     (testing (str (:id e))
       (is (keyword? (:id e)))
-      (is (#{:mycelium :maestro :parinferish :ring-chez} (:lib e)) "lib is one of the four")
+      (is (#{:mycelium :maestro :parinferish} (:lib e)) "lib is one of the three")
       (is (#{:port :harness :behaviour} (:kind e)) "kind is one of the three")
       (is (and (string? (:summary e)) (not (str/blank? (:summary e)))))
       (is (or (symbol? (:pinned-by e))

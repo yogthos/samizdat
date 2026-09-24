@@ -44,6 +44,7 @@
             [samizdat.manifests :as manifests]
             [samizdat.prompt :as prompt]
             [samizdat.store.userspace :as us]
+            [samizdat.userspace :as userspace]
             [samizdat.symbolic.dispatch :as dispatch]))
 
 (defn- validate!
@@ -185,6 +186,10 @@
   a project is bound — karamazov-blt.4, the same fallback `show` makes), else
   nil. The template alone has no version."
   [conn name]
+  ;; Through the seam first: in a project with files that is what brings the
+  ;; history up to date with an edit made to the file directly, so the row
+  ;; below is the text that runs.
+  (manifests/manifest-body name)
   (or (us/load-latest conn :manifest name)
       (when-let [body (manifests/manifest-body name)]
         (or (us/load-latest conn :manifest name)
@@ -268,7 +273,7 @@
   [conn]
   (let [rows (us/names conn :manifest)
         stored (set (map :name rows))
-        unseeded (for [nm manifests/shipped-manifests
+        unseeded (for [nm (userspace/roles :manifest)
                        :when (and (not (stored nm))
                                   (io/resource (manifests/manifest-resource nm)))]
                    (str nm "  [factory template, unseeded]"))]
@@ -302,7 +307,8 @@
             :else
             (if-let [row (if v
                            (us/load-version conn :manifest name v)
-                           (us/load-latest conn :manifest name))]
+                           (do (manifests/manifest-body name)
+                               (us/load-latest conn :manifest name)))]
               (base/ok branch (str name " v" (:version row) ":\n\n" (:body row)
                                    (dispatch-report (:body row))))
               ;; Not stored — fall back to the userspace seam, which serves

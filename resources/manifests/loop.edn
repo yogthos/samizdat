@@ -1,6 +1,6 @@
-;; The agentic loop as data. This file seeds version 1 of the "loop" workflow
-;; in the db; after that, the db rows are authoritative and this file is only
-;; the factory default. Cells are registered in samizdat.agent.cells; this
+;; The agentic loop as data. This file is the factory default: a project's
+;; first run copies it to .samizdat/manifests/loop.edn, and from then on the
+;; project's copy is what runs. Cells are registered in samizdat.agent.cells; this
 ;; definition carries the routing — which is exactly the part an agent can
 ;; safely rewrite, behind compile-time validation.
 ;;

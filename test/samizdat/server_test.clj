@@ -17,26 +17,20 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (ns samizdat.server-test
-  "The vendored ring adapter's request reader, and the listen socket's
-  close-on-exec."
+  "The HTTP server's wiring: routes, the listen socket's close-on-exec."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [jolt.process :as p]
+            [ring-chez.http]
             [ring-chez.adapter :as adapter]
+            [ring-chez.socket :as socket]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.api.control :as control]
             [samizdat.server :as server]
             [samizdat.store.db :as db]
             [samizdat.system :as system]
             [samizdat.userspace :as userspace]))
-
-(defn- request [body]
-  (str "POST /v1/runs HTTP/1.1\r\n"
-       "Content-Type: application/json\r\n"
-       "Content-Length: " (alength (.getBytes body "UTF-8")) "\r\n"
-       "\r\n"
-       body))
 
 (deftest slow-clamps-its-sleep
   ;; /slow exists so the smoke probe can prove /health still answers while a
@@ -63,18 +57,26 @@
         conn (db/open! tmp)
         prev (userspace/bind! conn)]
     (try
-      (testing "with nothing saved it is the shipped template, seeded"
-        (let [body (:layout (server/layout-body))]
-          (is (string? body))
-          (is (= (:layout (edn/read-string body))
-                 (:layout (edn/read-string (userspace/template :policy "tui"))))
-              "which is what a fresh project draws")))
-      (testing "and after the agent saves one, it is the agent's"
+      (testing "with nothing authored it serves NOTHING. The served copy sits
+                above a person's ~/.config/samizdat/tui.edn in the TUI's layers,
+                so serving the shipped file there would override every global
+                setting with the defaults — the TUI ships that file itself"
+        (is (nil? (:layout (server/layout-body)))))
+      (testing "after the agent saves one, it is the agent's"
         (userspace/save! :policy "tui"
                          (pr-str {:prose-turns 3 :layout [:vbox [:widget/status {}]]}))
         (let [spec (edn/read-string (:layout (server/layout-body)))]
           (is (= [:vbox [:widget/status {}]] (:layout spec)))
           (is (= 3 (:prose-turns spec)))))
+      (testing "and the project's own .samizdat/tui.edn beats a stored version"
+        (let [root (str (java.nio.file.Files/createTempDirectory
+                         "layout-root" (make-array java.nio.file.attribute.FileAttribute 0)))
+              prev-root (userspace/bind-root! root)]
+          (try
+            (.mkdirs (java.io.File. root ".samizdat"))
+            (spit (java.io.File. root ".samizdat/tui.edn") "{:prose-turns 9}")
+            (is (= "{:prose-turns 9}" (:layout (server/layout-body))))
+            (finally (userspace/bind-root! prev-root)))))
       (finally
         (userspace/bind! prev)
         (db/close conn)))))
@@ -127,22 +129,6 @@
         (server/cached-snapshot "/other")
         (is (= 3 @calls))))))
 
-(deftest content-length-is-octets-not-characters
-  ;; A 3-byte em-dash decodes to one char. Judging completeness by char count
-  ;; left the reader waiting for two bytes that had already arrived, so every
-  ;; POST whose body carried multibyte UTF-8 hung until the client gave up.
-  (testing "a multibyte body is complete when its octet count matches"
-    (is (#'adapter/request-complete?
-         (request "{\"note\": \"an em-dash — here\"}"))))
-  (testing "an ascii body is complete"
-    (is (#'adapter/request-complete? (request "{\"a\": 1}"))))
-  (testing "a short body is incomplete"
-    (let [r (request "{\"a\": 1}")]
-      (is (not (#'adapter/request-complete? (subs r 0 (- (count r) 3)))))))
-  (testing "unterminated headers are incomplete"
-    (is (not (#'adapter/request-complete?
-              "POST / HTTP/1.1\r\nContent-Length: 5\r\n")))))
-
 (deftest a-subprocess-does-not-inherit-the-listen-socket
   ;; The listening socket is a raw fd from socket(2), and every process the
   ;; harness spawns — the Lean repl through `lake env`, prolog, octave — forks
@@ -173,7 +159,7 @@
       ;; different reasons and the first version could not tell them apart:
       ;; it passed on macOS and failed on Linux CI with nothing to say about
       ;; whether the flag had been set at all.
-      (is (adapter/cloexec? (:socket server))
+      (is (socket/cloexec? (:socket server))
           "the listen fd is not marked FD_CLOEXEC — the mechanism itself failed")
       (adapter/stop-server server)
       (let [again (try {:ok true :server (adapter/run-server handler {:port port})}
@@ -255,28 +241,11 @@
         (is (= 16384 (:max-tokens r)))))))
 
 (deftest refusals-carry-their-own-reason-phrase
-  ;; provenance R3-12: status-text knew 409 and 503 not, and the status line fell
-  ;; back to "OK" — a refusal that read as a success on the wire. Both are
-  ;; statuses this API actually sends (abort/resume 409, start 503).
-  (is (str/starts-with? (#'adapter/response->string
-                         {:status 409 :headers {} :body "x"})
-                        "HTTP/1.1 409 Conflict"))
-  (is (str/starts-with? (#'adapter/response->string
-                         {:status 503 :headers {} :body "x"})
-                        "HTTP/1.1 503 Service Unavailable")))
-
-(deftest a-failed-send-throws-rather-than-truncating
-  ;; provenance R3-12: send-all stopped silently when c-send answered <= 0, so the
-  ;; client read a body that ended exactly where the socket died while
-  ;; Content-Length promised more — a well-formed lie. Throwing hands the
-  ;; connection to serve-conn's error path instead.
-  (let [fd (adapter/c-socket 2 1 0)]
-    (when (neg? fd) (throw (ex-info "socket() failed in test setup" {})))
-    (try
-      (#'adapter/c-close fd)
-      (is (thrown? Throwable (#'adapter/send-all fd "x"))
-          "send on a dead fd must not return as if it wrote")
-      (finally (#'adapter/c-close fd)))))
+  ;; provenance R3-12: the status line fell back to "OK" for 409 and 503 — a
+  ;; refusal that read as a success on the wire. Both are statuses this API
+  ;; sends (abort/resume 409, start 503).
+  (is (= "Conflict" (get @#'ring-chez.http/status-text 409)))
+  (is (= "Service Unavailable" (get @#'ring-chez.http/status-text 503))))
 
 (deftest query-params-are-percent-decoded
   ;; provenance R3-12: values arrived raw from the query string, so %XX stayed %XX

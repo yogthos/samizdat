@@ -19,6 +19,20 @@
 
 ;; --- the taxonomy ------------------------------------------------------------
 
+(defmacro ^:private with-tool
+  "Install `f` as the `tool` method of base/run-tool for `body`, and put the
+  real one back after. A bare `defmethod` here replaced the shell and lsp
+  tools for the life of the process: every later test in the same image —
+  the shell's hard deny, the lsp tool's root check — ran against this file's
+  stubs and failed, and only test order kept a fresh `jolt test` green."
+  [tool f & body]
+  `(let [orig# (get-method base/run-tool ~tool)]
+     (.addMethod base/run-tool ~tool ~f)
+     (try ~@body
+          (finally (if orig#
+                     (.addMethod base/run-tool ~tool orig#)
+                     (remove-method base/run-tool ~tool))))))
+
 (deftest failures-are-classified-by-what-the-branch-should-do-about-them
   (testing "a timeout is transient BY FLAG, before any text matching — it is
             the one failure the tool layer records structurally"
@@ -66,22 +80,22 @@
 
 (deftest a-retry-is-invisible-when-it-works-and-counted-when-it-does-not
   (let [n (atom 0)]
-    (defmethod base/run-tool "lsp" [{:keys [branch]}]
-      (swap! n inc)
-      (if (< @n 3) (base/fail branch "lsp request timed out")
-          (base/ok branch "definition at src/a.clj:12")))
-    (let [r (tools/run-tool {:branch {:id "B1"} :tool-name "lsp" :args {}})]
-      (is (= 3 @n) "it tried again rather than spending the branch's turn on a blip")
-      (is (= :neutral (:category r)))
-      (is (str/includes? (:result r) "src/a.clj:12")))))
+    (with-tool "lsp" (fn [{:keys [branch]}]
+                       (swap! n inc)
+                       (if (< @n 3) (base/fail branch "lsp request timed out")
+                           (base/ok branch "definition at src/a.clj:12")))
+      (let [r (tools/run-tool {:branch {:id "B1"} :tool-name "lsp" :args {}})]
+        (is (= 3 @n) "it tried again rather than spending the branch's turn on a blip")
+        (is (= :neutral (:category r)))
+        (is (str/includes? (:result r) "src/a.clj:12"))))))
 
 (deftest a-mutating-tool-that-timed-out-is-never-run-again
   (let [n (atom 0)]
-    (defmethod base/run-tool "shell" [{:keys [branch]}]
-      (swap! n inc)
-      (base/fail branch "command timed out after 120000ms" :timeout? true))
-    (tools/run-tool {:branch {:id "B1"} :tool-name "shell" :args {}})
-    (is (= 1 @n))))
+    (with-tool "shell" (fn [{:keys [branch]}]
+                         (swap! n inc)
+                         (base/fail branch "command timed out after 120000ms" :timeout? true))
+      (tools/run-tool {:branch {:id "B1"} :tool-name "shell" :args {}})
+      (is (= 1 @n)))))
 
 ;; --- what it landed ----------------------------------------------------------
 
@@ -96,12 +110,12 @@
             nothing either time"
     (is (not (te/uncertain-effect? {:tool "read_file" :timeout? true} (read-only)))))
   (testing "and the branch is told, in the result it actually reads"
-    (defmethod base/run-tool "shell" [{:keys [branch]}]
-      (base/fail branch "command timed out" :timeout? true))
-    (let [r (tools/run-tool {:branch {:id "B1"} :tool-name "shell" :args {}})]
-      (is (str/includes? (:result r) "not known whether this call landed"))
-      (is (str/includes? (:result r) "issue it again")
-          "and names the unsafe move by name, rather than hinting at it"))))
+    (with-tool "shell" (fn [{:keys [branch]}]
+                         (base/fail branch "command timed out" :timeout? true))
+      (let [r (tools/run-tool {:branch {:id "B1"} :tool-name "shell" :args {}})]
+        (is (str/includes? (:result r) "not known whether this call landed"))
+        (is (str/includes? (:result r) "issue it again")
+            "and names the unsafe move by name, rather than hinting at it")))))
 
 ;; --- the runaway-reasoning breaker -------------------------------------------
 

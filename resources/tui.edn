@@ -1,6 +1,6 @@
-;; The terminal UI's arrangement, as data. This file seeds version 1 of the
-;; "tui" policy table in the project; after that the stored row is
-;; authoritative and this is only the factory default.
+;; The terminal UI's arrangement, as data — the factory default of a LAYERED
+;; settings file. Another tui.edn only has to say what it changes: it is merged
+;; over this one key by key (a :layout is replaced whole).
 ;;
 ;; THIS IS USERSPACE. The core implements the widgets — what a conversation
 ;; log is, how a diff folds, where the activity trace comes from — and this
@@ -8,15 +8,18 @@
 ;; EDN: no rebuild, and the agent can do it to itself at runtime through the
 ;; same seam that carries gates.edn and the manifests.
 ;;
-;; WHICH COPY THE TUI DRAWS, most local first:
+;; WHERE THE TUI READS IT FROM, highest first, each merged over the ones below
+;; (samizdat.layers):
 ;;
-;;   1. $SAMIZDAT_TUI_LAYOUT, or .samizdat/tui.edn beside the project — a
-;;      person's own, re-read whenever it changes, so an edit shows up on the
-;;      next frame with the TUI still running;
-;;   2. what the harness serves from GET /v1/harness/layout — the stored row
-;;      above, which is how the AGENT rearranges its own UI. The TUI holds no
-;;      database handle, so it asks the server, which does;
-;;   3. this file, off the classpath, which is what draws offline.
+;;   1. the file $SAMIZDAT_TUI_FILE (or $SAMIZDAT_TUI_LAYOUT) names;
+;;   2. .samizdat/tui.edn in the project;
+;;   3. what the harness serves from GET /v1/harness/layout — the server's own
+;;      project file, which is how the AGENT rearranges a front end's UI;
+;;   4. ~/.config/samizdat/tui.edn — a person's own, across every project;
+;;   5. this file, off the classpath, which is what draws offline.
+;;
+;; Every file is re-read when it changes, so an edit shows up on the next
+;; frame with the TUI still running.
 ;;
 ;; The vocabulary is ftxui's own (see the ftxui-jolt README): :vbox, :hbox,
 ;; :border, :separator, :flex, :width, anything the toolkit draws. The only
@@ -38,6 +41,81 @@
  ;; newest, since a conversation is read from the bottom. Raise it to scroll
  ;; back further; every turn added is another request per poll.
  :prose-turns 12
+
+ ;; --- the theme ---------------------------------------------------------------
+ ;;
+ ;; Every colour on screen, as a map from a CLASS to a STYLE. The widgets name
+ ;; classes and never colours; any node in :layout below may name classes too
+ ;; ({:class :critic}) or carry its own inline {:style {...}}, which wins, the
+ ;; way CSS does. A style takes ftxui's attributes — :color :bg :bold :dim
+ ;; :italic :underlined :inverted :strikethrough — plus :border (:rounded
+ ;; :heavy :double :light :dashed) and :border-color.
+ ;;
+ ;; A colour is a palette name (:red :cyan :gray-dark …), a 256-colour index
+ ;; (0-255), "#rgb" / "#rrggbb", or [:rgb r g b]. One ftxui cannot read is
+ ;; left out and named in the status line, never drawn.
+ ;;
+ ;; Merged key by key across the layers, so a ~/.config/samizdat/tui.edn that
+ ;; says only {:theme {:agent {:color "#ffffff"}}} changes that one colour.
+ ;;
+ ;; The palette is dirge's PHOSPHOR: green for the agent, cyan for you,
+ ;; lavender for the critic, amber for anything that needs you.
+ :theme
+ {;; the frame and its panels
+  :frame        {:color "#60dc8c"}
+  :panel        {:border-color "#60dc8c"}
+  :panel-title  {:color "#60dc8c" :bold true}
+  :dim          {:color "#567460"}
+  :muted        {:color "#486252"}
+  :accent       {:color "#9eeeac"}
+  :selected     {:color "#9eeeac" :bold true}
+  :ok           {:color "#8ae89c"}
+  :info         {:color "#7dcdd2"}
+  :warn         {:color "#d4a860"}
+  :error        {:color "#ff5f5a" :bold true}
+  :complaint    {:color "#ff5f5a" :border-color "#ff5f5a"}
+
+  ;; who is speaking
+  :user         {:color "#7dcdd2"}
+  :agent        {:color "#8ae89c"}
+  :critic       {:color "#baa6d8"}
+  :supervisor   {:color "#e0c27a"}
+  :system       {:color "#6a8c78"}
+  :thinking     {:color "#80968c"}
+
+  ;; what the agent did
+  :tool         {:color "#6cbc96"}
+  :tool-box     {:border :rounded :border-color "#486252"}
+  :error-box    {:border-color "#ff5f5a"}
+  :tool-name    {:color "#6cbc96" :bold true}
+  :result       {:color "#769e84"}
+  :diff-add     {:color "#8ae89c" :bg 22}
+  :diff-del     {:color "#ff5f5a" :bg 52}
+  :diff-hunk    {:color "#567460"}
+  :step         {:color "#6cbc96"}
+  :step-failed  {:color "#ff5f5a"}
+
+  ;; gauges and the footer
+  :gauge        {:color "#60dc8c"}
+  :gauge-hot    {:color "#ff5f5a"}
+  :status       {:bg "#1a1a1a" :color "#6a8c78"}
+  :status-live  {:color "#8ae89c"}
+  :status-down  {:color "#ff5f5a"}
+  :model        {:color "#7dcdd2"}
+  :git-branch   {:color "#8ae89c"}
+  :input        {:color "#ffffff"}
+
+  ;; what the claims came to
+  :claim-confirmed   {:color "#8ae89c"}
+  :claim-refuted     {:color "#ff5f5a"}
+  :claim-ambiguous   {:color "#d4a860"}
+  :claim-existential {:color "#7dcdd2"}
+
+  ;; somebody has to answer
+  :perm         {:color "#ffb955"}
+  :perm-box     {:border :heavy :border-color "#ffb955"}
+  :question     {:color "#7dcdd2"}
+  :question-box {:border :heavy :border-color "#7dcdd2"}}
 
  ;; --- the widgets in this build ---------------------------------------------
  ;;
@@ -64,63 +142,171 @@
  ;;                         Enter means depends on whether a run is selected:
  ;;                         with one it is a directive for that run, with none
  ;;                         the words are the problem statement for a new run.
- ;;                         Bare by default; {:title "STEER"} draws a caption.
+ ;;                         Bare by default; {:boxed true} draws a border,
+ ;;                         {:title "STEER"} a titled panel.
  ;;   :widget/git           the working tree: branch, +staged ~unstaged
  ;;                         ?untracked, and the last commit's subject.
  ;;   :widget/status        the footer: project:branch, model, context fill,
  ;;                         turns, run status, run id.
 
- ;; THREE PANELS TO A COLUMN, not five. A bare :height is an EQUALITY
- ;; constraint in ftxui, so a stack of pinned boxes cannot shrink to fit and
- ;; the ones at the bottom are simply squeezed to nothing: five in the right
- ;; gutter drew MODIFIED, CLAIMS and GATES as three empty rules. One flexed
- ;; panel per column, the rest pinned, and the two diagnostic lists moved to
- ;; a wide short row where their entries have somewhere to go.
+ ;;   :widget/command-hints while a /command is being typed, what it could
+ ;;                         be and what each does. Nothing otherwise.
+ ;;   :widget/rule          a line with a title set into it, ──[ TITLE ]──.
+ ;;                         The top frame is three, one over each column.
+ ;;   :widget/avatar        a face saying what the agent is doing — faces
+ ;;                         and which tool makes which one are :avatar below.
+
+ ;; The conversation: who is who, and which of the journal's notes are shown
+ ;; beside the turns and as whom.
+ :conversation
+ {;; The name each role speaks under: <you>, <agent> …
+  :handles {:user "you" :agent "agent" :critic "critic"
+            :supervisor "supervisor" :system "sys"}
+  ;; Who issued a steer, as a role.
+  :issued-by {"human" :user "supervisor" :supervisor "watch" :supervisor}
+  ;; Journal notes shown in the conversation: the kind, the role it speaks
+  ;; as, and the path to its words in the note's data (the whole data when
+  ;; that path holds nothing). The kinds are what the branch fetch asks for.
+  :notes {"critic-score"       {:role :critic :say [:reply]}
+          "critique"           {:role :critic :say [:findings]}
+          "review"             {:role :critic :say [:decision]}
+          "oversight"          {:role :supervisor :say [:notes]}
+          "watch-intervention" {:role :supervisor :say [:finding]}
+          "compaction"         {:role :system :say [:action]}
+          "llm-switch"         {:role :system :say [:summary]}}
+  ;; The argument a tool call is known by in its chamber's header.
+  :banner {"read_file" "path" "write_file" "path" "edit_file" "path"
+           "read_digest" "path" "patch" "path" "shell" "command"
+           "grep" "pattern" "glob" "pattern" "eval" "code"}
+  ;; How many lines of a result show before the rest folds.
+  :result-lines 4}
+
+ ;; SLASH COMMANDS, typed into the compose box; Tab completes a name, and
+ ;; /help lists them. Each says what it DOES (an action the TUI implements),
+ ;; its arguments and its help line; {:alias "/model"} is a second name.
+ ;;
+ ;;   :do :intervene sends a directive to the run on screen, of :kind, with
+ ;;   the argument as its payload, aimed by :target — :branch (the branch on
+ ;;   screen), :arg (the argument names the branch) or nothing (the run).
+ :commands
+ {"/help"     {:do :help :doc "these commands"}
+  "/quit"     {:do :quit :doc "leave (Ctrl+Q)"}
+  "/model"    {:do :model :args "[role] [model]"
+               :doc "list the models, or switch: `/model glm-5.3` for every role, `/model critic glm:glm-5.3` for one — live for the run on screen, else the next run"}
+  "/effort"   {:do :effort :args "[role] <low|medium|high|max>"
+               :doc "how hard the model thinks, for every role or one — live for the run on screen, else the next run"}
+  "/mode"     {:do :mode :args "[refuse|block]"
+               :doc "when a run needs you: refuse, or block and ask"}
+  "/run"      {:do :start :args "<problem>" :doc "start a run on a problem"}
+  "/abort"    {:do :abort :doc "abort the run on screen"}
+  "/resume"   {:do :resume :doc "resume the run on screen"}
+  "/runs"     {:do :runs :args "[id]" :doc "list the runs, or open one by the start of its id"}
+  "/branch"   {:do :branch :args "<id>" :doc "read another branch of the beam"}
+  "/follow"   {:do :follow :doc "back to the newest entry (End)"}
+  "/clear"    {:do :clear :doc "clear what this TUI printed"}
+  "/steer"    {:do :intervene :kind "message" :target :branch :args "<text>"
+               :doc "say something to the branch on screen, at its next turn"}
+  "/review"   {:do :intervene :kind "review" :target :branch
+               :doc "tell the branch to cross-check and ship what it has"}
+  "/cull"     {:do :intervene :kind "cull" :target :arg :args "<branch>"
+               :doc "stop a branch"}
+  "/fork"     {:do :intervene :kind "fork" :args "<thesis>"
+               :doc "open a sibling branch on a thesis"}
+  "/extend"   {:do :intervene :kind "extend" :args "<turns>"
+               :doc "raise the run's turn cap"}
+  "/pause"    {:do :intervene :kind "pause" :doc "stop scheduling new turns"}
+  "/continue" {:do :intervene :kind "resume" :doc "schedule turns again after /pause"}
+  "/switch"   {:do :intervene :kind "switch" :args "<board|team|decompose>"
+               :doc "the feature loop's strategy for its next round"}
+  "/budget"   {:do :intervene :kind "budget" :args "<turns>"
+               :doc "the per-owner turn budget for the feature loop's next rounds"}
+  "/stop"     {:do :intervene :kind "stop" :args "<why>"
+               :doc "end the run unsolved at the feature loop's next round"}
+  "/q"        {:alias "/quit"}}
+
+ ;; DESKTOP NOTIFICATIONS, after dirge's: when the run on screen needs you
+ ;; (a permission question, ask_human), and when it ends. :on picks the
+ ;; moments — "question", "run-finished" — and an empty set turns them off.
+ ;; :command, when set, is the program to run, with {title} and {body}
+ ;; filled in, e.g. ["terminal-notifier" "-title" "{title}" "-message" "{body}"];
+ ;; unset, osascript on macOS and notify-send elsewhere.
+ :notifications {:on #{"question" "run-finished"}}
+
+ ;; The avatar's faces, by mood, and the tools that set one. A mood no tool
+ ;; names is :thinking while a run is going.
+ :avatar
+ {:faces {:idle     "(o o)"
+          :thinking "(o .)"
+          :reading  "[@ @]"
+          :writing  "(>_<)"
+          :shell    "[$_$]"
+          :alert    "(O_O)"
+          :error    "(x_x)"
+          :done     "(^_^)"}
+  :tools {"read_file" :reading "read_digest" :reading "grep" :reading
+          "glob" :reading "lsp" :reading "fetch_turn" :reading
+          "write_file" :writing "edit_file" :writing "patch" :writing
+          "shell" :shell "eval" :shell}}
+
+ ;; THE ARRANGEMENT, after dirge: a top frame naming the three columns; the
+ ;; run's vitals on the left; the conversation in the middle, where the room
+ ;; is; the work in progress on the right; the avatar beside the compose box;
+ ;; the status line under everything.
+ ;;
+ ;; ONE FLEXED PANEL PER COLUMN. A bare :height is an EQUALITY constraint in
+ ;; ftxui, so a stack of pinned boxes cannot shrink to fit and the ones at the
+ ;; bottom are squeezed to nothing — five pinned in one gutter once drew three
+ ;; of them as empty rules. Each column below pins the rest and flexes one.
 
  :layout
  [:vbox {:flex true}
 
+  ;; THE CHAT COLUMN IS CAPPED, as dirge's is: 120 columns, which it gives up
+  ;; on a narrow terminal (:flex :shrink), while the side columns — at least
+  ;; 32 and 34 wide, :grow — share whatever room is left on a wide one. Each
+  ;; column carries its own title in the top frame, so the titles stay over
+  ;; their columns at any width; the bottom strip uses the same widths so the
+  ;; compose box stays under the conversation.
   [:hbox {:flex true}
 
-   ;; The left gutter: what the agent is doing, what it is spending, and
-   ;; which run all of it is about.
-   [:vbox {:width 30}
-    [:widget/activity {:title "ACTIVITY LOG" :flex :grow}]
+   ;; Left: what the run is spending and doing, and the beam — which branch
+   ;; the conversation beside it is.
+   [:vbox {:width [:>= 32] :flex :grow}
+    [:widget/rule {:title "RUN STATUS"}]
+    [:text {:class :panel-title :align :hcenter} "S A M I Z D A T"]
     [:widget/context {:title "CONTEXT" :height 11}]
-    [:widget/runs {:title "RUNS" :height 6}]]
+    [:widget/activity {:title "ACTIVITY" :flex :grow}]
+    [:widget/branches {:title "BEAM" :height 7}]]
 
-   ;; The middle band is the conversation, and it takes the room. `:turns` is
-   ;; how far back it draws — the newest that many. Every entry is rebuilt on
-   ;; every frame, so this is a frame-rate number as much as a history one;
-   ;; raise it to scroll further back and pay for it in redraws.
-   [:widget/conversation {:flex true :turns 60}]
+   ;; The middle: the conversation; while a /command is typed, what it could
+   ;; be; when somebody has to answer, the question; and the run's own
+   ;; account of itself — its claims, and the gates it was advised by and
+   ;; has not answered — in a wide short row. `:turns` is how far back the
+   ;; conversation draws.
+   [:vbox {:width 120 :flex :shrink}
+    [:widget/rule {:title "AGENT LOG"}]
+    [:widget/conversation {:flex true :turns 60}]
+    [:widget/command-hints {}]
+    [:widget/approvals {}]
+    [:hbox {:height 6}
+     [:widget/artifacts {:title "CLAIMS" :flex true}]
+     [:widget/gates {:title "GATES" :flex true}]]]
 
-   ;; The right gutter: which branch, what it is working on, what it has
-   ;; changed. BEAM is at the top because it decides what the conversation
-   ;; beside it IS — a run here is several branches, and the one on screen
-   ;; is a choice rather than the only one.
-   [:vbox {:width 34}
-    [:widget/branches {:title "BEAM" :height 6}]
+   ;; Right: which run, the board, what has changed, and the tree it is
+   ;; changing. GIT needs three rows inside its chrome, hence 7.
+   [:vbox {:width [:>= 34] :flex :grow}
+    [:widget/rule {:title "HARNESS"}]
+    [:widget/runs {:title "RUNS" :height 6}]
     [:widget/tasks {:title "TASKS" :height 8}]
-    [:widget/files {:title "MODIFIED" :flex :grow}]]]
+    [:widget/files {:title "MODIFIED" :flex :grow}]
+    [:widget/git {:title "GIT" :height 7}]]]
 
-  ;; The run's own account of itself: what it has established, and what it
-  ;; was advised and has not answered. Wide and short — both are short lists
-  ;; of long lines, which is the opposite of what a gutter is for.
-  ;; GIT rides in this row rather than in a gutter, and the reason is the
-  ;; warning at the top of this file. A fourth box in the right column put
-  ;; BEAM 6 + TASKS 8 + GIT 6 = 20 pinned rows against a :grow MODIFIED that
-  ;; may not be squeezed, so on a 28-row terminal GIT drew as a titled box
-  ;; with no content in it — the same squeeze, one panel further along. Here
-  ;; the row is pinned at 7, GIT needs 3 content rows inside its chrome, and
-  ;; it fits at any height the rest of the layout does.
-  [:hbox {:height 7}
-   [:widget/artifacts {:title "CLAIMS" :flex true}]
-   [:widget/gates {:title "GATES" :flex true}]
-   [:widget/git {:title "GIT" :width 34}]]
+  ;; The avatar and the compose box. No height: the strip is as tall as the
+  ;; box, which grows a row per line — typed (Ctrl+J) or wrapped — up to
+  ;; :max-lines.
+  [:hbox
+   [:widget/avatar {:width [:>= 32] :flex :grow}]
+   [:widget/input {:width 120 :flex :shrink :boxed true :max-lines 8}]
+   [:filler {:width [:>= 34] :flex :grow}]]
 
-  ;; Above the compose box, because the branch is parked on it and it is the
-  ;; only thing on screen that is waiting on you. Invisible when idle.
-  [:widget/approvals {}]
-  [:widget/input {}]
   [:widget/status {}]]}

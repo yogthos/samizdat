@@ -60,6 +60,13 @@
 
 (defn- props-of [el] (when (map? (second el)) (second el)))
 
+(defn- texts-of
+  "Every string in a rendered tree, one by one."
+  [form]
+  (let [acc (atom [])]
+    (walk/postwalk (fn [x] (when (string? x) (swap! acc conj x)) x) form)
+    @acc))
+
 ;; --- the activity log --------------------------------------------------------
 
 (def ^:private trace
@@ -100,9 +107,14 @@
 
 ;; --- the conversation --------------------------------------------------------
 
+(def ^:private long-result
+  "Seven lines: four show in the chamber, three fold."
+  (str/join "\n" ["(ns a)" "(defn one [])" "(defn two [])" "(defn three [])"
+                  "(defn four [])" "(defn five [])" "(defn six [])"]))
+
 (def ^:private turns
   [{:turn 1 :tool_name "read_file" :args "{\"path\":\"src/a.clj\"}"
-    :result "(ns a)" :category "neutral"}
+    :result long-result :category "neutral"}
    {:turn 2 :tool_name "write_file" :args "{\"path\":\"src/a.clj\"}"
     :result "+ (defn go [])\n- (defn old [])" :category "success"}])
 
@@ -112,75 +124,88 @@
       :reasoning_text "I should read before I write."}
    2 {:assistant_text "Replacing the entry point."}})
 
+(def ^:private conv-settings
+  {:conversation {:handles {:user "you" :agent "agent"} :banner {"read_file" "path"}
+                  :result-lines 4}})
+
+(defn- conv [state props]
+  (render :widget/conversation (assoc state :settings conv-settings) props))
+
 (deftest the-conversation-shows-what-was-said-and-what-was-called
-  (let [said (texts (render :widget/conversation
-                            {:branch {:turns turns} :turn-text turn-text} {}))]
+  (let [said (texts (conv {:branch {:turns turns} :turn-text turn-text} {}))]
     (is (str/includes? said "Looking at the namespace first."))
-    (is (str/includes? said "read_file"))
-    (is (str/includes? said "write_file"))))
+    (is (str/includes? said "<agent>") "in the agent's voice")
+    (is (str/includes? said "READ_FILE") "a chamber per call, headed by the tool")
+    (is (str/includes? said "\"src/a.clj\"") "and the argument it is known by")
+    (is (str/includes? said "WRITE_FILE"))))
+
+(deftest the-problem-opens-the-conversation-in-your-voice
+  (let [said (texts (conv {:detail {:run {:problem "build a parser"}}
+                           :branch {:turns turns}} {}))]
+    (is (str/includes? said "<you>"))
+    (is (str/includes? said "build a parser"))))
 
 (deftest a-turn-whose-prose-has-not-arrived-still-draws-its-call
   ;; The prose is a second fetch, so there are always frames where a turn is
   ;; listed and its words are not back yet. That has to read as a turn with
   ;; no prose, not as a blank entry or a crash.
-  (let [said (texts (render :widget/conversation {:branch {:turns turns}} {}))]
-    (is (str/includes? said "read_file"))
+  (let [said (texts (conv {:branch {:turns turns}} {}))]
+    (is (str/includes? said "READ_FILE"))
     (is (not (str/includes? said "Looking at the namespace first.")))))
 
-(deftest thinking-arguments-and-results-fold-and-are-closed-by-default
-  ;; A conversation that opened every tool result would be unreadable after
-  ;; three turns. The header is always there; the body is a click away.
-  (let [out (render :widget/conversation
-                    {:branch {:turns turns} :turn-text turn-text} {})
+(deftest a-result-shows-its-first-lines-and-folds-the-rest
+  ;; dirge's chamber: the head of a result is what a reader scans, and a log
+  ;; that opened every result whole is unreadable after three turns.
+  (let [out (conv {:branch {:turns turns} :turn-text turn-text} {})
         folds (nodes-of :collapsible out)]
+    (is (str/includes? (texts out) "(defn three [])") "the first four lines show")
     (is (seq folds) "folds are ftxui collapsibles, so the mouse works on them")
-    (is (every? #(false? (:show (props-of %))) folds)
-        "closed until the operator opens one")
+    (is (every? #(false? (:show (props-of %))) folds) "closed until opened")
     (let [labels (str/join " " (keep #(:label (props-of %)) folds))]
       (is (str/includes? labels "thinking"))
-      (is (str/includes? labels "result")))))
+      (is (str/includes? labels "3 more lines")))))
 
 (deftest a-closed-fold-does-not-carry-its-body
-  ;; Cost, not appearance. `fold` handed the body to :collapsible whether or
-  ;; not it was open, so every frame split every tool result on the branch
-  ;; into one element per line — 175ms a frame at 200 turns, with every fold
-  ;; SHUT, and ftxui redraws on every keystroke. A shut fold's body is not
-  ;; on screen and must not be built.
-  (let [out (render :widget/conversation
-                    {:branch {:turns turns} :turn-text turn-text} {})]
-    (is (not (str/includes? (texts out) "(ns a)"))
-        "the body of a closed fold is not in the tree at all")
-    (is (str/includes? (texts out) "result")
-        "but its header is, which is what a reader scans"))
+  ;; Cost, not appearance: a shut fold's body is not on screen and must not
+  ;; be built — every frame, every turn (175ms a frame at 200 turns once).
+  (let [out (conv {:branch {:turns turns} :turn-text turn-text} {})]
+    (is (not (str/includes? (texts out) "(defn six [])"))
+        "the body of a closed fold is not in the tree at all"))
   (testing "and the body is back the moment it is opened"
-    (let [out (render :widget/conversation
-                      {:branch {:turns turns} :turn-text turn-text
-                       :expanded #{(w/fold-id 1 :result)}} {})]
-      (is (str/includes? (texts out) "(ns a)")))))
+    (let [out (conv {:branch {:turns turns} :turn-text turn-text
+                     :expanded #{(w/fold-id 1 :result)}} {})]
+      (is (str/includes? (texts out) "(defn six [])")))))
 
 (deftest the-conversation-draws-a-bounded-tail-of-a-long-branch
-  ;; Every other panel is bounded — the trace at 500, the file list at
-  ;; :modified-files-shown. The biggest one was not, so a 400-turn branch
-  ;; built 400 entries per frame. How many is userspace, like :prose-turns:
-  ;; how far back a reader scrolls is their business.
+  ;; Every other panel is bounded. How many turns is userspace, like
+  ;; :prose-turns: how far back a reader scrolls is their business.
   (let [turns (mapv (fn [n] {:turn n :tool_name "read_file" :result "x"})
                     (range 1 401))
-        out (render :widget/conversation {:branch {:turns turns}} {:turns 40})
+        out (conv {:branch {:turns turns}} {:turns 40})
         drawn (keep #(:key (props-of %)) (nodes-of :vbox out))]
     (is (= 40 (count drawn)) "the tail the layout asked for")
-    (is (= "400" (last drawn)) "and it is the NEWEST forty, which is what is being read")
-    (is (= "361" (first drawn))))
+    (is (= "t400/tool" (last drawn)) "and it is the NEWEST forty, which is what is being read")
+    (is (= "t361/tool" (first drawn))))
   (testing "a branch shorter than the bound is drawn whole"
     (let [turns (mapv (fn [n] {:turn n :tool_name "read_file"}) (range 1 4))
-          out (render :widget/conversation {:branch {:turns turns}} {:turns 40})]
+          out (conv {:branch {:turns turns}} {:turns 40})]
       (is (= 3 (count (keep #(:key (props-of %)) (nodes-of :vbox out))))))))
+
+(deftest the-newest-entry-holds-the-focus-unless-scrolled-away
+  ;; ftxui scrolls a frame to its focused element: that is how the pane
+  ;; follows the bottom as the run speaks.
+  (let [focused #(keep (fn [n] (when (:focus (props-of n)) (:key (props-of n))))
+                       (nodes-of :vbox %))]
+    (is (= ["t2/tool"] (focused (conv {:branch {:turns turns}} {}))))
+    (is (= ["t1/tool"] (focused (conv {:branch {:turns turns} :scroll-anchor "t1/tool"} {})))
+        "scrolled up, the anchor holds the view")))
 
 (deftest an-expanded-fold-is-open-and-its-body-is-drawn
   (let [id (w/fold-id 1 :result)
-        out (render :widget/conversation {:branch {:turns turns} :turn-text turn-text :expanded #{id}} {})
+        out (conv {:branch {:turns turns} :turn-text turn-text :expanded #{id}} {})
         open (filter #(true? (:show (props-of %))) (nodes-of :collapsible out))]
     (is (= 1 (count open)) "exactly the one that was expanded")
-    (is (str/includes? (texts open) "(ns a)") "and its body is rendered")))
+    (is (str/includes? (texts open) "(defn six [])") "and its body is rendered")))
 
 (deftest a-fold-id-is-stable-across-frames-and-unique-per-section
   ;; The set of open folds is keyed by these. An id derived from a position
@@ -195,19 +220,18 @@
   ;; state. That is what keeps them testable without a running loop.
   (let [toggled (atom nil)
         state {:branch {:turns turns} :turn-text turn-text :on {:toggle #(reset! toggled %)}}
-        fold (first (nodes-of :collapsible (render :widget/conversation state {})))]
+        fold (first (nodes-of :collapsible (conv state {})))]
     ((:on-change (props-of fold)) true)
     (is (some? @toggled) "the toggle handler was called with the fold's id")))
 
 (deftest a-write-result-is-drawn-as-a-diff
   ;; +/- lines are the one result shape worth colouring: it is how a reader
   ;; tells an edit that landed from one that replaced the wrong thing.
-  (let [id (w/fold-id 2 :result)
-        out (render :widget/conversation {:branch {:turns turns} :turn-text turn-text :expanded #{id}} {})
-        coloured (filter #(:color (props-of %)) (nodes-of :text out))
-        by-colour (group-by #(:color (props-of %)) coloured)]
-    (is (seq (get by-colour :green)) "additions")
-    (is (seq (get by-colour :red)) "removals")))
+  (let [out (conv {:branch {:turns turns} :turn-text turn-text} {})
+        classed (filter #(:class (props-of %)) (nodes-of :wrapped out))
+        by-class (group-by #(:class (props-of %)) classed)]
+    (is (seq (get by-class :diff-add)) "additions")
+    (is (seq (get by-class :diff-del)) "removals")))
 
 (deftest a-failed-turn-reads-as-failed
   (let [said (texts (render :widget/conversation
@@ -525,6 +549,16 @@
     ((:on-enter (props-of input)) "do the thing")
     (is (= "do the thing" @sent))))
 
+(deftest the-compose-box-wraps-and-grows-up-to-a-cap
+  ;; How tall the box is depends on the width FTXUI gives it, so the widget
+  ;; does not count rows: it asks the input to wrap and caps the row. That
+  ;; the rows really appear is mouse_test's claim, through the toolkit.
+  (let [out (render :widget/input {:input "x"} {:max-lines 5})
+        input (first (nodes-of :input out))]
+    (is (true? (:wrap (props-of input))))
+    (is (some #(= [:<= 5] (:height (props-of %))) (nodes-of :hbox out))
+        "no taller than :max-lines")))
+
 ;; --- the modals --------------------------------------------------------------
 
 (def ^:private perm
@@ -551,7 +585,44 @@
     ((:on-click (props-of (first (filter #(re-find #"(?i)allow" (str (:label (props-of %))))
                                          buttons)))))
     (is (= "a1" (first @decided)) "the decision names the request it answers")
-    (is (= :allow (second @decided)))))
+    (is (= {:decision :allow} (second @decided)))))
+
+(deftest allow-always-is-offered-only-with-the-pattern-it-would-allow
+  (let [labels (fn [a] (str/join " " (keep #(:label (props-of %))
+                                           (nodes-of :button (render :widget/approvals {:approvals [a]} {})))))]
+    (is (not (re-find #"always" (labels perm))) "no pattern, no always")
+    (let [a (assoc perm :always "cargo *")
+          decided (atom nil)
+          out (render :widget/approvals {:approvals [a] :on {:decide #(reset! decided %&)}} {})]
+      (is (re-find #"always would allow: cargo \*, for this session" (texts out)))
+      ((:on-click (props-of (first (filter #(re-find #"always" (str (:label (props-of %))))
+                                           (nodes-of :button out))))))
+      (is (= ["a1" {:decision :allow :always true}] @decided)))))
+
+(deftest deny-with-a-note-hands-the-compose-box-to-the-dialog
+  (let [replied (atom nil)
+        out (render :widget/approvals {:approvals [perm] :on {:reply #(reset! replied %&)}} {})]
+    ((:on-click (props-of (first (filter #(re-find #"note" (str (:label (props-of %))))
+                                         (nodes-of :button out))))))
+    (is (= [:deny-note "a1"] @replied)))
+  (let [out (render :widget/approvals {:approvals [perm] :reply {:kind :deny-note :id "a1"}} {})]
+    (is (re-find #"type what to do instead" (texts out)))
+    (is (empty? (nodes-of :button out)) "the buttons step aside while the note is written")))
+
+(deftest a-multi-select-question-ticks-options-and-confirms-them
+  (let [answered (atom nil)
+        toggled (atom nil)
+        q {:id "q1" :questions [{:question "which?" :multi true :options ["a" "b" "c"]}]}
+        out (render :widget/approvals {:approvals [q] :question-selected #{0 2}
+                                       :on {:answer #(reset! answered %&)
+                                            :toggle-option #(reset! toggled %)}} {})
+        boxes (nodes-of :checkbox out)]
+    (is (= [true false true] (mapv #(:checked (props-of %)) boxes)))
+    ((:on-change (props-of (second boxes))) true)
+    (is (= 1 @toggled))
+    ((:on-click (props-of (first (filter #(= "confirm" (:label (props-of %))) (nodes-of :button out))))))
+    (is (= ["q1" 0 [["a" "c"]]] @answered) "the ticked labels, as one answer")
+    (is (re-find #"(?i)reject" (texts out)) "and it can be rejected")))
 
 (deftest with-nothing-pending-the-dialog-is-out-of-the-way
   ;; It sits in the layout permanently, so with no question it must occupy
@@ -650,3 +721,53 @@
     (doseq [[tag f] @layout/widgets]
       (testing (str tag)
         (is (vector? (f half {})))))))
+
+;; --- the frame (karamazov-tq7m.3) ---------------------------------------------
+
+(deftest a-rule-sets-its-title-into-the-line
+  (let [out (render :widget/rule {} {:title "AGENT LOG" :width 30})]
+    (is (some #{"[AGENT LOG]"} (texts-of out)))
+    (is (= 30 (:width (props-of out))))))
+
+(def ^:private faces
+  {:avatar {:faces {:idle "(o o)" :thinking "(o .)" :reading "[@ @]" :alert "(O_O)"
+                    :error "(x_x)" :done "(^_^)"}
+            :tools {"read_file" :reading}}})
+
+(defn- face [state]
+  (first (filter #(re-find #"\(|\[" %) (texts-of (render :widget/avatar (assoc state :settings faces) {})))))
+
+(deftest the-avatar-says-what-the-agent-is-doing
+  (is (= "(o o)" (face {})) "no run")
+  (is (= "(o .)" (face {:run-id "R" :detail {:run {:status "running"}}})))
+  (is (= "[@ @]" (face {:run-id "R" :detail {:run {:status "running"}}
+                        :branch {:turns [{:tool_name "read_file"}]}})))
+  (is (= "(O_O)" (face {:run-id "R" :approvals [{:id "a"}]})) "somebody has to answer")
+  (is (= "(x_x)" (face {:run-id "R" :detail {:run {:status "failed"}}})))
+  (is (= "(^_^)" (face {:run-id "R" :detail {:run {:status "done"}}}))))
+
+(deftest the-footer-shows-the-approval-mode-and-whether-the-run-is-pushed
+  (let [said (texts (render :widget/status {:run-id "R" :live? true
+                                            :project {:approval_mode "block"}} {}))]
+    (is (re-find #"mode:block" said))
+    (is (re-find #"live" said)))
+  (is (re-find #"polling" (texts (render :widget/status {:run-id "R"} {})))))
+
+;; --- slash commands (karamazov-tq7m.5) ----------------------------------------
+
+(def ^:private cmds
+  {:commands {"/model" {:do :model :args "[id]" :doc "switch the model"}
+              "/mode" {:do :mode :args "[refuse|block]" :doc "the approval mode"}}})
+
+(deftest typing-a-slash-shows-what-it-could-be
+  (let [said (texts (render :widget/command-hints {:settings cmds :input "/mo"} {}))]
+    (is (str/includes? said "/mode [refuse|block] — the approval mode"))
+    (is (str/includes? said "/model [id] — switch the model")))
+  (testing "once the name is typed, its usage"
+    (is (str/includes? (texts (render :widget/command-hints {:settings cmds :input "/model gl"} {}))
+                       "/model [id]")))
+  (testing "an unknown one says so"
+    (is (re-find #"unknown command /zz" (texts (render :widget/command-hints
+                                                        {:settings cmds :input "/zz x"} {})))))
+  (testing "and nothing at all while typing a directive"
+    (is (= [:empty] (render :widget/command-hints {:settings cmds :input "fix it"} {})))))

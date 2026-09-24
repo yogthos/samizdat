@@ -33,6 +33,11 @@
    :local openai/local
    :ollama ollama/ollama})
 
+(defn providers
+  "Every provider an adapter exists for."
+  []
+  (keys adapters))
+
 (defn adapter-for
   "The adapter for a provider keyword. Throws naming what is available rather
   than returning nil, since a nil adapter fails much later and less clearly."

@@ -43,6 +43,7 @@
             ;; they compile the normal way first and the AOT cache stays sound
             ;; (samizdat.cell-prelude explains the -dirty-build failure it fixes).
             [samizdat.cell-prelude]
+            [clojure.tools.logging :as log]
             [samizdat.userspace :as userspace]))
 
 (defn resource-dir
@@ -113,34 +114,29 @@
          (filter #(str/ends-with? % ".clj"))
          sort)))
 
-(def shipped-cells
-  "The cell files that ship with the harness, as RESOURCE names.
+(defn shipped-cells
+  "The cell files that ship with the harness, as RESOURCE paths, in load
+  order — the :cells list of the shipped role map (resources/userspace.edn).
 
-  Enumerated rather than globbed, and read through io/resource, so the shipped
-  cells load from a built binary that has no resources/ on disk (deps.edn
-  :jolt/build :embed bakes them in). A classpath has no directory listing and
-  an embedded resource has no filesystem path for `.getPath` to name, so the
-  glob above finds nothing there and the kernel registered ZERO cells — which
-  surfaces as `Cell :loop/assemble not found in registry` the moment a run
-  tries to compile its loop. Same reasoning as workflow/factory-manifest-names;
-  both are pinned against their directory by a test so the list cannot drift.
+  Read through io/resource, so the shipped cells load from a built binary
+  that has no resources/ on disk (deps.edn :jolt/build :embed bakes them
+  in): a classpath has no directory listing and an embedded resource has no
+  filesystem path, so a glob finds nothing there and the kernel registered
+  ZERO cells — which surfaces as `Cell :loop/assemble not found in registry`
+  the moment a run tries to compile its loop. userspace-files-test pins the
+  map against resources/.
 
   Lowest precedence: a project's .samizdat/cells override still loads after
-  these and wins, and in a source checkout the dir scan reads the very same
-  files, so a shipped cell edited in place is picked up from disk."
-  ["cells/beam.clj" "cells/board.clj" "cells/compaction.clj" "cells/critic.clj"
-   "cells/decompose.clj"
-   "cells/feature.clj" "cells/loop.clj" "cells/probe.clj" "cells/repair.clj"
-   "cells/oversight.clj"
-   "cells/repl.clj"
-   "cells/team.clj"])
+  these and wins."
+  []
+  (:cells (userspace/template-map)))
 
 (defn- shipped-sources
   "The shipped cells as {:id :content} — read from the classpath (embedded or
   not). Skips any whose dir scan already produced it, so a source checkout
   loads each file once and from disk."
   [covered]
-  (for [r shipped-cells
+  (for [r (shipped-cells)
         :let [url (io/resource r)]
         :when (and url (not (contains? covered (last (str/split r #"/")))))]
     {:id r :content (slurp url) :file? false}))
@@ -302,11 +298,11 @@
     (load-string content))
   (defcell-ids content))
 
-(def ^:private cell-names
+(defn- cell-names
   "The names the shipped cell templates are known by in the userspace store —
-  the resource basename without its extension. `shipped-cells` stays the
-  resource list; this is the same set as store keys."
-  (mapv #(str/replace (last (str/split % #"/")) #"\.clj$" "") shipped-cells))
+  the resource basename without its extension."
+  []
+  (mapv #(str/replace (last (str/split % #"/")) #"\.clj$" "") (shipped-cells)))
 
 (defn- project-sources
   "The project's cells as {:id :content}, seeded from the shipped templates on
@@ -330,13 +326,18 @@
                              [(str/replace (last (str/split (str p) #"/"))
                                            #"\.clj$" "")
                               (slurp p)]))]
+    ;; A dir file that differs from the store's copy is recorded as the
+    ;; project's newest version. It used to be saved only when the store had
+    ;; NOTHING under the name — and a shipped cell always has its template
+    ;; there — so an override of a shipped cell never landed and the store's
+    ;; copy ran instead (karamazov-1a51.4).
     (doseq [[nm body] from-dirs]
-      (when-not (userspace/body :cell nm)
+      (when (and (userspace/bound?) (not= body (userspace/body :cell nm)))
         (userspace/save! :cell nm body)))
-    (let [bodies (merge (userspace/seed-all! :cell cell-names)
-                        ;; Unbound (a test, a bare REPL) there is no store to
-                        ;; seed into, so the dir content IS the source.
-                        (when-not (userspace/bound?) from-dirs))
+    (let [bodies (merge (userspace/seed-all! :cell (cell-names))
+                        ;; And the dir content wins the load either way —
+                        ;; unbound (a test, a bare REPL) it is the only source.
+                        from-dirs)
           ;; Shipped templates load FIRST, in their shipped order; everything
           ;; the project added after them, sorted for determinism. Later
           ;; load-string wins in the registry, so this is what makes "a
@@ -344,10 +345,37 @@
           ;; a plain (sort-by key) made precedence depend on how a project
           ;; name happened to sort against the template basenames
           ;; (karamazov-blt.8).
-          shipped-order (into {} (map-indexed (fn [i n] [n i]) cell-names))]
+          shipped-order (into {} (map-indexed (fn [i n] [n i]) (cell-names)))]
       (for [[nm body] (sort-by (fn [[nm _]] [(get shipped-order nm 999999) nm])
                                bodies)]
         {:id nm :content body :file? false :store? true}))))
+
+(defn project-cells-dir
+  "Where a project keeps its cells: <root>/.samizdat/cells."
+  []
+  (some-> (userspace/project-dir) (str "/cells")))
+
+(defn- file-sources
+  "A project's cells in file mode: the :cells list of its role map, in that
+  order — and nothing else. The project owns its whole set, so a cell it
+  dropped from the map stays dropped and one it changed is its own. Each text
+  comes through userspace, so an edit that does not pass its check is not
+  loaded: the last version that passed is. Keyed by PATH, which is what the
+  mutation protocol's file checkpoint restores."
+  []
+  (for [rel (:cells (userspace/role-map))
+        :let [p (str (userspace/project-dir) "/" rel)
+              content (userspace/body :cell (str/replace (last (str/split rel #"/")) #"\.clj$" ""))]
+        :when (or content
+                  (do (log/warn "cells: the role map lists" rel "but it has no text that passes")
+                      false))]
+    {:id p :content content :file? true}))
+
+(defn current-dirs
+  "The cell dirs the running image loads from: the project's own in file
+  mode, the shipped library plus .samizdat/cells otherwise."
+  []
+  (if (userspace/files?) [(project-cells-dir)] default-dirs))
 
 (defn- dir-sources
   "The legacy source set: shipped resources plus a scan of `dirs`, with no
@@ -391,9 +419,10 @@
    ;; nil means "the project"; an explicit dir list means the legacy scan.
    ;; Distinguishing on the ARGUMENT rather than on a flag keeps every
    ;; existing caller and test meaning exactly what it meant.
-   (let [sources (if (nil? dirs)
-                   (project-sources default-dirs)
-                   (dir-sources dirs))]
+   (let [sources (cond
+                   (some? dirs) (dir-sources dirs)
+                   (userspace/files?) (file-sources)
+                   :else (project-sources default-dirs))]
      (if (unchanged-since-last-load? sources)
        @loaded-cells
        (load-sources! dirs sources)))))
@@ -432,3 +461,23 @@
          (throw (ex-info (str "cell load failed; registry rolled back: "
                               (ex-message e))
                          {:dirs dirs} e))))))
+
+;; A cell edit is checked before it is loaded for real (karamazov-1a51.8): it
+;; has to read, it has to define a cell, and it has to LOAD — tried inside a
+;; registry snapshot that is put back whatever happens, so a candidate that
+;; fails half way registers nothing. Whether the manifests still compile
+;; against it is the manifest check's, and the mutation protocol's for an edit
+;; made through the cell tool.
+(userspace/register-validator!
+ :cell
+ (fn [_ text]
+   (let [forms (try {:ids (defcell-ids text)}
+                    (catch Throwable e {:problem (userspace/problem :read e)}))]
+     (cond
+       (:problem forms) (:problem forms)
+       (empty? (:ids forms)) {:stage :shape :message "defines no cell"}
+       :else
+       (let [snapshot (cell/registry-snapshot)]
+         (try (binding [*ns* *ns*] (load-string text)) nil
+              (catch Throwable e (userspace/problem :load e))
+              (finally (cell/registry-restore! snapshot))))))))

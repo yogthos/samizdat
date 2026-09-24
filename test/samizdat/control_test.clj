@@ -57,6 +57,13 @@
   `(let [~binding (db/open! ":memory:")]
      (try ~@body (finally (db/close ~binding)))))
 
+;; A throwaway project directory for a test that starts the system: start!
+;; seeds the project's workflow into <root>/.samizdat/ on its first run, and
+;; the default root is the working directory — this checkout.
+(defn- temp-root []
+  (str (java.nio.file.Files/createTempDirectory
+        "samizdat-control-root" (make-array java.nio.file.attribute.FileAttribute 0))))
+
 (deftest steer-queues-a-message-directive
   (with-db [c]
     (let [rid (runs/start-run! c {:problem "p"})]
@@ -247,7 +254,7 @@
   (let [called (atom 0)]
     (with-redefs [gates/reload-config! (fn [] (swap! called inc))]
       (system/start! (fn [_] {:status 200 :headers {} :body "ok"})
-                     {:db {:path ":memory:"} :http {:port 0}})
+                     {:db {:path ":memory:"} :http {:port 0} :run {:root (temp-root)}})
       (system/stop!))
     (is (= 1 @called) "start! refreshed the cached gate thresholds")))
 
@@ -797,7 +804,7 @@
   ;; before any run touches them — and a broken cell stops the boot instead
   ;; of the first run.
   (system/start! (fn [_] {:status 200 :headers {} :body "ok"})
-                 {:db {:path ":memory:"} :http {:port 0}})
+                 {:db {:path ":memory:"} :http {:port 0} :run {:root (temp-root)}})
   (try
     (is (seq (cells/loaded)) "the cell registry is populated before the first run")
     (finally (system/stop!))))
@@ -858,3 +865,16 @@
                          (map :content))]
           (is (some #(= "<tool_result tool=\"read_file\">\ncontents\n</tool_result>" %) users))
           (is (some #(= "[harness] No tool-call block" %) users)))))))
+
+(deftest a-start-that-fails-leaves-no-project-bound
+  ;; start! binds the project, opens the db and starts the pump before it
+  ;; binds the port. When a later step threw, all of that stayed: every
+  ;; userspace read in the process went on to a project nobody had started.
+  (let [root (temp-root)]
+    (with-redefs [ring-chez.adapter/run-server (fn [& _] (throw (ex-info "port taken" {})))]
+      (is (thrown? Throwable
+                   (system/start! (fn [_] {:status 200 :headers {} :body "ok"})
+                                  {:db {:path ":memory:"} :http {:port 0} :run {:root root}}))))
+    (is (not (system/started?)))
+    (is (nil? (samizdat.userspace/project-root)) "the project it bound is let go")
+    (is (not (samizdat.userspace/files?)))))

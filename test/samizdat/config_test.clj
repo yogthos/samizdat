@@ -20,6 +20,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.config :as config]
+            [samizdat.layers :as layers]
             [samizdat.store.db]))
 
 (deftest provider-llm-builds-a-named-provider-config
@@ -162,7 +163,7 @@
   (let [home (temp-config-home "{:llm {:provider :glm}}")
         root (temp-project-root nil)]
     (try
-      (with-redefs [config/config-home (fn [] home)]
+      (with-redefs [layers/config-home (fn [] home)]
         (let [{:keys [provider base-url model temperature]}
               (:llm (config/load-config {:run {:root root}}))]
           (is (= :glm provider))
@@ -176,7 +177,7 @@
     (let [home (temp-config-home "{:llm {:provider :glm}}")
           root (temp-project-root "{:llm {:provider :deepseek}}")]
       (try
-        (with-redefs [config/config-home (fn [] home)]
+        (with-redefs [layers/config-home (fn [] home)]
           (let [{:keys [provider base-url model]}
                 (:llm (config/load-config {:run {:root root}}))]
             (is (= :deepseek provider))
@@ -188,7 +189,7 @@
     (let [home (temp-config-home "{:llm {:provider :glm :model \"glm-4.6\"}}")
           root (temp-project-root nil)]
       (try
-        (with-redefs [config/config-home (fn [] home)]
+        (with-redefs [layers/config-home (fn [] home)]
           (let [{:keys [base-url model]} (:llm (config/load-config {:run {:root root}}))]
             (is (= "glm-4.6" model) "the pin wins over the preset")
             (is (str/includes? base-url "bigmodel") "the rest of the preset still applies")))
@@ -201,7 +202,7 @@
     (let [home (temp-config-home "{:llm {:provider \"glm\"}}")
           root (temp-project-root nil)]
       (try
-        (with-redefs [config/config-home (fn [] home)]
+        (with-redefs [layers/config-home (fn [] home)]
           (is (= :glm (get-in (config/load-config {:run {:root root}}) [:llm :provider]))))
         (finally (delete-recursively (java.io.File. home))
                  (delete-recursively (java.io.File. root))))))
@@ -209,7 +210,7 @@
     (let [home (temp-config-home "{:llm {:provider :nope}}")
           root (temp-project-root nil)]
       (try
-        (with-redefs [config/config-home (fn [] home)]
+        (with-redefs [layers/config-home (fn [] home)]
           (is (thrown? Exception (config/load-config {:run {:root root}}))))
         (finally (delete-recursively (java.io.File. home))
                  (delete-recursively (java.io.File. root)))))))
@@ -218,7 +219,7 @@
   (let [home (temp-config-home "{:http {:port 4100} :llm {:model \"global-model\" :base-url \"http://global\"}}")
         root (temp-project-root "{:llm {:model \"project-model\"}}")]
     (try
-      (with-redefs [config/config-home (fn [] home)]
+      (with-redefs [layers/config-home (fn [] home)]
         (testing "global-config reads <config-home>/samizdat/config.edn"
           (is (= {:http {:port 4100} :llm {:model "global-model" :base-url "http://global"}}
                  (config/global-config))))
@@ -247,7 +248,7 @@
   (let [home (temp-config-home "{:eval {:mode :off}}")
         root (temp-project-root nil)]
     (try
-      (with-redefs [config/config-home (fn [] home)]
+      (with-redefs [layers/config-home (fn [] home)]
         (is (= :off (config/eval-mode root)))
         (testing "and the project can still override it"
           (spit (java.io.File. (str root "/.samizdat") "config.edn") "{:eval {:mode :harness}}")
@@ -260,9 +261,9 @@
   (let [home (temp-config-home nil)
         root (temp-project-root nil)]
     (try
-      (with-redefs [config/config-home (fn [] home)]
+      (with-redefs [layers/config-home (fn [] home)]
         (let [with-home (config/load-config {:run {:root root}})
-              without (with-redefs [config/config-home (fn [] nil)]
+              without (with-redefs [layers/config-home (fn [] nil)]
                         (config/load-config {:run {:root root}}))]
           (is (= with-home without)
               "an absent global file contributes nothing, byte for byte")))
@@ -273,7 +274,7 @@
 (deftest a-broken-global-file-is-ignored-like-a-broken-project-file
   (let [home (temp-config-home "{:http {:port ")]
     (try
-      (with-redefs [config/config-home (fn [] home)]
+      (with-redefs [layers/config-home (fn [] home)]
         (is (= {} (config/global-config))))
       (finally (delete-recursively (java.io.File. home))))))
 
@@ -283,7 +284,7 @@
   (let [home (temp-config-home "{}")
         root (temp-project-root nil)]
     (try
-      (with-redefs [config/config-home (fn [] home)]
+      (with-redefs [layers/config-home (fn [] home)]
         (let [srcs (config/config-sources root)]
           (is (= [:global :project] (mapv :layer srcs)))
           (is (= (str home "/samizdat/config.edn") (:path (first srcs))))
@@ -291,7 +292,7 @@
           (is (= (str root "/.samizdat/config.edn") (:path (second srcs))))
           (is (false? (:present? (second srcs))))))
       (testing "no config home at all is reported, not thrown"
-        (with-redefs [config/config-home (fn [] nil)]
+        (with-redefs [layers/config-home (fn [] nil)]
           (let [[g] (config/config-sources root)]
             (is (= :global (:layer g)))
             (is (nil? (:path g)))
@@ -343,3 +344,39 @@
       (finally
         (samizdat.store.db/close c)
         (delete-recursively (java.io.File. root))))))
+
+;; --- one resolver for the file layers (karamazov-1a51.2) ---------------------
+
+(deftest an-env-named-config-file-sits-above-the-project-file
+  (let [home (temp-config-home "{:http {:port 4100}}")
+        root (temp-project-root "{:http {:port 4242} :llm {:model \"project-model\"}}")
+        envf (str root "/elsewhere.edn")]
+    (spit envf "{:http {:port 4343}}")
+    (try
+      (with-redefs [layers/config-home (fn [] home)
+                    layers/getenv (fn [k] (when (= k "SAMIZDAT_CONFIG_FILE") envf))]
+        (is (= {:http {:port 4343} :llm {:model "project-model"}}
+               (config/file-config root)))
+        (testing "and the boot log names it, highest last like the rest"
+          (is (= [:global :project :env] (mapv :layer (config/config-sources root))))
+          (is (= envf (:path (last (config/config-sources root)))))))
+      (finally
+        (delete-recursively (java.io.File. root))
+        (delete-recursively (java.io.File. home))))))
+
+(deftest a-broken-project-file-no-longer-hides-the-global-one
+  ;; A project file that did not parse used to be read as {} — fine on its
+  ;; own — but it was merged as one map with the global file, and the whole
+  ;; project layer vanishing is the same as it never having been there. The
+  ;; difference now is the boot log: the broken file is NAMED.
+  (let [home (temp-config-home "{:http {:port 4100}}")
+        root (temp-project-root "{:http {:port ")]
+    (try
+      (with-redefs [layers/config-home (fn [] home)]
+        (is (= {:http {:port 4100}} (config/file-config root)))
+        (let [p (some #(when (= :project (:layer %)) %) (config/config-sources root))]
+          (is (true? (:present? p)))
+          (is (re-find #"did not parse" (str (:error p))))))
+      (finally
+        (delete-recursively (java.io.File. root))
+        (delete-recursively (java.io.File. home))))))

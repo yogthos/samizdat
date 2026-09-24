@@ -31,56 +31,12 @@
 
 (selmer-util/turn-off-escaping!)
 
-(def shipped-prompts
-  "Every prompt name the harness ships, ENUMERATED not globbed.
-
-  Same reason as `cells/shipped-cells`: `jolt build` bakes resources/ into the
-  binary, and an embedded resource has no filesystem path for a glob to walk —
-  a built binary run outside the project root would find nothing and report
-  that the harness has no prompts. `prompt-test` pins this against the
-  directory, so it cannot drift on its own.
-
-  Used by the `prompt` tool to list what a project can edit. Reading one still
-  goes through the userspace seam, which is what decides whether the project's
-  version or the template answers."
-  ["acceptance-failed" "acceptance-judge" "architect" "ask-tool" "assembly" "branch-cap"
-   "branch-out" "cell-effects" "cell-shadowed" "cell-tool" "clojure-syntax"
-   "compaction-marker" "compaction-summary" "context-empty" "critic"
-   "critic-system" "crossover" "cull-reprieve" "cycle-unguarded" "digest"
-   "design-brief" "digest-tool" "directive-refused" "directive-rejected" "dispatch-opaque" "dispatch-order"
-   "dispatch-refused" "drift" "emergency-review" "eval-calls-main"
-   "eval-error" "eval-image" "eval-syntax" "eval-terminates-process"
-   "experiment-line" "exposure-refused" "experiment-tool" "explore-cap" "failure-log"
-   "fetch-turn-miss" "file-thrash" "file-tool" "fork-thesis"
-   "glob-tool" "grep-tool" "image-denied" "image-down" "image-off"
-   "image-timeout" "instructions-dir" "instructions-root" "intervene-tool" "judge" "judge-exemptions" "judge-plan" "judge-verify"
-   "learned-since"
-   "judge-user" "juvenile-grace" "kernel-write-refused" "last-call"
-   "ledger" "manifest-tool" "manual-group" "mechanics-streak" "memory-stale-completion"
-   "memory-tool" "memory-unverified" "metrics-findings" "milestone" "mutation-refused"
-   "no-call-exhausted" "no-call-imitation" "no-call-periodic" "no-call-reason"
-   "no-call-withheld"
-   "no-edits" "over-budget" "orient-inject" "orienting" "outside-role-surface" "oversight-pass"
-   "parked" "parse-error-causes" "parse-error-repaired" "plan-last-call"
-   "plan-not-landed" "plan-tool" "plan-wind-down" "planner"
-   "planning-declares-a-plan" "policy-tool" "probe-candidates"
-   "probe-steer" "problem" "progress-stalled" "prologue-cap"
-   "prompt-tool" "read-too-large" "repl-needs-a-plan" "repopulate"
-   "residual-report" "retirement" "retry-diagnosis" "review" "rfc-brief"
-   "roles/implementor" "roles/reviewer" "roles/supervisor" "run-health"
-   "run-start-timeout" "safe-state" "session-block" "shared-artifacts"
-   "shared-tree" "shell-read-too-large" "shell-refused" "split-decision" "split-tool"
-   "stale-write" "storm" "storm-force" "storm-oscillation"
-   "stuck" "suspect-the-test" "system" "system-honesty" "system-structure"
-   "system-tools" "system-turn" "task-busy"
-   "task-claimed" "task-current" "task-folded" "task-none" "task-reflection"
-   "task-reflection-input" "task-required" "task-tests" "team-worker"
-   "thinking-runaway" "trajectory-judge" "turn-deadline" "turn-interrupted"
-   "uncertain-effect"
-   "user-simulator" "verify-hollow" "verify-red" "verify-timeout" "verify-unknown"
-   "watch-intervention" "webfetch-tool" "websearch-tool" "wind-down" "workflow-history"
-   "workflow-select"
-   "workflow-select-system"])
+(defn shipped-prompts
+  "Every prompt role the harness ships, from the shipped role map
+  (resources/userspace.edn). What a project HAS is its own map —
+  `userspace/roles` — and that is what a lister should read."
+  []
+  (userspace/shipped-roles :prompt))
 
 (defn prompt
   "The text of prompt `name` for the current project.
@@ -188,3 +144,12 @@
   (if-let [entries (get (chains) k)]
     (resolve-chain entries)
     (userspace/body :prompt (name k))))
+
+;; A prompt edit is checked before it is what renders (karamazov-1a51.8): the
+;; template has to parse. Whether every variable it names is supplied is the
+;; caller's business and not knowable from the text alone.
+(userspace/register-validator!
+ :prompt
+ (fn [_ text]
+   (try (render-str text {}) nil
+        (catch Throwable e (userspace/problem :render e)))))

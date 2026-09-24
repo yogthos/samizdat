@@ -79,12 +79,20 @@
 ;; (karamazov-blt.8).
 (defonce ^:private generation (atom 0))
 
+;; {[kind name] text} — in file mode, the text the store is known to hold as
+;; the latest version, so an unchanged file costs no query to confirm it is
+;; unchanged. Dropped with the read cache.
+(defonce ^:private synced (atom {}))
+
+(declare reset-checks!)
+
 (defn invalidate!
   "Drop the read cache. Called on every write; public so a caller that changed
   the store behind this namespace's back can say so."
   []
   (swap! generation inc)
   (reset! cache {})
+  (reset! synced {})
   nil)
 
 (defn bind!
@@ -97,6 +105,7 @@
   (let [prev @project]
     (reset! project conn)
     (invalidate!)
+    (reset-checks!)
     prev))
 
 (defn unbind!
@@ -105,6 +114,7 @@
   []
   (reset! project nil)
   (invalidate!)
+  (reset-checks!)
   nil)
 
 (defn conn
@@ -131,6 +141,8 @@
   [dir]
   (let [prev @root]
     (reset! root (some-> dir str))
+    (invalidate!)
+    (reset-checks!)
     prev))
 
 (defn project-root
@@ -219,6 +231,8 @@
     (throw (ex-info (str "no template path for userspace kind " (pr-str kind))
                     {:kind kind :name name}))))
 
+(declare role-path template-map)
+
 (defn template
   "The shipped template body for `kind`/`name`, or nil when nothing ships
   under that name.
@@ -227,7 +241,9 @@
   shipped — a cell the supervisor wrote, a manifest it authored — and those
   have no template by definition."
   [kind name]
-  (some-> (io/resource (template-path kind name)) slurp))
+  (some-> (io/resource (or (role-path kind name (template-map))
+                           (template-path kind name)))
+          slurp))
 
 ;; --- prompt FILES ------------------------------------------------------------
 ;;
@@ -312,9 +328,641 @@
                          (concat project provider model)))))
     {}))
 
+;; --- the project's FILES -----------------------------------------------------
+;;
+;; A project's workflow lives in files under <root>/.samizdat/, and WHICH files
+;; is data too: .samizdat/userspace.edn is a ROLE MAP — {:manifests {role path}
+;; :prompts {role path} :policies {role path} :cells [path …]} — and every read
+;; asks it which file serves a role. Nothing in src/ lists what a project has;
+;; the agent can point a role at another file, add roles, or drop them.
+;; resources/userspace.edn is the shipped map, and the first run copies it
+;; with every file it names (`seed-project!`). The templates are a generic
+;; starting point, not a layer underneath: a role the project's map lacks is
+;; refused, not quietly answered by the shipped copy.
+;;
+;; The STORE becomes the history. A save writes the file and appends a
+;; version with its rationale; a revert rewrites the file from a version; an
+;; edit made to the file directly — by a person, or by the agent's own file
+;; tools — is appended as a version the next time it is read. Standing, drift
+;; and prescription keep reading the same rows they always did.
+;;
+;; FILE MODE needs both halves bound, a root and a store: without a directory
+;; there are no files, and without a store there is no history to keep. A
+;; test or a bare REPL that binds only a store gets the store, as before.
+
+(def layered-policies
+  "Policy names that are LAYERED settings files (samizdat.layers), not part of
+  the project's workflow: never in a role map and never copied into the
+  project, because a full copy in .samizdat/ would sit above a person's
+  ~/.config/samizdat/ file and hide it. A save still writes the project's
+  <name>.edn — that is the project layer."
+  #{"tui" "gui" "webui"})
+
+(defn files?
+  "Whether reads and writes go to the project's files."
+  []
+  (boolean (and (conn) (project-root))))
+
+(defn project-dir
+  "<root>/.samizdat, or nil with no root bound."
+  []
+  (some-> (project-root) (str "/.samizdat")))
+
+;; {path {:stamp [mtime length] :text}} — so a hot read is a stat, not a read.
+(defonce ^:private file-cache (atom {}))
+
+(defn- file-text
+  "The text at `path`, or nil when there is no such file."
+  [path]
+  (let [f (io/file (str path))]
+    (when (.isFile f)
+      (let [stamp [(.lastModified f) (.length f)]
+            c (get @file-cache path)]
+        (if (= stamp (:stamp c))
+          (:text c)
+          (let [t (slurp f)]
+            (swap! file-cache assoc path {:stamp stamp :text t})
+            t))))))
+
+(defn- write-file!
+  "Write `text` at `path` through a sibling temp file and a rename, so a
+  reader never sees half of it."
+  [path text]
+  (let [f (io/file (str path))
+        tmp (io/file (str path ".tmp"))]
+    (.mkdirs (.getParentFile f))
+    (spit tmp (str text))
+    (when-not (.renameTo tmp f)
+      (spit f (str text))
+      (.delete tmp))
+    (swap! file-cache dissoc (str path))
+    nil))
+
+;; --- validation --------------------------------------------------------------
+;;
+;; An edit to a project's workflow is CHECKED before it is what runs. Each kind
+;; has a validator — registered by the namespace that owns the kind, since that
+;; is the code that knows what "works" means for it — taking the role's name
+;; and the candidate text and answering nil, or a PROBLEM:
+;;
+;;   {:stage :read|:compile|:render|:load|:shape|… :message "…" :line L :column C}
+;;
+;; A text that fails is never recorded and never runs: the last version that
+;; passed keeps running, the file is left as written so it can be fixed in
+;; place, and the rejection is held — `rejection`, `rejections` — until a text
+;; that passes replaces it. Whoever made the edit is told: a file tool's write
+;; hears it in its own result (`check-written!`); anything else is reported
+;; through `on-reject!` and listed for the supervisor.
+
+(defonce ^:private validators (atom {}))
+
+(defn register-validator!
+  "Install `f` — (fn [name text] -> nil | problem) — as `kind`'s validator.
+  nil removes it."
+  [kind f]
+  (if f (swap! validators assoc kind f) (swap! validators dissoc kind))
+  nil)
+
+(def ^:private validator-owners
+  "Which namespace registers each kind's validator. A validator is installed
+  as its owner loads, and an owner nothing happened to load would let every
+  edit of its kind through unchecked — so asking for a validator loads its
+  owner first."
+  {:manifest 'samizdat.manifests
+   :prompt   'samizdat.prompt
+   :cell     'samizdat.cells
+   :policy   'samizdat.agent.tools.policy})
+
+(defn validator
+  "`kind`'s validator, or nil."
+  [kind]
+  (or (get @validators kind)
+      (when-let [owner (get validator-owners kind)]
+        (require owner)
+        (get @validators kind))))
+
+(defn problem
+  "A throwable as a problem at `stage`, with the reader's line and column when
+  it carried them."
+  [stage ^Throwable e]
+  (let [d (ex-data e)
+        line (or (:clojure.error/line d) (:line d))
+        col (or (:clojure.error/column d) (:column d))]
+    (cond-> {:stage stage :message (or (ex-message e) (str e))}
+      line (assoc :line line)
+      col (assoc :column col))))
+
+(defn read-edn
+  "`text` as EDN: {:value v}, or {:problem …} at the :read stage."
+  [text]
+  (try {:value (edn/read-string (str text))}
+       (catch Throwable e {:problem (problem :read e)})))
+
+(defn- check
+  "The problem with `text` as `kind`/`name`, or nil. A validator that throws
+  is itself the problem, at :check — a validator bug must not wave an edit
+  through."
+  [kind name text]
+  (when-let [f (validator kind)]
+    (try (f (str name) text)
+         (catch Throwable e (problem :check e)))))
+
+;; {[kind name] {:text :problem}} — the verdict on the last text checked, so a
+;; broken file read on every render is checked once.
+(defonce ^:private verdicts (atom {}))
+
+;; {[kind name] {:kind :name :path :text :problem :by}} — the edits currently
+;; refused, until a passing text replaces them.
+(defonce ^:private rejected (atom {}))
+
+(def ^:dynamic *candidate*
+  "{[kind name] text} — texts that `body` answers with in place of the
+  project's, for the extent of a validator that has to exercise the LIVE
+  reader (a policy table's reload) against a text not yet accepted."
+  {})
+
+(defn with-candidate
+  "Call `f` with `kind`/`name` read as `text`, then refill whatever `refill`
+  (a no-arg fn) refills from the text that should be live now — the last
+  version that passed — so a rejected candidate does not linger in a cache."
+  [kind name text f refill]
+  (try
+    (binding [*candidate* (assoc *candidate* [kind (str name)] text)]
+      (f))
+    (finally
+      ;; Only with a text to refill FROM: with none, the refill would read the
+      ;; project's file, and checking that file is what is running now.
+      (when-let [good (some-> (conn) (store/load-latest kind (str name)) :body)]
+        (binding [*candidate* (assoc *candidate* [kind (str name)] good)]
+          (try (refill) (catch Throwable _ nil)))))))
+
+(def ^:dynamic *writer*
+  "Who is writing, while a file tool checks its own write: {:branch-id …}.
+  A rejection made under it has been told to its writer already."
+  nil)
+
+(defn- default-on-reject [r]
+  (log/warn "userspace: REJECTED" (:path r) "—"
+            (name (get-in r [:problem :stage] :check))
+            (get-in r [:problem :message])
+            (if-let [l (get-in r [:problem :line])] (str "(line " l ")") "")))
+
+(defonce ^:private on-reject (atom default-on-reject))
+
+(defn on-reject!
+  "Install `f`, called once with each NEW rejection. Returns the previous
+  hook; nil restores the default, which logs."
+  [f]
+  (let [prev @on-reject]
+    (reset! on-reject (or f default-on-reject))
+    prev))
+
+(defn- verdict
+  "Check `text` as `kind`/`name` (once per text), holding or clearing the
+  rejection. Returns the problem, or nil when it passes."
+  [kind name path text]
+  (let [k [kind name]
+        v (get @verdicts k)
+        ;; A failing verdict is not reused for the ROLE MAP: whether its
+        ;; files exist is not a property of its text, and a map waiting on a
+        ;; file being written must see the file the moment it lands.
+        p (if (and v (= text (:text v))
+                   (not (and (= :map kind) (:problem v))))
+            (:problem v)
+            (let [p (check kind name text)]
+              (swap! verdicts assoc k {:text text :problem p})
+              p))]
+    (if p
+      (let [prev (get @rejected k)]
+        (when-not (= text (:text prev))
+          (let [r {:kind kind :name (str name) :path (str path) :text text
+                   :problem p :by *writer*}]
+            (swap! rejected assoc k r)
+            (@on-reject r))))
+      (swap! rejected dissoc k))
+    p))
+
+;; The last project map that read, so a map broken mid-edit does not take
+;; every role with it.
+(defonce ^:private last-good-map (atom nil))
+
+(defn- reset-checks!
+  "Forget every verdict and rejection — another project is bound."
+  []
+  (reset! verdicts {})
+  (reset! rejected {})
+  (reset! last-good-map nil)
+  nil)
+
+(defn rejection
+  "The edit of `kind`/`name` currently refused, or nil."
+  [kind name]
+  (some-> (get @rejected [kind (str name)]) (dissoc :text)))
+
+(defn rejections
+  "Every edit currently refused."
+  []
+  (mapv #(dissoc % :text) (vals @rejected)))
+
+;; --- the role map ------------------------------------------------------------
+
+(def ^:private map-key
+  {:manifest :manifests :prompt :prompts :policy :policies :cell :cells})
+
+;; {slot {:text :value}} — the last text each map was parsed from, so a map is
+;; parsed once per change. Two slots, :shipped and :project; no bound needed.
+(defonce ^:private parsed-maps (atom {}))
+
+(defn- parse-map [slot text]
+  (let [c (get @parsed-maps slot)]
+    (if (and c (= text (:text c)))
+      (:value c)
+      (let [v (try (let [m (edn/read-string (str text))] (when (map? m) m))
+                   (catch Throwable _ nil))]
+        (swap! parsed-maps assoc slot {:text text :value v})
+        v))))
+
+(defn template-map
+  "The shipped role map, resources/userspace.edn."
+  []
+  (or (some->> (io/resource "userspace.edn") slurp (parse-map :shipped)) {}))
+
+(defn map-path
+  "Where the project's role map is: <root>/.samizdat/userspace.edn."
+  []
+  (str (project-dir) "/userspace.edn"))
+
+(declare map-files)
+
+(defn role-map
+  "The role map in force: the project's in file mode, the shipped one
+  otherwise. A project map that does not read, or names a file that is not
+  there, is rejected like any other edit and the last one that passed stays
+  in force."
+  []
+  (if (files?)
+    (if-let [t (file-text (map-path))]
+      (let [m (parse-map :project t)
+            p (verdict :map "userspace" (map-path) t)]
+        (if (and m (nil? p))
+          (do (reset! last-good-map m) m)
+          (or @last-good-map m {})))
+      {})
+    (template-map)))
+
+(defn- cell-role [path]
+  (str/replace (last (str/split (str path) #"/")) #"\.clj$" ""))
+
+(defn role-path
+  "The file serving `kind`/`name` under `m` (the map in force by default),
+  relative to .samizdat/ — or nil when the map has no such role."
+  ([kind name] (role-path kind name (role-map)))
+  ([kind name m]
+   (let [name (str name)]
+     (cond
+       (and (= :policy kind) (contains? layered-policies name)) (str name ".edn")
+       (= :cell kind) (some #(when (= name (cell-role %)) %) (:cells m))
+       :else (get-in m [(map-key kind) (keyword name)])))))
+
+(defn- roles-in [m kind]
+  (if (= :cell kind)
+    (mapv cell-role (:cells m))
+    (->> (keys (get m (map-key kind)))
+         (map #(subs (str %) 1))
+         sort
+         vec)))
+
+(defn roles
+  "Every role of `kind` in the map in force, as names. Cells in load order,
+  the rest sorted."
+  [kind]
+  (roles-in (role-map) kind))
+
+(defn shipped-roles
+  "Every role of `kind` the shipped map has."
+  [kind]
+  (roles-in (template-map) kind))
+
+(defn project-path
+  "The absolute path of the file serving `kind`/`name` in the project, or
+  nil when the project's map has no such role."
+  [kind name]
+  (some->> (role-path kind name) (str (project-dir) "/")))
+
+(defn- render-map
+  "`m` as the text of a userspace.edn: `header` (the comment lines a person
+  or the agent wrote at the top) kept, then one role per line, so the file
+  stays readable after a tool adds a role to it."
+  [m header]
+  (let [section (fn [k]
+                  (let [v (get m k)]
+                    (if (= :cells k)
+                      (str " " k "\n  [" (str/join "\n   " (map pr-str v)) "]")
+                      (str " " k "\n  {"
+                           (str/join "\n   " (for [[r p] (sort-by (comp str key) v)]
+                                                (str (pr-str r) " " (pr-str p))))
+                           "}"))))
+        ks (concat (filter #(contains? m %) [:manifests :policies :cells :prompts])
+                   (remove #{:manifests :policies :cells :prompts} (keys m)))]
+    (str header
+         "{" (subs (str/join "\n\n" (for [k ks]
+                                     (if (#{:manifests :policies :cells :prompts} k)
+                                       (section k)
+                                       (str " " k " " (pr-str (get m k))))))
+                   1)
+         "}\n")))
+
+(defn- comment-header
+  "The leading comment block of a map file, verbatim."
+  [text]
+  (let [ls (take-while #(or (str/starts-with? (str/trim %) ";") (str/blank? %))
+                       (str/split-lines (str text)))]
+    (if (seq ls) (str (str/join "\n" ls) "\n") "")))
+
+(defn- map-role!
+  "Add `kind`/`name` to the project's map at `rel`, and write the map."
+  [kind name rel]
+  (let [text (file-text (map-path))
+        m (role-map)
+        m (if (= :cell kind)
+            (update m :cells (fnil conj []) rel)
+            (assoc-in m [(map-key kind) (keyword (str name))] rel))]
+    (write-file! (map-path) (render-map m (comment-header text)))
+    (reset! last-good-map m)))
+
+(defn- save-path
+  "Where a save of `kind`/`name` goes: the file its role maps to, or — for a
+  role the map does not have yet — a new file laid out like resources/, which
+  is added to the map."
+  [kind name]
+  (or (project-path kind name)
+      (let [rel (template-path kind name)]
+        (map-role! kind name rel)
+        (str (project-dir) "/" rel))))
+
+;; --- reading the files -------------------------------------------------------
+
+(defn- record-file-edit!
+  "Append `text` as a version when it is not what the store already has as
+  the latest — an edit made to the file outside the tools."
+  [kind name text]
+  (when-not (= text (get @synced [kind name]))
+    (when-let [c (conn)]
+      (let [latest (:body (store/load-latest c kind name))]
+        (when (not= text latest)
+          (store/save! c kind name text "file" nil))))
+    (swap! synced assoc [kind name] text)))
+
+(defn- last-good
+  "The last text of `kind`/`name` that passed: the store's newest version,
+  since only a passing text is ever recorded."
+  [kind name]
+  (some-> (conn) (store/load-latest kind name) :body))
+
+(defn- read-project-file
+  "`kind`/`name` from the project's files, or nil when the project's map has
+  no such role or its file is gone. A text that does not pass its kind's
+  validator is not what runs: the last version that did is returned instead.
+  A prompt may be answered by a provider or model variant; only the role's
+  own file is its history."
+  [kind name]
+  (when-let [own (project-path kind name)]
+    (let [variant (when (= :prompt kind)
+                    (let [f (prompt-file name)]
+                      (when (#{:model :provider} (:layer f)) (:path f))))
+          vt (some-> variant file-text)]
+      (if (and vt (nil? (check kind name vt)))
+        vt
+        (when-let [t (file-text own)]
+          (cond
+            (= t (get @synced [kind name])) t
+            (verdict kind name own t) (last-good kind name)
+            :else (do (record-file-edit! kind name t) t)))))))
+
+(defn check-written!
+  "After a file tool wrote `path`: when it serves a role of the project's
+  workflow, check it now and return the rejection if the edit was refused
+  ({:kind :name :path :problem}), else nil. `writer` ({:branch-id …}) is
+  recorded on the rejection — it has been told."
+  ([path] (check-written! path nil))
+  ([path writer]
+   (when (files?)
+     (let [abs (.getCanonicalPath (io/file (str path)))
+           base (.getCanonicalPath (io/file (str (project-dir))))
+           rel (when (str/starts-with? abs (str base "/")) (subs abs (inc (count base))))
+           m (role-map)
+           role (cond
+                  (nil? rel) nil
+                  (= rel "userspace.edn") [:map "userspace"]
+                  :else (some (fn [[kind n r]] (when (= r rel) [kind n])) (map-files m)))]
+       (when-let [[kind n] role]
+         (binding [*writer* writer]
+           (swap! rejected (fn [m] (if (contains? m [kind n])
+                                     (assoc-in m [[kind n] :by] writer)
+                                     m)))
+           (if (= :map kind) (role-map) (read-project-file kind n)))
+         (when-let [r (get @rejected [kind n])]
+           (when (= (:text r) (file-text abs))
+             (assoc (dissoc r :text) :path (str path)))))))))
+
+(defn- adoption-path [] (str (project-dir) "/adoption.edn"))
+
+(defn- offer-key [kind role] (str (clojure.core/name kind) "/" role))
+
+(defn- map-files
+  "Every file a role map names, as [kind role rel-path]."
+  [m]
+  (concat (for [[r p] (:manifests m)] [:manifest (subs (str r) 1) p])
+          (for [[r p] (:policies m)] [:policy (subs (str r) 1) p])
+          (for [p (:cells m)] [:cell (cell-role p) p])
+          (for [[r p] (:prompts m)] [:prompt (subs (str r) 1) p])))
+
+(defn seed-project!
+  "Copy the shipped role map, and every file it names, into the project the
+  first time samizdat runs there. `m` is the map to copy — the shipped one by
+  default; a test hands in a slice.
+
+  ONCE. While .samizdat/userspace.edn exists nothing is copied again: a
+  project that dropped a role keeps it dropped, and a template a later
+  release adds is offered to the supervisor rather than written behind its
+  back. A file that already exists is never overwritten, first run or not.
+
+  A project that ran before its workflow lived in files has its evolution in
+  the store. Those versions are not applied: they are listed under :pending in
+  .samizdat/adoption.edn, for the supervisor to adopt or not.
+
+  Returns {:written [path …] :pending [{:kind :name :version} …]}, or nil
+  outside file mode."
+  ([] (seed-project! nil))
+  ([m]
+   (when (files?)
+     (if (.isFile (io/file (map-path)))
+       {:written [] :pending []}
+       (let [c (conn)
+             shipped? (nil? m)
+             m (or m (template-map))
+             ;; What the store held BEFORE any of this: a project's own
+             ;; versions, which the templates written below would otherwise
+             ;; bury under a newer factory row.
+             pending (vec (for [kind (sort store/kinds)
+                                {:keys [name version]} (store/names c kind)
+                                :let [row (store/load-latest c kind name)]
+                                :when (and (not= "factory" (:source row))
+                                           (not (contains? layered-policies name))
+                                           (not= (:body row) (template kind name)))]
+                            {:kind kind :name name :version version}))
+             written (vec (for [[kind role rel] (map-files m)
+                                :let [t (some-> (io/resource rel) slurp)
+                                      path (str (project-dir) "/" rel)]
+                                :when (and t (not (.exists (io/file path))))]
+                            (do (write-file! path t)
+                                (store/seed! c kind role t)
+                                path)))]
+         (write-file! (map-path) (if shipped?
+                                   (slurp (io/resource "userspace.edn"))
+                                   (render-map m "")))
+         ;; What this project has SEEN of each template, so a later release
+         ;; that changes one can be told apart from the project changing it.
+         (write-file! (adoption-path)
+                      (pr-str {:seen (into {} (for [[kind role rel] (map-files m)
+                                                    :let [t (some-> (io/resource rel) slurp)]
+                                                    :when t]
+                                                [(offer-key kind role) (hash t)]))
+                               :pending pending
+                               :declined []}))
+         (invalidate!)
+         (log/info "userspace: seeded" (count written) "file(s) into" (project-dir)
+                   (if (seq pending)
+                     (str "; " (count pending) " stored version(s) await the supervisor")
+                     ""))
+         {:written written :pending pending})))))
+
+;; --- adoption ----------------------------------------------------------------
+;;
+;; What the project has not taken is OFFERED to the supervisor, never applied:
+;;
+;;   :new      a role the shipped map has and the project's does not
+;;   :updated  a role both have, whose shipped template changed since the
+;;             project last saw it, where the project's file does not already
+;;             say what the template says (:edited? when the project changed
+;;             its copy too)
+;;   :pending  a version the store held before the project's workflow lived
+;;             in files (seed-project!)
+;;
+;; .samizdat/adoption.edn remembers the answers: :seen maps each role to the
+;; hash of the template the project last saw (seeded, adopted or declined),
+;; :pending lists the store's versions not yet answered, :declined keeps each
+;; refusal with its reason for the next supervisor. jolt's `hash` is stable
+;; across processes; if a runtime changed it every template would be offered
+;; again, which is loud rather than wrong.
+
+(declare save!)
+
+(defn- adoption []
+  (or (some-> (file-text (adoption-path))
+              (#(try (edn/read-string %) (catch Throwable _ nil))))
+      {}))
+
+(defn- save-adoption! [a]
+  (write-file! (adoption-path) (pr-str a)))
+
+(defn- factory-hash
+  "The hash of the first template the store seeded for `kind`/`name` — what
+  the project saw when adoption.edn has no record of it."
+  [kind name]
+  (when-let [c (conn)]
+    (when-let [v (some #(when (= "factory" (:source %)) (:version %))
+                       (store/versions c kind name))]
+      (some-> (store/load-version c kind name v) :body hash))))
+
+(defn offers
+  "Everything on offer to this project, as {:offer :kind :name :path …}. See
+  the section comment. Empty outside file mode."
+  []
+  (if-not (files?)
+    []
+    (let [a (adoption)
+          pm (role-map)
+          seen (fn [kind role] (or (get-in a [:seen (offer-key kind role)])
+                                   (factory-hash kind role)))
+          shipped (for [[kind role rel] (map-files (template-map))
+                        :when (not (and (= :policy kind) (contains? layered-policies role)))
+                        :let [t (template kind role)]
+                        :when (and t (not= (hash t) (seen kind role)))
+                        :let [own (role-path kind role pm)]]
+                    (if-not own
+                      {:offer :new :kind kind :name role :path rel}
+                      (let [ft (file-text (str (project-dir) "/" own))]
+                        (when (not= ft t)
+                          {:offer :updated :kind kind :name role :path own
+                           :edited? (not= (some-> ft hash) (seen kind role))}))))
+          pending (for [{:keys [kind name version]} (:pending a)
+                        :let [own (role-path kind name pm)
+                              ft (some->> own (str (project-dir) "/") file-text)
+                              b (some-> (conn) (store/load-version kind name version) :body)]
+                        :when (and b (not= b ft))]
+                    {:offer :pending :kind kind :name name :version version
+                     :path (or own (template-path kind name))})]
+      (vec (concat (remove nil? shipped) pending)))))
+
+(defn offer-text
+  "The text an offer would install."
+  [{:keys [offer kind name version]}]
+  (if (= :pending offer)
+    (some-> (conn) (store/load-version kind name version) :body)
+    (template kind name)))
+
+(defn- find-offer [kind name]
+  (some #(when (and (= kind (:kind %)) (= (str name) (:name %))) %) (offers)))
+
+(defn- answered!
+  "Record that `o` has been answered, so it is not offered again."
+  [{:keys [offer kind name version]} a]
+  (save-adoption!
+   (if (= :pending offer)
+     (update a :pending (fn [ps] (vec (remove #(and (= kind (:kind %)) (= name (:name %))
+                                                    (= version (:version %)))
+                                              ps))))
+     (assoc-in a [:seen (offer-key kind name)] (hash (template kind name))))))
+
+(defn adopt!
+  "Take the offer for `kind`/`name`: its text is checked like any edit, then
+  written to the project's file (a :new role is added to the map) and
+  recorded as a version with `rationale`.
+
+  Returns {:adopted offer :version v}, {:problem p :offer offer} when the
+  text does not pass — nothing written, still on offer — or {:no-offer true}."
+  [kind name rationale]
+  (if-let [o (find-offer kind name)]
+    (let [text (offer-text o)]
+      (if-let [p (check kind (str name) text)]
+        {:problem p :offer o}
+        (let [a (adoption)]
+          (when (= :new (:offer o))
+            (write-file! (str (project-dir) "/" (:path o)) text)
+            (map-role! kind (str name) (:path o)))
+          (let [v (save! kind (str name) text rationale)]
+            (answered! o a)
+            (log/info "userspace: adopted" (clojure.core/name (:offer o))
+                      (clojure.core/name kind) name)
+            {:adopted o :version v}))))
+    {:no-offer true}))
+
+(defn decline!
+  "Answer the offer for `kind`/`name` with no, keeping `reason` for the next
+  supervisor. Writes nothing else. Returns the offer, or nil when there was
+  none."
+  [kind name reason]
+  (when-let [o (find-offer kind name)]
+    (let [a (adoption)]
+      (answered! o (update a :declined (fnil conj [])
+                           (assoc (select-keys o [:kind :name :offer :version])
+                                  :reason (str reason)))))
+    o))
+
 ;; --- reads -------------------------------------------------------------------
 
-(declare cached-body)
+(declare cached-body body-of)
 
 (defn- read-body
   [kind name]
@@ -347,9 +995,19 @@
 
   Cached per (kind, name) and invalidated on every write; see `cache`."
   [kind name]
-  (or (when (= :prompt kind)
-        (some-> (prompt-file name) :path slurp))
-      (cached-body kind name)))
+  (if-let [t (get *candidate* [kind (str name)])]
+    t
+    (body-of kind name)))
+
+(defn- body-of
+  [kind name]
+  (if (files?)
+    ;; The project's file for the role, and nothing else: a role the map
+    ;; lacks is nil here and refused by body!, not answered by the template.
+    (read-project-file kind name)
+    (or (when (= :prompt kind)
+          (some-> (prompt-file name) :path slurp))
+        (cached-body kind name))))
 
 (defn- cached-body
   [kind name]
@@ -375,10 +1033,36 @@
   is meaningless without it — a manifest node's cell, the system prompt."
   [kind name]
   (or (body kind name)
-      (throw (ex-info (str "no userspace " (clojure.core/name kind) " named "
-                           (pr-str name) ": the project has no version and"
-                           " nothing ships at " (template-path kind name))
-                      {:kind kind :name name}))))
+      (if (files?)
+        ;; The two ways a project can lack a role, each named with where to
+        ;; fix it — the agent reads this and has to be able to act on it.
+        (let [rel (role-path kind name)
+              data {:kind kind :name (str name) :role (keyword (str name))
+                    :map (map-path)}
+              r (rejection kind name)]
+          (throw (cond
+                   r
+                   (ex-info (str "the " (clojure.core/name kind) " role "
+                                 (keyword (str name)) " (" rel ") was rejected and has"
+                                 " no earlier version that passed: "
+                                 (clojure.core/name (get-in r [:problem :stage] :check)) " — "
+                                 (get-in r [:problem :message]))
+                            (assoc data :missing :rejected :path rel :problem (:problem r)))
+                   rel
+                   (ex-info (str "the " (clojure.core/name kind) " role "
+                                 (keyword (str name)) " maps to " rel
+                                 ", which is not in " (project-dir))
+                            (assoc data :missing :file :path rel))
+                   :else
+                   (ex-info (str "no " (clojure.core/name kind) " role "
+                                 (keyword (str name)) " in " (map-path))
+                            (assoc data :missing :role)))))
+        (throw (ex-info (str "no userspace " (clojure.core/name kind) " named "
+                             (pr-str name) ": the project has no version and"
+                             " nothing ships at " (template-path kind name))
+                        {:kind kind :name name})))))
+
+(declare store-prompt-source)
 
 (defn prompt-source
   "Where the text of prompt `name` comes from, for the `prompt` tool:
@@ -386,6 +1070,17 @@
   :version n}` for a stored row, `{:source :template}` for the shipped file,
   nil for a name nobody has."
   [name]
+  (if (files?)
+    ;; The project's files are the whole story: a provider or model variant,
+    ;; else the role's own file, else nothing.
+    (let [f (prompt-file name)
+          own (project-path :prompt name)]
+      (cond
+        (#{:model :provider} (:layer f)) {:source :file :layer (:layer f) :path (:path f)}
+        (and own (.isFile (io/file own))) {:source :file :layer :project :path own}))
+    (store-prompt-source name)))
+
+(defn- store-prompt-source [name]
   (or (when-let [f (prompt-file name)]
         {:source :file :layer (:layer f) :path (:path f)})
       ;; A bound project SEEDS a shipped prompt as a factory row on first read,
@@ -426,6 +1121,12 @@
   ([kind name new-body rationale]
    (if-let [c (conn)]
      (let [v (store/save! c kind name new-body "project" rationale)]
+       ;; The file is what runs, so it is written; the version above is its
+       ;; history, and marking it synced keeps the read that follows from
+       ;; recording the same text a second time as a file edit.
+       (when (files?)
+         (write-file! (save-path kind name) new-body)
+         (swap! synced assoc [kind name] (str new-body)))
        (invalidate!)
        (log/info "userspace" (clojure.core/name kind) name "saved as version" v)
        v)
@@ -440,6 +1141,10 @@
   ([kind name version rationale]
    (when-let [c (conn)]
      (let [v (store/revert! c kind name version rationale)]
+       (when (and v (files?))
+         (let [b (:body (store/load-latest c kind name))]
+           (write-file! (save-path kind name) b)
+           (swap! synced assoc [kind name] (str b))))
        (invalidate!)
        v))))
 
@@ -498,3 +1203,34 @@
     (into {}
           (keep (fn [n] (when-let [t (template kind n)] [n t])))
           template-names)))
+
+;; --- the role map's own validator --------------------------------------------
+
+(defn- map-problem
+  "What is wrong with a role-map text: it does not read, is not the shape a
+  map has, or names files the project does not have."
+  [_ text]
+  (let [{:keys [value problem]} (read-edn text)
+        role-map? (fn [m] (and (map? m) (every? keyword? (keys m)) (every? string? (vals m))))]
+    (or problem
+        (cond
+          (not (map? value))
+          {:stage :shape :message "not a map"}
+
+          (not-every? #(or (nil? (get value %)) (role-map? (get value %)))
+                      [:manifests :policies :prompts])
+          {:stage :shape :message "not role -> path"
+           :sections (vec (remove #(or (nil? (get value %)) (role-map? (get value %)))
+                                  [:manifests :policies :prompts]))}
+
+          (not (or (nil? (:cells value))
+                   (and (vector? (:cells value)) (every? string? (:cells value)))))
+          {:stage :shape :message ":cells not paths"})
+        (let [missing (vec (for [[_ _ rel] (map-files value)
+                                 :when (not (.isFile (io/file (str (project-dir) "/" rel))))]
+                             rel))]
+          (when (seq missing)
+            {:stage :shape :message (str "missing files: " (str/join ", " missing))
+             :missing missing})))))
+
+(register-validator! :map map-problem)

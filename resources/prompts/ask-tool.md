@@ -26,4 +26,8 @@ Decide it yourself, say which way you went and why, and continue.
 There is no human attached to this run, and the simulated user that would have answered from `:run :user-context` could not be reached: {{error}}.
 
 Decide it yourself and say in your next message which way you went and why.
+{% endif %}{% if declined %}
+The person read the question and declined to answer it{% if note %}: {{note}}{% else %}.{% endif %}
+
+Do not ask it again. Decide it yourself, say which way you went and why, and continue.
 {% endif %}

@@ -244,7 +244,7 @@
   ;; a project may need one — but the factory manifests set the example the
   ;; model copies from, and a form there would be a branch the analysis
   ;; cannot see.
-  (doseq [n manifests/shipped-manifests
+  (doseq [n (manifests/shipped-manifests)
           :let [res (io/resource (manifests/manifest-resource n))]
           :when res
           [cell table] (:dispatches (manifests/read-definition (slurp res)))

@@ -61,7 +61,7 @@
   ;; that first suffers for it — and an agent-authored cell goes through the
   ;; same defcell, so the rule holds for cells this suite never sees.
   (cells/load-cells!)
-  (doseq [nm manifests/shipped-manifests]
+  (doseq [nm (manifests/shipped-manifests)]
     (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))
           ;; What a compile does. A composed sub-workflow cell (orchestrator's
           ;; :loop/worker) exists only once its child has been registered, so
@@ -124,7 +124,7 @@
   ;; are — and until then this test is what says the rollout is still safe
   ;; mid-flight rather than only at the end.
   (cells/load-cells!)
-  (doseq [nm manifests/shipped-manifests]
+  (doseq [nm (manifests/shipped-manifests)]
     (testing nm
       (is (some? (manifests/compiled-manifest nm))
           (str nm " no longer compiles — a cell schema requires a key that"
@@ -288,7 +288,7 @@
   (get entry-data (keyword nm) (:default entry-data)))
 
 (deftest every-shipped-manifest-declares-what-it-starts-from
-  (doseq [nm manifests/shipped-manifests]
+  (doseq [nm (manifests/shipped-manifests)]
     (testing nm
       (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))]
         (is (some? (:input-schema d))
@@ -301,7 +301,7 @@
   ;; it is an outage waiting for the first real run — and every one of these
   ;; entry points is reached only by a driver, never by a test that would
   ;; notice. Same reasoning manifests/ctx-keys is checked from both ends.
-  (doseq [nm manifests/shipped-manifests]
+  (doseq [nm (manifests/shipped-manifests)]
     (testing nm
       (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))]
         (is (m/validate (:input-schema d) (entry-for nm))
@@ -419,7 +419,7 @@
         "the arbiter can rely on assemble's :before on every path in")
     (is (= #{:max-turns} (get-in r [:nodes :route :ctx-requires])))
     (is (every? (fn [[_ n]] (set? (:established n))) (:nodes r))))
-  (doseq [n manifests/shipped-manifests
+  (doseq [n (manifests/shipped-manifests)
           :when (io/resource (manifests/manifest-resource n))]
     (testing n
       (is (= [] (:unsatisfied (manifests/preconditions (shipped-definition n))))))))

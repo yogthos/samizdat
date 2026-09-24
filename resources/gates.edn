@@ -2039,6 +2039,16 @@
         A run that ends releases its waiters regardless — see
         samizdat.approval/abandon!."}
 
+ :branch-notes-shown
+ {:value 200
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-tq7m.4"]
+  :doc "How many journal notes a branch detail carries when a front end
+        asks for some (GET /v1/runs/:id/branches/:b?notes=critic-score,…) —
+        the critic's scores and the supervisor's notes a conversation shows
+        beside the turns. The newest, since a conversation is read from the
+        bottom."}
+
  :modified-files-shown
  {:value 60
   :kind :cost-ceiling :capability-tunable? false
@@ -2049,6 +2059,21 @@
         touches hundreds of files and a front end draws a panel's worth.
         Newest first, so what the cap drops is the oldest change — the one
         least likely to be what someone is looking at."}
+
+ :event-stream
+ {:value {:poll-ms 100 :heartbeat-ms 15000 :page 200}
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-tq7m.1"]
+  :doc "The server-sent event stream a front end follows a run on
+        (GET /v1/runs/:id/events, GET /v1/events).
+
+        `poll-ms` is how often the stream looks at the bus: the bus only
+        says something happened, and the rows are read back from the events
+        table by id, so a client that falls behind or reconnects with
+        Last-Event-ID misses nothing and sees them in order. `page` bounds
+        one read. `heartbeat-ms` is how long a quiet stream goes before it
+        sends a comment line — how a stream to a client that went away is
+        noticed and its worker thread given back."}
 
  :step-ring
  {:value {:capacity 512 :max-runs 16 :pump-ms 250}
@@ -3218,7 +3243,7 @@
                   "recall" "fetch_artifact" "fetch_turn" "branch_theses"
                   "lsp" "skill" "policy" "complete" "done" "give_up"}
   :storm-mutating #{"write_file" "edit_file" "shell" "eval" "reload_cells"
-                    "cell" "prompt" "manifest" "experiment" "remember"
+                    "cell" "prompt" "manifest" "adopt" "experiment" "remember"
                     "forget" "retire"}
   :settle-called
   {:orienting        #{"plan" "write_file" "edit_file" "patch"}

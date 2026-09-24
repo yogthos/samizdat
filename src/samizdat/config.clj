@@ -25,18 +25,15 @@
   OpenAI-compatible endpoint (including llama-server) instead."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
-            [clojure.walk :as walk]))
+            [clojure.walk :as walk]
+            [samizdat.layers :as layers]))
 
-(defn deep-merge
+(def deep-merge
   "Merge maps left to right, recursing when BOTH values are maps; any other
   collision is won by the later value. The layering primitive for config:
-  defaults < ~/.config/samizdat/config.edn < project .samizdat/config.edn
-  < explicit overrides."
-  [& ms]
-  (apply merge-with (fn [a b] (if (and (map? a) (map? b))
-                               (deep-merge a b)
-                               b))
-         ms))
+  defaults < the config.edn file layers < explicit overrides. Lives in
+  samizdat.layers, which assembles the file layers with it."
+  layers/deep-merge)
 
 (defn- env [k] (let [v (jolt.host/getenv k)] (when-not (str/blank? v) v)))
 
@@ -60,19 +57,16 @@
   [root]
   (read-config-file (str root "/.samizdat/config.edn")))
 
-(defn config-home
-  "The user's config directory: $XDG_CONFIG_HOME, else ~/.config, else nil
-  when neither is known. A var rather than inline so a test can point it at a
-  temp dir with-redefs."
-  []
-  (or (env "XDG_CONFIG_HOME")
-      (some-> (env "HOME") (str "/.config"))))
+(defn- layer-opts
+  "Where the config.edn layers are for the project at `root`."
+  [root]
+  {:root root :global-dir (layers/global-dir)})
 
 (defn global-config-path
   "Where the machine-wide layer lives: <config-home>/samizdat/config.edn, or
   nil when there is no config home to look in."
   []
-  (some-> (config-home) (str "/samizdat/config.edn")))
+  (some-> (layers/global-dir) (str "/config.edn")))
 
 (defn global-config
   "The machine-wide config layer as an EDN map — a user's defaults, so they
@@ -83,24 +77,38 @@
   (if-let [p (global-config-path)] (read-config-file p) {}))
 
 (defn file-config
-  "Both file layers as one map: the project's .samizdat/config.edn merged ON
-  TOP of the global file, so a project overrides a machine default key by key
-  and inherits the rest. Everything that reads config from disk comes through
+  "Every config.edn file layer as one map, through samizdat.layers: the file
+  SAMIZDAT_CONFIG_FILE names, over the project's .samizdat/config.edn, over
+  the global file. A project overrides a machine default key by key and
+  inherits the rest. Everything that reads config from disk comes through
   here — load-config, the eval settings, the reference paths — so no reader
-  can see one layer and not the other."
+  can see one layer and not another.
+
+  A layer that does not read is dropped on its own; the others still count,
+  and `config-sources` names the broken one."
   [root]
-  (deep-merge (global-config) (project-config root)))
+  (or (:value (layers/resolve "config" (layer-opts root))) {}))
 
 (defn config-sources
   "Which config files this process reads, in precedence order (lowest first),
-  and whether each exists. For the boot log and /health, so a surprising
-  value can be traced to the file that set it rather than guessed at."
+  whether each exists, and why one was dropped (:error). For the boot log and
+  /health, so a surprising value can be traced to the file that set it rather
+  than guessed at. The global layer is always listed, with a nil path when
+  there is no config home; the env layer only when its variable is set."
   [root]
-  (let [present? (fn [p] (boolean (and p (.exists (java.io.File. (str p))))))
-        g (global-config-path)
-        p (str root "/.samizdat/config.edn")]
-    [{:layer :global  :path g :present? (present? g)}
-     {:layer :project :path p :present? (present? p)}]))
+  (let [cands (layers/candidates "config" (layer-opts root))
+        errors (into {} (map (juxt :path :error))
+                     (:errors (layers/resolve "config" (layer-opts root))))
+        present? (fn [p] (boolean (and p (.exists (java.io.File. (str p))))))
+        row (fn [{:keys [layer path]}]
+              (cond-> {:layer layer :path path :present? (present? path)}
+                (get errors path) (assoc :error (get errors path))))
+        by-layer (into {} (map (juxt :layer identity)) cands)]
+    (vec (concat
+          [(row (or (:global by-layer) {:layer :global :path nil}))
+           (row (or (:project by-layer) {:layer :project
+                                         :path (str root "/.samizdat/config.edn")}))]
+          (when-let [e (:env by-layer)] [(row e)])))))
 
 (defn db-location
   "Where the project's database is, as {:path :from}. `env-db` is HARNESS_DB
@@ -438,7 +446,11 @@
       ;; developer machine, and a harness that silently fails to bind (or
       ;; binds where something else already lives) is worse than one on an
       ;; address nothing else wants.
-      {:http     {:port (or (env-long "HARNESS_PORT") 3985)}
+      {:http     {:port (or (env-long "HARNESS_PORT") 3985)
+                  ;; The server's worker pool. Every open event stream (a
+                  ;; front end following a run) holds one, and so does a
+                  ;; POST /v1/runs for the length of its workflow choice.
+                  :worker-threads 32}
        :nrepl    {:port (or (env-long "HARNESS_NREPL_PORT")
                             (env-long "JOLT_NREPL_PORT")
                             7888)}

@@ -36,6 +36,7 @@
             [samizdat.api.control :as control]
             [samizdat.api.openai :as openai]
             [samizdat.api.runs :as api-runs]
+            [samizdat.api.stream :as stream]
             [samizdat.approval :as approval]
             [samizdat.config :as config]
             [samizdat.llm.client :as llm-client]
@@ -147,20 +148,26 @@
   (json-response {:gates (gates/describe) :thresholds (gates/config)}))
 
 (defn layout-body
-  "The project's terminal-UI layout, as the EDN text of its `tui` policy.
+  "What this project has AUTHORED of the terminal UI's settings, as EDN text,
+  or nil.
 
-  Served rather than read by the front end because only this process is
-  BOUND to the project: `userspace/body` reads the stored row here and falls
-  back to the shipped template, where the same call in the TUI's process —
-  which holds no database handle by design — can only ever see the template.
-  Without this the agent could save a new version of its own UI and nothing
-  would ever draw it.
+  tui.edn is a layered settings file (samizdat.layers), and the front end
+  assembles it itself: its own env file and project file, then this, then a
+  person's ~/.config/samizdat/tui.edn, then the file it ships. So this serves
+  the project's layer and nothing below it — the project's .samizdat/tui.edn
+  under this process's root, else a version the agent saved. Serving the
+  shipped file when nothing was authored would put the defaults ABOVE the
+  person's global file and silently override it.
 
-  Text, not parsed: the server has no business understanding a layout, and a
-  client that is going to `edn/read-string` it anyway gains nothing from a
-  round trip through JSON."
+  Served because a front end may run on another machine than the project it
+  watches. Text, not parsed: a client that is going to read it anyway gains
+  nothing from a round trip through JSON."
   []
-  {:layout (userspace/body :policy "tui")})
+  {:layout (or (when-let [r (userspace/project-root)]
+                 (let [f (java.io.File. (str r "/.samizdat/tui.edn"))]
+                   (when (.isFile f) (slurp f))))
+               (let [b (userspace/body :policy "tui")]
+                 (when (not= b (userspace/template :policy "tui")) b)))})
 
 (defn- layout-table [_req]
   (json-response (layout-body)))
@@ -210,7 +217,10 @@
      :last_commit (:last-commit snap)
      :provider (some-> (get-in cfg [:llm :provider]) name)
      :model (get-in cfg [:llm :model])
-     :context_window (get-in cfg [:llm :context-window])}))
+     :context_window (get-in cfg [:llm :context-window])
+     ;; What happens when a run needs a person: refuse, block (ask), or a
+     ;; simulated user. The footer shows it, and /mode changes it.
+     :approval_mode (some-> (:mode (approval/policy)) name)}))
 
 (defn- project-table [_req]
   (json-response (project-body)))
@@ -231,7 +241,7 @@
 
 (defn- slow
   "Sleeps, so the smoke probe can prove /health still answers while a handler is
-  busy. That is the property the vendored thread-per-connection change buys and
+  busy. That is the property the server's worker pool buys and
   the reason a multi-minute beam can share a process with a UI."
   [req]
   (let [ms (clamp-slow-ms (long-param req "ms"))]
@@ -251,6 +261,15 @@
    ;; Which project, which branch, how dirty, which model — the footer and the
    ;; GIT panel. Served because only this process is bound to the project.
    [:get "/v1/harness/project" #'project-table]
+   ;; The approval mode for this server session: {"mode": "block"} to have
+   ;; the runs ask a person, "refuse" to not, null for the project's own.
+   [:post "/v1/harness/approval-mode"
+    (fn [req] (let [m (:mode (body-json req))]
+                (if-let [now (approval/set-mode! m)]
+                  (json-response {:mode (name now)})
+                  (json-response 400 {:error {:message (str "not a mode: " (pr-str m)
+                                                            "; one of "
+                                                            (str/join ", " (map name (sort approval/modes))))}}))))]
    [:get "/v1/runs" (fn [req] (json-response (api-runs/list-runs (system/conn)
                                                                  (long-param req "limit"))))]
    ;; `(or (:status r) 200)`, the same shape resume uses: a handler that refuses
@@ -268,6 +287,14 @@
                                                     (get-in req [:path-params :id])
                                                     (long-param req "since")
                                                     (long-param req "limit"))))]
+   ;; The run PUSHED: every journal event after the cursor (Last-Event-ID, or
+   ;; ?since=), then each one as it lands, plus the steps and approvals that
+   ;; are never journalled. See samizdat.api.stream.
+   [:get "/v1/runs/:id/events"
+    (fn [req] (stream/response (system/conn) (get-in req [:path-params :id])
+                               (stream/cursor req)))]
+   [:get "/v1/events"
+    (fn [req] (stream/response (system/conn) nil (stream/cursor req)))]
    ;; The live manifest-state trace. No conn: steps are held in memory, not
    ;; journalled — see samizdat.steps.
    [:get "/v1/runs/:id/steps"
@@ -284,7 +311,10 @@
                   (json-response 404 {:error {:message "no such turn"}}))))]
    [:get "/v1/runs/:id/branches/:branch"
     (fn [req] (let [{:keys [id branch]} (:path-params req)]
-                (if-let [b (api-runs/branch-detail (system/conn) id branch)]
+                (if-let [b (api-runs/branch-detail (system/conn) id branch
+                                                   (some-> (query-param req "notes")
+                                                           (str/split #",")
+                                                           (->> (remove str/blank?))))]
                   (json-response b)
                   (json-response 404 {:error {:message "no such branch"}}))))]
     [:post "/v1/runs/:id/interventions"
@@ -311,12 +341,14 @@
     (fn [_] (json-response {:approvals (approval/pending nil)}))]
    [:post "/v1/approvals/:aid"
     (fn [req]
-      (let [{:keys [decision note answers]} (body-json req)
+      (let [{:keys [decision note answers always]} (body-json req)
             d (keyword (or decision "deny"))]
         (if (approval/decide! (get-in req [:path-params :aid])
                               (cond-> {:decision d}
                                 note (assoc :note note)
-                                answers (assoc :answers answers)))
+                                answers (assoc :answers answers)
+                                ;; allow for the rest of this session, not once
+                                (true? always) (assoc :always true)))
           (json-response {:status "decided" :decision (name d)})
           ;; Gone rather than never-existed: the ordinary cause is a second
           ;; operator answering a question the first already settled, or a

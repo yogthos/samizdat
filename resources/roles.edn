@@ -77,7 +77,7 @@
   ;; `websearch` is investigation: a supervisor diagnosing an endpoint or a
   ;; library's behaviour has the same need an implementor does.
   :tools #{"intervene" "read_file" "read_digest" "grep" "lsp" "skill" "doc" "complete" "manual"
-           "introspect" "cells" "cell" "manifest" "prompt" "policy"
+           "introspect" "cells" "cell" "manifest" "prompt" "policy" "adopt"
            "fetch_turn" "fetch_artifact" "recall" "remember" "forget" "retire" "outcome"
            "experiment" "message" "eval" "shell" "websearch" "done" "give_up"}
   :prompt "roles/supervisor"

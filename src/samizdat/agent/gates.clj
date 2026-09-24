@@ -254,6 +254,55 @@
      ;; refused for using nor stay silent about one it holds (karamazov-ioo.15.2).
      :can-split (roles/may-use? (:role branch) "split")}))
 
+(def ^:private context-locals
+  "The names compile-form binds around every form."
+  '#{directive done-block branch max-turns branch-count safe-state-coverage ctx})
+
+(defn- bound-names
+  "Every symbol a form binds anywhere — let/loop/for/doseq vectors, fn
+  params, destructuring maps. Scope is ignored on purpose: a symbol bound in
+  one place and used in another is let through, which errs toward accepting a
+  gate, never toward refusing a good one."
+  [form]
+  (let [binders '#{let let* loop loop* for doseq when-let if-let when-some
+                   if-some binding with-open dotimes fn fn* letfn}
+        syms (fn syms [x]
+               (cond (symbol? x) [x]
+                     (map? x) (mapcat syms (concat (keys x) (vals x)))
+                     (coll? x) (mapcat syms x)
+                     :else []))]
+    (set (mapcat (fn [f]
+                   (when (and (seq? f) (contains? binders (first f)))
+                     (let [args (rest f)
+                           args (if (symbol? (first args)) (rest args) args)]
+                       (concat (when (vector? (first args)) (syms (first args)))
+                               ;; (fn ([a] …) ([a b] …)) and letfn specs
+                               (mapcat #(when (and (seq? %) (vector? (first %)))
+                                          (syms (first %)))
+                                       args)))))
+                 (tree-seq coll? seq form)))))
+
+(defn unresolved-symbols
+  "The symbols in `form` that are neither special forms, bound in the form,
+  gate-context locals, nor resolvable in this namespace — each of them a
+  call that can only fail when the gate fires.
+
+  Checked explicitly rather than left to `eval`, because under jolt's dev
+  mode (an nREPL image) an unresolved symbol compiles and fails at CALL time,
+  so a broken gate saved as if it were sound (karamazov-i6f1)."
+  [form]
+  (let [bound (into context-locals (bound-names form))
+        this (the-ns 'samizdat.agent.gates)]
+    (->> (tree-seq coll? seq form)
+         (filter symbol?)
+         (remove #(or (special-symbol? %) (contains? bound %)
+                      (= '& %) (str/starts-with? (name %) ".")
+                      (str/ends-with? (name %) ".")
+                      (try (ns-resolve this %) (catch Throwable _ false))))
+         distinct
+         sort
+         vec)))
+
 (defn- compile-form
   "Compile an EDN form into (fn [ctx] form) with the gate-context keys bound
   as plain locals — the environment both :when and :message-form build on.
@@ -267,6 +316,9 @@
   caller could be anything — jolt.main, a test namespace — and `threshold`,
   `prompt`, `state/…` and `supervisor/…` resolve in none of them."
   [form]
+  (when-let [bad (seq (unresolved-symbols form))]
+    (throw (ex-info (str "unresolved: " (str/join ", " bad))
+                    {:unresolved (vec bad) :form form})))
   (binding [*ns* (the-ns 'samizdat.agent.gates)]
     (eval `(fn [~'ctx]
            (let [~'directive            (get ~'ctx :directive)

@@ -205,22 +205,43 @@
     (let [[_ done2] (st/answer-question s1 ["yes" "no"])]
       (is (true? done2)))))
 
-(deftest y-and-n-answer-the-permission-dialog-that-is-on-screen
-  ;; The buttons are labelled "allow (y)" and "deny (n)", which was a promise
-  ;; the key handler did not keep. Pure, so the key policy is covered here
-  ;; rather than in the toolkit-bound suite.
-  (let [s (assoc (st/initial "b") :approvals [{:id "a1" :kind "shell"}])]
-    (is (= ["a1" :allow] (st/pending-decision s "y")))
-    (is (= ["a1" :deny] (st/pending-decision s "n")))
-    (is (nil? (st/pending-decision s "q")) "anything else belongs to whoever has focus"))
-  (testing "and they do nothing when no dialog is up"
-    (is (nil? (st/pending-decision (st/initial "b") "y"))))
-  (testing "nor over a questionnaire, where a letter is something being typed"
-    ;; The free-text box takes characters; y must reach it, not decide a
-    ;; question it was never offered as an answer to.
-    (let [s (assoc (st/initial "b")
-                   :approvals [{:id "q1" :questions [{:question "name?"}]}])]
-      (is (nil? (st/pending-decision s "y"))))))
+(deftest the-dialog-keys-answer-the-permission-question-on-screen
+  ;; dirge's keys: y allow once, a allow always (this session), n deny,
+  ;; d deny with a note, Esc abort. The buttons name them, and a label that
+  ;; names a key has to mean it. Pure, so the key policy is covered here.
+  (let [s (assoc (st/initial "b") :approvals [{:id "a1" :kind "shell" :always "cargo *"}])]
+    (is (= [:decide "a1" {:decision :allow}] (st/dialog-action s {:char "y"})))
+    (is (= [:decide "a1" {:decision :allow :always true}] (st/dialog-action s {:char "a"})))
+    (is (= [:decide "a1" {:decision :deny}] (st/dialog-action s {:char "n"})))
+    (is (= [:decide "a1" {:decision :deny}] (st/dialog-action s {:key :escape})))
+    (is (= [:reply :deny-note "a1"] (st/dialog-action s {:char "d"})))
+    (is (nil? (st/dialog-action s {:char "q"})) "anything else belongs to whoever has focus")
+    (testing "no always when the question offers no pattern to allow"
+      (is (nil? (st/dialog-action (assoc-in s [:approvals 0 :always] nil) {:char "a"}))))
+    (testing "not while something is being typed — a y in a directive is a letter"
+      (is (nil? (st/dialog-action (assoc s :input "yes") {:char "y"}))))
+    (testing "while writing the deny note, Esc goes back to the question"
+      (is (= [:cancel-reply] (st/dialog-action (st/start-reply s :deny-note "a1") {:key :escape})))))
+  (testing "they do nothing when no dialog is up"
+    (is (nil? (st/dialog-action (st/initial "b") {:char "y"}))))
+  (testing "over a questionnaire only Esc means something: reject it"
+    (let [s (assoc (st/initial "b") :approvals [{:id "q1" :questions [{:question "name?"}]}])]
+      (is (nil? (st/dialog-action s {:char "y"})))
+      (is (= [:decide "q1" {:decision :deny :note "rejected"}] (st/dialog-action s {:key :escape}))))))
+
+(deftest a-reply-takes-the-compose-box-until-it-is-sent-or-cancelled
+  (let [s (st/start-reply (st/initial "b") :custom-answer "q1")]
+    (is (= {:kind :custom-answer :id "q1"} (:reply s)))
+    (is (nil? (:reply (st/cancel-reply s))))))
+
+(deftest multi-select-options-toggle
+  (let [s (assoc (st/initial "b") :approvals [{:id "q1" :questions [{:question "which?" :multi true
+                                                                        :options ["a" "b" "c"]}]}])
+        s (-> s (st/toggle-option 0) (st/toggle-option 2))]
+    (is (= #{0 2} (:question-selected s)))
+    (is (= #{2} (:question-selected (st/toggle-option s 0))))
+    (testing "a new question starts with nothing selected"
+      (is (= #{} (:question-selected (st/apply-approvals s {:ok true :body {:approvals [{:id "q2"}]}})))))))
 
 (deftest folds-toggle-open-and-shut
   (let [s (-> (st/initial "b") (st/toggle-fold "3/result"))]
@@ -289,3 +310,50 @@
 (deftest starting-is-refused-before-it-is-sent-when-there-is-nothing-to-start
   (is (nil? (st/steer-payload "   ")))
   (is (= "go" (st/steer-payload "  go  "))))
+
+;; --- the pushed event stream (karamazov-tq7m.1) -------------------------------
+
+(defn- ev [kind id data]
+  {:id (some-> id str) :event kind :data data})
+
+(deftest a-step-event-lands-in-the-trace-with-nothing-to-fetch
+  (let [s (assoc (st/initial "b") :run-id "R")
+        [s wants] (st/apply-event s {:event "step"
+                                     :data {:kind "step" :run_id "R" :node "loop/assemble"
+                                            :cell "c" :transition "ok" :ms 3}})]
+    (is (= ["loop/assemble"] (mapv :node (:trace s))))
+    (is (= #{} wants))))
+
+(deftest a-journal-event-says-what-to-fetch-and-moves-the-cursor
+  (let [s (assoc (st/initial "b") :run-id "R" :branch-id "B1")]
+    (testing "a turn on the branch being read refreshes it and the run"
+      (let [[s' w] (st/apply-event s (ev "turn" 41 {:id 41 :run_id "R" :branch_id "B1" :kind "turn"}))]
+        (is (= #{:branch :detail} w))
+        (is (= 41 (:journal-cursor s')) "the id a reconnect resumes after")))
+    (testing "a turn on another branch refreshes only the run"
+      (is (= #{:detail} (second (st/apply-event s (ev "turn" 42 {:branch_id "B2" :kind "turn"}))))))
+    (testing "a question for a person refreshes the questions"
+      (is (= #{:approvals} (second (st/apply-event s {:event "approval" :data {:kind "approval"}})))))
+    (testing "the run ending refreshes the run list too"
+      (is (= #{:detail :runs} (second (st/apply-event s (ev "run-finished" 50 {:kind "run-finished"}))))))))
+
+(deftest the-stream-being-up-or-down-is-state
+  (let [s (st/initial "b")]
+    (is (false? (:live? s)))
+    (is (true? (:live? (st/stream-status s 200))))
+    (is (false? (:live? (st/stream-status (st/stream-status s 200) nil))))))
+
+;; --- the compose box grows (karamazov-tq7m follow-up) ---------------------------
+
+(deftest enter-in-the-box-sends-rather-than-breaking-the-line
+  ;; The box is a multi-line ftxui input, which answers Enter by inserting a
+  ;; newline AND firing on-enter. The newline is Enter's, not the person's:
+  ;; it is not kept, so what is sent is what was typed.
+  (let [s (st/set-input (st/initial "b") "fix the\nparser")]
+    (is (= "fix the\nparser" (:input s)) "a newline Ctrl+J put there is kept")
+    (is (= "fix the\nparser" (:input (st/set-input s "fix the\nparser\n"))) "Enter's at the end is not")
+    (is (= "fix the\nparser" (:input (st/set-input s "fix\n the\nparser"))) "nor one in the middle")
+    (is (= "fix the\nparsers" (:input (st/set-input s "fix the\nparsers"))) "typing is typing")))
+
+(deftest a-newline-can-be-typed-on-purpose
+  (is (= "one\n" (:input (st/newline (st/set-input (st/initial "b") "one"))))))

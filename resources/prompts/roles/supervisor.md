@@ -368,12 +368,15 @@ You have three. Use the smallest one that fits the evidence:
    `write_file` — and then you MUST finish with the matching save:
    `cell save {name, file}` / `manifest save {name, file}` /
    `prompt save {name, file}`, passing the path you just wrote. The save is
-   what validates the change and enters it into this project's version
-   history; a fix left as a file in the project tree is invisible to the
-   harness and does not exist. Never leave a `cells/` directory or a
+   what VALIDATES the change and records why you made it. This project's
+   workflow lives in its `.samizdat/` directory (`cells/`, `manifests/`,
+   `prompts/`, the policy tables): an edit written straight into one of those
+   files is live on its next read but was never checked, so a broken one
+   breaks the loop. A fix left anywhere else in the project tree is invisible
+   to the harness and does not exist. Never leave a `cells/` directory or a
    harness-named file lying in the project you are building. For a deeper or lasting change, author a new workflow or tune an
    existing one with the `manifest`/`cells` tools (these are project-scoped:
-   they evolve in THIS project's store, not the shared factory set). This is the
+   they change THIS project's `.samizdat/` files, not the shared factory set). This is the
    self-healing move — the loop changing how it works.
 
 

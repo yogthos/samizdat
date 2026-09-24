@@ -41,17 +41,50 @@
   request carries and what the answer carries, so they share the queue, the
   deadline and the endpoints."
   (:require [clojure.tools.logging :as log]
-            [samizdat.agent.gates :as gates]))
+            [samizdat.agent.gates :as gates]
+            [samizdat.events :as events]))
+
+(def modes
+  "What happens when a run needs a person: :refuse (nobody is asked; a
+  simulated user answers ask_human when the run has user context) or :block
+  (the question waits for a person, up to :wait-ms)."
+  #{:refuse :block})
+
+;; The mode a person set for this server session (/mode in the TUI), over the
+;; project's gates.edn. In memory on purpose: it says who is at the keyboard
+;; NOW, which is not a fact about the project to write into its policy.
+(defonce ^:private session-mode (atom nil))
+
+(defn set-mode!
+  "Set the session's approval mode, or nil to go back to the project's.
+  Returns the mode in force, or nil for one that is not a mode."
+  [mode]
+  (let [m (some-> mode name keyword)]
+    (cond
+      (nil? mode) (do (clojure.core/reset! session-mode nil) (:mode (gates/threshold :approval)))
+      (contains? modes m) (do (clojure.core/reset! session-mode m) m)
+      :else nil)))
 
 (defn policy
   "The approval policy: `{:mode :refuse|:block :wait-ms n :on-timeout
-  :deny|:allow}`, from gates.edn."
+  :deny|:allow}` — gates.edn's, with the session's mode over it."
   []
-  (gates/threshold :approval))
+  (cond-> (gates/threshold :approval)
+    @session-mode (assoc :mode @session-mode)))
 
 ;; {id {:id :run-id :branch-id :kind :input :details :reason :questions
 ;;      :status :asked-at :promise}}
 (defonce ^:private requests (atom {}))
+
+;; {run-id [pattern …]} — what a person allowed ALWAYS, for this session. In
+;; memory and never written anywhere: an allow that outlived the person who
+;; gave it would be a standing permission nobody chose to leave on.
+(defonce ^:private allowed (atom {}))
+
+(defn session-grants
+  "The patterns a person allowed always for `run-id` in this session."
+  [run-id]
+  (get @allowed run-id []))
 
 (defn reset!
   "Drop every request, releasing anyone waiting. For tests and teardown."
@@ -62,21 +95,33 @@
       (when promise (deliver promise {:decision :deny :note "harness shutting down"}))))
   nil)
 
+(defn- announce!
+  "Say on the bus that a question was asked or settled, so a front end
+  following the run sees it without polling. Only the id and the state:
+  the question itself is read from GET /v1/runs/:id/approvals."
+  [{:keys [id run-id branch-id status kind]}]
+  (events/publish! {:kind :approval :run-id run-id :branch-id branch-id
+                    :data {:id id :status status :kind (some-> kind name)}}))
+
 (defn- new-id []
   (str (java.util.UUID/randomUUID)))
 
 (defn request!
   "Register a question and return its id. Does not wait — `await!` does that,
   so a caller can register, publish, and then park."
-  [{:keys [run-id branch-id kind input details reason questions]}]
+  [{:keys [run-id branch-id kind input details reason questions always]}]
   (let [id (new-id)]
     (swap! requests assoc id
            {:id id :run-id run-id :branch-id branch-id
             :kind (or kind :shell)
             :input input :details details :reason reason :questions questions
+            ;; The pattern "allow always" would allow, when there is one, so
+            ;; the person sees what they would be agreeing to.
+            :always always
             :status "pending"
             :asked-at (System/currentTimeMillis)
             :promise (promise)})
+    (announce! (get @requests id))
     id))
 
 (defn pending
@@ -120,7 +165,9 @@
                      (assoc-in m [id :status] "decided"))
                  (do (clojure.core/reset! applied false) m)))))
     (if-let [r @applied]
-      (do (deliver (:promise r) decision) true)
+      (do (deliver (:promise r) decision)
+          (announce! (assoc r :status "decided"))
+          true)
       false)))
 
 (defn await!
@@ -141,11 +188,13 @@
     (assoc default :timed-out true)))
 
 (defn abandon!
-  "Release every waiter on `run-id` — the run is over.
+  "Release every waiter on `run-id` — the run is over — and forget what was
+  allowed always for it.
 
   Without this, an aborted or crashed run leaves threads parked on questions
   nobody will ever answer, and the process never gets them back."
   [run-id]
+  (swap! allowed dissoc run-id)
   (let [gone (filter #(= run-id (:run-id %)) (vals @requests))]
     (swap! requests #(apply dissoc % (map :id gone)))
     (doseq [{:keys [promise]} gone]
@@ -170,12 +219,20 @@
     (if-not (and (= :ask effect) (= :block mode))
       decision
       (try
-        (let [id (request! {:run-id run-id :branch-id branch-id :kind :shell
-                            :input input :details details :reason reason})
+        (let [;; A compound command is never grantable (the policy downgrades
+              ;; it to :ask over any grant), so there is no pattern to offer.
+              always (when (and (:head decision) (not (:complex? decision)))
+                       (str (:head decision) " *"))
+              id (request! {:run-id run-id :branch-id branch-id :kind :shell
+                            :input input :details details :reason reason
+                            :always always})
               answer (await! id wait-ms {:decision (or on-timeout :deny)})]
           (cond
             (= :allow (:decision answer))
-            (assoc decision :effect :allow :note (:note answer))
+            (do (when (and (:always answer) always)
+                  (swap! allowed update run-id (fn [ps] (vec (distinct (conj (vec ps) always)))))
+                  (log/info "approval: allowed" always "always, for this session, on run" run-id))
+                (assoc decision :effect :allow :note (:note answer)))
 
             ;; An expired wait leaves the ask as the refusal it always was,
             ;; and says that is why — so the refusal the model reads can

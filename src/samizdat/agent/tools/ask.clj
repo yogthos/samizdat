@@ -185,7 +185,13 @@
       (let [id (approval/request! {:run-id run-id :branch-id (or branch-id (:id branch))
                                    :kind :question :questions questions})
             answer (approval/await! id wait-ms {:decision (or on-timeout :deny)})]
-        (if (:timed-out answer)
+        (cond
+          (:timed-out answer)
           (base/malformed branch (msg {:unanswered true
                                        :seconds (int (/ (or wait-ms 0) 1000))}))
+          ;; The person saw the question and chose not to answer it — told
+          ;; as such, not as a set of empty answers.
+          (= :deny (:decision answer))
+          (base/ok branch (msg {:declined true :note (:note answer)}))
+          :else
           (base/ok branch (answered questions (vec (:answers answer)))))))))

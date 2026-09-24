@@ -112,7 +112,7 @@
   ;; so `:run :loop "repl"` threw at run start under the beam. Being off
   ;; gates.edn's selection whitelist was the only thing keeping it unreachable
   ;; — the supervisor's SWITCH menu is the whole catalogue (karamazov-4sx).
-  (doseq [nm manifests/shipped-manifests]
+  (doseq [nm (manifests/shipped-manifests)]
     (testing nm
       (let [d (shipped-definition nm)]
         (if (manifests/turn-sliceable? d)
@@ -131,7 +131,7 @@
   ;; purpose.
   (is (= #{"beam" "repl"}
          (set (remove #(manifests/turn-sliceable? (shipped-definition %))
-                      manifests/shipped-manifests)))))
+                      (manifests/shipped-manifests))))))
 
 (deftest a-whole-run-manifest-never-routes-back-to-its-entry
   ;; Run 3b8d2af5: the feature loop's revise edge went to :start, and under the
@@ -149,7 +149,7 @@
   ;; the hand-written list of five is what let `repl` route :empty back to
   ;; :start unnoticed. An unsliceable manifest is exempt because nothing ever
   ;; cuts its edges.
-  (doseq [nm manifests/shipped-manifests]
+  (doseq [nm (manifests/shipped-manifests)]
     (testing nm
       (let [d (shipped-definition nm)
             targets (mapcat (fn [[_ e]] (if (map? e) (vals e) [e])) (:edges d))]
@@ -440,7 +440,7 @@
   ;; The pin: every shipped cycle is guarded, so the warning only ever names
   ;; an agent-authored shape. The one that is not would have to say why here.
   (cells/load-cells!)
-  (doseq [nm manifests/shipped-manifests
+  (doseq [nm (manifests/shipped-manifests)
           :let [definition (shipped-definition nm)]]
     (is (= [] (manifests/unguarded-cycles definition)) nm)))
 
