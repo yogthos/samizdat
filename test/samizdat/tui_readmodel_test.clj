@@ -177,3 +177,21 @@
         (is (every? :created_at ns) "placed in time beside the turns"))
       (is (nil? (:notes (api-runs/branch-detail c rid "B1")))
           "no kinds asked for, no notes"))))
+
+(deftest a-branch-can-be-fetched-from-the-last-turn-a-reader-holds
+  ;; Every journal event naming the branch on screen refetched ALL of it:
+  ;; 1.8MB for run 3020cbca's SUP, 2s of the TUI's CPU to parse, for the one
+  ;; or two rows that were new (karamazov-rf7d). Turn rows are never updated
+  ;; once written, so the rows after the newest id held are all that changed.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (doseq [n [1 2 3]] (write-turn! c rid "B1" n "read_file" "a"))
+      (write-turn! c rid "B2" 1 "read_file" "a")
+      (let [all (:turns (api-runs/branch-detail c rid "B1"))
+            cursor (:id (second all))
+            since (api-runs/branch-detail c rid "B1" nil cursor)]
+        (is (= 3 (count all)))
+        (is (= [3] (map :turn (:turns since))) "only what is after the cursor, only this branch")
+        (is (= cursor (:since since)) "and it says it answered from the cursor")
+        (is (nil? (:since (api-runs/branch-detail c rid "B1"))) "a whole answer does not")))))

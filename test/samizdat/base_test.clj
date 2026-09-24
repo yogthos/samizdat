@@ -207,6 +207,14 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/agent/select.clj"
+   {:vocabulary {"(?i)^[\\s*_`#-]*(kind|size|workflow)[\\s*_`]*[:=]\\s*(.+)$"
+                 "The triage reply's own field labels — the parser's side of
+                  the three-line format prompts/workflow-select-system.md asks
+                  for. What the fields may SAY is gates.edn :kinds and :sizes;
+                  what they are CALLED is the protocol, and a project renaming
+                  one would also have to change what reads it."}}
+
    "src/samizdat/api/client.clj"
    {:threshold {200 "The success range of a status code. Protocol, as in
                      server.clj."
@@ -1119,7 +1127,7 @@
     :storm-strikes-to-force :storm-threshold :storm-timeout-floor
     :storm-verify-exempt :storm-window-size :supervisor-digest :thinking-budget
     :timeout-failure-weight :tool-clip :tool-retry :turn-deadline-ms
-    :verify-timeout-ms :verify-unknown :wind-down-fraction :workflow-selection})
+    :verify-timeout-ms :verify-unknown :wind-down-fraction})
 
 (def steers-that-predate-provenance
   "Same ratchet for the steer definitions under :gates."

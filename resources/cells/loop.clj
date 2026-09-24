@@ -259,6 +259,15 @@
                     (not (state/active? branch))
                     (if (:final-answer branch) :done :abandoned)
 
+                    ;; The provider has failed this many calls in a row, each
+                    ;; already retried by the client: an outage, not a bad
+                    ;; turn. Ending the branch costs a retry later; going on
+                    ;; cost run 3020cbca's supervisor 2810 failed calls to a
+                    ;; server that was not running (karamazov-e8iw).
+                    (>= (or (:consecutive-provider-errors branch) 0)
+                        (gates/threshold :provider-error-limit))
+                    :abandoned
+
                     (>= turn max-turns) :exhausted
                     :else :continue)]
       (cond-> (assoc data :verdict verdict)

@@ -47,6 +47,33 @@
             (is (contains? changed "seed.txt") "and a tracked edit is still seen")))
         (finally (sh dir (str "rm -rf " dir)))))))
 
+(deftest untracked-files-left-before-the-run-are-not-its-changes
+  ;; `git stash create` captures tracked edits only, so every untracked file
+  ;; in the tree was a change the run made. Run 74ddebb8 answered a question,
+  ;; wrote nothing, and passed `done` on the README.md, NOTES.md and
+  ;; EXPLAINED.md run 3020cbca had left behind (karamazov-9554).
+  (when (proc/available? "git")
+    (let [dir (str (System/getProperty "java.io.tmpdir") "/gd-stale-"
+                   (System/currentTimeMillis))]
+      (try
+        (proc/run {:timeout-ms 15000} "sh" "-c" (str "mkdir -p " dir))
+        (sh dir "git init -q && git config user.email t@t.co && git config user.name t")
+        (sh dir "echo seed > seed.txt && git add -A && git commit -qm init")
+        (sh dir "printf 'a\nb\n' > stale.md && printf 'x\n' > edited.md")
+        (let [base (gd/baseline dir)]
+          (testing "nothing written since the baseline is nothing changed"
+            (is (= [] (gd/changed-files dir base)))
+            (is (zero? (gd/changed-lines dir base)))
+            (is (= "" (gd/diff dir base))))
+          (sh dir "echo y >> edited.md && echo new > created.md && echo more >> seed.txt")
+          (is (= #{"edited.md" "created.md" "seed.txt"} (set (gd/changed-files dir base)))
+              "an edit to a file that was already there, a new file and a tracked edit")
+          (is (not (re-find #"stale\.md" (gd/diff dir base)))
+              "and the diff the critic reads does not show the untouched file as deleted")
+          (is (= 3 (gd/changed-lines dir base))
+              "one line appended to each of three files"))
+        (finally (sh dir (str "rm -rf " dir)))))))
+
 (deftest snapshot-reads-the-tree-at-a-glance
   ;; What the TUI's footer and GIT panel are built on: branch, dirty counts
   ;; split the way git splits them, and the last commit's subject. Ported from

@@ -1,4 +1,4 @@
-`{{tool-name}}` is not part of what a {{role}} does, so it is not available here.
+`{{tool-name}}` is not part of the {{role}} role, so it is not available here.
 
 {{role-doc}}
 

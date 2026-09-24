@@ -317,7 +317,8 @@
                 (if-let [b (api-runs/branch-detail (system/conn) id branch
                                                    (some-> (query-param req "notes")
                                                            (str/split #",")
-                                                           (->> (remove str/blank?))))]
+                                                           (->> (remove str/blank?)))
+                                                   (long-param req "since"))]
                   (json-response b)
                   (json-response 404 {:error {:message "no such branch"}}))))]
     [:post "/v1/runs/:id/interventions"

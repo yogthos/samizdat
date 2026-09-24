@@ -95,6 +95,21 @@
   :prompt "roles/reviewer"
   :sees #{:requirement :diff :answer}}
 
+ :answerer
+ {:doc "Answers a question about the project: reads what it needs and replies.
+        The reply is the deliverable — nothing in the project changes, so it
+        holds no tool that writes, and no `plan`, whose whole point is naming
+        the files a change will touch (karamazov-1wv9)."
+  ;; `shell` for the looks a file tool cannot take — `git log`, a directory
+  ;; listing, a build file's dependency tree. It is still under the approval
+  ;; policy like every other shell call. `eval` is left off: an answer is
+  ;; read, not run, and loading a project into the image is its own risk.
+  :tools #{"read_file" "read_digest" "grep" "glob" "lsp" "doc" "shell"
+           "websearch" "webfetch" "skill" "manual" "recall" "remember"
+           "fetch_turn" "fetch_artifact" "done" "give_up"}
+  :prompt "roles/answerer"
+  :sees #{:problem :skills}}
+
  :critic
  {:doc "One call, not a loop: the requirement, the diff, and the deterministic
         evidence, in and a verdict out. Holds no tools deliberately — a critic

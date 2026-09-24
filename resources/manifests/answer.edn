@@ -1,0 +1,81 @@
+;; The answer workflow (karamazov-1wv9). The ordinary loop, run by the
+;; `answerer` role: it reads, and its `done` reply is the deliverable.
+;;
+;; A question used to go through the code-change loop, where `eval` is refused
+;; until a plan exists, a plan is refused until it names a file to change, and
+;; `done` is refused until a file changed and a test exists. Run 3020cbca,
+;; "let's explain the project", spent 50 minutes across five branches and wrote
+;; README.md, NOTES.md, EXPLAINED.md and docs/OVERVIEW.md to have something to
+;; hand in. Here none of that applies — not by exempting this workflow from
+;; each rule, but because the role holds no tool a rule is about: no `plan`,
+;; so the plan-first rule cannot fire, and nothing that writes, so `done` has
+;; no change to verify.
+;;
+;; Chosen by triage (gates.edn :workflow-selection :effort :answer), or with
+;; config :run :loop "answer".
+{:description "Answers a question about the project — an explanation, a description, how something works — as the reply, changing nothing. Read-only: the answerer role has no tool that writes. Not for a task that should change the project."
+ :prompt "answer"
+ ;; Every branch this workflow opens runs as this role (roles.edn).
+ :role :answerer
+
+ :input-schema
+ [:map [:branch :map] [:turn :int]]
+
+ :cells {:start          :loop/assemble
+         :infer          :llm/infer
+         :parse          :llm/parse
+         :provider-error :loop/provider-error
+         :no-call        :loop/no-call
+         :dispatch       :tool/dispatch
+         :journal        :journal/record
+         :settle         :gate/settle
+         :arbiter        :gate/arbiter
+         :route          :loop/route
+         :distil         :memory/distil
+         :finish         :loop/finish}
+
+ :edges {:start          :infer
+         :infer          :parse
+         :parse          {:provider-error :provider-error
+                          :no-call        :no-call
+                          :tool           :dispatch}
+         :provider-error :route
+         :no-call        :route
+         :dispatch       :journal
+         :journal        :settle
+         :settle         :arbiter
+         :arbiter        :route
+         :route          {:continue  :start
+                          :done      :distil
+                          :abandoned :distil
+                          :exhausted :distil}
+         :distil         :finish
+         :finish         :end}
+
+ ;; ORDER MATTERS in :parse, as in loop.edn: a provider failure passes the
+ ;; data through with :parsed ABSENT, so :provider-error is tried first.
+ :dispatches {:parse [[:provider-error {:call {:ok false}}]
+                      [:no-call {:parsed nil}]
+                      [:no-call {:parsed {:name "__parse_error__"}}]
+                      [:tool _]]
+              :route [[:continue  {:verdict :continue}]
+                      [:done      {:verdict :done}]
+                      [:abandoned {:verdict :abandoned}]
+                      [:exhausted {:verdict :exhausted}]]}
+
+ :invariants
+ [{:type :must-follow :if :dispatch :then :journal :enforced true
+   :protects "A dispatched tool call is always recorded."}
+
+  {:type :must-follow :if :journal :then :arbiter :enforced true
+   :protects "A recorded turn always faces a gate."}
+
+  {:type :must-precede :cell :dispatch :before :arbiter :enforced true
+   :protects "The arbiter reads what the turn DID; a gate deciding before the
+              tool ran would steer on the previous turn's state."}
+
+  {:type :must-precede :cell :settle :before :arbiter :enforced true
+   :protects "A gate cannot be credited with an outcome that preceded it."}
+
+  {:type :must-precede :cell :parse :before :dispatch :enforced true
+   :protects "Nothing is dispatched that was not parsed out of a reply."}]}

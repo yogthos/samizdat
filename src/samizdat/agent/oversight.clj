@@ -285,11 +285,23 @@
                    (catch Throwable e
                      (when (cancel/control-signal? e) (throw e))
                      (log/warn "oversight loop:" (ex-message e)))))
-          ;; THE STREAM IS ONE TASK (RFC-013): a reduce over the bus's timed
-          ;; batches, whose accumulator is the state above. Stopping is
+          ;; THE STREAM IS ONE TASK (RFC-013): a loop on its own fiber that
+          ;; parks for the interval, drains the bus, and ticks. Stopping is
           ;; cancelling it; the park between batches sees the cancel at once.
           ;; No thread, no running flag.
+          ;;
+          ;; A LOOP, NOT A REDUCE OVER events/batches. The pass makes model
+          ;; calls, and a call parks on its HTTP read. Inside a reducer over
+          ;; that `ap` flow a park never came back: the reducer was entered
+          ;; again on the next tick and the parked call was never resumed —
+          ;; or, under a finally, ebb refused it as a fork. Run 74ddebb8's
+          ;; supervisor answered nothing in 1002 turns (karamazov-ah7d). On a
+          ;; fiber of its own a park is only a park.
           {:keys [cancel]} (cancel/start!
-                            (ebb/reduce (fn [_ batch] (tick batch) nil) nil
-                                        (events/batches ch poll-ms)))]
+                            (cancel/spawn
+                             (fn []
+                               (loop []
+                                 (cancel/sleep! poll-ms)
+                                 (tick (when ch (events/collect ch)))
+                                 (recur)))))]
       (fn stop [] (cancel) nil))))

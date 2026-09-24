@@ -17,7 +17,8 @@
   given conversation. Whether different words would have produced a better
   conversation is the live half's question."
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest testing is]]
+            [clojure.test :refer [deftest testing is use-fixtures]]
+            [samizdat.agent.select :as select]
             [samizdat.agent.infer :as infer]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.loop :as aloop]
@@ -27,6 +28,11 @@
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]))
+
+;; Triage off: these drive the beam with a scripted llm/chat, and the triage
+;; call would take the first scripted reply (karamazov-1wv9). What triage
+;; does is select-test's and beam-test's to say.
+(use-fixtures :each (fn [f] (with-redefs [select/triage! (constantly nil)] (f))))
 
 (defn- recorded-run
   "A run with three recorded turns on one branch. With `digests`, each turn

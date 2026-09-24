@@ -27,7 +27,8 @@
             [samizdat.cells :as cells]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.test :refer [deftest testing is]]
+            [clojure.test :refer [deftest testing is use-fixtures]]
+            [samizdat.agent.select :as select]
             [mycelium.cell :as cell]
             [mycelium.patch]
             [samizdat.agent.tools.base :as base]
@@ -37,6 +38,11 @@
             [samizdat.store.userspace :as us]
             [samizdat.userspace :as userspace]
             [samizdat.workflow :as wf]))
+
+;; Triage off: these drive the beam with a scripted llm/chat, and the triage
+;; call would take the first scripted reply (karamazov-1wv9). What triage
+;; does is select-test's and beam-test's to say.
+(use-fixtures :each (fn [f] (with-redefs [select/triage! (constantly nil)] (f))))
 
 (defn- with-db [f]
   (let [conn (db/open! ":memory:")]
@@ -889,3 +895,16 @@
   (let [template (slurp (io/resource "prompts/manifest-tool.md"))]
     (doseq [op (keys (mycelium.patch/ops))]
       (is (str/includes? template (str "  " op " {{args." op "}}")) op))))
+
+(deftest a-manifest-naming-a-role-that-does-not-exist-does-not-compile
+  ;; `:role` gives every branch of a run that role's tools and prompt
+  ;; (answer.edn's :answerer). A name roles.edn does not define would compile
+  ;; and then run its branches with no surface at all — roles are opt-in, and
+  ;; an unknown one is unrestricted.
+  (let [answer (wf/read-definition (slurp "resources/manifests/answer.edn"))]
+    (is (some? (wf/compile-loop answer)) "the shipped one compiles")
+    (let [e (try (wf/compile-loop (assoc answer :role :answerr)) nil
+                 (catch Throwable e e))]
+      (is (some? e))
+      (is (re-find #":answerr" (str (ex-message e))))
+      (is (re-find #":answerer" (str (ex-message e))) "and lists the roles there are"))))

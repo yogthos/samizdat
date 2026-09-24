@@ -148,11 +148,17 @@
   string and every encoding, which on a long run is hundreds of kilobytes
   and takes seconds. A front end renders live activity from the event stream
   meanwhile, so this arriving late costs nothing."
-  ([base run-id branch-id] (branch-detail base run-id branch-id nil))
-  ([base run-id branch-id note-kinds]
+  ([base run-id branch-id] (branch-detail base run-id branch-id nil nil))
+  ([base run-id branch-id note-kinds] (branch-detail base run-id branch-id note-kinds nil))
+  ([base run-id branch-id note-kinds since]
+   ;; `since`: the newest turn row id held — only the turns after it come
+   ;; back, and the answer carries :since to say so.
    (try (result (http/get (str base "/v1/runs/" run-id "/branches/" branch-id
-                               (when (seq note-kinds)
-                                 (str "?notes=" (str/join "," (map str note-kinds)))))
+                               (let [q (cond-> []
+                                         (seq note-kinds)
+                                         (conj (str "notes=" (str/join "," (map str note-kinds))))
+                                         since (conj (str "since=" since)))]
+                                 (when (seq q) (str "?" (str/join "&" q)))))
                           (assoc opts :socket-timeout 45000)))
         (catch Throwable e {:ok false :error (ex-message e)}))))
 

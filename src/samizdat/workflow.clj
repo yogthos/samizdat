@@ -363,10 +363,14 @@
                                         :found (:found orient)
                                         :chars (count (str (:block orient)))}})
                  (catch Throwable _ nil)))
-        branch (state/new-branch {:id "B1" :problem problem
-                                  :messages (branch-loop/initial-messages
-                                             problem (workflow-prompt definition)
-                                             nil opening)})
+        ;; The role the manifest names, as the beam gives its branches
+        ;; (answer.edn's :answerer): its tools, its prompt, its surface.
+        branch-role (some-> (:role definition) keyword)
+        branch (cond-> (state/new-branch {:id "B1" :problem problem
+                                          :messages (branch-loop/initial-messages
+                                                     problem (workflow-prompt definition)
+                                                     branch-role opening)})
+                 branch-role (assoc :role branch-role))
         ;; Make the project's own namespaces requirable from `eval` before any
         ;; branch takes a turn. The system prompt's whole first section is
         ;; REPL-first against the project under work, and without this that
@@ -397,7 +401,12 @@
              :git-baseline (when (or (not= loop-nm loop-name)
                                      (get-in config [:run :verify-focused?])
                                      (not (str/blank? (str (get-in config [:run :verify-cmd])))))
-                             (gitdiff/baseline root))
+                             ;; Journalled like the beam's, so a resume
+                             ;; measures from the same point (karamazov-9554).
+                             (let [b (gitdiff/baseline root)]
+                               (when (and b conn run-id)
+                                 (journal/note! conn run-id :git-baseline {:data {:ref b}}))
+                               b))
              ;; A per-run eval session, so defs the agent makes with `eval`
              ;; persist across its turns (define, then use) — REPL-first
              ;; development against the live image.
@@ -413,6 +422,7 @@
                    {:data {:name loop-nm :version version
                            :iterating? (iterating? definition)}})
     (runs/open-branch! conn run-id {:branch-id "B1"
+                                    :role (:role branch)
                                     :prompt-suffix (workflow-prompt definition)})
     ;; The window findings are evaluated over.
     (session/mark-run! run-id)

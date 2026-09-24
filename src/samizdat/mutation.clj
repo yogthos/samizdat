@@ -421,6 +421,13 @@
       unearned
       (fail unearned)
 
+      ;; And a cell that reads ctx keys its :requires does not declare: the
+      ;; manifest compile checks :requires against what drivers provide, so
+      ;; a declaration that is not true defeats it. The same check the
+      ;; userspace validator runs on a file edit — this path never reached it.
+      (cells/requires-problem body)
+      (fail (cells/requires-problem body))
+
       :else
     (try
       ;; INSTALL the candidate into the live image, on top of the project's

@@ -124,33 +124,86 @@
           (assoc :steps-cursor (or (:next body) (:steps-cursor s) 0))
           (update :trace-dropped + (or (:dropped body) 0))))))
 
+(defn- supervisor? [b] (= "supervisor" (str (:role b))))
+
+(defn- winner
+  "The branch a finished run finished on: the one that is `done`."
+  [branches]
+  (:id (first (filter #(= "done" (str (:status %))) branches))))
+
 (defn- active-branch
-  "The branch to open a run on: the one that is running, else the first.
+  "The branch to open a run on: the one that won, else one that is working,
+  else the first.
 
   Opening a run and being shown nothing until you click is a worse first
-  frame than opening it on the branch that is working."
+  frame than opening it on the branch that is working. The supervisor's SUP
+  is the last choice: it stays active after the run ends, and a run opened
+  on it showed its passes where the answer should have been (karamazov-ttrn)."
   [branches]
-  (or (:id (first (filter #(= "active" (str (:status %))) branches)))
+  (or (winner branches)
+      (:id (first (filter #(and (= "active" (str (:status %))) (not (supervisor? %)))
+                          branches)))
+      (:id (first (remove supervisor? branches)))
       (:id (first branches))))
+
+(defn- finished? [detail]
+  (contains? #{"completed" "exhausted" "failed" "aborted"}
+             (str (get-in detail [:run :status]))))
+
+(declare select-branch)
 
 (defn apply-detail
   "Fold the run detail — the row, branches, artifacts, gates, board, files."
   [s {:keys [ok body] :as r}]
   (if-not ok
     (disconnected s r)
-    (-> s
-        connected
-        (assoc :detail body)
+    (let [s (-> s connected (assoc :detail body))
+          w (winner (:branches body))]
+      (cond
         ;; Only when nothing is chosen. Re-picking on every poll would drag
         ;; the user off whichever branch they were reading the moment another
         ;; one became active.
-        (update :branch-id #(or % (active-branch (:branches body)))))))
+        (nil? (:branch-id s))
+        (cond-> (assoc s :branch-id (active-branch (:branches body)))
+          (finished? body) (assoc :winner-shown (:run-id s)))
+
+        ;; Except ONCE, when the run being watched finishes: the branch that
+        ;; won is where its answer is. Run 74ddebb8 finished on B4 while the
+        ;; TUI sat on an abandoned B1 and read as a failure (karamazov-ttrn).
+        (and w (finished? body) (not= (:winner-shown s) (:run-id s)))
+        (cond-> (assoc s :winner-shown (:run-id s))
+          (not= w (:branch-id s)) (select-branch w))
+
+        :else s))))
+
+(defn turns-cursor
+  "The newest turn row id held for the branch on screen: what to fetch the
+  branch from next. nil with nothing held, which asks for all of it."
+  [s]
+  (some->> (get-in s [:branch :turns]) (keep :id) seq (reduce max)))
 
 (defn apply-branch
+  "Fold a branch answer. One answered from a cursor (:since) carries only the
+  turns after it, and they are appended; the rest of it is current and
+  replaces what was held. An answer for a branch that is no longer on screen
+  is dropped — the fetch set out before the switch, and appending one
+  branch's turns to another's would be a story nobody told."
   [s {:keys [ok body] :as r}]
-  (if-not ok
-    (disconnected s r)
-    (-> s connected (assoc :branch body))))
+  (cond
+    (not ok) (disconnected s r)
+
+    (and (some-> (get-in body [:branch :id]) str) (:branch-id s)
+         (not= (str (get-in body [:branch :id])) (str (:branch-id s))))
+    (connected s)
+
+    (and (contains? body :since) (:branch s))
+    (let [held (get-in s [:branch :turns])
+          seen (set (keep :id held))]
+      (-> s connected
+          (assoc :branch (assoc (dissoc body :since)
+                                :turns (into (vec held) (remove (comp seen :id)) (:turns body))))))
+
+    :else (-> s connected (assoc :branch (dissoc body :since)))))
 
 (defn apply-approvals
   "Fold the questions waiting on a person.

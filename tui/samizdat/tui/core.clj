@@ -336,9 +336,12 @@
       (when (:detail wants) (swap! state st/apply-detail (client/run-detail base rid)))
       (when (:branch wants)
         (when-let [bid (:branch-id @state)]
+          ;; From the newest turn held: the rest has not changed, and on a
+          ;; long branch it is megabytes (karamazov-rf7d).
           (swap! state st/apply-branch
                  (client/branch-detail base rid bid
-                                       (keys (get-in (layout/current) [:conversation :notes]))))
+                                       (keys (get-in (layout/current) [:conversation :notes]))
+                                       (st/turns-cursor @state)))
           ;; The prose, a turn at a time, for the newest turns only — the
           ;; branch listing drops it because it is the bulk.
           (doseq [n (st/prose-wanted @state (:prose-turns (layout/current) 12))]

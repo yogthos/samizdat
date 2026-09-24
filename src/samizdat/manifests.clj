@@ -44,6 +44,8 @@
             [mycelium.core :as myc]
             [mycelium.schema :as schema]
             [mycelium.workflow :as wf]
+            [samizdat.agent.roles :as roles]
+            [samizdat.prompt :as prompt]
             [samizdat.cancel :as cancel]
             [samizdat.cells :as cells]
             [samizdat.lexicon :as lexicon]
@@ -287,6 +289,18 @@
                    ". Either the key belongs in manifests/ctx-keys and the"
                    " drivers must set it, or the cell should not be asking.")
               {:wanted wanted :provided (sort ctx-keys)})))))
+
+(defn- check-role!
+  "Refuse a manifest whose `:role` roles.edn does not define. The role gives
+  every branch of the run its tools and its prompt; a name the table does not
+  know would compile and run unrestricted, since roles are opt-in."
+  [definition]
+  (when-let [r (:role definition)]
+    (when-not (roles/spec r)
+      (throw (ex-info (str/trim (prompt/render "manifest-role"
+                                               {:role (pr-str r)
+                                                :known (str/join ", " (map pr-str (roles/names)))}))
+                      {:role r :known (vec (roles/names))})))))
 
 (defn preconditions
   "Every node's preconditions as ONE report, and whether each holds
@@ -539,6 +553,7 @@
    ;; Register any composed sub-loops as cells before the parent references them.
    (register-subworkflows! definition)
    (check-requires! definition)
+   (check-role! definition)
    (let [compiled (myc/pre-compile
                    (assoc definition :constraints (enforced-constraints definition))
                    ;; Baked in HERE because mycelium reads :validate at compile

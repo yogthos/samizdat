@@ -31,6 +31,7 @@
             [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is use-fixtures]]
+            [samizdat.agent.select :as select]
             [samizdat.agent.state :as state]
             [samizdat.llm.client :as llm]
             [samizdat.manifests :as manifests]
@@ -38,6 +39,7 @@
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
+            [samizdat.agent.roles :as roles]
             [samizdat.store.userspace :as us]
             [samizdat.userspace :as userspace]
             [samizdat.workflow :as workflow]
@@ -47,7 +49,11 @@
 ;; registers them as a namespace side effect anymore. Load them before the
 ;; tests that inspect the definition directly (compile-loop loads them itself,
 ;; but workflow-effects-are-fully-declared reads them without compiling).
-(use-fixtures :once (fn [f] (cells/load-cells!) (f)))
+;; Triage off: these drive the beam with a scripted llm/chat, and the triage
+;; call would take the first scripted reply (karamazov-1wv9). What triage
+;; does is select-test's and beam-test's to say.
+(use-fixtures :once (fn [f] (cells/load-cells!)
+                       (with-redefs [select/triage! (constantly nil)] (f))))
 
 (defmacro with-db [[binding] & body]
   `(let [~binding (db/open! ":memory:")]
@@ -185,8 +191,12 @@
   ;; counterpart to — and they are named here as the one allowed difference.
   ;; A row kind one driver writes and the other does not would be the next
   ;; finding; today there is none, and the empty set says so.
-  (let [beam-only-kinds #{}
-        beam-only-loop-workflow-keys #{"chosen-by" "beam-width" "requested-beam-width"}
+  (let [;; The beam takes a baseline on every run; this driver only when
+        ;; something downstream reads it (a non-default loop, focused verify,
+        ;; a verify command), which this case's config asks for none of. Each
+        ;; journals the one it takes (karamazov-9554).
+        beam-only-kinds #{"git-baseline"}
+        beam-only-loop-workflow-keys #{"chosen-by" "beam-width" "requested-beam-width" "triage"}
         say (fn [m] (str "```tool-call\n" (json/write-str m) "\n```"))
         case- {:problem "solve the problem"
                :replies {"B1" [(say {:name "thesis" :args {:goal "solve the problem"
@@ -415,3 +425,41 @@
                           :turn-workflow {:compiled-fsm {} :input-schema-raw {}}})]
     (is (str/includes? (str (:result r)) "loop/assemble")
         "the wiring shown is the stored loop manifest's, not an empty dump")))
+
+;; --- a question is answered, not built (karamazov-1wv9) ----------------------
+
+(deftest a-question-runs-the-answer-workflow-and-ends-on-its-reply
+  ;; "explain the project in the chat" went through the code-change loop:
+  ;; eval refused until a plan, a plan refused until it named a file, `done`
+  ;; refused until a file changed and a test existed. The branches wrote four
+  ;; documents to have something to hand in. Triage says it is a question;
+  ;; the answer workflow reads, and its reply is the deliverable.
+  (with-db [c]
+    (let [answer (str "The project is a small flying game. src/flight/main.clj opens the "
+                      "window and runs the loop; src/flight/draw.clj renders the terrain.")
+          seen (atom [])]
+      (with-redefs [select/triage! (fn [_ _] {:kind :answer :size :small :workflow "loop"})
+                    llm/chat (fn [_ _ messages & _]
+                               (swap! seen conj (:content (first messages)))
+                               (fence {:name "done" :args {:answer answer}}))]
+        (let [r (beam/run! {:conn c
+                            :config {:run {:beam-width 5 :max-turns 1000
+                                           :verify-focused? true :require-test? true}}
+                            :llm-adapter :a :llm-config {:max-tokens 16384}
+                            :problem "explain the project in the chat"})
+              note (journal/last-note c (:run-id r) :loop-workflow)]
+          (is (= "answer" (:name note)) "the table's workflow, over the chooser's")
+          (is (= :completed (:status r)) "done with nothing written is the whole job")
+          (is (= answer (:answer r)))
+          (is (= 1 (:beam_width (runs/get-run c (:run-id r)))))
+          (is (= "answerer" (some-> (first (runs/branches c (:run-id r))) :role str))
+              "its branch is the answerer, whose surface has no write tools")
+          (is (str/includes? (str (first @seen)) "answer")
+              "and it was told what the run is for"))))))
+
+(deftest the-answerer-reads-and-cannot-write
+  (is (roles/may-use? :answerer "read_file"))
+  (is (roles/may-use? :answerer "grep"))
+  (is (roles/may-use? :answerer "done"))
+  (doseq [t ["write_file" "edit_file" "patch" "plan" "task"]]
+    (is (not (roles/may-use? :answerer t)) (str t " is not an answerer's"))))

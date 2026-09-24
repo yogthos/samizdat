@@ -149,12 +149,49 @@
                     str/lower-case)]
     (first (filter #(= cleaned (str/lower-case %)) names))))
 
-(defn pick!
-  "Choose a workflow for `problem`, or nil to leave the decision alone.
+(defn parse-triage
+  "The triage reply as {:kind :size :workflow}, each nil unless it is on its
+  menu: :kind and :size from policy's :kinds and :sizes, as keywords, and
+  :workflow a candidate's name held to parse-choice's rule.
 
-  nil on every uncertainty — selection off, no candidates, the call failing,
-  a reply naming nothing on the menu — because the caller's fallback is the
-  factory loop, which is what the run would have used anyway. A run must never
+  Three `label: value` lines, after any <think> block. Each is judged on its
+  own, so a size off the menu costs the size and not the other two. A reply
+  with no labelled line at all is read the old way, as a bare workflow name,
+  so a model that answers as it used to still chooses."
+  [reply cands]
+  (let [p (policy)
+        body (message/strip-think-blocks (str reply))
+        labelled (into {}
+                       (keep #(when-let [[_ k v] (re-find #"(?i)^[\s*_`#-]*(kind|size|workflow)[\s*_`]*[:=]\s*(.+)$" %)]
+                                [(keyword (str/lower-case k)) v]))
+                       (str/split-lines body))
+        on-menu (fn [menu v]
+                  (let [v (-> (str v) str/trim (str/replace #"[\s`'\"*_.!,;:]+$" "")
+                              (str/replace #"^[\s`'\"*_]+" "") str/lower-case)]
+                    (when (contains? (set (map str/lower-case menu)) v) (keyword v))))]
+    (if (empty? labelled)
+      {:kind nil :size nil :workflow (parse-choice body cands)}
+      {:kind (on-menu (:kinds p) (:kind labelled))
+       :size (on-menu (:sizes p) (:size labelled))
+       :workflow (some-> (:workflow labelled) (parse-choice cands))})))
+
+(defn effort
+  "The run's shape for a triage — {:beam-width :max-turns :reasoning-effort
+  :workflow}, any of them absent — from policy's :effort table: the row for
+  its kind and size, else its kind's :any row. nil with no kind, which leaves
+  every number where the config put it."
+  [{:keys [kind size]}]
+  (when kind
+    (let [t (get (:effort (policy)) kind)]
+      (or (get t size) (get t :any)))))
+
+(defn triage!
+  "Ask what `problem` is: {:kind :size :workflow}, or nil to leave every
+  decision alone.
+
+  nil on every uncertainty — selection off, no candidates, the call failing
+  — because the caller's fallback is the factory loop at the config's
+  numbers, which is what the run would have used anyway. A run must never
   fail to start because the harness could not decide how to drive it."
   [{:keys [conn run-id llm-adapter llm-config]} problem]
   (try
@@ -163,11 +200,9 @@
       (when (and (:enabled? p)
                  (seq cands)
                  llm-adapter
-                 ;; A one-line problem is the factory loop's case by
-                 ;; definition — there is nothing to split and nothing to
-                 ;; decompose — so it is not worth a model call to be told so.
-                 ;; The floor is policy (gates.edn :min-problem-chars); at 0 it
-                 ;; is off and every run is chosen for.
+                 ;; The floor is policy (gates.edn :min-problem-chars). It is
+                 ;; 0: a short problem is where its length says least about
+                 ;; what it wants (karamazov-1wv9).
                  (>= (count (str/trim (str problem)))
                      (or (:min-problem-chars p) 0)))
         ;; BILLED like every other side model (karamazov-2rqb.1) — this used
@@ -179,7 +214,9 @@
                                [{:role "system" :content (prompt/prompt "workflow-select-system")}
                                 {:role "user"
                                  :content (build-prompt problem cands
-                                                        (history-lines conn cands))}]
+                                                        ;; No store, no record
+                                                        ;; to read.
+                                                        (when conn (history-lines conn cands)))}]
                                {:temperature 0.0})]
           (when (and conn run-id answer)
             (try (journal/record-side-call! conn run-id
@@ -187,5 +224,11 @@
                                              :model (:model llm-config)
                                              :usage (:usage answer)})
                  (catch Throwable _ nil)))
-          (parse-choice (:content answer) cands))))
+          (parse-triage (:content answer) cands))))
     (catch Throwable _ nil)))
+
+(defn pick!
+  "Choose a workflow for `problem`, or nil to leave the decision alone: the
+  workflow half of `triage!`."
+  [ctx problem]
+  (:workflow (triage! ctx problem)))

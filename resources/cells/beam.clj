@@ -41,6 +41,8 @@
             [samizdat.agent.beam :as beam]
             [samizdat.agent.critic :as critic]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.live :as live]
+            [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
             [samizdat.agent.state :as state]
             [samizdat.session :as session]
@@ -482,11 +484,19 @@
         because that pass reads them and stale scores would decide a live
         branch's fate on last round's evidence."
    :effects [:net :db]
-   :requires []
+   :requires [:beam-width]
    :input  [:map [:advanced :any] [:turn :int]]
    :output [:map [:advanced :any]]}
   (fn [ctx {:keys [advanced turn] :as data}]
-    (assoc data :advanced (beam/ensure-scored ctx advanced turn))))
+    ;; Scores decide which sibling is culled and whether a survivor may fork
+    ;; to regrow the beam. A width-1 run down to its one branch has neither —
+    ;; the last branch is never culled, and the beam is already at its width —
+    ;; so scoring it is a model call for nothing, and the note it leaves was
+    ;; the last thing an answer branch's log said (karamazov-1wv9).
+    (if (and (<= (or (:beam-width ctx) 1) 1)
+             (<= (count (filter state/active? advanced)) 1))
+      data
+      (assoc data :advanced (beam/ensure-scored ctx advanced turn)))))
 
 (cell/defcell :beam/cull
   {:doc "The retention pass: every branch that just failed faces the cull rule,
@@ -598,6 +608,51 @@
                   [[] []]
                   culled)]
       (assoc data :children children :updated updated))))
+
+(cell/defcell :beam/escalate
+  {:doc "Grow a run that was sized too small and is stuck (karamazov-1wv9).
+
+        Triage gives most runs one branch. Once the run's progress-stalled
+        gate has fired gates.edn :escalation :after-stalls times, the stuck
+        branch is handed theses for siblings up to :to-width — :beam/spawn,
+        next, opens them — and the run's reasoning effort goes to
+        :reasoning-effort for every role from its next request. Once per run
+        (:escalated? persists across rounds), and never for a run already
+        that wide."
+   :effects [:db]
+   :requires [:conn :run-id :beam-width]
+   :input  [:map [:culled :any] [:turn :int] [:escalated? {:optional true} :any]]
+   :output [:map [:culled :any] [:escalated? {:optional true} :any]]}
+  (fn [{:keys [conn run-id beam-width]} {:keys [culled escalated?] :as data}]
+    (let [{:keys [enabled? after-stalls to-width reasoning-effort]} (lexicon/policy :escalation)
+          stalls (or (some #(when (= "progress-stalled" (str (:gate %))) (:fired %))
+                           (journal/gate-tally conn run-id))
+                     0)
+          alive (filterv state/active? culled)
+          room (- (or to-width 0) (count alive))
+          target (first alive)]
+      (if (or escalated? (not enabled?) (nil? target) (not (pos? room))
+              (>= (or beam-width 1) (or to-width 0))
+              (< stalls (or after-stalls 0)))
+        data
+        (let [theses (mapv (fn [i]
+                             {:goal (str/trim (prompt/render "escalate-thesis"
+                                                             {:parent (:id target)
+                                                              :n (inc i) :of room}))
+                              :technique "a different approach"})
+                           (range room))]
+          (journal/note! conn run-id :escalated
+                         {:branch-id (:id target)
+                          :data {:stalls stalls :to-width to-width
+                                 :reasoning-effort reasoning-effort}})
+          (when reasoning-effort
+            (live/set! run-id nil {:reasoning-effort reasoning-effort}))
+          (assoc data
+                 :escalated? true
+                 :culled (mapv #(if (= (:id %) (:id target))
+                                  (update % :pending-branch-theses (fnil into []) theses)
+                                  %)
+                               culled)))))))
 
 (def ^:private round-products
   "The keys a round produces and the next one must not inherit.

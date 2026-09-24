@@ -26,7 +26,8 @@
             [jolt.time]
             [clojure.data.json :as json]
             [clojure.string :as str]
-            [clojure.test :refer [deftest testing is]]
+            [clojure.test :refer [deftest testing is use-fixtures]]
+            [samizdat.agent.select :as select]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.roles :as roles]
@@ -52,6 +53,11 @@
             [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]))
+
+;; Triage off: these drive the beam with a scripted llm/chat, and the triage
+;; call would take the first scripted reply (karamazov-1wv9). What triage
+;; does is select-test's and beam-test's to say.
+(use-fixtures :each (fn [f] (with-redefs [select/triage! (constantly nil)] (f))))
 
 (defmacro with-db [[binding] & body]
   `(let [~binding (db/open! ":memory:")]
@@ -565,6 +571,21 @@
                 "the branch knows what it holds again")
             (is (some :pinned? (:messages b))
                 "and the pinned task statement is back in its context")))))))
+
+(deftest a-resumed-run-measures-its-changes-from-where-it-started
+  ;; The baseline says what the run changed. Taken afresh at the resume, it
+  ;; swallowed everything the run wrote before the restart — and since the
+  ;; baseline holds untracked files (karamazov-9554), that is now its new
+  ;; files too, so a run that finished its work and then restarted would be
+  ;; refused `done` for having changed nothing. The run's own is journalled.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})
+          seen (atom nil)]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (journal/note! c rid :git-baseline {:data {:ref "0123abcd"}})
+      (with-redefs [beam/run-rounds (fn [ctx branches _] (reset! seen ctx) {:branches branches})]
+        (resume/resume! {:conn c :config {} :llm-adapter :a :llm-config {} :run-id rid}))
+      (is (= "0123abcd" (:git-baseline @seen))))))
 
 (deftest a-resumed-worker-keeps-its-own-problem
   ;; karamazov-blt.23: sub-workflow branches (a decompose unit, a team worker)

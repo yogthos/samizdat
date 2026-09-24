@@ -121,6 +121,30 @@
                        "**The harness's reflex has intervened"))
     (is (not (str/includes? (msg {:payload "ship it" :issued_by "supervisor"}) "human")))))
 
+(deftest a-role-that-cannot-write-is-not-told-to
+  ;; progress-stalled, orienting and prologue-cap all say the same thing in
+  ;; the end: write the next file, declare a plan, produce an artifact. To an
+  ;; answerer, whose job is reading and whose deliverable is its reply, that
+  ;; is wrong on its face — and in run 756b5572 progress-stalled fired twice
+  ;; on the answerer at turns 12-13 while it read src/, which is what widened
+  ;; a question into three branches (karamazov-1wv9).
+  (let [reading (fn [role]
+                  (branch-with :role role :phase :build :status :active
+                               :any-progress? true :turns-since-progress 20
+                               ;; A shell look first, as the live answerer
+                               ;; took: `shell` is on the shipping vocabulary,
+                               ;; which is what arms :studying.
+                               :turns (vec (cons {:tool "shell"}
+                                                 (repeat 70 {:tool "read_file"})))))
+        gates-for (fn [b] (set (map :gate (arbiter/eligible {:branch b :max-turns 100}))))
+        writers #{:progress-stalled :orienting :prologue-cap :studying}]
+    (is (seq (clojure.set/intersection writers (gates-for (reading nil))))
+        "an implementor reading this long is nudged")
+    (is (empty? (clojure.set/intersection writers (gates-for (reading :answerer))))
+        "an answerer is not")
+    (is (empty? (clojure.set/intersection
+                 writers (gates-for (assoc (reading :answerer) :any-progress? false)))))))
+
 (deftest gates-stay-silent-when-they-should
   (testing "the stall gate arms only after the branch has made progress"
     ;; Exploration is never nudged; the prologue cap covers the other case.
@@ -2734,6 +2758,61 @@
         (is (not (str/includes? (:witness obs) "77")))
         (is (not (str/includes? (:witness obs) "55")))
         (is (nil? (ship/observed-output [])) "nothing measured, nothing to add")))))
+
+(deftest an-answerer-may-quote-what-it-read
+  ;; For a code change, a figure only a READ showed is an input, not a
+  ;; measurement — the rung above. For a question about the project, what was
+  ;; read IS the subject: run 756b5572's answerer was refused `done` for
+  ;; quoting the constants in src/flight/mechanics.clj it had just read (60,
+  ;; 180, 4.5), and it has no eval to re-derive them with (karamazov-1wv9).
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "explain the project"})
+        b (assoc (state/new-branch {:id "B1" :problem "explain the project"}) :role :answerer)
+        _ (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "read_file"
+                                       :args "{}" :category :neutral
+                                       :result "src/flight/mechanics.clj:\n(def max-speed 180)"})
+        ;; A shell look as well, as the live answerer took: with it the branch
+        ;; has evidence, and the figure rung runs.
+        _ (journal/record-turn! c rid {:branch-id "B1" :turn 2 :tool-name "shell"
+                                       :args "{}" :category :success
+                                       :result "src/flight/bird.clj\nsrc/flight/mechanics.clj"})
+        ship (fn [branch]
+               (tools/run-tool {:branch branch :tool-name "done" :turn 3 :conn c :run-id rid
+                                :root "/tmp" :git-baseline "HEAD" :config {}
+                                :args {:answer "The project is a flying game; the bird tops out at 180 in src/flight/mechanics.clj."}}))]
+    (is (not (re-find #"figures no artifact supports" (str (:result (ship b)))))
+        "the answerer quoting what it read is accepted")
+    (is (re-find #"figures no artifact supports: `180`"
+                 (str (:result (ship (dissoc b :role)))))
+        "the same answer from a branch that could have measured is still refused")))
+
+(deftest a-request-is-not-its-subject
+  ;; "explain the project in the chat" has three substantive words, and all
+  ;; three are about the REQUEST. Run fd65f5a6's answerer described the game
+  ;; accurately and was refused for sharing no term with the problem, then
+  ;; passed by prefixing "I am explaining the project in the chat, as asked."
+  ;; — the check taught it to game the check.
+  (is (ship/engages-problem? "explain the project in the chat"
+                             "flight is a bird-flight game written in Jolt Clojure"))
+  (is (not (ship/engages-problem? "fix the parser's handling of nested brackets"
+                                  "the weather in Toronto is mild today"))
+      "a problem with a subject still holds the answer to it"))
+
+(deftest the-figure-refusal-tells-each-role-what-covers-a-figure
+  ;; The refusal told an answerer to back its figures with "a test run or an
+  ;; `eval`" — tools it does not have. What covers a figure for a role that
+  ;; cannot write is what it read or ran.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "explain the project"})
+        b (assoc (state/new-branch {:id "B1" :problem "explain the project"}) :role :answerer)
+        _ (journal/record-turn! c rid {:branch-id "B1" :turn 1 :tool-name "shell" :args "{}"
+                                       :category :success :result "src/flight/bird.clj"})
+        r (tools/run-tool {:branch b :tool-name "done" :turn 3 :conn c :run-id rid
+                           :root "/tmp" :git-baseline "HEAD" :config {}
+                           :args {:answer "The project is a flying game with 830 lines of code."}})]
+    (is (re-find #"figures no artifact supports: `830`" (str (:result r))))
+    (is (not (re-find #"eval" (str (:result r)))) "no advice to use a tool it lacks")
+    (is (re-find #"read" (str (:result r))))))
 
 ;; --- the context block's cost is journalled per turn (karamazov-o4wm.6) ------
 

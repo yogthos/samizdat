@@ -20,7 +20,8 @@
   "A branch's conversation as one timeline of who said what
   (karamazov-tq7m.4): the person, the agent, the critic, the supervisor, the
   harness — in the order it happened."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
             [samizdat.tui.state :as st]
             [samizdat.tui.timeline :as tl]))
 
@@ -152,3 +153,71 @@
     (is (= [[:agent :thinking "first\nso"] [:agent :say "Writing it"]]
            (mapv (juxt :role :kind :text) (take-last 2 es))))
     (is (every? :live? (take-last 2 es)))))
+
+;; --- a frame that changed nothing the conversation shows (karamazov-iimi) -----
+
+(deftest a-keystroke-does-not-rebuild-the-conversation
+  ;; Every keystroke is a frame. Rebuilding the timeline from every turn row
+  ;; was 108ms of a 170ms frame on a 3067-turn branch, for a vector that
+  ;; had not changed: typing only moves :input.
+  (let [es (tl/entries state settings)]
+    (is (identical? es (tl/entries (assoc state :input "a") settings)))
+    (is (identical? es (tl/entries (assoc state :input "ab" :scroll {:x 1}) settings)))
+    (testing "what the conversation shows still reaches it"
+      (let [more (update-in state [:branch :turns] conj
+                            {:turn 3 :tool_name "done" :result "ok"
+                             :created_at "2026-09-23T10:00:09.000Z"})]
+        (is (= "t3/tool" (:key (last (tl/entries more settings)))))
+        (is (= "later" (:text (last (tl/entries (assoc state :local-notes
+                                                       [{:key "l1" :at "2026-09-23T11:00:00.000Z"
+                                                         :text "later"}])
+                                                settings)))))))
+    (testing "the reply being streamed is folded in on top of the cached history"
+      (let [live (assoc state :live {"B1" {:text "Writing"}})]
+        (is (= "Writing" (:text (last (tl/entries live settings)))))
+        (is (= (count es) (dec (count (tl/entries live settings)))))))))
+
+;; --- a branch that numbers its turns more than once (karamazov-qqqr) ----------
+
+(def ^:private repeating
+  "The supervisor's SUP branch as runs before karamazov-pefk wrote it: every
+  oversight pass numbered its turns from 1 again."
+  {:branch-id "SUP"
+   :branch {:turns (vec (map-indexed (fn [i n] {:id (inc i) :turn n :tool_name "shell"
+                                                :result (str "r" i)
+                                                :created_at (format "2026-09-23T10:00:%02d.000Z" i)})
+                                     [1 2 3 1 2 1 2 3]))}
+   :turn-text {1 {:assistant_text "the first pass's first turn"}}})
+
+(deftest a-repeated-turn-number-is-still-its-own-entry
+  (let [es (tl/entries repeating {})
+        ks (map :key es)]
+    (is (= (count ks) (count (distinct ks))) "keys are what ftxui and the folds are keyed by")
+    (is (= ["t1/tool" "t2/tool" "t3/tool" "t1.2/tool" "t2.2/tool" "t1.3/tool" "t2.3/tool" "t3.2/tool"]
+           (vec (filter #(str/ends-with? % "/tool") ks)))
+        "the first of a number keeps the plain key, so a branch that never repeats is unchanged")
+    (is (= (count (distinct (map :turn-key es))) 8) "each row is its own turn for the window")
+    (testing "a turn number's prose is the first row's, which is the row the server returns"
+      (is (= ["the first pass's first turn"] (keep #(when (= :say (:kind %)) (:text %)) es))))))
+
+(deftest reasoning-the-reply-repeats-is-shown-once
+  ;; A provider that returns reasoning_text AND leaves the same text in a
+  ;; <think> block drew the thinking fold with every paragraph twice.
+  (let [s {:branch {:turns [{:turn 1 :tool_name "shell" :created_at "t1"}]}
+           :turn-text {1 {:assistant_text "<think>check the tree</think>Reading."
+                          :reasoning_text "check the tree"}}}]
+    (is (= ["check the tree"] (keep #(when (= :thinking (:kind %)) (:text %)) (tl/entries s {})))))
+  (testing "different reasoning from each source is still joined"
+    (let [s {:branch {:turns [{:turn 1 :tool_name "shell" :created_at "t1"}]}
+             :turn-text {1 {:assistant_text "<think>second</think>ok" :reasoning_text "first"}}}]
+      (is (= ["first\nsecond"] (keep #(when (= :thinking (:kind %)) (:text %)) (tl/entries s {})))))))
+
+(deftest the-runs-answer-ends-the-conversation
+  ;; The answer a finished run gave was only a truncated claim in a side
+  ;; panel (karamazov-ttrn). It is what the person asked for; it is the last
+  ;; thing the conversation says.
+  (let [s (assoc-in state [:detail :run :final_answer] "The project is a parser.")
+        es (tl/entries s settings)]
+    (is (= {:role :agent :kind :say :text "The project is a parser." :final? true}
+           (select-keys (last es) [:role :kind :text :final?])))
+    (is (not-any? :final? (tl/entries state settings)) "no answer, no entry")))

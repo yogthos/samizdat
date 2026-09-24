@@ -25,6 +25,18 @@
    "clpfd" "prolog" "smt" "lean" "works" "available" "loaded" "basic"
    "supports" "simple" "test" "check" "verify" "verified" "example"}
 
+ :request-framing
+ ;; Words that frame a REQUEST rather than name its subject — what to do and
+ ;; where to say it. The problem-relevance rung drops them from the PROBLEM's
+ ;; terms before asking whether the answer shares one: "explain the project in
+ ;; the chat" has nothing left, so any answer engages it, where "fix the
+ ;; parser" still has `parser` (karamazov-1wv9). Widening this list weakens
+ ;; that rung, so an entry is an instruction word, never a subject.
+ #{"explain" "explanation" "describe" "description" "summarize" "summarise"
+   "summary" "overview" "tell" "me" "please" "chat" "project" "codebase"
+   "repo" "repository" "what" "how" "does" "work" "works" "understand"
+   "walk" "through" "give" "let's" "lets" "us"}
+
  :answer-framing
  ;; Grammar plus the vocabulary a model uses to FRAME an answer rather than
  ;; to assert one. The gate is aimed at specifics — numbers, names,

@@ -211,19 +211,26 @@
 (defn branch-detail
   "A branch, its turns, and — when `note-kinds` names any — the journal notes
   of those kinds that belong to its story (journal/branch-notes), for a
-  front end drawing who said what beside the turns."
-  ([conn run-id branch-id] (branch-detail conn run-id branch-id nil))
-  ([conn run-id branch-id note-kinds]
+  front end drawing who said what beside the turns.
+
+  `since` (a turn row id) answers with only the turns after it, and says so
+  as :since — a reader already holding the rest appends rather than
+  re-reading a branch that on a long run is megabytes. Everything else in
+  the answer is whole either way: it is small, and it does change."
+  ([conn run-id branch-id] (branch-detail conn run-id branch-id nil nil))
+  ([conn run-id branch-id note-kinds] (branch-detail conn run-id branch-id note-kinds nil))
+  ([conn run-id branch-id note-kinds since]
   (when-let [b (runs/get-branch conn run-id branch-id)]
     (cond->
     {:branch (update b :thesis parse-json)
-     :turns (journal/branch-turns conn run-id branch-id)
+     :turns (journal/branch-turns conn run-id branch-id since)
      ;; Gates that fired but whose predictions never settled — the run's own
      ;; account of advice that went unheeded, surfaced where the turns it
      ;; targeted are read.
      :unsettled-gates (journal/unsettled-gates conn run-id branch-id)
      :artifacts (mapv #(update % :witness parse-json)
                       (journal/artifacts conn run-id branch-id))}
+      since (assoc :since since)
       (seq note-kinds)
       (assoc :notes (mapv #(update % :data parse-json)
                           (journal/branch-notes conn run-id branch-id note-kinds

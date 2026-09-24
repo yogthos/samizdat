@@ -77,13 +77,44 @@
       (is (nil? (select/parse-choice "loop over the items" cands)))
       (is (nil? (select/parse-choice "solve the problem" cands))))))
 
-(deftest a-one-line-problem-is-not-worth-a-round-trip
-  ;; The factory loop's case by definition — nothing to split, nothing to
-  ;; decompose — so the floor keeps selection off the cheap runs entirely.
-  (let [floor (:min-problem-chars (select/policy))]
-    (is (pos? floor))
-    (is (nil? (select/pick! {:conn nil :llm-adapter :fake :llm-config {}}
-                            (apply str (repeat (dec floor) "x")))))))
+(deftest a-short-question-is-still-triaged
+  ;; The floor used to skip every problem under 120 characters as "the factory
+  ;; loop's case by definition". "explain the project in the chat" is 31, so
+  ;; it ran the code-change loop at width 5 with the plan and test gates, took
+  ;; 50 minutes and wrote four files nobody asked for (karamazov-1wv9). A
+  ;; short problem is where kind and size are least obvious from its length.
+  (is (zero? (or (:min-problem-chars (select/policy)) 0)))
+  (with-redefs [llm/chat (fn [& _] {:content "kind: answer\nsize: small\nworkflow: loop"
+                                    :finish-reason "stop"})]
+    (is (= {:kind :answer :size :small :workflow "loop"}
+           (select/triage! {:conn nil :llm-adapter :fake :llm-config {}}
+                           "explain the project in the chat")))))
+
+(deftest a-triage-reply-is-three-lines-each-held-to-its-menu
+  (let [cands [{:name "loop"} {:name "team"}]]
+    (is (= {:kind :change :size :large :workflow "team"}
+           (select/parse-triage "<think>parts</think>\nkind: change\nsize: large\nworkflow: team" cands)))
+    (testing "a value off its menu is dropped, and the rest still stands"
+      (is (= {:kind :answer :size nil :workflow "loop"}
+             (select/parse-triage "kind: answer\nsize: huge\nworkflow: loop" cands)))
+      (is (= {:kind :investigate :size :small :workflow nil}
+             (select/parse-triage "kind: investigate\nsize: small\nworkflow: looping" cands))))
+    (testing "a bare name, the old reply, is still a workflow"
+      (is (= {:kind nil :size nil :workflow "team"} (select/parse-triage "team" cands))))
+    (is (= {:kind nil :size nil :workflow nil} (select/parse-triage "no idea" cands)))))
+
+(deftest the-effort-a-task-gets-is-policy
+  ;; kind x size -> width, turns, effort, and for a question its workflow.
+  ;; The numbers are gates.edn's; this pins the shape and the direction.
+  (let [answer (select/effort {:kind :answer :size :small})
+        large (select/effort {:kind :change :size :large})]
+    (is (= 1 (:beam-width answer)) "a question is one line of work")
+    (is (pos-int? (:max-turns answer)))
+    (is (< (:max-turns answer) 100) "and a short one")
+    (is (> (:beam-width large) 1) "a large change still gets the beam")
+    (is (nil? (select/effort {:kind nil :size nil})) "no triage, no opinion")
+    (is (= (select/effort {:kind :answer :size nil}) (select/effort {:kind :answer :size :large}))
+        "a question's effort does not depend on its size")))
 
 (deftest selection-never-stops-a-run-from-starting
   ;; nil on every uncertainty: the caller's fallback is the factory loop,
