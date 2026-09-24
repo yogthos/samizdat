@@ -191,14 +191,13 @@
           out (conv {:branch {:turns turns}} {:turns 40})]
       (is (= 3 (count (keep #(:key (props-of %)) (nodes-of :vbox out))))))))
 
-(deftest the-newest-entry-holds-the-focus-unless-scrolled-away
-  ;; ftxui scrolls a frame to its focused element: that is how the pane
-  ;; follows the bottom as the run speaks.
-  (let [focused #(keep (fn [n] (when (:focus (props-of n)) (:key (props-of n))))
-                       (nodes-of :vbox %))]
-    (is (= ["t2/tool"] (focused (conv {:branch {:turns turns}} {}))))
-    (is (= ["t1/tool"] (focused (conv {:branch {:turns turns} :scroll-anchor "t1/tool"} {})))
-        "scrolled up, the anchor holds the view")))
+(deftest the-conversation-is-a-scroll-pane-at-the-top-it-was-left
+  (let [pane #(first (nodes-of :scroll %))]
+    (is (some? (pane (conv {:branch {:turns turns}} {}))))
+    (is (nil? (:top (props-of (pane (conv {:branch {:turns turns}} {}))))) "following")
+    (is (= 7 (:top (props-of (pane (conv {:branch {:turns turns}
+                                         :scroll {:conversation {:top 7}}} {})))))
+        "scrolled up, it stays there")))
 
 (deftest an-expanded-fold-is-open-and-its-body-is-drawn
   (let [id (w/fold-id 1 :result)

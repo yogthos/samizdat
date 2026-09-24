@@ -55,6 +55,7 @@
   cell's job, in resources, where the supervisor can rewrite it."
   (:require [clojure.tools.logging :as log]
             [samizdat.agent.gates :as gates]
+            [samizdat.events :as events]
             [samizdat.cancel :as cancel]
             [samizdat.agent.tools.base :as tools]
             [samizdat.config :as config]
@@ -319,6 +320,34 @@
     (let [{:keys [turn forced]} (gates/threshold :local-reasoning-budget)]
       (if force-tool forced turn))))
 
+(defn- delta-publisher
+  "An `on-delta` for one call on `branch-id` of `run-id`: the reply's text and
+  reasoning gathered and published to the bus at most every gates.edn
+  :delta-publish-ms, each piece with the offset it starts at, and a `flush!`
+  for what is still gathered when the call returns. {:on-delta :flush!}."
+  [run-id branch-id]
+  (let [every (gates/threshold :delta-publish-ms)
+        st (atom {:text "" :reasoning "" :sent-text 0 :sent-reasoning 0 :at 0})
+        publish! (fn [{:keys [text reasoning sent-text sent-reasoning]}]
+                   (let [t (subs text sent-text) r (subs reasoning sent-reasoning)]
+                     (when (or (seq t) (seq r))
+                       (events/publish! (cond-> {:kind :delta :run-id run-id :branch-id branch-id}
+                                          (seq t) (assoc :text t :text-at sent-text)
+                                          (seq r) (assoc :reasoning r :reasoning-at sent-reasoning))))))
+        mark (fn [s now] (-> s
+                             (assoc :sent-text (count (:text s))
+                                    :sent-reasoning (count (:reasoning s)) :at now)
+                             (update :marks (fnil inc 0))))]
+    {:on-delta (fn [{:keys [text reasoning]}]
+                 (let [now (System/currentTimeMillis)
+                       [before after] (swap-vals! st #(cond-> (-> % (update :text str text)
+                                                                   (update :reasoning str reasoning))
+                                                        (>= (- now (:at %)) every) (mark now)))]
+                   (when (not= (:marks before) (:marks after))
+                     (publish! (assoc after :sent-text (:sent-text before)
+                                            :sent-reasoning (:sent-reasoning before))))))
+     :flush! (fn [] (let [[before _] (swap-vals! st mark 0)] (publish! before)))}))
+
 (defn complete-fn
   "ctx -> (fn [tape] -> {:ok true :response r} | {:ok false :error s}).
 
@@ -351,7 +380,12 @@
            (force-mechanism ctx tape)
            reasoning-budget (reasoning-budget-for ctx tape)]
      (loop [attempt 1]
-       (let [base (or (:max-tokens (:llm-config ctx))
+       (let [;; Somebody may be watching the run: its calls stream, and what
+             ;; the model writes goes onto the bus as it is written. Not a
+             ;; probe's (journal? false): a bounce is not a turn anyone sees.
+             watch (when (and journal? (:run-id ctx) id)
+                     (delta-publisher (:run-id ctx) (str id)))
+             base (or (:max-tokens (:llm-config ctx))
                       ;; No configured cap: the FIRST attempt keeps the
                       ;; provider's default, but a retry exists to buy room —
                       ;; doubling nothing was a same-budget repeat (blt.38).
@@ -377,7 +411,8 @@
                                         ;; The stable conversation key an endpoint
                                         ;; pins its prefix cache to. Only the local
                                         ;; adapter emits it; see LR-5.
-                                        id (assoc :cache-key (str id))))
+                                        id (assoc :cache-key (str id))
+                                        watch (assoc :on-delta (:on-delta watch))))
                                    :wire wire)}
                  (catch Throwable e
                    ;; The reason travels with the failure. `provider-error-step`
@@ -386,7 +421,8 @@
                    ;; versus wait and retry. Without this the loop knows only
                    ;; `the call failed` and every provider problem looks alike.
                    {:ok false :error (ex-message e)
-                    :reason (or (:reason (ex-data e)) :call-failed)}))]
+                    :reason (or (:reason (ex-data e)) :call-failed)})
+                 (finally (some-> watch :flush! (apply []))))]
          (if (and (:ok r)
                   (< attempt max-call-attempts)
                   ;; The prefill the adapter ACTUALLY sent (nil where it was

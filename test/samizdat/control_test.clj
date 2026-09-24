@@ -617,26 +617,24 @@
 (deftest a-resumed-branch-reopens-on-the-suffix-it-was-opened-on
   ;; The row records the suffix the cell handed initial-messages (v24), and
   ;; the rebuild replays it verbatim: a decompose unit keeps its attempt
-  ;; framing and a supervisor its role text, whatever the manifest's :prompt
-  ;; says. Before the column every branch came back on the manifest's prompt —
-  ;; a resumed unit lost its attempt framing, a resumed supervisor opened on
-  ;; the supervisor system prompt without the supervisor role text
-  ;; (karamazov-kgvg). A row that recorded NONE gets none, even under a
+  ;; framing, whatever the manifest's :prompt says. Before the column every
+  ;; branch came back on the manifest's prompt — a resumed unit lost its
+  ;; attempt framing (karamazov-kgvg). A row that recorded NONE gets none, even under a
   ;; manifest that has a :prompt.
   (with-db [c]
     (let [rid (runs/start-run! c {:problem "review src/example.clj"
                                   :max-turns 10 :beam-width 1})]
-      (runs/open-branch! c rid {:branch-id "SUP" :role :supervisor
-                                :prompt-suffix "YOU WATCH THE RUN"})
+      (runs/open-branch! c rid {:branch-id "U1" :role :implementor
+                                :prompt-suffix "ATTEMPT THIS UNIT"})
       (runs/open-branch! c rid {:branch-id "B1"})
       (with-redefs [beam/run-rounds (fn [_ branches _] {:branches branches})]
         (let [bs (:branches (resume/resume! {:conn c :config {:run {:loop "review"}}
                                              :llm-adapter :a :llm-config {} :run-id rid}))
               system (fn [id] (->> bs (filter #(= id (:id %))) first :messages
                                    (filter #(= "system" (:role %))) first :content))]
-          (is (str/includes? (system "SUP") "YOU WATCH THE RUN")
+          (is (str/includes? (system "U1") "ATTEMPT THIS UNIT")
               "the suffix it opened on")
-          (is (not (str/includes? (system "SUP") "CODE REVIEW"))
+          (is (not (str/includes? (system "U1") "CODE REVIEW"))
               "and not the manifest's, which it never saw")
           (is (not (str/includes? (system "B1") "CODE REVIEW"))
               "a branch recorded as opening on no suffix gets none"))))))
@@ -878,3 +876,55 @@
     (is (not (system/started?)))
     (is (nil? (samizdat.userspace/project-root)) "the project it bound is let go")
     (is (not (samizdat.userspace/files?)))))
+
+;; --- resume ------------------------------------------------------------------
+
+(deftest a-run-running-in-this-process-cannot-be-resumed
+  ;; A resume of a live run started a SECOND driver over the same branches:
+  ;; duplicate turn rows, and every call on whatever model the resume picked
+  ;; (run 3020cbca, endless-flight).
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :provider :deepseek :model "m"})
+          drove (atom 0)]
+      (swap! api-control/active assoc rid {:abort (atom false)})
+      (try
+        (with-redefs [resume/resume! (fn [_] (swap! drove inc) {:status :completed})]
+          (let [r (api-control/resume! {:conn c :config {:llm {:provider :local}}} rid {})]
+            (is (= 409 (:status r)))
+            (is (str/includes? (str (get-in r [:body :error :message])) "still running")))
+          (Thread/sleep 50)
+          (is (zero? @drove) "no second driver"))
+        (finally (swap! api-control/active dissoc rid))))))
+
+(deftest a-resume-keeps-the-runs-own-provider-and-model
+  ;; It rebuilt the model from the config's default, so a run started on
+  ;; deepseek came back on the local endpoint.
+  (with-db [c]
+    (let [config {:llm {:provider :local :model "local-model"}
+                  :providers {:flash {:type :deepseek :model "deepseek-v4-flash"}}}
+          rid (runs/start-run! c {:problem "p" :provider :flash :model "deepseek-v4-flash"})
+          seen (promise)]
+      (with-redefs [resume/resume! (fn [ctx] (deliver seen (:llm-config ctx)) {:status :completed})]
+        (api-control/resume! {:conn c :config config} rid {})
+        (let [llm (deref seen 2000 nil)]
+          (is (= :deepseek (:provider llm)))
+          (is (= :flash (:provider-name llm)))
+          (is (= "deepseek-v4-flash" (:model llm)))))
+      (testing "a resume that names a model still gets it"
+        (let [seen (promise)]
+          (with-redefs [resume/resume! (fn [ctx] (deliver seen (:llm-config ctx)) {:status :completed})]
+            (api-control/resume! {:conn c :config config} rid {:model "deepseek-v4-pro"})
+            (is (= "deepseek-v4-pro" (:model (deref seen 2000 nil))))))))))
+
+(deftest a-resume-leaves-the-supervisor-stream-to-its-stream
+  ;; The oversight stream opens SUP on the runs row to carry the supervisor's
+  ;; conversation; a resumed beam rebuilt it as a beam branch and drove it
+  ;; through the implementor loop. The stream re-opens it itself.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :max-turns 10 :beam-width 1})]
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (runs/open-branch! c rid {:branch-id "SUP" :role :supervisor})
+      (with-redefs [beam/run-rounds (fn [_ branches _] {:branches branches})]
+        (is (= ["B1"] (mapv :id (:branches (resume/resume! {:conn c :config {}
+                                                            :llm-adapter :a :llm-config {}
+                                                            :run-id rid})))))))))

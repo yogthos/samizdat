@@ -342,7 +342,10 @@
         opening (instr/opening-context root (:block orient)
                                        (gates/threshold :instructions))
         run-id (runs/start-run! conn {:problem problem
-                                      :provider (:provider llm-config)
+                                      ;; The alias, so a resume resolves the
+                                      ;; same declaration (api.control/resume!).
+                                      :provider (or (:provider-name llm-config)
+                                                    (:provider llm-config))
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width 1

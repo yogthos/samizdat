@@ -269,7 +269,16 @@
   (is (= :start (st/enter-action (st/initial "b")))
       "nothing to steer, so the words are a problem statement")
   (is (= :submit (st/enter-action (assoc (st/initial "b") :run-id "r1")))
-      "with a run on screen the words are a directive for it"))
+      "with a run on screen the words are a directive for it")
+  (is (= :submit (st/enter-action (assoc (st/initial "b") :run-id "r1"
+                                         :detail {:run {:status "running"}}))))
+  (testing "a run that has ended cannot be steered: the words start the next one"
+    ;; They went out as a directive, the server refused it, and what was typed
+    ;; was gone — `describe the project` typed over a finished run.
+    (doseq [status ["completed" "failed" "aborted" "exhausted"]]
+      (is (= :start (st/enter-action (assoc (st/initial "b") :run-id "r1"
+                                            :detail {:run {:status status}})))
+          status))))
 
 (deftest a-started-run-is-selected-and-the-box-is-emptied
   (let [s (-> (st/initial "b")
@@ -357,3 +366,32 @@
 
 (deftest a-newline-can-be-typed-on-purpose
   (is (= "one\n" (:input (st/newline (st/set-input (st/initial "b") "one"))))))
+
+(deftest a-reply-being-written-is-folded-in-as-it-arrives
+  (let [ev (fn [data] {:event "delta" :data (merge {:branch_id "B1"} data)})
+        fold (fn [s e] (first (st/apply-event s e)))
+        s (reduce fold (st/initial "b")
+                  [(ev {:reasoning "hm" :reasoning-at 0})
+                   (ev {:text "Hel" :text-at 0})
+                   (ev {:text "lo" :text-at 3})])]
+    (is (= {:text "Hello" :reasoning "hm"} (get-in s [:live "B1"])))
+    (is (= #{} (second (st/apply-event s (ev {:text "!" :text-at 5}))))
+        "nothing to fetch: the event carries it")
+    (testing "a piece already held is not doubled"
+      (is (= "Hello" (get-in (fold s (ev {:text "lo" :text-at 3})) [:live "B1" :text]))))
+    (testing "the branch's next turn row takes over from it"
+      (is (nil? (get-in (fold s {:id "9" :event "turn" :data {:branch_id "B1"}}) [:live "B1"]))))))
+
+(deftest a-pushed-event-is-read-as-it-comes-off-the-wire
+  ;; The stream hands over each event's data as the JSON TEXT it was sent
+  ;; as. Read as a map it never was, every event lost its branch: a turn on
+  ;; the branch on screen asked for no branch fetch — the conversation only
+  ;; caught up when something else refreshed it — and a reply being written
+  ;; was filed under no branch at all.
+  (let [s (assoc (st/initial "b") :run-id "R" :branch-id "B1")]
+    (is (contains? (second (st/apply-event s {:id "41" :event "turn"
+                                              :data "{\"id\":41,\"branch_id\":\"B1\",\"kind\":\"turn\"}"}))
+                   :branch))
+    (is (= "Hel" (get-in (first (st/apply-event s {:event "delta"
+                                                   :data "{\"branch_id\":\"B1\",\"text\":\"Hel\",\"text-at\":0}"}))
+                         [:live "B1" :text])))))

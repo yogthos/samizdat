@@ -49,6 +49,7 @@
             [samizdat.llm.adapter :as adapter]
             [samizdat.llm.message :as message]
             [samizdat.llm.ratelimit :as ratelimit]
+            [samizdat.llm.stream :as stream]
             [samizdat.util :as util]
             [samizdat.session :as session]))
 
@@ -244,16 +245,21 @@
         ;; storing a doubled fence on every steered GLM turn.
         use-prefill? (boolean (and (:prefill request)
                                    (adapter/prefill-support? adapter config)))
-        body (adapter/chat-body adapter config request)
+        streamed? (boolean (and (:on-delta request) (contains? (:features config) :stream)))
+        body (cond-> (adapter/chat-body adapter config request)
+               ;; Usage rides the last chunk only when asked for.
+               streamed? (assoc :stream true :stream_options {:include_usage true}))
         payload (json/write-str body)
         started (System/currentTimeMillis)
-        resp (http/post url {:headers (merge (request-headers adapter config)
-                                             {"Content-Type" "application/json"})
-                             :body payload
-                             :socket-timeout (:timeout-ms config default-timeout-ms)
-                             :conn-timeout (:conn-timeout-ms config
-                                                             default-conn-timeout-ms)
-                             :throw-exceptions false})
+        opts {:headers (merge (request-headers adapter config)
+                              {"Content-Type" "application/json"})
+              :body payload
+              :socket-timeout (:timeout-ms config default-timeout-ms)
+              :conn-timeout (:conn-timeout-ms config default-conn-timeout-ms)}
+        resp (if streamed?
+               (stream/post url (assoc opts :max-response-ms (:max-response-ms config))
+                            (:on-delta request))
+               (http/post url (assoc opts :throw-exceptions false)))
         elapsed (- (System/currentTimeMillis) started)
         status (:status resp)
         decoded (decode (:body resp))]
@@ -371,7 +377,8 @@
   stuck provider costs a known amount rather than the run."
   ([adapter config messages] (chat adapter config messages nil))
   ([adapter config messages {:keys [max-tokens temperature max-retries prefill force-tool
-                                    cache-key reasoning-effort grammar reasoning-budget]}]
+                                    cache-key reasoning-effort grammar reasoning-budget
+                                    on-delta]}]
    (let [request {:messages (message/prepare messages)
                   :max-tokens (or max-tokens (:max-tokens config))
                   :temperature (or temperature (:temperature config))
@@ -402,7 +409,11 @@
                   :grammar grammar
                   ;; A per-call thinking cap for a llama.cpp endpoint
                   ;; (karamazov-w7n4); every other adapter ignores it.
-                  :reasoning-budget reasoning-budget}
+                  :reasoning-budget reasoning-budget
+                  ;; Somebody watching the reply as it is written: with an
+                  ;; endpoint that can stream (:stream), each delta goes to
+                  ;; it as it arrives (samizdat.llm.stream).
+                  :on-delta on-delta}
          ;; The read timeout is sized to the budget being asked for: a big
          ;; max-tokens legitimately takes longer than a small one, and a fixed
          ;; bound cut off long generations and re-billed them (see

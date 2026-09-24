@@ -44,7 +44,8 @@ needing cmake and a C++17 compiler). This is also why the TUI is not part of
 | `/` + a command | a slash command — see below; `Tab` completes the name, `/help` lists them |
 | `Ctrl-J` | a new line in the compose box, which grows a row per line, typed or soft-wrapped at its width (up to `:max-lines`, 8, then it scrolls); `Enter` sends |
 | `Ctrl-P` / `Ctrl-N` | walk back and forth through what you sent |
-| `PgUp` / `PgDn`, mouse wheel | scroll the conversation; it stops following the bottom |
+| `PgUp` / `PgDn` | page the conversation; it stops following the bottom |
+| mouse wheel | scroll whichever pane is under the pointer — the conversation, the activity log |
 | `End`, or `↓` while scrolled up | back to following the bottom |
 | `Ctrl-O` | open the newest folded result or thinking; again to shut it |
 | click a fold | open a thinking block or the rest of a result |
@@ -193,7 +194,11 @@ One timeline per branch of who said what, in the order it happened
 (samizdat.tui.timeline), each role in its own voice and colour:
 
 - `<you>` — the problem, and every steer a person sent;
-- `<agent>` — what the model said; its thinking folds under `◇ thinking`;
+- `<agent>` — what the model said, drawn as markdown (headings, bullets,
+  code, quotes), with the call syntax it wrote left to the chamber below and
+  its thinking — the provider's reasoning and any `<think>` block — folded
+  under `◇ thinking`. While a call streams, the reply appears here as the
+  model writes it, and gives way to the finished turn when it lands;
   each tool call is a **chamber**, headed by the tool and the argument it is
   known by, showing the first `:result-lines` of what came back with the rest
   a click (or `Ctrl-O`) away, diffs coloured, failures red;
@@ -205,11 +210,11 @@ Which journal notes appear, as whom, and where in each note's data its words
 are, is `tui.edn :conversation :notes`; the branch fetch asks the server for
 exactly those kinds (`?notes=…`).
 
-It **follows the bottom**: the newest entry holds the frame's focus, so the
-pane scrolls as the run speaks. Scrolling up anchors it on an entry, which
-stays put however much arrives below; `End` follows again. It is bounded —
-the newest `:turns` of them, 60 by default, since every entry is rebuilt on
-every frame.
+It **follows the bottom**, and scrolls by rows (ftxui-jolt's `:scroll`): the
+wheel over it or `PgUp` moves it, and it stays where it was left however much
+arrives below; `End`, or sending something, follows again. The activity log
+scrolls the same way. It is bounded — the newest `:turns` of them, 60 by
+default, since every entry is rebuilt on every frame.
 
 ### The footer
 
@@ -370,7 +375,10 @@ is being used, so every failure here is a rendering:
 The run on screen is **pushed**. The TUI follows `GET /v1/runs/:id/events`, a
 server-sent event stream (samizdat.api.stream): every journal event after the
 cursor, then each one as it lands, plus the manifest steps and approval
-changes that are never journalled. An event says what changed — a turn on the
+changes that are never journalled, and the reply a branch is writing while
+its model call streams (`delta` events, published every gates.edn
+`:delta-publish-ms` by samizdat.agent.infer, each piece with the offset it
+starts at). An event says what changed — a turn on the
 branch being read, a question for a person, the run ending — and only that is
 fetched, a burst of events coalesced into one fetch of each thing. The footer
 says `live` while the stream is up. A dropped stream reconnects with

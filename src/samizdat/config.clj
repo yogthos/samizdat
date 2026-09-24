@@ -257,7 +257,7 @@
               ;; URL continues a flagged assistant prefix; `thinking {type
               ;; disabled}` reliably yields no reasoning; a native tool_choice
               ;; is honoured, but only with thinking off (the adapter knows).
-              :features #{:prefill :native-tool-choice :thinking-toggle :reasoning-effort}
+              :features #{:prefill :native-tool-choice :thinking-toggle :reasoning-effort :stream}
               :key-env  "DEEPSEEK_API_KEY"
               ;; deepseek-v4-flash is the development and test model: cheap
               ;; enough to run the beam repeatedly. deepseek-v4-pro is the
@@ -275,7 +275,7 @@
               ;; Measured 2026-09-06: ignores a trailing assistant prefix
               ;; entirely, cannot be told not to think (effort low is the
               ;; least), honours tool_choice {type function} despite its docs.
-              :features #{:native-tool-choice :reasoning-effort}
+              :features #{:native-tool-choice :reasoning-effort :stream}
               :key-env  "ZHIPU_API_KEY"
               :model    "glm-5.3"
               ;; GLM benefits from a low temperature on coding tasks (dirge
@@ -283,7 +283,7 @@
               :temperature 0.2}
    :openai   {:context-window 128000
               :base-url "https://api.openai.com/v1"
-              :features #{:native-tool-choice :reasoning-effort}
+              :features #{:native-tool-choice :reasoning-effort :stream}
               :key-env  "OPENAI_API_KEY"
               :model    "gpt-4o"}
    ;; A local llama-server / vLLM / LM Studio OpenAI-compatible endpoint.
@@ -297,7 +297,7 @@
               ;; A bare OpenAI-compatible endpoint until the startup probe
               ;; says which server it is; `llama-cpp-features` is what a
               ;; llama.cpp answer adds (apply-discovery).
-              :features #{:native-tool-choice :reasoning-effort}}
+              :features #{:native-tool-choice :reasoning-effort :stream}}
    ;; Ollama's NATIVE api, so no /v1 suffix. See llm/adapter/ollama.clj for
    ;; why the native surface rather than Ollama's OpenAI-compatible one.
    :ollama   {:context-window 32768
@@ -327,6 +327,8 @@
 ;;                        thinking {type disabled}, llama.cpp's
 ;;                        chat_template_kwargs {enable_thinking false})
 ;;   :reasoning-effort    a top-level reasoning_effort is honoured
+;;   :stream              `stream: true` is answered as server-sent chunks, so
+;;                        a reply can be watched as it is written
 
 (def llama-cpp-features
   "What a llama.cpp server adds once /props has identified it. Measured on

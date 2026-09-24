@@ -27,7 +27,8 @@
   and the layout never has to name data, only widgets; that is what lets a
   user put a panel anywhere without anything being rewired."
   (:refer-clojure :exclude [newline])
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [samizdat.api.sse :as sse]))
 
 (def handler-keys
   "Every action a widget may ask the loop to take.
@@ -39,7 +40,7 @@
   that called them, which no test could see because each half was correct on
   its own."
   #{:decide :answer :toggle :select-run :select-branch :input :submit :start
-    :abort :resume :reply :toggle-option})
+    :abort :resume :reply :toggle-option :scroll})
 
 (def max-trace
   "How many steps the UI holds. The server's ring is bounded and so is this:
@@ -73,9 +74,8 @@
    ;; Whether the run's event stream is up. While it is, the run panels are
    ;; refreshed when an event says they changed rather than on a timer.
    :live? false
-   ;; Where the conversation is scrolled to: the key of the entry held in
-   ;; view, or nil to follow the bottom as new entries arrive.
-   :scroll-anchor nil
+   ;; Each pane's scroll, as it last reported it: {pane {:top :max :rows}}.
+   :scroll {}
    ;; What this TUI printed — command output, /help — drawn in the
    ;; conversation as the harness's voice. Local: nothing the server holds.
    :local-notes []
@@ -363,9 +363,14 @@
   A pure function rather than a branch inside the widget so the rule is
   testable, and named as a KEY so the widget still spells both handlers out
   literally — `every-handler-the-loop-offers-has-a-caller` reads those off
-  the source."
+  the source.
+
+  A run that has ENDED has nothing to steer either: a directive to it is
+  refused, and what was typed was lost. Its status is read off the run
+  detail; until that has loaded, a selected run is taken as live."
   [s]
-  (if (:run-id s) :submit :start))
+  (let [status (some-> (get-in s [:detail :run :status]) str)]
+    (if (and (:run-id s) (or (nil? status) (= "running" status))) :submit :start)))
 
 (defn apply-start
   "Fold the answer to POST /v1/runs.
@@ -405,12 +410,33 @@
   [d]
   (select-keys d [:node :cell :transition :ms :failed :turn :branch_id]))
 
+(defn- splice
+  "`piece` into `held` at offset `at`: appended when it follows on, laid
+  over what is held when it repeats some of it, and after the gap when one
+  was lost — this is a preview the turn row replaces, not the record."
+  [held piece at]
+  (let [held (str held)
+        at (or at (count held))]
+    (str (subs held 0 (min at (count held))) piece)))
+
+(defn- live-delta
+  "A piece of the reply a branch is writing (samizdat.agent.infer publishes
+  them while a model call streams)."
+  [s {:keys [branch_id text reasoning] :as d}]
+  (update-in s [:live branch_id]
+             (fn [l]
+               (cond-> (or l {:text "" :reasoning ""})
+                 text (update :text splice text (:text-at d))
+                 reasoning (update :reasoning splice reasoning (:reasoning-at d))))))
+
 (defn apply-event
   "Fold one pushed event into the state. Returns [state wants]: `wants` is
   the set of things the event changed that the stream does not carry —
   :detail, :branch, :approvals, :runs — for the caller to fetch, coalesced."
   [s {:keys [id event data]}]
-  (let [s (cond-> s id (assoc :journal-cursor (or (parse-long (str id)) (:journal-cursor s))))]
+  (let [;; Off the wire an event's data is the JSON text it was sent as.
+        data (if (string? data) (:data (sse/parse-data data)) data)
+        s (cond-> s id (assoc :journal-cursor (or (parse-long (str id)) (:journal-cursor s))))]
     (case event
       "step" [(update s :trace (fn [t] (let [t (conj (vec t) (step-entry data))]
                                          (if (> (count t) max-trace)
@@ -418,8 +444,11 @@
                                            t))))
               #{}]
       "approval" [s #{:approvals}]
-      [s (cond-> (get refresh-for event #{:detail})
-           (and (:branch_id data) (= (:branch_id data) (:branch-id s))) (conj :branch))])))
+      "delta" [(live-delta s data) #{}]
+      ;; A branch's turn row is in: it holds what the live preview showed.
+      [(cond-> s (= "turn" event) (update :live dissoc (:branch_id data)))
+       (cond-> (get refresh-for event #{:detail})
+         (and (:branch_id data) (= (:branch_id data) (:branch-id s))) (conj :branch))])))
 
 (defn stream-status
   "Note the event stream's state: `status` 200 is up, anything else down."
@@ -427,26 +456,30 @@
   (assoc s :live? (= 200 status)))
 
 ;; --- following the bottom ----------------------------------------------------
+;;
+;; A pane scrolls by rows (ftxui's :scroll). What it last reported is kept per
+;; pane, {:top :max :rows}: :top the first row shown, nil following the bottom.
+
+(defn scrolled
+  "Keep what pane `pane` reported: its view and how far it can go."
+  [s pane view]
+  (assoc-in s [:scroll pane] view))
+
+(defn scroll-top [s pane] (get-in s [:scroll pane :top]))
 
 (defn follow
-  "Follow the bottom of the conversation again."
-  [s]
-  (assoc s :scroll-anchor nil))
+  "Follow the bottom of `pane` again."
+  [s pane]
+  (assoc-in s [:scroll pane :top] nil))
 
-(defn scroll
-  "Move the conversation `delta` entries (negative is up) over `ks`, the
-  entries' keys in order. Following the bottom is the anchor being nil;
-  scrolling back down to the last entry follows again, and an anchor holds
-  its entry however many arrive below it — the view stays where the reader
-  left it (dirge's rule)."
-  [s ks delta]
-  (let [n (count ks)
-        at (or (some-> (:scroll-anchor s) (#(.indexOf ^java.util.List ks %)) (#(when (>= % 0) %)))
-               (dec n))
-        to (max 0 (min (dec n) (+ at delta)))]
-    (if (or (zero? n) (>= to (dec n)))
-      (follow s)
-      (assoc s :scroll-anchor (nth ks to)))))
+(defn page
+  "Move `pane` a page up (`dir` -1) or down (1): the rows it shows, less two
+  for context. Paging back to the end follows again, as dirge does."
+  [s pane dir]
+  (let [{:keys [top max rows]} (get-in s [:scroll pane])
+        max (or max 0)
+        to (clojure.core/max 0 (+ (or top max) (* dir (clojure.core/max 1 (- (or rows 3) 2)))))]
+    (assoc-in s [:scroll pane :top] (when (< to max) to))))
 
 (defn toggle-latest-fold
   "Ctrl+O, from dirge: open the newest fold in `ids` (in order), or shut it
