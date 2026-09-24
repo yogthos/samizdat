@@ -223,15 +223,37 @@
   `body` may carry max_turns: an explicit budget extension that reopens
   branches closed as exhausted. Omitted, the original budget stands."
   [{:keys [conn config]} run-id body]
-  (if-not (resume/resumable? conn run-id)
-    {:status 409 :body {:error {:message (str "run " run-id " is not resumable")
-                                :run_id run-id}}}
+  (let [refuse (fn [why] {:status 409 :body {:error {:message (str "run " run-id " " why)
+                                                     :run_id run-id}}})
+        run (runs/get-run conn run-id)
+        ;; The model the run was ON, from its row: the provider it recorded
+        ;; (an alias config.edn declares, or a built-in) and the model.
+        recorded (when (not-empty (str (:provider run)))
+                   (try (config/provider-llm config (:provider run)
+                                             (if (not-empty (str (:model run)))
+                                               {:model (:model run)}
+                                               {}))
+                        (catch Exception e e)))]
+    (cond
+      (not (resume/resumable? conn run-id)) (refuse "is not resumable")
+      (instance? Exception recorded) (refuse (str "ran on " (:provider run) ": "
+                                                  (ex-message recorded)))
+      :else
     ;; A resume may name an arm too — a run that crashed on one model can be
     ;; picked up on another, and saying nothing keeps the original.
-    (let [llm-config (run-llm-config config (:llm config) body)
+    (let [llm-config (run-llm-config config (or recorded (:llm config)) body)
           adapter (registry/adapter-for (:provider llm-config))
           abort (atom false)
-          max-turns (or (:max_turns body) (:max-turns body))]
+          max-turns (or (:max_turns body) (:max-turns body))
+          ;; A run already driven by this process is not resumed: a second
+          ;; driver over the same branches wrote duplicate turns, every call
+          ;; on whatever model the resume resolved. Claimed HERE, atomically,
+          ;; not by the spawned thread, or two resumes a double click apart
+          ;; would both get in before either thread registered.
+          [before _] (swap-vals! active #(if (contains? % run-id) % (assoc % run-id {:abort abort})))]
+      (if (contains? before run-id)
+        (refuse "is already running in this process")
+      (do
       (let [cancel* (atom nil)
             started (cancel/start!
                      (cancel/spawn
@@ -261,7 +283,7 @@
       ;; max_turns extension was reported as the old budget more often than
       ;; not.
       {:body {:run_id run-id :status "resuming"
-              :max_turns (or max-turns (:max_turns (runs/get-run conn run-id)))}})))
+              :max_turns (or max-turns (:max_turns (runs/get-run conn run-id)))}}))))))
 (defn- grant-pattern
   "The pattern from a grant payload. Accepts a map (what body-json yields), a
   bare string, or nil. Blank is not a pattern — an unset form posts empty

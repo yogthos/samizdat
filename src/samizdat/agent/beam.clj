@@ -1050,7 +1050,10 @@
         ;; a moment; the journal poller handles that, and it is the honest
         ;; picture — the branches genuinely do not exist yet.
         run-id (runs/start-run! conn {:problem problem
-                                      :provider (:provider llm-config)
+                                      ;; The alias, so a resume resolves the
+                                      ;; same declaration (api.control/resume!).
+                                      :provider (or (:provider-name llm-config)
+                                                    (:provider llm-config))
                                       :model (:model llm-config)
                                       :max-turns max-turns
                                       :beam-width requested-width

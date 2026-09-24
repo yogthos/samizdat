@@ -400,7 +400,9 @@
                                                   :title (:title held)})
                                held (task-tool/task-statement held)
                                (seq in-flight) (update :messages into in-flight))))
-                         (runs/branches conn run-id))
+                         ;; Not the supervisor stream's branch: the stream
+                         ;; carries it and re-opens it on its next pass.
+                         (remove #(= "supervisor" (:role %)) (runs/branches conn run-id)))
           ;; The anchor: rounds completed are the max turn in the journal, so
           ;; the loop continues one past it. max-turns is the ORIGINAL budget.
           start-turn (inc (reduce max 0 (map :turn turn-rows)))]
