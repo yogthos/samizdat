@@ -111,6 +111,9 @@
       :config_defaults (config/redacted (select-keys cfg [:llm :run :db]))
       ;; Which files those defaults were layered from, lowest first.
       :config_sources (config/config-sources (get-in cfg [:run :root]))
+      ;; Which provider serves which role, and what each declared alias is.
+      :providers (config/redacted (:providers cfg))
+      :roles (:roles cfg)
       ;; Kept under the old key as well: this is a published endpoint and the
       ;; GUI reads it. Removing it is a separate change from correcting it.
       :config (config/redacted (select-keys cfg [:llm :run :db]))})))
@@ -318,7 +321,7 @@
                   (json-response b)
                   (json-response 404 {:error {:message "no such branch"}}))))]
     [:post "/v1/runs/:id/interventions"
-     (fn [req] (let [r (control/intervene! (system/conn)
+     (fn [req] (let [r (control/intervene! (system/conn) (system/config)
                                            (get-in req [:path-params :id])
                                            (body-json req))]
                  (json-response (or (:status r) 200) (:body r))))]

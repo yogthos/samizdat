@@ -205,7 +205,10 @@
                   :extra-deps
                   {jlt-commons/ftxui-jolt
                    {:local/root "/Users/yogthos/src/jlt-commons/ftxui-jolt"}}
-                  :main-opts ["-m" "samizdat.tui.core"]}
+                  ;; samizdat.main: the server and the TUI in one process;
+                  ;; --headless for the server alone, --connect URL for the
+                  ;; TUI alone against a running server.
+                  :main-opts ["-m" "samizdat.main"]}
 
            ;; The half of the TUI the main suite cannot cover: what the
            ;; TOOLKIT does with the hiccup — that a click on a fold's header
@@ -234,7 +237,13 @@
           ;; environment where 1024 exceeds the hard limit still runs.
           test  "(ulimit -n 1024 2>/dev/null; jolt -M:test)"
          gui   "jolt -M:gui"
+         ;; The whole application: the server and the TUI in one process.
+         ;; `jolt tui --connect [URL]` attaches to a server already running.
          tui   "jolt -M:tui"
+         ;; The binary, from the same entry point. -A:tui because the TUI's
+         ;; toolkit lives only under that alias. `jolt build` itself is
+         ;; always the compiler, so the task cannot take that name.
+         bin   "jolt -A:tui build -m samizdat.main -o samizdat"
          ;; A shell string, not :main-opts: a task's main-opts cannot carry an
          ;; -M alias, and this one needs the ftxui dep.
          tui-test "jolt -M:tui-test"

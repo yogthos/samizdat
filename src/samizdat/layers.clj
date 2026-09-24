@@ -182,6 +182,9 @@
 
   Returns {:name :body :value :sources :errors}:
     :value    the merged map, nil when no layer had anything
+    :layers   each contributing layer's own map, highest first, as
+              {:layer :path :value} — for a choice that belongs to one layer
+              rather than to the merge
     :body     its text — VERBATIM when one layer answered, so the comments a
               person reads survive; the printed merged value otherwise
     :sources  the layers that contributed, highest first, {:layer :path}
@@ -196,6 +199,7 @@
         value (when (seq good) (apply deep-merge (reverse (map :value good))))]
     {:name (str name)
      :value value
+     :layers (mapv #(select-keys % [:layer :path :value]) good)
      :body (cond (empty? good) nil
                  (= 1 (count good)) (:body (first good))
                  :else (pr-str value))

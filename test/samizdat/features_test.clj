@@ -40,19 +40,21 @@
         "a bare :local is an OpenAI-compatible endpoint until the probe says which")))
 
 (deftest the-loaded-config-carries-the-features-and-a-file-can-name-its-own
-  (let [c (config/load-config {:llm {:provider :glm}})]
+  (let [c (config/load-config {:roles {:default :glm}})]
     (is (= (config/features-of :glm) (get-in c [:llm :features]))))
   (testing "DeepSeek off its beta URL loses the prefill it would be refused for"
     ;; 'prefix is only available when using beta api' is a 400 on /v1, so a
     ;; misconfigured endpoint would fail every steered turn.
-    (let [c (config/load-config {:llm {:provider :deepseek :base-url "https://api.deepseek.com/v1"}})]
+    (let [c (config/load-config {:providers {:deepseek {:base-url "https://api.deepseek.com/v1"}}
+                                 :roles {:default :deepseek}})]
       (is (not (contains? (get-in c [:llm :features]) :prefill)))
       (is (contains? (get-in c [:llm :features]) :native-tool-choice) "the rest stays")))
-  (testing "an override that names features names them all"
-    (let [c (config/load-config {:llm {:provider :local :features #{:grammar}}})]
+  (testing "a declaration that names features names them all"
+    (let [c (config/load-config {:providers {:local {:features #{:grammar}}}
+                                 :roles {:default :local}})]
       (is (= #{:grammar} (get-in c [:llm :features])))))
   (testing "a role model built for another provider carries that provider's features"
-    (is (= (config/features-of :deepseek) (:features (config/provider-llm :deepseek {}))))))
+    (is (= (config/features-of :deepseek) (:features (config/provider-llm nil :deepseek {}))))))
 
 ;; --- discovered ---------------------------------------------------------------
 

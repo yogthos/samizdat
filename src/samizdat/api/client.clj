@@ -37,6 +37,7 @@
             [jolt.time]
             [clojure.data.json :as json]
             [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [jolt.http-client :as http]))
 
 (def ^:private opts
@@ -258,9 +259,10 @@
                 (when f
                   (fn [& args]
                     (try (apply f args)
+                         ;; Logged, not printed: stdout is the TUI's
+                         ;; frame, and the log is where it sends lines.
                          (catch Throwable e
-                           (println "[api.client] poller callback failed:"
-                                    (ex-message e)))))))]
+                           (log/warn "poller callback failed:" (ex-message e)))))))]
     (let [on-events (guard on-events)
           on-status (guard on-status)]
       (future

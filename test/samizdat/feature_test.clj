@@ -286,9 +286,8 @@
                              (apply base adapter cfg messages r))]
       (let [conn (db/open! ":memory:")]
         (workflow/run! {:conn conn
-                        :config {:run {:loop "feature" :subtasks ["alpha"]
-                                       :role-models {:implementor {:provider "deepseek"}
-                                                     :critic {:provider "glm"}}}}
+                        :config {:run {:loop "feature" :subtasks ["alpha"]}
+                                 :roles {:implementor :deepseek :critic :glm}}
                         :llm-adapter :a
                         :llm-config {:provider :openai :model "gpt-4o" :max-tokens 16384}
                         :problem "the feature" :max-turns 4})

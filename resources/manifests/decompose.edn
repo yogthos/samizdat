@@ -4,7 +4,7 @@
 ;;
 ;;   plan-free: no up-front size guess. :decompose/run drives
 ;;   samizdat.agent.decompose/solve, which attempts each unit with an implementor
-;;   worker, and on a stuck unit asks an ARCHITECT (config :run :role-models
+;;   worker, and on a stuck unit asks an ARCHITECT (config :roles
 ;;   :architect) to decompose or hint a fresh approach. A landed unit is a stable
 ;;   subassembly (it changed the tree and shipped); its parent composes it.
 ;;

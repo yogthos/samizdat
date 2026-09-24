@@ -53,7 +53,7 @@
       (is (some? (exposure/refusal
                   (assoc ctx :tool-name "read_digest" :args {:paths ["secrets/key.clj"]}
                          :llm-config {:provider :glm}
-                         :config (assoc-in config [:run :role-models :reader] {:provider "deepseek"}))))))
+                         :config (assoc-in config [:roles :reader] :deepseek))))))
     (testing "a shell statement that prints the file is refused too"
       (is (some? (exposure/refusal (assoc ctx :tool-name "shell"
                                           :args {:command "sed -n '1,5p' secrets/key.clj"})))))

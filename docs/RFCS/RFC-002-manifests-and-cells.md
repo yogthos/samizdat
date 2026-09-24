@@ -149,7 +149,7 @@ role plumbing. Two functions worth knowing apart:
 | `(catalog conn)` | Every workflow with its `:description` and `:turn-sliceable?` — the full inventory. |
 | `(render-catalog conn)` | The switch menu the supervisor chooses from: the catalogue minus what cannot be a run's loop. |
 | `(iterating? definition)`, `(turn-sliceable? …)`, `(finish-nodes …)`, `(start-node)` | Classification. |
-| `(role-ctx ctx role)` | ctx with the adapter and model swapped to `config :run :role-models`. |
+| `(role-ctx ctx role)` | ctx with the adapter and model swapped to the provider `config :roles` assigns. |
 | `(workflow-prompt definition)` / `(prompt-text name)` | A manifest's prompt suffix. |
 
 ### `samizdat.cells`

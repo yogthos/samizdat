@@ -526,13 +526,18 @@
 
       :else false)))
 
+(defn run-ui!
+  "Draw the TUI against the server at `base` until the user quits. Blocks."
+  [base]
+  (swap! state assoc :base base)
+  (start-polling!)
+  (try
+    ;; Mouse on: the folds in the conversation are ftxui collapsibles and
+    ;; clicking one is how they open.
+    (ui/run root :mode :fullscreen :mouse true :on-event on-event)
+    (finally (stop-polling!))))
+
 (defn -main [& args]
   (let [base (or (first (remove str/blank? args)) (default-base-url))]
-    (swap! state assoc :base base)
     (println "samizdat tui →" base)
-    (start-polling!)
-    (try
-      ;; Mouse on: the folds in the conversation are ftxui collapsibles and
-      ;; clicking one is how they open.
-      (ui/run root :mode :fullscreen :mouse true :on-event on-event)
-      (finally (stop-polling!)))))
+    (run-ui! base)))

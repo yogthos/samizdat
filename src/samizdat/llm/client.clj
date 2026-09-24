@@ -200,6 +200,13 @@
 
 (declare post-once*)
 
+(defn- request-headers
+  "The adapter's auth headers with the provider's declared :headers over
+  them (config.edn :providers), so a gateway that wants its own
+  Authorization can have it."
+  [adapter config]
+  (merge (adapter/auth-headers adapter config) (:headers config)))
+
 (defn- post-once [adapter config request]
   (let [url (adapter/chat-url adapter config)]
     ;; THE LATCH, before the socket. One account is one window, and the beam's
@@ -240,7 +247,7 @@
         body (adapter/chat-body adapter config request)
         payload (json/write-str body)
         started (System/currentTimeMillis)
-        resp (http/post url {:headers (merge (adapter/auth-headers adapter config)
+        resp (http/post url {:headers (merge (request-headers adapter config)
                                              {"Content-Type" "application/json"})
                              :body payload
                              :socket-timeout (:timeout-ms config default-timeout-ms)
@@ -531,7 +538,8 @@
   (try
     (let [base (str/replace (str (:base-url config)) #"/v1/?$" "")
           resp (http/get (str base "/props")
-                         {:socket-timeout 5000
+                         {:headers (or (:headers config) {})
+                          :socket-timeout 5000
                           :conn-timeout (:conn-timeout-ms config
                                                           default-conn-timeout-ms)
                           :throw-exceptions false})]
@@ -579,7 +587,8 @@
   [config]
   (try
     (let [url (str (str/replace (str (:base-url config)) #"/$" "") "/chat/completions")
-          resp (http/post url {:headers {"Content-Type" "application/json"}
+          resp (http/post url {:headers (merge (:headers config)
+                                               {"Content-Type" "application/json"})
                                :body (json/write-str
                                       {:model (:model config)
                                        :max_tokens 1
@@ -602,7 +611,7 @@
     ;; Bounded like every other call: this is the boot-time reachability
     ;; probe (core/warm-tls!), and a harness whose provider is unreachable
     ;; must still come up rather than sit in a connect nobody bounded.
-    (let [resp (http/get url {:headers (adapter/auth-headers adapter config)
+    (let [resp (http/get url {:headers (request-headers adapter config)
                               :socket-timeout 30000
                               :conn-timeout (:conn-timeout-ms config
                                                               default-conn-timeout-ms)
