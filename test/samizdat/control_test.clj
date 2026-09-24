@@ -891,7 +891,7 @@
         (with-redefs [resume/resume! (fn [_] (swap! drove inc) {:status :completed})]
           (let [r (api-control/resume! {:conn c :config {:llm {:provider :local}}} rid {})]
             (is (= 409 (:status r)))
-            (is (str/includes? (str (get-in r [:body :error :message])) "running")))
+            (is (str/includes? (str (get-in r [:body :error :message])) "still running")))
           (Thread/sleep 50)
           (is (zero? @drove) "no second driver"))
         (finally (swap! api-control/active dissoc rid))))))

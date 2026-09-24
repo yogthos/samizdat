@@ -234,8 +234,7 @@
    "src/samizdat/api/sse.clj"
    {:vocabulary {:all "HTTP/1.1 and server-sent-events wire syntax: the status
                        line, the chunked transfer-encoding header, the URL
-                       form. Protocol, not a vocabulary a project chooses."}
-    :threshold {80 "The default port of an http URL with none. Protocol."}}
+                       form. Protocol, not a vocabulary a project chooses."}}
 
    "src/samizdat/api/stream.clj"
    {:vocabulary {:all "The query syntax of the stream's own cursor parameter

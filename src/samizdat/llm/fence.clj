@@ -650,6 +650,29 @@
       (str/replace think-re "")
       (str/replace open-think-re "")))
 
+;; --- what a reader sees -----------------------------------------------------
+
+(def ^:private call-markup-res
+  "Every call syntax a model writes into its text, each to its closer or to
+  the end of the reply (a reply cut off mid-call), then the stray closers
+  some models repeat after a call."
+  [#"(?s)```tool-call\s*\r?\n.*?(?:```|\z)"
+   #"(?s)<tool[-_]call>.*?(?:</tool[-_]calls?>|\z)"
+   #"(?s)<function_calls>.*?(?:</function_calls>|\z)"
+   #"(?s)<invoke\b[^>]*>.*?(?:</invoke>|\z)"
+   #"(?s)<\|DSML\|[^>]*>.*?(?:</\|DSML\|[^>]*>|\z)"
+   #"</?(?:invoke|parameter|function_calls|tool[-_]calls?)\b[^>]*>"])
+
+(defn prose
+  "The reply as a reader should see it: reasoning blocks and call markup
+  removed — the thinking fold holds the one and the tool's own chamber shows
+  the other — and the blank runs the cuts leave collapsed. Display only; the
+  transcript keeps the reply as it came."
+  [s]
+  (-> (reduce #(str/replace %1 %2 "") (strip-think s) call-markup-res)
+      (str/replace #"\n[ \t]*(?:\n[ \t]*){2,}" "\n\n")
+      str/trim))
+
 (defn- parse-tool-call* [response]
   (let [fenced (extract-fences response)
         ;; A response that ends in a well-formed call but omits the fence is

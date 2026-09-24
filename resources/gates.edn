@@ -2060,6 +2060,16 @@
         Newest first, so what the cap drops is the oldest change — the one
         least likely to be what someone is looking at."}
 
+ :delta-publish-ms
+ {:value 100
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-ta8w"]
+  :doc "How often a reply being written is published to the event bus, in
+        ms, while a run's model call streams (samizdat.llm.stream). The
+        pieces between publishes are sent together. Lower is a livelier
+        conversation pane and more events; the bus keeps a window of 256 per
+        watcher, and a watcher that falls behind loses the oldest."}
+
  :event-stream
  {:value {:poll-ms 100 :heartbeat-ms 15000 :page 200}
   :kind :cost-ceiling :capability-tunable? false

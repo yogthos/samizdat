@@ -53,7 +53,7 @@
 
 (deftest everyone-speaks-in-the-order-it-happened
   (let [es (tl/entries state settings)]
-    (is (= [[:user :say] [:agent :say] [:agent :thinking] [:agent :tool]
+    (is (= [[:user :say] [:agent :thinking] [:agent :say] [:agent :tool]
             [:user :say] [:critic :say] [:agent :say] [:agent :tool]
             [:supervisor :say] [:supervisor :say]]
            (mapv (juxt :role :kind) es)))
@@ -86,21 +86,24 @@
     (is (= before (take (count before) after)))))
 
 ;; --- following the bottom -------------------------------------------------------
+;;
+;; A pane scrolls by ROWS (ftxui's :scroll): :top is the first row shown, nil
+;; follows the bottom. The pane reports {:top :max :rows}; keys page from it.
 
-(deftest the-view-follows-the-bottom-until-you-scroll-up
-  (let [ks (mapv str (range 30))
-        s (st/initial "b")]
-    (is (nil? (:scroll-anchor s)) "following")
-    (let [up (st/scroll s ks -10)]
-      (is (= "19" (:scroll-anchor up)) "ten entries up from the bottom")
-      (is (= "9" (:scroll-anchor (st/scroll up ks -10))))
-      (is (= "0" (:scroll-anchor (st/scroll up ks -100))) "not past the top")
-      (testing "scrolling back down to the bottom follows again"
-        (is (nil? (:scroll-anchor (st/scroll up ks 10))))
-        (is (nil? (:scroll-anchor (st/scroll up ks 100)))))
-      (testing "an anchor holds its place as entries arrive below it"
-        (is (= "19" (:scroll-anchor (st/scroll up (conj ks "30" "31") 0)))))
-      (is (nil? (:scroll-anchor (st/follow up)))))))
+(deftest a-pane-follows-the-bottom-until-paged-up
+  (let [s (st/scrolled (st/initial "b") :conversation {:top nil :max 100 :rows 22})]
+    (is (nil? (st/scroll-top s :conversation)) "following")
+    (let [up (st/page s :conversation -1)]
+      (is (= 80 (st/scroll-top up :conversation)) "a page is the rows shown, less two")
+      (is (= 60 (st/scroll-top (st/page up :conversation -1) :conversation)))
+      (is (= 0 (st/scroll-top (reduce #(st/page %1 :conversation %2) up (repeat 9 -1))
+                              :conversation))
+          "not past the top")
+      (testing "paging back down to the end follows again"
+        (is (nil? (st/scroll-top (st/page up :conversation 1) :conversation))))
+      (is (nil? (st/scroll-top (st/follow up :conversation) :conversation))))
+    (testing "what the pane reports is what is kept"
+      (is (= 12 (st/scroll-top (st/scrolled s :activity {:top 12 :max 40 :rows 10}) :activity))))))
 
 (deftest only-folds-that-are-drawn-are-folds
   (let [es (tl/entries (assoc-in state [:branch :turns 1 :result] "1\n2\n3\n4\n5") settings)]
@@ -114,3 +117,38 @@
     (is (= #{"t2/tool/more"} (:expanded opened)) "the newest collapsed thing opens")
     (is (= #{} (:expanded (st/toggle-latest-fold opened ids))) "pressed again, it shuts")
     (is (= s (st/toggle-latest-fold s [])) "nothing to open, nothing changes")))
+
+(deftest the-agents-words-are-drawn-without-markup
+  ;; A reply's call syntax is the chamber's to show and its <think> the
+  ;; thinking fold's; drawn raw they were a column of `</invoke>` lines.
+  (let [s {:run-id "R" :branch-id "B1"
+           :branch {:turns [{:turn 1 :tool_name "shell" :args "{\"command\":\"ls\"}"
+                             :result "a" :category "success" :created_at "t1"}]}
+           :turn-text {1 {:assistant_text "<think>plan it</think>Listing.\n<invoke name=\"shell\"></invoke>\n</invoke>"
+                          :reasoning_text "first"}}}
+        es (tl/entries s {})
+        say (first (filter #(= :say (:kind %)) es))
+        thinking (first (filter #(= :thinking (:kind %)) es))]
+    (is (= "Listing." (:text say)))
+    (is (= "first\nplan it" (:text thinking)) "inline reasoning joins the thinking fold"))
+  (testing "a turn that said nothing but a call has no say entry"
+    (let [s {:branch {:turns [{:turn 1 :tool_name "shell" :created_at "t1"}]}
+             :turn-text {1 {:assistant_text "```tool-call\n{\"name\": \"shell\"}\n```"}}}]
+      (is (not-any? #(= :say (:kind %)) (tl/entries s {}))))))
+
+(deftest a-notes-reasoning-folds-too
+  (let [s {:branch {:notes [{:id 7 :kind "critic-score" :created_at "t1"
+                             :data "{\"reply\":\"<think>hmm</think>Progress 2.\"}"}]}}
+        es (tl/entries s settings)]
+    (is (= ["Progress 2."] (map :text (filter #(= :say (:kind %)) es))))
+    (is (= ["hmm"] (map :text (filter #(= :thinking (:kind %)) es))))))
+
+(deftest the-reply-being-written-is-the-last-entry
+  (let [s {:branch-id "B1"
+           :branch {:turns [{:turn 1 :tool_name "shell" :created_at "t1"}]}
+           :live {"B1" {:text "<think>so</think>Writing it\n<invoke name=\"x\">" :reasoning "first"}
+                  "B2" {:text "not this branch"}}}
+        es (tl/entries s {})]
+    (is (= [[:agent :thinking "first\nso"] [:agent :say "Writing it"]]
+           (mapv (juxt :role :kind :text) (take-last 2 es))))
+    (is (every? :live? (take-last 2 es)))))

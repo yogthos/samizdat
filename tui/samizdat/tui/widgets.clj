@@ -39,6 +39,7 @@
             [samizdat.tui.layout :as layout]
             [samizdat.tui.state :as st]
             [samizdat.tui.commands :as cmd]
+            [samizdat.tui.markdown :as md]
             [samizdat.tui.timeline :as tl]))
 
 ;; --- shared shapes -----------------------------------------------------------
@@ -139,6 +140,18 @@
                    :on-change (toggle-fn state id)}
      (if open? (body-fn) [:empty])]))
 
+;; --- scrolling ----------------------------------------------------------------
+
+(defn- pane
+  "`content` in a pane that scrolls by rows: the wheel over it scrolls it,
+  and it follows the bottom until it is scrolled up. Where it is lives in the
+  state under `id`, so keys can page it (state/page)."
+  [state id content]
+  [:scroll {:flex true
+            :top (get-in state [:scroll id :top])
+            :on-change (fn [view] (when-let [f (get-in state [:on :scroll])] (f id view)))}
+   content])
+
 ;; --- the activity log --------------------------------------------------------
 
 (defn- step-line [{:keys [node cell transition ms failed]}]
@@ -168,7 +181,7 @@
            (when (and dropped (pos? dropped))
              [:text {:class :warn} (str "  ⚠ " dropped " step(s) dropped")])
            (if (seq trace)
-             (into [:vbox {:flex true}] (map step-line trace))
+             (pane state :activity (into [:vbox] (map step-line trace)))
              (empty-note "no steps yet")))))
 
 ;; --- the conversation --------------------------------------------------------
@@ -208,14 +221,15 @@
 (def ^:private writing-tools #{"write_file" "edit_file" "patch"})
 
 (defn- say-entry
-  "A line in a role's voice, dirge-style: `<agent> ` and the words wrapped
-  under it with a hanging indent. `:wrapped` rather than `:paragraph`: a
-  path or a token wider than the pane breaks instead of being cut off."
+  "A line in a role's voice, dirge-style: `<agent> ` and the words under it
+  with a hanging indent, drawn as markdown (samizdat.tui.markdown) in the
+  role's colour. Rows are `:wrapped`: a path or a token wider than the pane
+  breaks instead of being cut off."
   [{:keys [role text pending?]} handles]
   [:hbox
    [:text {:class role} (str "<" (get handles role (name role)) "> ")]
-   [:wrapped {:class role :flex true}
-    (str text (when pending? "  (not applied yet)"))]])
+   (into [:vbox {:class role :flex true}]
+         (md/lines (str text (when pending? "  (not applied yet)"))))])
 
 (defn- thinking-entry [state e]
   (fold state (tl/fold-id e)
@@ -264,27 +278,26 @@
   A tool call is a chamber showing the first lines of its result; the rest,
   and the model's thinking, fold, closed by default.
 
-  FOLLOWS THE BOTTOM. The newest entry holds the frame's focus, so the pane
-  scrolls as the run speaks; scrolling up anchors it on an entry and it
-  stays there as more arrive, until End (or scrolling back down) follows
-  again.
+  FOLLOWS THE BOTTOM. A scroll pane (`pane`): the wheel over it or PgUp
+  scrolls it by rows and it stays there as more arrive, until End (or
+  scrolling back down) follows again.
 
   BOUNDED: `:turns` in the layout, the newest that many."
   [state props]
   (let [cfg (get-in state [:settings :conversation])
         es (shown-entries (tl/entries state cfg) (or (:turns props) default-turns-shown))
-        focus (or (:scroll-anchor state) (:key (peek es)))
         handles (:handles cfg)]
     (panel (assoc props :title (or (:title props)
                                    (some->> (:branch-id state) (str "BRANCH "))))
            (if (seq es)
-             (into [:vbox {:flex true :frame :y :scroll-indicator :v}]
-                   (for [e es]
-                     [:vbox (cond-> {:key (:key e)} (= focus (:key e)) (assoc :focus true))
-                      (case (:kind e)
-                        :say (say-entry e handles)
-                        :thinking (thinking-entry state e)
-                        :tool (tool-entry state e cfg))]))
+             (pane state :conversation
+                   (into [:vbox]
+                         (for [e es]
+                           [:vbox {:key (:key e)}
+                            (case (:kind e)
+                              :say (say-entry e handles)
+                              :thinking (thinking-entry state e)
+                              :tool (tool-entry state e cfg))])))
              (empty-note "no turns yet — pick a run")))))
 
 ;; --- the side panels ---------------------------------------------------------
@@ -699,6 +712,9 @@
         rows [:<= (or (:max-lines props) 8)]
         row [:hbox (merge (select-keys props [:flex :width]) {:height rows})
              [:input {:flex true
+                      ;; Typing into a TUI that has just opened lands here,
+                      ;; not in whichever widget the layout reaches first.
+                      :autofocus true
                       :multiline true
                       :wrap true
                       :value (or (:input state) "")

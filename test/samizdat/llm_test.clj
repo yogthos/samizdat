@@ -1809,3 +1809,49 @@
     (doseq [h @seen]
       (is (= "acme" (get h "X-Org")))
       (is (= "Bearer k" (get h "Authorization"))))))
+
+(deftest prose-is-the-reply-without-reasoning-or-call-markup
+  ;; What a reader of the conversation sees: the words, not the call syntax
+  ;; the tool chamber already shows, nor reasoning the thinking fold holds.
+  (testing "a fenced call and a think block"
+    (is (= "Reading the config first."
+           (fence/prose (str "<think>which file?</think>Reading the config first.\n"
+                             "```tool-call\n{\"name\": \"read_file\", \"args\": {\"path\": \"a\"}}\n```")))))
+  (testing "XML calls, including a pile of stray closers"
+    (is (= "Let me look."
+           (fence/prose (str "Let me look.\n<function_calls>\n<invoke name=\"shell\">\n"
+                             "<parameter name=\"command\">ls</parameter>\n</invoke>\n</function_calls>\n"
+                             "</invoke>\n</invoke>\n</invoke>")))))
+  (testing "tagged calls, and a reply cut off mid-call or mid-thought"
+    (is (= "ok" (fence/prose "ok\n<tool_call>{\"name\": \"done\"")))
+    (is (= "" (fence/prose "<think>still going"))))
+  (testing "a fence that is not a call is prose"
+    (is (= "```clojure\n(+ 1 2)\n```" (fence/prose "```clojure\n(+ 1 2)\n```"))))
+  (testing "blank runs left by the cuts collapse"
+    (is (= "a\n\nb" (fence/prose "a\n<tool_call>{}</tool_call>\n\n\n\nb")))))
+
+(deftest a-call-streams-when-the-endpoint-can-and-someone-is-watching
+  (let [sent (atom nil)
+        seen (atom [])
+        whole "{\"choices\":[{\"message\":{\"content\":\"hi there\"},\"finish_reason\":\"stop\"}]}"]
+    (with-redefs [samizdat.llm.stream/post (fn [_ {:keys [body]} on-delta]
+                                             (reset! sent (json/read-str body :key-fn keyword))
+                                             (on-delta {:text "hi"}) (on-delta {:text " there"})
+                                             {:status 200 :headers {} :body whole})
+                  jolt.http-client/post (fn [_ _] (throw (ex-info "not streamed" {})))]
+      (let [r (client/chat (registry/adapter-for :local)
+                           {:base-url "http://h/v1" :model "m" :features #{:stream}}
+                           [{:role "user" :content "x"}]
+                           {:max-tokens 5 :on-delta #(swap! seen conj %)})]
+        (is (= "hi there" (:content r)) "the reply is the same reply")
+        (is (true? (:stream @sent)))
+        (is (= [{:text "hi"} {:text " there"}] @seen)))))
+  (testing "no watcher, or an endpoint that cannot stream: the whole reply at once"
+    (doseq [[features opts] [[#{:stream} {:max-tokens 5}]
+                             [#{} {:max-tokens 5 :on-delta identity}]]]
+      (with-redefs [samizdat.llm.stream/post (fn [& _] (throw (ex-info "streamed" {})))
+                    jolt.http-client/post (fn [_ _] {:status 200
+                                                     :body "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}"})]
+        (is (= "ok" (:content (client/chat (registry/adapter-for :local)
+                                           {:base-url "http://h/v1" :model "m" :features features}
+                                           [{:role "user" :content "x"}] opts))))))))

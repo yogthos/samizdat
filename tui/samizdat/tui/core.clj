@@ -206,7 +206,7 @@
         :help (apply say! "commands:" (cmd/help-lines cs))
         :quit (ui/exit!)
         :clear (swap! state st/clear-local)
-        :follow (swap! state st/follow)
+        :follow (swap! state st/follow :conversation)
         :abort (abort!)
         :resume (resume!)
         :start (if arg (start! arg) (say! "/run needs the problem to work on"))
@@ -276,7 +276,8 @@
 
       (cmd/parse text {}) (command! text)
 
-      :else (do (swap! state st/remember-input text)
+      ;; Sending is looking at the bottom again, as in dirge.
+      :else (do (swap! state #(-> % (st/remember-input text) (st/follow :conversation)))
                 (action text)))))
 
 (def ^:private handlers
@@ -293,7 +294,8 @@
    :abort         abort!
    :resume        resume!
    :reply         (fn [kind id] (swap! state st/start-reply kind id))
-   :toggle-option #(swap! state st/toggle-option %)})
+   :toggle-option #(swap! state st/toggle-option %)
+   :scroll        (fn [pane view] (swap! state st/scrolled pane view))})
 
 ;; --- the feeds ----------------------------------------------------------------
 ;;
@@ -460,9 +462,6 @@
     ;; along with the ones the layout names — one stylesheet for both.
     (theme/apply-theme th (layout/expand layout s))))
 
-(def ^:private page-entries 10)
-(def ^:private wheel-entries 3)
-
 (defn- conversation-entries
   "The conversation's entries as the widget draws them, for the keys that
   move through it."
@@ -478,10 +477,8 @@
   key has to mean it. `state/pending-decision` decides whether there is such
   a dialog — over a questionnaire's answer box a `y` is a letter being
   typed, and it goes through untouched."
-  [{:keys [type key char control button]}]
-  (let [scroll! (fn [delta]
-                  (swap! state #(st/scroll % (mapv :key (conversation-entries %)) delta))
-                  true)]
+  [{:keys [type key char control]}]
+  (let [page! (fn [dir] (swap! state st/page :conversation dir) true)]
     (cond
       (and (= :key type) (= :ctrl-c key)) (do (ui/exit!) true)
       ;; ftxui delivers Ctrl+Q as a :key, never as a :character with a
@@ -491,14 +488,13 @@
       (and (= :key type) (= :f5 key)) (do (future (poll-once!)) true)
 
       ;; The conversation: page through it, and back to following the bottom.
-      (and (= :key type) (= :page-up key)) (scroll! (- page-entries))
-      (and (= :key type) (= :page-down key)) (scroll! page-entries)
-      (and (= :mouse type) (= :wheel-up button)) (scroll! (- wheel-entries))
-      (and (= :mouse type) (= :wheel-down button)) (scroll! wheel-entries)
+      ;; The wheel is not handled here: each pane scrolls under the mouse.
+      (and (= :key type) (= :page-up key)) (page! -1)
+      (and (= :key type) (= :page-down key)) (page! 1)
       ;; Down or End while scrolled up jumps back to the bottom (dirge);
       ;; while following, they are the input's.
-      (and (= :key type) (#{:arrow-down :end} key) (:scroll-anchor @state))
-      (do (swap! state st/follow) true)
+      (and (= :key type) (#{:arrow-down :end} key) (st/scroll-top @state :conversation))
+      (do (swap! state st/follow :conversation) true)
       ;; Tab completes a slash command's name.
       (and (= :key type) (= :tab key) (str/starts-with? (str (:input @state)) "/"))
       (do (swap! state #(st/set-input % (cmd/complete (:input %) (:commands (layout/current)))))

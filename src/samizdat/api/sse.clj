@@ -38,10 +38,17 @@
 ;; --- the parser --------------------------------------------------------------
 
 (defn reader
-  "A fresh parser: feed it the bytes of one connection with `feed`."
-  []
-  {:phase :head :buf [] :status nil :chunked? false
-   :need nil :skip 0 :line [] :event {} :done? false})
+  "A fresh parser: feed it the bytes of one connection with `feed`.
+
+  `:keep-body? true` keeps a response that is not an event stream — a status
+  other than 200, or a 200 with some other content type — as its raw body
+  (`:raw`, `body-text`) rather than giving it up: a provider's error, or a
+  provider that answered a streamed request whole."
+  ([] (reader nil))
+  ([{:keys [keep-body?]}]
+   {:phase :head :buf [] :status nil :headers {} :chunked? false
+    :need nil :skip 0 :line [] :event {} :done? false
+    :keep-body? (boolean keep-body?) :raw? false :raw []}))
 
 (defn- utf8 [bs] (String. (byte-array bs) "UTF-8"))
 
@@ -94,6 +101,11 @@
               [(update st :line conj b) out]))
           [st out] bs))
 
+(defn- sink
+  "Body bytes to where they go: the raw body, or the event lines."
+  [st out bs]
+  (if (:raw? st) [(update st :raw into bs) out] (payload st out bs)))
+
 (defn- chunked
   "De-chunk `bs` into the event parser."
   [st out bs]
@@ -115,13 +127,26 @@
 
       :else
       (let [k (min (:need st) (count bs))
-            [st out] (payload st out (take k bs))
+            [st out] (sink st out (take k bs))
             left (- (:need st) k)]
         (recur (if (zero? left) (assoc st :need nil :skip 2) (assoc st :need left))
                out (seq (drop k bs)))))))
 
 (defn- body [st out bs]
-  (if (:chunked? st) (chunked st out bs) (payload st out bs)))
+  (if (:chunked? st) (chunked st out bs) (sink st out bs)))
+
+(defn- head-fields
+  "The response head's header fields, names lower-cased."
+  [head]
+  (into {} (for [line (rest (str/split-lines head))
+                 :let [i (str/index-of line ":")]
+                 :when i]
+             [(str/lower-case (str/trim (subs line 0 i))) (str/trim (subs line (inc i)))])))
+
+(defn body-text
+  "A kept body (`:keep-body?`) as text."
+  [st]
+  (utf8 (:raw st)))
 
 (defn feed
   "Feed `bytes` to parser state `st`. Returns {:state :events}: the events
@@ -135,9 +160,15 @@
         (if-let [end (head-end buf)]
           (let [head (utf8 (subvec buf 0 end))
                 status (some-> (re-find #"^HTTP/\d\.\d (\d{3})" head) second parse-long)
-                chunked? (boolean (re-find #"(?i)\r\ntransfer-encoding:\s*chunked" head))
-                st (assoc st :phase :body :buf [] :status status :chunked? chunked?)]
-            (if (= 200 status)
+                fields (head-fields head)
+                chunked? (boolean (some-> (get fields "transfer-encoding") str/lower-case
+                                          (str/includes? "chunked")))
+                events? (boolean (some-> (get fields "content-type") str/lower-case
+                                         (str/includes? "text/event-stream")))
+                raw? (and (:keep-body? st) (or (not= 200 status) (not events?)))
+                st (assoc st :phase :body :buf [] :status status :headers fields
+                          :chunked? chunked? :raw? raw?)]
+            (if (or raw? (= 200 status))
               (let [[st out] (body st [] (subvec buf end))]
                 {:state st :events out})
               {:state (assoc st :done? true) :events []}))
@@ -154,9 +185,13 @@
 
 ;; --- following a stream --------------------------------------------------------
 
-(defn- parse-url [url]
-  (let [[_ host port path] (re-find #"^https?://([^:/]+)(?::(\d+))?(/.*)?$" (str url))]
-    {:host host :port (or (some-> port parse-long) 80) :path (or path "/")}))
+(defn parse-url
+  "`url` as {:tls? :host :port :path}, the port defaulting by scheme."
+  [url]
+  (let [[_ scheme host port path] (re-find #"^(https?)://([^:/]+)(?::(\d+))?(/.*)?$" (str url))
+        tls? (= "https" scheme)]
+    {:tls? tls? :host host :port (or (some-> port parse-long) (if tls? 443 80))
+     :path (or path "/")}))
 
 (defn- request-text [{:keys [host port path]} last-id]
   (str "GET " path " HTTP/1.1\r\n"

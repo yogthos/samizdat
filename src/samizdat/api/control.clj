@@ -252,7 +252,7 @@
           ;; would both get in before either thread registered.
           [before _] (swap-vals! active #(if (contains? % run-id) % (assoc % run-id {:abort abort})))]
       (if (contains? before run-id)
-        (refuse "is already running in this process")
+        (refuse "is still running")
       (do
       (let [cancel* (atom nil)
             started (cancel/start!

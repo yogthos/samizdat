@@ -83,6 +83,12 @@
   :system       {:color "#6a8c78"}
   :thinking     {:color "#80968c"}
 
+  ;; a reply's markdown
+  :md-h1        {:color "#9eeeac" :bold true}
+  :md-h2        {:color "#60dc8c" :bold true}
+  :md-code      {:color "#769e84"}
+  :md-quote     {:color "#567460"}
+
   ;; what the agent did
   :tool         {:color "#6cbc96"}
   :tool-box     {:border :rounded :border-color "#486252"}
@@ -303,10 +309,12 @@
 
   ;; The avatar and the compose box. No height: the strip is as tall as the
   ;; box, which grows a row per line — typed (Ctrl+J) or wrapped — up to
-  ;; :max-lines.
+  ;; :max-lines. The box runs from under the conversation to the right edge:
+  ;; its minimum is the middle and right columns' together (120 + 34), and
+  ;; it grows alongside the avatar, so the two split the spare width the way
+  ;; the left and right columns above do and the edges line up.
   [:hbox
    [:widget/avatar {:width [:>= 32] :flex :grow}]
-   [:widget/input {:width 120 :flex :shrink :boxed true :max-lines 8}]
-   [:filler {:width [:>= 34] :flex :grow}]]
+   [:widget/input {:width [:>= 154] :flex :grow :boxed true :max-lines 8}]]
 
   [:widget/status {}]]}

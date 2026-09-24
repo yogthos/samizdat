@@ -10,7 +10,9 @@
   what a turn would do without running one."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.infer :as infer]
+            [samizdat.events :as events]
             [samizdat.agent.loop :as aloop]
             [samizdat.agent.state :as state]
             [samizdat.store.journal :as journal]
@@ -452,3 +454,37 @@
       (is (= "```tool-call\n" (:prefill b')) "the next request opens inside the fence")
       (is (= 1 (get-in (state/record-mechanics b {:periodic true}) [:mechanics :periodic]))
           "and the tally the parse step keeps counts it"))))
+
+
+(deftest a-call-in-a-run-publishes-its-reply-as-it-is-written
+  ;; The TUI shows the reply while the model writes it: every delta the
+  ;; client hands on goes onto the bus, tagged with where it starts, so a
+  ;; reader that missed one can tell rather than garble the rest.
+  (let [sub (events/subscribe)
+        threshold gates/threshold]
+    (try
+      (with-redefs [gates/threshold (fn [k] (if (= :delta-publish-ms k) 0 (threshold k)))
+                    samizdat.llm.client/chat
+                    (fn [_ _ _ {:keys [on-delta]}]
+                      (on-delta {:reasoning "hm"})
+                      (on-delta {:text "Hel"})
+                      (on-delta {:text "lo"})
+                      {:content "Hello" :finish-reason "stop"})]
+        ((infer/complete-fn {:llm-adapter ::a :llm-config {} :run-id "R1"}) base-tape))
+      (let [ds (filter #(= :delta (:kind %)) (events/collect sub))]
+        (is (every? #(= ["R1" "B1"] [(:run-id %) (:branch-id %)]) ds))
+        (is (= "Hello" (apply str (keep :text ds))))
+        (is (= "hm" (apply str (keep :reasoning ds))))
+        (is (= [0 3] (keep #(when (:text %) (:text-at %)) ds)) "each piece says where it goes"))
+      (finally (events/unsubscribe! sub)))))
+
+(deftest a-call-outside-a-run-publishes-nothing
+  (let [sub (events/subscribe)
+        seen (atom :unset)]
+    (try
+      (with-redefs [samizdat.llm.client/chat
+                    (fn [_ _ _ opts] (reset! seen (:on-delta opts)) {:content "x" :finish-reason "stop"})]
+        ((infer/complete-fn {:llm-adapter ::a :llm-config {}}) base-tape))
+      (is (nil? @seen) "no watcher asked for, so the call is not streamed")
+      (is (empty? (filter #(= :delta (:kind %)) (events/collect sub))))
+      (finally (events/unsubscribe! sub)))))

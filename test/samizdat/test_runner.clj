@@ -166,6 +166,7 @@
             [samizdat.userspace-adoption-test]
             [samizdat.event-stream-test]
             [samizdat.tui-theme-test]
+            [samizdat.tui-markdown-test]
             [samizdat.tui-timeline-test]
             [samizdat.tui-commands-test]
             [samizdat.live-model-test]
@@ -174,6 +175,7 @@
             [samizdat.kanban-test]
             [samizdat.security.policy-test]
             [samizdat.llm-test]
+            [samizdat.llm-stream-test]
             [samizdat.prompt-test]
             [samizdat.server-test]
             [samizdat.adapter-test]
@@ -272,6 +274,7 @@
     samizdat.tui-widgets-test
     samizdat.store-test
     samizdat.llm-test
+    samizdat.llm-stream-test
     samizdat.agent-test
     samizdat.approval-test
     samizdat.base-test
@@ -372,6 +375,7 @@
     samizdat.userspace-adoption-test
     samizdat.event-stream-test
     samizdat.tui-theme-test
+    samizdat.tui-markdown-test
     samizdat.tui-timeline-test
     samizdat.tui-commands-test
     samizdat.live-model-test

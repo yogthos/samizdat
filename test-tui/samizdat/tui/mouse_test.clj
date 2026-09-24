@@ -247,6 +247,57 @@
               (is (= [(keyword label)] @hit)
                   (str "a click at " (pr-str at) " reached " label)))))))))
 
+(deftest the-compose-box-has-the-focus-from-the-start
+  ;; Typing into a TUI that has just opened must land in the compose box. The
+  ;; focus used to start on whatever focusable widget the layout reached
+  ;; first, so what was typed went nowhere until the box had been clicked.
+  (let [typed (atom nil)
+        handlers {:start (fn [& _]) :abort (fn []) :resume (fn [])
+                  :input #(reset! typed %) :submit (fn [_]) :toggle (fn [_])
+                  :decide (fn [& _]) :answer (fn [& _]) :select-run (fn [_])
+                  :select-branch (fn [_]) :scroll (fn [& _])}
+        current (requiring-resolve 'samizdat.tui.layout/current)
+        expand (requiring-resolve 'samizdat.tui.layout/expand)
+        themed (requiring-resolve 'samizdat.tui.theme/apply-theme)
+        turns [{:turn 1 :tool_name "shell" :result "a\nb\nc\nd\ne\nf" :category "success"}]
+        app (fn [] (let [spec (current)]
+                     (themed (:theme spec)
+                             (expand (:layout spec)
+                                     (assoc (st/initial "http://x") :on handlers
+                                            :run-id "r" :branch-id "B1"
+                                            :branch {:turns turns})))))]
+    (ui/with-screen [s app]
+      (ui/render-text s 200 45)
+      (ui/send-char! s "hi")
+      (is (= "hi" @typed))))
+  (testing "and keeps it as the screen fills in around it"
+    ;; The first frame has no runs and no turns; the polls that follow add
+    ;; a run menu and a conversation of folds, each of them focusable.
+    (let [typed (atom nil)
+          data (atom {})
+          handlers {:start (fn [& _]) :abort (fn []) :resume (fn [])
+                    :input #(reset! typed %) :submit (fn [_]) :toggle (fn [_])
+                    :decide (fn [& _]) :answer (fn [& _]) :select-run (fn [_])
+                    :select-branch (fn [_]) :scroll (fn [& _])}
+          current (requiring-resolve 'samizdat.tui.layout/current)
+          expand (requiring-resolve 'samizdat.tui.layout/expand)
+          themed (requiring-resolve 'samizdat.tui.theme/apply-theme)
+          app (fn [] (let [spec (current)]
+                       (themed (:theme spec)
+                               (expand (:layout spec)
+                                       (merge (assoc (st/initial "http://x") :on handlers)
+                                              @data)))))]
+      (ui/with-screen [s app]
+        (ui/render-text s 200 45)
+        (reset! data {:runs [{:id "r1" :problem "p" :status "completed"}]
+                      :run-id "r1" :branch-id "B1"
+                      :branch {:turns [{:turn 1 :tool_name "shell" :result "a\nb\nc\nd\ne\nf"
+                                        :category "success"}]}})
+        (ui/refresh! s)
+        (ui/render-text s 200 45)
+        (ui/send-char! s "yo")
+        (is (= "yo" @typed))))))
+
 (deftest the-whole-shipped-layout-renders-through-the-real-toolkit
   ;; The layout is userspace hiccup expanded against the registry, and every
   ;; widget is only ever checked as data. This is the one test that says the
@@ -284,22 +335,21 @@
     (is (str/includes? frame "samizdat:trunk") "and the footer's project label")))
 
 (deftest the-conversation-follows-the-bottom-in-the-real-toolkit
-  ;; The data half says the newest entry carries :focus. That is only the
-  ;; mechanism; the claim is that FTXUI scrolls its frame to it, so a run
-  ;; that has said more than fits shows what it said LAST.
+  ;; The pane follows the bottom until it is scrolled (ftxui-jolt's
+  ;; :scroll): a run that has said more than fits shows what it said LAST.
   (let [turns (mapv (fn [n] {:turn n :tool_name "read_file" :result (str "result " n)})
                     (range 1 41))
         frame (ui/render-text (w/conversation (assoc (st/initial "b") :branch {:turns turns}) {})
                               60 20)]
     (is (str/includes? frame "result 40") "the newest turn is on screen")
     (is (not (str/includes? frame "result 1\n")) "and the oldest has scrolled away"))
-  (testing "scrolled up to an anchor, the frame holds it instead"
+  (testing "scrolled to the top, the pane holds it there instead"
     (let [turns (mapv (fn [n] {:turn n :tool_name "read_file" :result (str "result " n)})
                       (range 1 41))
           frame (ui/render-text (w/conversation (assoc (st/initial "b") :branch {:turns turns}
-                                                       :scroll-anchor "t5/tool") {})
+                                                       :scroll {:conversation {:top 0}}) {})
                                 60 20)]
-      (is (str/includes? frame "result 5"))
+      (is (re-find #"result 1\b" frame) "the oldest turn is on screen")
       (is (not (str/includes? frame "result 40"))))))
 
 (deftest a-multi-select-question-ticks-on-a-click
