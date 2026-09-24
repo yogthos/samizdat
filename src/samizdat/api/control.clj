@@ -33,6 +33,7 @@
             [samizdat.agent.resume :as resume]
             [samizdat.approval :as approval]
             [samizdat.cancel :as cancel]
+            [samizdat.config :as config]
             [samizdat.llm.registry :as registry]
             [samizdat.prompt :as prompt]
             [samizdat.store.grants :as grants]
@@ -63,18 +64,36 @@
   says so in the run record.
 
   Blank is not a value — an unset select posts \"\" — so it leaves the
-  configured default standing rather than asking for a model with no name."
-  [llm-config body]
-  (let [pick (fn [& ks]
-               (let [v (some #(let [x (get body %)]
-                                (when-not (str/blank? (str x)) x))
-                             ks)]
-                 v))]
-    (cond-> llm-config
-      (pick :model :model "model") (assoc :model (pick :model "model"))
-      (pick :reasoning_effort :reasoning-effort "reasoning_effort")
-      (assoc :reasoning-effort
-             (pick :reasoning_effort :reasoning-effort "reasoning_effort")))))
+  configured default standing rather than asking for a model with no name.
+  The model may name its provider as `provider:model`, or be a provider
+  config.edn declares on its own (its declared model) — what `/model` keeps
+  for the next run — and the run then goes to that provider. A colon whose
+  prefix names no provider is part of the model's name (`qwen3:32b`)."
+  ([llm-config body] (run-llm-config nil llm-config body))
+  ([config llm-config body]
+   (let [pick (fn [& ks]
+                (some #(let [x (get body %)]
+                         (when-not (str/blank? (str x)) x))
+                      ks))
+         model (pick :model "model")
+         effort (pick :reasoning_effort :reasoning-effort "reasoning_effort")
+         known (set (config/provider-names config))
+         declared (set (keep #(some-> % name str/lower-case keyword)
+                             (keys (:providers config))))
+         [p m] (when model (str/split (str model) #":" 2))
+         p (some-> p str/lower-case keyword)
+         [provider model] (cond
+                            (and m (known p)) [p m]
+                            (and (nil? m) (declared p)) [p nil]
+                            :else [nil model])
+         llm-config (if (and provider
+                             (not (#{(:provider llm-config) (:provider-name llm-config)} provider)))
+                      (config/provider-llm config provider
+                                           (select-keys llm-config [:reasoning-effort]))
+                      llm-config)]
+     (cond-> llm-config
+       model (assoc :model model)
+       effort (assoc :reasoning-effort effort)))))
 
 (defn start-run!
   "Kick off a run in the background and return its id immediately.
@@ -98,7 +117,7 @@
     {:status 400
      :body {:error {:message "a run needs a non-blank `problem`"
                     :type "invalid_request_error"}}}
-  (let [llm-config (run-llm-config (:llm config) body)
+  (let [llm-config (run-llm-config config (:llm config) body)
         adapter (registry/adapter-for (:provider llm-config))
         abort (atom false)
         promised (promise)
@@ -209,7 +228,7 @@
                                 :run_id run-id}}}
     ;; A resume may name an arm too — a run that crashed on one model can be
     ;; picked up on another, and saying nothing keeps the original.
-    (let [llm-config (run-llm-config (:llm config) body)
+    (let [llm-config (run-llm-config config (:llm config) body)
           adapter (registry/adapter-for (:provider llm-config))
           abort (atom false)
           max-turns (or (:max_turns body) (:max-turns body))]
@@ -261,39 +280,50 @@
   {"model" :model "effort" :reasoning-effort})
 
 (defn- parse-switch
-  "A switch's payload: `value`, or `role value` — a model may carry its
-  provider as `provider:model`. {:role :value :provider} or {:error …}."
-  [kind payload]
+  "A switch's payload: `value`, or `role value`. A model may carry its
+  provider as `provider:model`, and a provider config.edn declares may be
+  named alone, meaning its declared model. {:role :value :provider} or
+  {:error …}."
+  [config kind payload]
   (let [words (remove str/blank? (str/split (str/trim (str payload)) #"\s+"))
         [role v] (case (count words) 1 [nil (first words)] 2 words [nil nil])
+        known (set (config/provider-names config))
+        declared (set (keep #(some-> % name str/lower-case keyword) (keys (:providers config))))
         [p m] (when (and v (= "model" kind) (str/includes? v ":")) (str/split v #":" 2))
-        provider (some-> p str/lower-case keyword)]
+        alone (when (and v (= "model" kind) (nil? p))
+                (declared (keyword (str/lower-case v))))
+        provider (or (some-> p str/lower-case keyword) alone)]
     (cond
       (nil? v) {:error (str "a " kind " switch takes `" kind "` or `role " kind "`")}
-      (and provider (not (contains? (set (registry/providers)) provider)))
+      (and provider (not (contains? known provider)))
       {:error (str "unknown provider " p "; known: "
-                   (str/join ", " (sort (map name (registry/providers)))))}
-      :else {:role (some-> role str/lower-case keyword) :value (if provider m v)
+                   (str/join ", " (sort (map name known))))}
+      :else {:role (some-> role str/lower-case keyword)
+             :value (cond alone nil provider m :else v)
              :provider provider})))
 
 (defn- live-switch!
-  [conn run-id {:keys [kind payload]}]
-  (let [{:keys [error role value provider]} (parse-switch kind payload)
+  [conn config run-id {:keys [kind payload]}]
+  (let [{:keys [error role value provider]} (parse-switch config kind payload)
         k (get live-kinds kind)]
     (if error
       {:status 400 :body {:error {:message error :run_id run-id}}}
-      (let [m (cond-> {k value} provider (assoc :provider provider))
+      (let [m (cond-> {} value (assoc k value) provider (assoc :provider provider))
             summary (str (if role (name role) "every role") " → "
-                         (when provider (str (name provider) ":")) value)]
+                         (when provider (str (name provider) (when value ":")))
+                         value)]
         (live/set! run-id role m)
         ;; On the record, so the run's own account says when it changed
         ;; and a front end's conversation can show it.
         (journal/note! conn run-id :llm-switch
-                       {:data (cond-> {k value :summary summary}
+                       {:data (cond-> {:summary summary}
+                                value (assoc k value)
                                 role (assoc :role (name role))
                                 provider (assoc :provider (name provider)))})
         (log/info "run" run-id kind "switched:" summary)
-        {:body {:status "switched" :role (some-> role name) (name k) value :run_id run-id}}))))
+        {:body (cond-> {:status "switched" :role (some-> role name) :run_id run-id}
+                 value (assoc (name k) value)
+                 provider (assoc :provider (name provider)))}))))
 
 (defn intervene!
   "Record a human intervention. Queued kinds (message, cull, fork, …) go on
@@ -302,8 +332,12 @@
   the shell policy consults on every command, so there is no boundary to wait
   for. This is the one production write path into the grants table — a human
   surface, never a tool — and without it every deliberate `ask` (interpreters,
-  git push, curl, installs) blocked a run forever (provenance A-2, docs/provenance.md)."
-  [conn run-id body]
+  git push, curl, installs) blocked a run forever (provenance A-2, docs/provenance.md).
+
+  `config` is the running config, for the providers a model switch may name
+  beyond the built-ins (config.edn :providers)."
+  ([conn run-id body] (intervene! conn nil run-id body))
+  ([conn config run-id body]
   (if (= "grant" (:kind body))
     (if-let [pattern (grant-pattern (:payload body))]
       (do (grants/grant! conn run-id pattern)
@@ -325,7 +359,7 @@
                                                   (:status run))
                                     :run_id run-id}}})
     (if (contains? live-kinds (:kind body))
-      (live-switch! conn run-id body)
+      (live-switch! conn config run-id body)
     (if-not (contains? interventions/kinds (:kind body))
       ;; provenance R3-12: this reached submit!'s throw and surfaced as the
       ;; server's catch-all 500. An unknown kind is the client's mistake.
@@ -344,7 +378,7 @@
           :status "pending"
           ;; Said plainly rather than implied, because the difference between
           ;; accepted and applied is the thing a UI most easily lies about.
-          :note "Queued. It applies at the branch's next turn boundary, not now."}}))))))
+          :note "Queued. It applies at the branch's next turn boundary, not now."}})))))))
 
 (defn kinds
   "Every directive kind with what it does — the names from the store, the

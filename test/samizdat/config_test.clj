@@ -26,18 +26,18 @@
 (deftest provider-llm-builds-a-named-provider-config
   ;; per-role model assignment: build the :llm map for a specific provider,
   ;; independent of the run's detected default, with overrides winning.
-  (let [c (config/provider-llm :glm {:model "glm-x"})]
+  (let [c (config/provider-llm nil :glm {:model "glm-x"})]
     (is (= :glm (:provider c)))
     (is (= "glm-x" (:model c)) "the override wins over the table default")
     (is (str/includes? (:base-url c) "bigmodel") "and it carries GLM's endpoint"))
   (testing "an unknown provider is an error, not a silent default"
-    (is (thrown? Exception (config/provider-llm :nope {})))))
+    (is (thrown? Exception (config/provider-llm nil :nope {})))))
 
 (deftest glm-uses-the-coding-endpoint
   ;; Aligned with the config dirge drives GLM through: the coding endpoint,
   ;; glm-5.3, low temperature. The coding /models listing advertises the base
   ;; models (glm-4.5/4.6), not the coding alias, but chat accepts glm-5.3.
-  (let [cfg (config/load-config {:llm {:provider :glm}})
+  (let [cfg (config/load-config {:roles {:default :glm}})
         {:keys [base-url model temperature]} (:llm cfg)]
     (testing "the provider defaults resolve to dirge's working GLM config"
       ;; Asserted on the LOADED config, which is the claim worth making. It
@@ -82,20 +82,20 @@
   (is (= {:a {:b 1}} (config/deep-merge {:a {:b 1}} {}))))
 
 (deftest project-config-layers-between-defaults-and-overrides
-  (let [root (temp-project-root "{ :http { :port 4242 } :llm { :model \"project-model\" } }")]
+  (let [root (temp-project-root "{ :http { :port 4242 } :run { :max-turns 7 } }")]
     (try
       (testing "project-config reads the file"
-        (is (= {:http {:port 4242} :llm {:model "project-model"}}
+        (is (= {:http {:port 4242} :run {:max-turns 7}}
                (config/project-config root))))
       (testing "load-config picks up the project value"
         (let [cfg (config/load-config {:run {:root root}})]
           (is (= 4242 (get-in cfg [:http :port])))
-          (is (= "project-model" (get-in cfg [:llm :model])))))
+          (is (= 7 (get-in cfg [:run :max-turns])))))
       (testing "an explicit override still beats the project value"
         (let [cfg (config/load-config {:run {:root root} :http {:port 5555}})]
           (is (= 5555 (get-in cfg [:http :port])))
           ;; untouched keys keep the project value
-          (is (= "project-model" (get-in cfg [:llm :model])))))
+          (is (= 7 (get-in cfg [:run :max-turns])))))
       (finally (delete-recursively (java.io.File. root))))))
 
 (deftest missing-or-broken-project-file-is-ignored
@@ -117,19 +117,16 @@
         (finally (delete-recursively (java.io.File. root)))))))
 
 (deftest redacted-masks-an-api-key-wherever-it-sits
-  ;; /health serves (config/redacted …), which masked [:llm :api-key] only. A
-  ;; role spec under :run :role-models may carry its own :api-key override —
-  ;; role-ctx merges it into the provider config — and it was served cleartext
-  ;; (karamazov-blt.29).
+  ;; /health serves (config/redacted …), which masked [:llm :api-key] only,
+  ;; and a nested key was served cleartext (karamazov-blt.29).
   (let [cfg {:llm {:api-key "sk-top" :model "m"}
-             :run {:role-models {:critic {:provider :glm :model "g"
-                                          :api-key "sk-role"}}}
+             :providers {:critic {:type :glm :model "g" :api-key "sk-role"}}
              :db {:path "x"}}
         r (config/redacted cfg)]
     (is (= "***" (get-in r [:llm :api-key])))
-    (is (= "***" (get-in r [:run :role-models :critic :api-key]))
-        "a nested per-role key is masked too")
-    (is (= "g" (get-in r [:run :role-models :critic :model]))
+    (is (= "***" (get-in r [:providers :critic :api-key]))
+        "a declared provider's key is masked too")
+    (is (= "g" (get-in r [:providers :critic :model]))
         "only the key is touched")
     (is (= {:db {:path "x"}} (config/redacted {:db {:path "x"}}))
         "a config with no key gains none")))
@@ -149,93 +146,85 @@
       (spit (java.io.File. dir "config.edn") edn-content))
     home))
 
-(deftest a-config-file-that-names-a-provider-gets-that-provider
-  ;; The provider was chosen by `detect-provider` ALONE — HARNESS_PROVIDER, else
-  ;; the first provider whose key-env is in the environment — and the file
-  ;; layers were merged on top of the preset that choice had already expanded.
-  ;; So `{:llm {:provider :glm}}` in a config file set the :provider key and
-  ;; nothing else: the run kept DeepSeek's base-url, DeepSeek's api-key and
-  ;; deepseek-v4-flash, while naming itself glm and dispatching the GLM
-  ;; adapter. Wrong endpoint, wrong key, wrong model, no complaint.
-  ;;
-  ;; A layer that names a provider now selects that provider's preset, which is
-  ;; the only reading of "provider: glm" that means anything.
-  (let [home (temp-config-home "{:llm {:provider :glm}}")
-        root (temp-project-root nil)]
-    (try
-      (with-redefs [layers/config-home (fn [] home)]
-        (let [{:keys [provider base-url model temperature]}
-              (:llm (config/load-config {:run {:root root}}))]
-          (is (= :glm provider))
-          (is (= "https://open.bigmodel.cn/api/coding/paas/v4" base-url)
-              "GLM's endpoint, not whichever provider the environment detected")
-          (is (= "glm-5.3" model))
-          (is (= 0.2 temperature) "and GLM's coding temperature")))
-      (finally (delete-recursively (java.io.File. home))
-               (delete-recursively (java.io.File. root)))))
-  (testing "a project file overrides the global one's provider"
-    (let [home (temp-config-home "{:llm {:provider :glm}}")
-          root (temp-project-root "{:llm {:provider :deepseek}}")]
-      (try
-        (with-redefs [layers/config-home (fn [] home)]
-          (let [{:keys [provider base-url model]}
-                (:llm (config/load-config {:run {:root root}}))]
-            (is (= :deepseek provider))
-            (is (str/includes? base-url "deepseek"))
-            (is (= "deepseek-v4-flash" model))))
-        (finally (delete-recursively (java.io.File. home))
-                 (delete-recursively (java.io.File. root))))))
-  (testing "a file may name the provider and still pin one of its keys"
-    (let [home (temp-config-home "{:llm {:provider :glm :model \"glm-4.6\"}}")
-          root (temp-project-root nil)]
-      (try
-        (with-redefs [layers/config-home (fn [] home)]
-          (let [{:keys [base-url model]} (:llm (config/load-config {:run {:root root}}))]
-            (is (= "glm-4.6" model) "the pin wins over the preset")
-            (is (str/includes? base-url "bigmodel") "the rest of the preset still applies")))
-        (finally (delete-recursively (java.io.File. home))
-                 (delete-recursively (java.io.File. root))))))
+(defmacro ^:private with-files
+  "Run `body` with the global and project config.edn set to `global` and
+  `project` (nil for none), binding `root`."
+  [[root global project] & body]
+  `(let [home# (temp-config-home ~global)
+         ~root (temp-project-root ~project)]
+     (try
+       (with-redefs [layers/config-home (fn [] home#)]
+         ~@body)
+       (finally (delete-recursively (java.io.File. home#))
+                (delete-recursively (java.io.File. ~root))))))
+
+(deftest a-config-file-that-selects-a-provider-gets-that-provider
+  ;; Selecting a provider selects its whole preset — endpoint, key, model,
+  ;; context window, temperature — not just the adapter. The provider used
+  ;; to be picked from the environment first and a file's choice merged over
+  ;; the expanded preset, which dispatched GLM's adapter at DeepSeek's
+  ;; endpoint with DeepSeek's key and said nothing.
+  (with-files [root "{:roles {:default :glm}}" nil]
+    (let [{:keys [provider base-url model temperature]}
+          (:llm (config/load-config {:run {:root root}}))]
+      (is (= :glm provider))
+      (is (= "https://open.bigmodel.cn/api/coding/paas/v4" base-url)
+          "GLM's endpoint, not whichever provider the environment detected")
+      (is (= "glm-5.3" model))
+      (is (= 0.2 temperature) "and GLM's coding temperature")))
+  (testing "a project file's choice beats the global one's"
+    (with-files [root "{:roles {:default :glm}}" "{:roles {:default :deepseek}}"]
+      (let [{:keys [provider base-url model]} (:llm (config/load-config {:run {:root root}}))]
+        (is (= :deepseek provider))
+        (is (str/includes? base-url "deepseek"))
+        (is (= "deepseek-v4-flash" model)))))
+  (testing "a declaration may pin one key and keep the rest of the preset"
+    (with-files [root "{:providers {:glm {:model \"glm-4.6\"}} :roles {:default :glm}}" nil]
+      (let [{:keys [base-url model]} (:llm (config/load-config {:run {:root root}}))]
+        (is (= "glm-4.6" model))
+        (is (str/includes? base-url "bigmodel")))))
+  (testing "a project may select an alias only the global file declares"
+    (with-files [root "{:providers {:flash {:type :deepseek :model \"f\"}}}"
+                 "{:roles {:default :flash}}"]
+      (is (= "f" (:model (:llm (config/load-config {:run {:root root}})))))))
   (testing "a provider spelled as a string is the provider it names"
-    ;; EDN written by a person, not by code: `:provider "glm"` is what someone
-    ;; who has seen the JSON in /health writes, and reading it as an unknown
-    ;; provider would have been a crash on a legible file.
-    (let [home (temp-config-home "{:llm {:provider \"glm\"}}")
-          root (temp-project-root nil)]
-      (try
-        (with-redefs [layers/config-home (fn [] home)]
-          (is (= :glm (get-in (config/load-config {:run {:root root}}) [:llm :provider]))))
-        (finally (delete-recursively (java.io.File. home))
-                 (delete-recursively (java.io.File. root))))))
+    ;; `"glm"` is what someone who has read the JSON in /health writes.
+    (with-files [root "{:roles {:default \"glm\"}}" nil]
+      (is (= :glm (get-in (config/load-config {:run {:root root}}) [:llm :provider])))))
   (testing "a provider no table knows is an error, not a silent fallback"
-    (let [home (temp-config-home "{:llm {:provider :nope}}")
-          root (temp-project-root nil)]
-      (try
-        (with-redefs [layers/config-home (fn [] home)]
-          (is (thrown? Exception (config/load-config {:run {:root root}}))))
-        (finally (delete-recursively (java.io.File. home))
-                 (delete-recursively (java.io.File. root)))))))
+    (with-files [root "{:roles {:default :nope}}" nil]
+      (is (thrown? Exception (config/load-config {:run {:root root}}))))))
+
+(deftest an-unrecognized-key-is-refused-naming-its-file
+  (doseq [[body k] [["{:llm {:provider :glm}}" ":llm"]
+                    ["{:porvider :glm}" ":porvider"]]]
+    (with-files [root nil body]
+      (let [e (try (config/load-config {:run {:root root}}) nil (catch Exception e e))]
+        (is e body)
+        (is (str/includes? (str (ex-message e)) "/.samizdat/config.edn"))
+        (is (str/includes? (str (ex-message e)) (str "unrecognized key " k)))))))
 
 (deftest a-global-config-sits-beneath-the-project-config
-  (let [home (temp-config-home "{:http {:port 4100} :llm {:model \"global-model\" :base-url \"http://global\"}}")
-        root (temp-project-root "{:llm {:model \"project-model\"}}")]
+  (let [home (temp-config-home "{:http {:port 4100} :run {:max-turns 9 :beam-width 2}}")
+        root (temp-project-root "{:run {:max-turns 7}}")]
     (try
       (with-redefs [layers/config-home (fn [] home)]
         (testing "global-config reads <config-home>/samizdat/config.edn"
-          (is (= {:http {:port 4100} :llm {:model "global-model" :base-url "http://global"}}
+          (is (= {:http {:port 4100} :run {:max-turns 9 :beam-width 2}}
                  (config/global-config))))
         (let [cfg (config/load-config {:run {:root root}})]
           (testing "a value set only globally reaches the run"
             (is (= 4100 (get-in cfg [:http :port]))))
           (testing "the same key set in the project wins over global"
-            (is (= "project-model" (get-in cfg [:llm :model]))))
-          (testing "nested maps MERGE: the project's :llm :model did not wipe the global :llm :base-url"
-            (is (= "http://global" (get-in cfg [:llm :base-url])))))
+            (is (= 7 (get-in cfg [:run :max-turns]))))
+          (testing "nested maps MERGE: the project's :run :max-turns did not wipe the global :run :beam-width"
+            (is (= 2 (get-in cfg [:run :beam-width])))))
         (testing "an explicit override still beats both files"
           (is (= 5555 (get-in (config/load-config {:run {:root root} :http {:port 5555}})
                               [:http :port]))))
         (testing "the layered file config is one map, project on top"
           (is (= {:http {:port 4100}
-                  :llm {:model "project-model" :base-url "http://global"}}
+                  :run {:max-turns 7 :beam-width 2}}
                  (config/file-config root)))))
       (finally
         (delete-recursively (java.io.File. root))
@@ -349,13 +338,13 @@
 
 (deftest an-env-named-config-file-sits-above-the-project-file
   (let [home (temp-config-home "{:http {:port 4100}}")
-        root (temp-project-root "{:http {:port 4242} :llm {:model \"project-model\"}}")
+        root (temp-project-root "{:http {:port 4242} :run {:max-turns 7}}")
         envf (str root "/elsewhere.edn")]
     (spit envf "{:http {:port 4343}}")
     (try
       (with-redefs [layers/config-home (fn [] home)
                     layers/getenv (fn [k] (when (= k "SAMIZDAT_CONFIG_FILE") envf))]
-        (is (= {:http {:port 4343} :llm {:model "project-model"}}
+        (is (= {:http {:port 4343} :run {:max-turns 7}}
                (config/file-config root)))
         (testing "and the boot log names it, highest last like the rest"
           (is (= [:global :project :env] (mapv :layer (config/config-sources root))))
@@ -380,3 +369,107 @@
       (finally
         (delete-recursively (java.io.File. root))
         (delete-recursively (java.io.File. home))))))
+
+;; --- declared providers and role assignment ----------------------------------
+;;
+;; The dirge shape: :providers declares endpoints by alias, :roles says which
+;; alias serves each role, :default being the run's own model.
+
+(def ^:private home (System/getenv "HOME"))
+
+(def ^:private declared
+  {:providers {:fast {:type :deepseek :model "deepseek-v4-flash"}
+               :vllm {:type :openai
+                      :base-url "http://gpu:8000/v1"
+                      :model "qwen"
+                      :api-key "${HOME}"
+                      :headers {"X-Home" "${HOME}" "X-Lit" "v"}
+                      :context-window 64000
+                      :thinking? true}}
+   :roles {:default :vllm :reader :fast}})
+
+(deftest roles-default-picks-the-runs-provider
+  (let [llm (:llm (config/load-config declared))]
+    (is (= :openai (:provider llm)) "the adapter is the entry's :type")
+    (is (= :vllm (:provider-name llm)) "the alias rides along")
+    (is (= "http://gpu:8000/v1" (:base-url llm)))
+    (is (= "qwen" (:model llm)))
+    (is (= 64000 (:context-window llm)))
+    (is (true? (:thinking? llm)) "any :llm knob can sit on the entry")
+    (testing "${VAR} expands from the environment, in the key and in headers"
+      (is (= home (:api-key llm)))
+      (is (= {"X-Home" home "X-Lit" "v"} (:headers llm))))
+    (is (not-any? #(contains? llm %) [:type :api-key-env])
+        "declaration-only keys do not leak into the resolved config")))
+
+(deftest roles-assign-a-declared-provider-to-a-role
+  (let [cfg (config/load-config declared)
+        llm (:llm cfg)]
+    (let [r (config/role-llm cfg llm :reader)]
+      (is (= :deepseek (:provider r)))
+      (is (= :fast (:provider-name r)))
+      (is (= "deepseek-v4-flash" (:model r)))
+      (is (str/includes? (:base-url r) "deepseek") "the preset fills what the entry leaves out"))
+    (is (nil? (config/role-llm cfg llm :supervisor))
+        "an unassigned role runs on the default")
+    (is (nil? (config/role-llm (assoc-in cfg [:roles :reader] :vllm) llm :reader))
+        "a role assigned the default's own alias keeps the default (and what the probe learned)")))
+
+(deftest an-alias-named-after-a-built-in-needs-no-type
+  (let [llm (:llm (config/load-config {:providers {:glm {:model "glm-9"}}
+                                       :roles {:default :glm}}))]
+    (is (= :glm (:provider llm)))
+    (is (= "glm-9" (:model llm)))
+    (is (str/includes? (:base-url llm) "bigmodel"))
+    (is (= 0.2 (:temperature llm)) "the preset's own defaults still apply")))
+
+(deftest api-key-env-names-the-variable-holding-the-key
+  (is (= home (:api-key (:llm (config/load-config
+                               {:providers {:box {:type :local :api-key-env "HOME"}}
+                                :roles {:default :box}}))))))
+
+(deftest a-bad-declaration-is-refused-by-name
+  (testing "an alias that is not a built-in needs a :type"
+    (let [e (try (config/load-config {:providers {:mystery {:model "m"}}
+                                      :roles {:default :mystery}})
+                 nil (catch Exception e e))]
+      (is e)
+      (is (str/includes? (ex-message e) "mystery"))))
+  (testing "a :type no adapter serves"
+    (is (thrown? Exception (config/load-config {:providers {:x {:type :nope}}
+                                                :roles {:default :x}}))))
+  (testing "a role naming a provider nobody declared"
+    (let [cfg (config/load-config declared)]
+      (is (thrown? Exception (config/role-llm (assoc-in cfg [:roles :reader] :ghost)
+                                              (:llm cfg) :reader)))))
+  (testing "a typo in :roles fails at load, not when that role first runs"
+    (let [e (try (config/load-config (assoc-in declared [:roles :judge] :ghost))
+                 nil (catch Exception e e))]
+      (is e)
+      (is (str/includes? (str (ex-message e)) "ghost"))))
+  (testing "${VAR} that is unset"
+    (let [e (try (config/load-config {:providers {:x {:type :local
+                                                      :api-key "${SAMIZDAT_SURELY_UNSET_VAR}"}}
+                                      :roles {:default :x}})
+                 nil (catch Exception e e))]
+      (is e)
+      (is (str/includes? (ex-message e) "SAMIZDAT_SURELY_UNSET_VAR")))))
+
+(deftest an-undeclared-unused-provider-costs-nothing
+  ;; A machine-wide file may declare endpoints whose keys this machine lacks;
+  ;; only the providers actually selected are resolved.
+  (is (= :local (:provider (:llm (config/load-config
+                                  {:providers {:far {:type :openai
+                                                     :api-key "${SAMIZDAT_SURELY_UNSET_VAR}"}}
+                                   :roles {:default :local}}))))))
+
+(deftest provider-names-lists-built-ins-and-declared-aliases
+  (let [names (set (config/provider-names (config/load-config declared)))]
+    (is (every? names [:vllm :fast :glm :deepseek :local]))))
+
+(deftest redacted-masks-declared-keys-and-headers
+  (let [r (config/redacted (config/load-config declared))]
+    (is (= "***" (get-in r [:llm :api-key])))
+    (is (= "***" (get-in r [:providers :vllm :api-key])))
+    (is (every? #{"***"} (vals (get-in r [:llm :headers]))))
+    (is (every? #{"***"} (vals (get-in r [:providers :vllm :headers]))))))

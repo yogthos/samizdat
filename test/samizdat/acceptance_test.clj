@@ -258,6 +258,6 @@
        Exception #"acceptance"
        (system/start! (fn [_] {:status 200})
                       {:db {:path ":memory:"} :http {:port 0}
-                       :llm {:provider :local}
+                       :roles {:default :local}
                        :run {:acceptance [{:check "no name"}]}})))
   (is (not (system/started?))))

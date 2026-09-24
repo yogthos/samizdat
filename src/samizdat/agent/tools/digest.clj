@@ -22,8 +22,8 @@
   Most of what a branch does with a large file is not reasoning about it: it
   pages through five screens to answer one question, and every page is
   billed at the branch's rate and resent on every following turn. This tool
-  sends the files to a reader — the :reader role's model when config :run
-  :role-models assigns one, the branch's own otherwise — with the question,
+  sends the files to a reader — the :reader role's model when config :roles
+  assigns one, the branch's own otherwise — with the question,
   and hands back only the bullets. The files never enter the branch's
   context, so a follow-up question costs the reader again and the branch
   nothing (karamazov-b76m, after Spotify's shunt).

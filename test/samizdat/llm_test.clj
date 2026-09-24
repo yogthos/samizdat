@@ -858,13 +858,13 @@
       ;; REJECTS the request — "prefix is only available when using beta
       ;; api" — so load-config drops :prefill for a config pointed there
       ;; (features-test); the adapter simply reads what is left.
-      (let [beta (:llm (config/load-config {:llm {:provider :deepseek}}))
-            v1   (:llm (config/load-config {:llm {:provider :deepseek
-                                                  :base-url "https://api.deepseek.com/v1"}}))]
+      (let [beta (:llm (config/load-config {:roles {:default :deepseek}}))
+            v1   (:llm (config/load-config {:providers {:deepseek {:base-url "https://api.deepseek.com/v1"}}
+                                            :roles {:default :deepseek}}))]
         (is (adapter/prefill-support? (registry/adapter-for :deepseek) beta))
         (is (not (adapter/prefill-support? (registry/adapter-for :deepseek) v1)))
         (is (not (adapter/prefill-support? (registry/adapter-for :openai)
-                                           (:llm (config/load-config {:llm {:provider :openai}})))))
+                                           (:llm (config/load-config {:roles {:default :openai}})))))
         (is (not (adapter/prefill-support? (registry/adapter-for :ollama) beta)))))
 
     (testing "a supporting adapter appends the prefix as a trailing assistant turn"
@@ -1787,3 +1787,25 @@
                                   {:status 200 :body "{\"choices\":[{\"message\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}"})]
           (client/chat local cfg [{:role "user" :content "x"}] {:max-tokens 10 :reasoning-budget 256}))
         (is (= 256 (:reasoning_budget_tokens @sent)))))))
+
+(deftest declared-headers-go-out-with-every-call
+  ;; A :providers entry may carry :headers (a proxy's org id, a gateway's
+  ;; own token); they ride along with the key on chat and on the listing.
+  (let [seen (atom [])
+        cfg {:base-url "http://h/v1" :model "m" :api-key "k"
+             :headers {"X-Org" "acme"}}]
+    (with-redefs [jolt.http-client/post
+                  (fn [_ {:keys [headers]}]
+                    (swap! seen conj headers)
+                    {:status 200
+                     :body "{\"choices\":[{\"message\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}"})
+                  jolt.http-client/get
+                  (fn [_ {:keys [headers]}]
+                    (swap! seen conj headers)
+                    {:status 200 :body "{\"data\":[]}"})]
+      (client/chat (registry/adapter-for :openai) cfg [{:role "user" :content "x"}] {:max-tokens 5})
+      (client/list-models (registry/adapter-for :openai) cfg))
+    (is (= 2 (count @seen)))
+    (doseq [h @seen]
+      (is (= "acme" (get h "X-Org")))
+      (is (= "Bearer k" (get h "Authorization"))))))

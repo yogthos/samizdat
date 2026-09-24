@@ -229,11 +229,10 @@
 
 (defn role-ctx
   "The ctx a role's sub-loop runs under, with its LLM adapter and config swapped
-  to the model assigned to `role` under config :run :role-models — e.g.
-  {:implementor {:provider \"deepseek\"} :supervisor {:provider \"glm\"}}. A role
-  with no entry keeps the run's default model. `:provider` may be omitted to keep
-  the run's provider and only change the model. This is how a cheap model can
-  implement while a stronger one reviews or supervises."
+  to the provider config :roles assigns `role` — e.g. {:implementor :flash
+  :supervisor :glm}. A role with no entry keeps the run's default model. This
+  is how a cheap model can implement while a stronger one reviews or
+  supervises."
   [ctx role]
   ;; :role rides the ctx from here on. It used to be consumed by prompt
   ;; assembly and dropped, which left the tool layer unable to tell a

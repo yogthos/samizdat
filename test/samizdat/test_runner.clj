@@ -115,6 +115,7 @@
             [samizdat.source-test]
             [samizdat.security.secrets-test]
             [samizdat.config-test]
+            [samizdat.launch-test]
             [samizdat.layers-test]
             [samizdat.files-test]
             [samizdat.edit-test]
@@ -320,6 +321,7 @@
     samizdat.source-test
     samizdat.security.secrets-test
     samizdat.config-test
+    samizdat.launch-test
     samizdat.layers-test
     samizdat.files-test
     samizdat.edit-test

@@ -99,3 +99,24 @@
       (testing "a provider nobody has heard of is refused"
         (is (= 400 (:status (control/intervene! conn rid {:kind "model" :payload "critic nope:m"})))))
       (finally (live/forget-run! rid) (db/close conn)))))
+
+(deftest a-switch-can-name-a-declared-provider
+  ;; config.edn :providers declares endpoints by alias; a switch may name one
+  ;; alone (its declared model) or with a model (`fast:other`).
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        config {:providers {:fast {:type :deepseek :model "deepseek-v4-flash"}}}
+        base {:run-id rid :config config
+              :llm-config {:provider :local :provider-name :local :model "base"}}]
+    (try
+      (is (= "switched" (get-in (control/intervene! conn config rid {:kind "model" :payload "reviewer fast"})
+                                [:body :status])))
+      (let [c (:llm-config (live/in-ctx (assoc base :role :reviewer)))]
+        (is (= :deepseek (:provider c)))
+        (is (= :fast (:provider-name c)))
+        (is (= "deepseek-v4-flash" (:model c))))
+      (control/intervene! conn config rid {:kind "model" :payload "critic fast:other"})
+      (is (= "other" (:model (:llm-config (live/in-ctx (assoc base :role :critic))))))
+      (testing "an alias this config does not declare is still refused"
+        (is (= 400 (:status (control/intervene! conn config rid {:kind "model" :payload "critic slow:m"})))))
+      (finally (live/forget-run! rid) (db/close conn)))))

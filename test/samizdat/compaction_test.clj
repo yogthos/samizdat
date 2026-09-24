@@ -474,7 +474,7 @@
     (let [w (:context-window (get config/providers-for-test p))]
       (is (and w (pos? w)) (str "provider " p " must declare a context window"))))
   (testing "and it reaches the :llm config the loop hands to compaction"
-    (is (pos? (:context-window (:llm (config/load-config {:llm {:provider :glm}})))))))
+    (is (pos? (:context-window (:llm (config/load-config {:roles {:default :glm}})))))))
 
 (deftest a-compaction-note-names-the-branch-and-the-turn
   ;; Every rung noted WHAT it did and none noted WHERE: {:data …} with no

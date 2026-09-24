@@ -48,34 +48,37 @@
   (clojure.core/get @overrides run-id))
 
 (defn- over
-  "`llm` with override `o` applied: a provider it names replaces the config
-  with that provider's (samizdat.config/provider-llm), the rest merges."
-  [llm o]
+  "`llm` with override `o` applied: a provider it names — a built-in or an
+  alias `config` declares — replaces the config with that provider's
+  (samizdat.config/provider-llm), the rest merges."
+  [config llm o]
   (cond
     (empty? o) llm
-    (and (:provider o) (not= (:provider o) (:provider llm)))
-    (config/provider-llm (:provider o) (dissoc (merge (select-keys llm [:reasoning-effort :timeout-ms]) o)
-                                               :provider))
-    :else (merge llm o)))
+    (and (:provider o) (not (#{(:provider llm) (:provider-name llm)} (:provider o))))
+    (config/provider-llm config (:provider o)
+                         (dissoc (merge (select-keys llm [:reasoning-effort :timeout-ms]) o)
+                                 :provider))
+    :else (merge llm (dissoc o :provider))))
 
 (defn apply-to
   "`llm-config` with `run-id`'s overrides for `role` over it: the run-wide
   switch first, then the role's own, so a role named in a switch keeps it
-  when a later switch names nobody."
-  ([llm-config run-id] (apply-to llm-config run-id nil))
-  ([llm-config run-id role]
+  when a later switch names nobody. `config` resolves a provider alias."
+  ([llm-config run-id] (apply-to llm-config run-id nil nil))
+  ([llm-config run-id role] (apply-to llm-config run-id role nil))
+  ([llm-config run-id role config]
    (let [o (get run-id)]
      (cond-> llm-config
-       (:all o) (over (:all o))
-       (and role (clojure.core/get o role)) (over (clojure.core/get o role))))))
+       (:all o) (#(over config % (:all o)))
+       (and role (clojure.core/get o role)) (#(over config % (clojure.core/get o role)))))))
 
 (defn in-ctx
   "`ctx` with its llm config — and its adapter, when the provider moved —
   switched for `ctx`'s :role on its run."
-  [{:keys [run-id role llm-config] :as ctx}]
+  [{:keys [run-id role llm-config config] :as ctx}]
   (if-not (get run-id)
     ctx
-    (let [c (apply-to llm-config run-id role)]
+    (let [c (apply-to llm-config run-id role config)]
       (cond-> (assoc ctx :llm-config c)
         (not= (:provider c) (:provider llm-config))
         (assoc :llm-adapter (registry/adapter-for (:provider c)))))))

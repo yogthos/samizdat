@@ -8,17 +8,25 @@ It is a strict HTTP client, like the GUI: this process holds no engines, no
 database handle and no run state of its own. Everything on screen arrived
 through `samizdat.api.client`, and everything a key or a click does goes back
 as a POST. That is why it can be pointed at a harness on another machine, and
-why closing it does nothing to the run.
+why, attached with `--connect`, closing it does nothing to the run.
 
 ## Running it
 
 ```bash
-jolt serve                      # the harness, in another terminal
-jolt tui                        # the UI, against http://127.0.0.1:3985
-jolt -M:tui http://host:3985    # or somewhere else
+jolt tui                                  # server + UI in one process
+jolt tui --connect                        # the UI alone, against a running server
+jolt tui --connect http://host:3985       # ... somewhere else
+./samizdat [--headless | --connect [URL]] # the built binary (`jolt bin`)
 ```
 
-Where to connect, in order: an argument, then `SAMIZDAT_URL`, then
+By default the process is the whole application: `samizdat.main` starts the
+server, sends its log to `.samizdat/samizdat.log` under the project root (so
+nothing scribbles over the frame), and runs the UI against it over loopback —
+still a plain HTTP client. Quitting the UI stops that server, and a run still
+going is recorded as interrupted and can be resumed from its journal. `--headless`
+is the server alone, which is what `jolt serve` runs.
+
+With `--connect`, where to connect, in order: the URL, then `SAMIZDAT_URL`, then
 `HARNESS_PORT` (the port alone, when only the port moved), then the default
 `http://127.0.0.1:3985` — the same port `jolt serve` binds, so the common case
 needs no configuration at all.
@@ -63,7 +71,7 @@ rebuild. What they print lands in the conversation as `<sys>`.
 
 | | |
 |---|---|
-| `/model [role] [model]` | list the provider's models, or switch — **live** for the run on screen, otherwise for the next run started from here. `/model glm-5.3` switches every role; `/model critic glm:glm-5.3` only the critic, and a `provider:` prefix moves it to that provider. Roles: `implementor`, `critic`, `supervisor`, `reviewer`, `planner`, `architect`, `summarizer` |
+| `/model [role] [model]` | list the provider's models, or switch — **live** for the run on screen, otherwise for the next run started from here. `/model glm-5.3` switches every role; `/model critic glm:glm-5.3` only the critic, and a `provider:` prefix moves it to that provider — a built-in or an alias `config.edn` declares under `:providers`, which may also be named alone for its declared model (`/model critic flash`). Roles: `implementor`, `critic`, `supervisor`, `reviewer`, `planner`, `architect`, `summarizer` |
 | `/effort [role] <level>` | how hard the model thinks, the same way |
 | `/mode [refuse\|block]` | what happens when a run needs you, for this server session: refuse, or block and ask. The footer shows it |
 | `/run <problem>` `/abort` `/resume` | start a run; abort or resume the one on screen |

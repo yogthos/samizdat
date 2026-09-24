@@ -79,20 +79,17 @@
     (first (concat fresh usable))))
 
 (defn- role-ctx
-  "`ctx` with its adapter and model swapped to the one assigned to `role` under
-  config :run :role-models. A role with no entry keeps the run's own model.
+  "`ctx` with its adapter and model swapped to the provider config :roles
+  assigns `role` (config/role-llm). A role with no entry keeps the run's own
+  model.
 
   Mirrors samizdat.workflow/role-ctx rather than requiring it: a shipped cell
   is load-stringed from inside the loop compile, and reaching back into the
   loop driver from there is the cycle samizdat.agent.tools.manifest documents
   avoiding for the same reason."
   [ctx role]
-  (if-let [spec (get-in (:config ctx) [:run :role-models role])]
-    (let [provider (or (some-> (:provider spec) name str/lower-case keyword)
-                       (:provider (:llm-config ctx)))]
-      (assoc ctx
-             :llm-adapter (registry/adapter-for provider)
-             :llm-config (config/provider-llm provider (dissoc spec :provider))))
+  (if-let [llm (config/role-llm (:config ctx) (:llm-config ctx) role)]
+    (assoc ctx :llm-adapter (registry/adapter-for (:provider llm)) :llm-config llm)
     ctx))
 
 (cell/defcell :probe/next-move
@@ -149,7 +146,7 @@
         keep every answer as data, without any of them becoming a turn.
 
         The arms are `gates.edn :probe` :variants — role keys resolved through
-        config :run :role-models, so which models get compared is config, not
+        config :roles, so which models get compared is config, not
         code. Adds :ab to the data map; nothing routes on it yet, which is
         deliberate: the comparison is worth recording before it is worth
         acting on."

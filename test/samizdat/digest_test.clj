@@ -104,7 +104,8 @@
       (testing "an assignment: the reader's model and adapter"
         (tools-base/run-tool
          (ctx :args {:paths "src/a.clj" :question "x?"}
-              :config {:run {:role-models {:reader {:provider "deepseek" :model "cheap"}}}}))
+              :config {:providers {:cheap {:type :deepseek :model "cheap"}}
+                       :roles {:reader :cheap}}))
         (is (= "cheap" (get-in (first @seen) [:config :model])))
         (is (= :deepseek (get-in (first @seen) [:config :provider])))
         (is (not= :run-adapter (:adapter (first @seen))) "a real adapter for the provider")))))
@@ -223,15 +224,12 @@
 
 (deftest role-llm-resolves-an-assignment-and-nothing-else
   (let [run {:provider :openai :model "gpt-4o"}]
-    (is (nil? (config/role-llm {:run {}} run :reader)) "no assignment, no override")
-    (let [l (config/role-llm {:run {:role-models {:reader {:provider "deepseek" :model "cheap"}}}}
+    (is (nil? (config/role-llm {} run :reader)) "no assignment, no override")
+    (let [l (config/role-llm {:providers {:cheap {:type :deepseek :model "cheap"}}
+                              :roles {:reader :cheap}}
                              run :reader)]
       (is (= :deepseek (:provider l)))
-      (is (= "cheap" (:model l))))
-    (testing "no provider in the spec: the run's provider, another model"
-      (let [l (config/role-llm {:run {:role-models {:reader {:model "mini"}}}} run :reader)]
-        (is (= :openai (:provider l)))
-        (is (= "mini" (:model l)))))))
+      (is (= "cheap" (:model l))))))
 
 (deftest a-fold-summarises-on-the-summarizer-role-when-one-is-assigned
   ;; The fold's summary is the most delegable call in the loop: old history
@@ -247,13 +245,14 @@
               :compaction/tier :fold
               :compaction/before 1000000000}
         summary "## Active Task\nFix step-move.\n## Goal\nShip the game.\n## Goal\nx"
-        run-ctx (fn [role-models]
+        run-ctx (fn [roles]
                   (let [conn (db/open! ":memory:")]
                     {:conn conn :run-id "run-fold"
                      :llm-adapter :run-adapter
                      :llm-config {:provider :openai :model "gpt-4o" :max-tokens 16384
                                   :context-window 32768}
-                     :config {:run {:role-models role-models}}}))]
+                     :config {:providers {:cheap-sum {:type :deepseek :model "cheap-sum"}}
+                              :roles roles}}))]
     (testing "no assignment: the branch's own model"
       (let [seen (atom [])]
         (with-redefs [llm/chat (capturing-chat seen summary)]
@@ -263,6 +262,6 @@
     (testing "an assignment: the summarizer's model"
       (let [seen (atom [])]
         (with-redefs [llm/chat (capturing-chat seen summary)]
-          (handler (run-ctx {:summarizer {:provider "deepseek" :model "cheap-sum"}}) data))
+          (handler (run-ctx {:summarizer :cheap-sum}) data))
         (is (= "cheap-sum" (get-in (first @seen) [:config :model])))
         (is (= :deepseek (get-in (first @seen) [:config :provider])))))))

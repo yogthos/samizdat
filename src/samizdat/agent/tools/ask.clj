@@ -84,7 +84,7 @@
 
 (defn- user-model
   "The adapter and config the simulated user runs on: the :user role's when
-  config :run :role-models assigns one (config/role-llm, the same resolver
+  config :roles assigns one (config/role-llm, the same resolver
   as every role), else the branch's own."
   [{:keys [config llm-adapter llm-config]}]
   (if-let [llm (config/role-llm config llm-config :user)]

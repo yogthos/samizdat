@@ -131,10 +131,14 @@
           (map :id)))
     (catch Throwable _ nil)))
 
-(defn -main [& _args]
+(defn start!
+  "Bring the harness up: the system, the shutdown hooks, nREPL, the provider
+  check. Returns `{:config cfg :warm status}` and leaves the server running
+  on its worker threads; the caller decides what the main thread does next —
+  park (`-main`, headless) or run a front end (`samizdat.main`)."
+  []
   (system/start! #'server/handler)
   (let [cfg (system/config)
-        nrepl-port (get-in cfg [:nrepl :port])
         warm (warm-tls! cfg)]
     ;; RECORD THE EXIT BEFORE TEARING ANYTHING DOWN. A parked server does not
     ;; exit on its own, so an exit with work still in flight is a bug — and the
@@ -144,16 +148,30 @@
     ;; open and can still say what was running.
     (jolt.host/add-shutdown-hook record-exit!)
     (jolt.host/add-shutdown-hook system/stop!)
-    (start-nrepl! nrepl-port)
-    (println)
-    (println "samizdat")
-    (println (str "  http   http://127.0.0.1:" (get-in cfg [:http :port]) "/health"))
-    (println (str "  nrepl  127.0.0.1:" nrepl-port))
-    (println (str "  model  " (name (get-in cfg [:llm :provider]))
-                  " / " (get-in cfg [:llm :model])
-                  " (" (name warm) ")"))
-    (println)
-    ;; Park. The server and nREPL run on worker threads; the shutdown hooks
-    ;; close them. Returning here lets the launcher tear the process down.
-    (jolt.host/park-until-interrupt)
-    (system/stop!)))
+    (start-nrepl! (get-in cfg [:nrepl :port]))
+    {:config cfg :warm warm}))
+
+(defn local-url
+  "The loopback URL a front end in this process reaches the server on."
+  [cfg]
+  (str "http://127.0.0.1:" (get-in cfg [:http :port])))
+
+(defn print-banner! [{cfg :config warm :warm}]
+  (println)
+  (println "samizdat")
+  (println (str "  http   " (local-url cfg) "/health"))
+  (println (str "  nrepl  127.0.0.1:" (get-in cfg [:nrepl :port])))
+  (println (str "  model  " (name (get-in cfg [:llm :provider]))
+                " / " (get-in cfg [:llm :model])
+                " (" (name warm) ")"))
+  (println))
+
+(defn -main
+  "The server alone: start, print where it is, park. `samizdat --headless`
+  and `jolt serve` both end up here."
+  [& _args]
+  (print-banner! (start!))
+  ;; Park. The server and nREPL run on worker threads; the shutdown hooks
+  ;; close them. Returning here lets the launcher tear the process down.
+  (jolt.host/park-until-interrupt)
+  (system/stop!))

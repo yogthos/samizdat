@@ -262,3 +262,24 @@
       (is (= "50%" (q "ms=50%25" "ms"))))
     (testing "a lone % the client never escaped survives"
       (is (= "50%" (q "ms=50%" "ms"))))))
+
+(deftest a-run-can-name-its-provider-with-its-model
+  ;; The TUI keeps `/model glm:glm-5.3` for the next run and posts it as the
+  ;; model; it used to go out verbatim, a model named "glm:glm-5.3" asked of
+  ;; the default provider.
+  (let [base {:model "deepseek-v4-flash" :provider :deepseek :provider-name :deepseek
+              :reasoning-effort "high"}
+        config {:providers {:fast {:type :deepseek :model "deepseek-v4-flash"}
+                            :gpu {:type :openai :base-url "https://gpu/v1" :model "qwen"}}}]
+    (testing "provider:model moves the run to that provider"
+      (let [r (control/run-llm-config config base {:model "glm:glm-5.3"})]
+        (is (= :glm (:provider r)))
+        (is (= "glm-5.3" (:model r)))
+        (is (str/includes? (:base-url r) "bigmodel"))
+        (is (= "high" (:reasoning-effort r)) "the effort it was asked for survives")))
+    (testing "a declared alias alone is that provider with its declared model"
+      (let [r (control/run-llm-config config base {:model "gpu"})]
+        (is (= :openai (:provider r)))
+        (is (= "qwen" (:model r)))))
+    (testing "a colon that names no provider is part of the model's name"
+      (is (= "qwen3:32b" (:model (control/run-llm-config config base {:model "qwen3:32b"})))))))

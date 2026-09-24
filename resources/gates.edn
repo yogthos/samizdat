@@ -791,7 +791,7 @@
         struggling run — a branch in trouble is the last one to spend more on.
 
         :variants — the role keys :probe/ab-model fans one question across,
-        resolved through config :run :role-models. Empty turns the A/B off.
+        resolved through config :roles. Empty turns the A/B off.
         Recording the comparison is the point; nothing routes on it yet.
 
         NOT capability-tunable, even though both knobs are keyed on tool-call
@@ -2784,7 +2784,7 @@
                       for a local reader with a 32k window at ~4 chars a
                       token, with room for the answer.
 
-        The reader is config :run :role-models :reader, a cheap model; with
+        The reader is config :roles :reader, a cheap model; with
         no assignment the branch's own model reads, which still keeps the
         file out of the branch's context. :summarizer, likewise, is the
         role the compaction fold's summary call runs on."}

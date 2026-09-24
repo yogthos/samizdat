@@ -182,7 +182,7 @@ because the prompt contains `cells`.
 
 `read_digest({paths, question, anchors?})` sends the files to a reader and
 returns only its bullets. The reader is the `:reader` role's model when
-`:run :role-models` assigns one and the branch's own otherwise; either way the
+`:roles` in config.edn assigns one and the branch's own otherwise; either way the
 files never enter the branch's context. With `anchors: true` every line the
 reader sees carries its `line:hash`, so a bullet that cites one is a `patch`
 address — the digest can hand back edit coordinates, which a plain summary

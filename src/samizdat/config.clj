@@ -17,12 +17,14 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (ns samizdat.config
-  "Runtime configuration, read from the environment once at startup.
+  "Runtime configuration: the environment and the config.edn layers, read
+  once at startup.
 
-  Provider selection mirrors the TypeScript harness: an explicit
-  HARNESS_PROVIDER wins, otherwise the first provider whose API key is present.
-  In-process GGUF inference is not carried over — point HARNESS_BASE_URL at any
-  OpenAI-compatible endpoint (including llama-server) instead."
+  Providers are DECLARED under :providers by alias and ASSIGNED to roles
+  under :roles, :default being the run's own model (see 'declared providers
+  and role assignment' below). With no :roles :default the run falls back to
+  HARNESS_PROVIDER, then the first built-in whose API key is present, then
+  :local — any OpenAI-compatible endpoint, llama-server included."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.walk :as walk]
@@ -88,6 +90,11 @@
   and `config-sources` names the broken one."
   [root]
   (or (:value (layers/resolve "config" (layer-opts root))) {}))
+
+(defn- file-layers
+  "Each config.edn layer as {:layer :path :value}, highest first."
+  [root]
+  (or (:layers (layers/resolve "config" (layer-opts root))) []))
 
 (defn config-sources
   "Which config files this process reads, in precedence order (lowest first),
@@ -395,14 +402,122 @@
                p))
       :local))
 
-(defn- named-provider
-  "The provider a config layer NAMES, as a keyword, or nil when it names none.
+;; --- declared providers and role assignment ----------------------------------
+;;
+;; A config file DECLARES endpoints under :providers, by alias, and says which
+;; alias serves each role under :roles — the shape dirge's config.json has:
+;;
+;;   {:providers {:bonsai {:type :local :base-url "http://127.0.0.1:8080/v1"
+;;                         :thinking? true :gen-floor-tps 15}
+;;                :glm    {:model "glm-5.3"}             ; alias = built-in, no :type
+;;                :flash  {:type :deepseek :model "deepseek-v4-flash"}
+;;                :vllm   {:type :openai :base-url "https://gpu:8000/v1"
+;;                         :api-key "${VLLM_KEY}" :headers {"X-Org" "${ORG}"}}}
+;;    :roles {:default :bonsai :supervisor :glm :reader :flash}}
+;;
+;; :type picks the adapter and the built-in preset that fills whatever the
+;; entry leaves out; it defaults to the alias when the alias names a built-in.
+;; :api-key-env names the variable holding the key; :api-key is a literal or
+;; exactly "${VAR}", and so is a :headers value. Anything else on an entry is
+;; an :llm knob (:model, :context-window, :thinking?, :max-tokens, ...).
+;;
+;; Only the providers something SELECTS are resolved, so a machine-wide file
+;; can declare an endpoint whose key this machine does not have.
 
-  Accepts a string as well as a keyword: `:provider \"glm\"` is what somebody
-  writes after reading /health, where it has been through JSON, and refusing
-  a legible file on that is a crash rather than a correction."
-  [m]
-  (some-> (get-in m [:llm :provider]) name str/lower-case not-empty keyword))
+(def ^:private declaration-keys
+  "Entry keys that describe the declaration rather than the endpoint's :llm."
+  [:type :api-key-env])
+
+(defn- as-key
+  "A provider or role name as a lower-case keyword, whichever spelling a layer
+  used: `\"glm\"` is what somebody writes after reading /health."
+  [x]
+  (some-> x name str/lower-case not-empty keyword))
+
+(defn- expand-var
+  "`s` with an exact `${VAR}` replaced from the environment. An unset
+  variable is an error naming it: a key someone asked for by name and did not
+  get is a misconfiguration, and a request without it fails far less clearly."
+  [where s]
+  (if-let [[_ v] (and (string? s) (re-matches #"\$\{([A-Za-z_][A-Za-z0-9_]*)\}" s))]
+    (or (env v)
+        (throw (ex-info (str where " names ${" v "}, which is not set") {:var v})))
+    s))
+
+(defn- declared-entry [config alias]
+  (some (fn [[k v]] (when (= (as-key k) alias) v)) (:providers config)))
+
+(defn provider-names
+  "Every provider `config` can select: the built-ins and its declared aliases."
+  [config]
+  (distinct (concat (keys providers) (keep as-key (keys (:providers config))))))
+
+(defn- resolve-entry
+  "The provider `alias` names in `config`, as {:type :alias :llm}: its adapter
+  type and the :llm knobs its declaration sets, keys resolved. Throws naming
+  the alias when nothing declares it or its type has no adapter."
+  [config alias]
+  (let [alias (as-key alias)
+        entry (declared-entry config alias)
+        type (as-key (or (:type entry) (when (providers alias) alias)))
+        known (sort (map name (keys providers)))]
+    (cond
+      (and (nil? entry) (nil? (providers alias)))
+      (throw (ex-info (str "unknown provider " (some-> alias name)
+                           "; declared: " (str/join ", " (sort (keep #(some-> % as-key name) (keys (:providers config)))))
+                           "; built-in: " (str/join ", " known))
+                      {:provider alias :known (provider-names config)}))
+
+      (nil? type)
+      (throw (ex-info (str "provider " (name alias) " needs a :type, one of "
+                           (str/join ", " known))
+                      {:provider alias}))
+
+      (nil? (providers type))
+      (throw (ex-info (str "provider " (name alias) " has :type " (name type)
+                           ", which no adapter serves; one of " (str/join ", " known))
+                      {:provider alias :type type}))
+
+      :else
+      (let [where (str "provider " (name alias))]
+        {:type type
+         :alias alias
+         :llm (cond-> (apply dissoc (or entry {}) declaration-keys)
+                (and (:api-key-env entry) (not (:api-key entry)))
+                (assoc :api-key (env (:api-key-env entry)))
+                (:api-key entry) (update :api-key #(expand-var where %))
+                (:headers entry) (update :headers
+                                         #(into {} (for [[k v] %] [k (expand-var where v)]))))}))))
+
+(def ^:private file-keys
+  "The top-level keys a config file may set. :run stays open below this:
+  cells read their own :run keys, and a list of them here would be a
+  decision about behaviour made in src."
+  #{:http :nrepl :db :eval :run :providers :roles})
+
+(defn- refuse-unrecognized!
+  "Throw naming the file and the key when a config layer sets a top-level
+  key nothing reads. Refused rather than ignored: a key that silently means
+  nothing is a setting somebody believes is in effect."
+  [layers]
+  (doseq [{:keys [path value]} layers
+          k (keys value)
+          :when (not (contains? file-keys k))]
+    (throw (ex-info (str path ": unrecognized key " (pr-str k))
+                    {:path path :key k :known file-keys}))))
+
+(declare role-llm)
+
+(defn- check-roles!
+  "`config`, once every role it assigns resolves. A typo in :roles would
+  otherwise surface only when that role first runs, minutes into a run."
+  [config]
+  (doseq [role (keys (:roles config))]
+    (try (role-llm config (:llm config) role)
+         (catch Exception e
+           (throw (ex-info (str ":roles " (name role) ": " (ex-message e))
+                           (assoc (ex-data e) :role role) e)))))
+  config)
 
 (defn load-config
   "Build the config map. `overrides` is merged last so tests and REPL sessions
@@ -424,22 +539,18 @@
          ;; moving env above the files would silently change every checkout
          ;; that pins a value in .samizdat/config.edn.
          files (file-config root)
-         ;; READ BEFORE THE PRESET IS EXPANDED, and that ordering is the whole
-         ;; point: a layer that names a provider picks that provider's
-         ;; base-url, key-env, model, context window and temperature. It used
-         ;; to name only the :provider KEY — the preset had already been
-         ;; expanded from whatever `detect-provider` found — so a file saying
-         ;; `{:llm {:provider :glm}}` ran against DeepSeek's endpoint with
-         ;; DeepSeek's key and deepseek-v4-flash while dispatching the GLM
-         ;; adapter, and said nothing. Overrides outrank files here for the
-         ;; same reason they do everywhere else.
-         provider (or (named-provider overrides)
-                      (named-provider files)
-                      (detect-provider))
-         defaults (or (providers provider)
-                      (throw (ex-info (str "Unknown provider: " provider)
-                                      {:provider provider
-                                       :known (keys providers)})))
+         layers (file-layers root)
+         _ (refuse-unrecognized! layers)
+         ;; The choice belongs to ONE layer: the highest that names a
+         ;; :roles :default.
+         chosen (or (some #(get-in % [:roles :default])
+                          (cons overrides (map :value layers)))
+                    (detect-provider))
+         declared (deep-merge (select-keys files [:providers])
+                              (select-keys overrides [:providers]))
+         entry (resolve-entry declared chosen)
+         provider (:type entry)
+         defaults (providers provider)
          db (db-location root (env "HARNESS_DB"))]
      (-> (deep-merge
       ;; 3985 rather than a common port: 3000 is the busiest address on a
@@ -580,73 +691,73 @@
                   ;; keep exploring, and the best is ranked at the end.
                   :stop-on-first-done? (not= "0" (or (env "HARNESS_STOP_ON_FIRST_DONE")
                                                      "1"))}}
+      ;; The selected provider's declaration over its built-in preset. An
+      ;; override's :llm (a test, a REPL) tunes the result.
+      {:llm (:llm entry)}
       files
       overrides)
-      ;; The RESOLVED provider, not whatever spelling a layer used. `provider`
-      ;; already normalised a string to its keyword to pick the preset, and
-      ;; every consumer downstream — registry/adapter-for above all — expects
-      ;; a keyword; leaving the file's `"glm"` to win the merge would dispatch
-      ;; on a string and find no adapter.
-      (assoc-in [:llm :provider] provider)
+      (update :llm assoc :provider provider :provider-name (:alias entry))
       ;; The one feature rule that depends on the RESOLVED url, after every
       ;; layer has had its say: DeepSeek off /beta answers a prefill with a
       ;; 400, whatever a file claimed.
-      (update :llm #(resolve-features provider %))))))
+      (update :llm #(resolve-features provider %))
+      (check-roles!)))))
 
 (defn provider-llm
-  "The :llm config for a SPECIFIC provider — its base URL, model, temperature,
-  and API key (from the provider's key-env in the environment) from the built-in
-  providers table, with `overrides` merged last. Independent of which provider
-  the run detected as its default, so a role can be assigned a different model
-  than the rest of the run (per-role model assignment). The shared per-response
-  timeouts still come from HARNESS_* env. Throws on an unknown provider."
-  [provider overrides]
-  (let [defaults (or (providers provider)
-                     (throw (ex-info (str "unknown provider for a role: " provider)
-                                     {:provider provider :known (keys providers)})))]
-    (merge
-     {:provider    provider
-      :base-url    (:base-url defaults)
-      :features    (provider-features provider (:base-url defaults))
-      :api-key     (some-> (:key-env defaults) env)
-      :model       (:model defaults)
-      :temperature (provider-temperature provider)
-      :max-tokens  (or (env-long "HARNESS_MAX_TOKENS") 16384)
-      :timeout-ms  (or (env-long "HARNESS_TIMEOUT_MS") 300000)
-      :conn-timeout-ms (or (env-long "HARNESS_CONN_TIMEOUT_MS") 15000)
-      :max-response-ms (or (env-long "HARNESS_MAX_RESPONSE_MS") 600000)}
-     overrides)))
+  "The :llm config for a SPECIFIC provider — a built-in, or an alias `config`
+  declares under :providers — with `overrides` merged last. Independent of
+  which provider the run's default is, so a role can run on a different
+  model than the rest of the run. The shared per-response timeouts still
+  come from HARNESS_* env. Throws on an unknown provider."
+  [config provider overrides]
+  (let [{:keys [type alias llm]} (resolve-entry config provider)
+         defaults (providers type)
+         base-url (or (:base-url llm) (:base-url defaults))]
+     (resolve-features
+      type
+      (merge
+       {:base-url    (:base-url defaults)
+        :features    (provider-features type base-url)
+        :api-key     (some-> (:key-env defaults) env)
+        :model       (:model defaults)
+        :context-window (:context-window defaults)
+        :temperature (provider-temperature type)
+        :max-tokens  (or (env-long "HARNESS_MAX_TOKENS") 16384)
+        :timeout-ms  (or (env-long "HARNESS_TIMEOUT_MS") 300000)
+        :conn-timeout-ms (or (env-long "HARNESS_CONN_TIMEOUT_MS") 15000)
+        :max-response-ms (or (env-long "HARNESS_MAX_RESPONSE_MS") 600000)}
+       llm
+       (dissoc overrides :provider)
+       {:provider type :provider-name alias}))))
 
 (defn role-llm
-  "The :llm config for `role`, when config :run :role-models assigns it one —
-  e.g. {:reader {:provider \"deepseek\" :model \"deepseek-chat\"}} — or nil when
-  it has no assignment and should run on the caller's own model.
-
-  `:provider` may be omitted to keep `default-llm`'s provider and change only
-  the model, and anything else in the spec (a :model, an :api-key, a
-  :temperature) overrides the provider's defaults. The one resolver behind
-  workflow/role-ctx (a role's whole sub-loop) and read_digest (one call), so
-  'which model does this role run on' has one answer (karamazov-b76m)."
+  "The :llm config for `role` when config :roles assigns it a provider alias
+  — `{:reader :flash}` — or nil when it runs on the caller's own model. An
+  alias that IS the default's is no assignment: the default carries what the
+  startup probe learned about it, a fresh resolution would not. The one
+  resolver behind workflow/role-ctx (a role's whole sub-loop) and
+  read_digest (one call), so 'which model does this role run on' has one
+  answer (karamazov-b76m)."
   [config default-llm role]
-  (when-let [spec (get-in config [:run :role-models role])]
-    (let [provider (or (some-> (:provider spec) name str/lower-case keyword)
-                       (:provider default-llm))]
-      (provider-llm provider (dissoc spec :provider)))))
+  (when-let [alias (as-key (get-in config [:roles role]))]
+    (when-not (= alias (as-key (or (:provider-name default-llm) (:provider default-llm))))
+      (provider-llm config alias {}))))
 
 (defn redacted
   "The config with every :api-key masked, WHEREVER it sits, for logging and
   for /health.
 
   A walk rather than a path: [:llm :api-key] is not the only place a key
-  lives — a role spec under :run :role-models may carry its own :api-key
-  override (role-ctx merges it into the provider config), and the path
-  version served exactly that one cleartext (karamazov-blt.29). Masking by
+  lives — every :providers entry may carry its own, and the path version
+  once served a nested one cleartext (karamazov-blt.29). Masking by
   key name means the next nested key is masked without anyone remembering
   this function exists."
   [config]
   (walk/postwalk
    (fn [x]
-     (if (and (map? x) (some? (:api-key x)))
-       (assoc x :api-key "***")
-       x))
+     (cond-> x
+       (and (map? x) (some? (:api-key x))) (assoc :api-key "***")
+       ;; A header is as likely as the key to carry a secret.
+       (and (map? x) (map? (:headers x)))
+       (update :headers #(into {} (for [[k _] %] [k "***"])))))
    config))

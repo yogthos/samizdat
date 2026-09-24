@@ -307,7 +307,7 @@
       (let [p (policy)
             ;; The summary is the most delegable call in the loop: old
             ;; history in, a short structured summary out. It runs on the
-            ;; :summarizer role's model when config :run :role-models
+            ;; :summarizer role's model when config :roles
             ;; assigns one, the branch's own otherwise. The WINDOW math above
             ;; and below stays on the branch's llm-config — it is the
             ;; branch's context being measured, whoever writes the summary

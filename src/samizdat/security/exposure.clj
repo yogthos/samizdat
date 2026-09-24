@@ -23,6 +23,7 @@
   (:require [clojure.string :as str]
             [jolt.fs :as fs]
             [samizdat.agent.files :as files]
+            [samizdat.config :as config]
             [samizdat.security.policy :as policy]
             [samizdat.prompt :as prompt]))
 
@@ -69,9 +70,13 @@
 (defn- providers-for
   "Every provider the result of this call reaches."
   [{:keys [config llm-config tool-name]}]
-  (distinct (remove nil? [(provider-key (:provider llm-config))
-                          (when (= "read_digest" tool-name)
-                            (provider-key (get-in config [:run :role-models :reader :provider])))])))
+  (let [reader (when (= "read_digest" tool-name)
+                 (try (config/role-llm config llm-config :reader)
+                      (catch Exception _ nil)))]
+    ;; The adapter type and the alias both: a rule may name either, and an
+    ;; alias of type :glm still sends the file to GLM.
+    (distinct (keep provider-key [(:provider llm-config) (:provider-name llm-config)
+                                  (:provider reader) (:provider-name reader)]))))
 
 (defn refusal
   "A refusal message when this call names a path a provider its result

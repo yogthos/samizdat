@@ -198,8 +198,8 @@
   (fn [{:keys [conn run-id] :as ctx} {:keys [branch subtasks] :as data}]
     (let [tasks (vec (if (seq subtasks) subtasks [(:problem branch)]))
           worker (wf/worker-compiled)
-          ;; Implementors may run on their own assigned model (config :run
-          ;; :role-models :implementor) — a cheap one, say, while the reviewer
+          ;; Implementors may run on their own assigned model (config :roles
+          ;; :implementor) — a cheap one, say, while the reviewer
           ;; and supervisor run on a stronger one.
           ictx (wf/role-ctx ctx :implementor)
           ;; When the feature loop sends a round back, :revise/guidance carries
