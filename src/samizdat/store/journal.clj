@@ -417,16 +417,20 @@
   the bulk, and they are how a reader sees the cache serve, or stop
   serving, at the turn it happened. completion_tokens and elapsed_ms are the
   two that make a generation rate (karamazov-a28w)."
-  [conn run-id branch-id]
-  (db/fetch conn
-            ["SELECT id, run_id, branch_id, turn, tool_name, args, result,
-                     category, parse_error, auto_repaired, created_at,
-                     prompt_tokens, cache_hit_tokens, completion_tokens, elapsed_ms,
-                     prefix_change, forced_tool, forced_via
-                FROM turns
-               WHERE run_id = ? AND branch_id = ?
-               ORDER BY turn, id"
-             run-id branch-id]))
+  ([conn run-id branch-id] (branch-turns conn run-id branch-id nil))
+  ([conn run-id branch-id since-id]
+   ;; `since-id`: only the rows after it — what a reader holding the rest
+   ;; needs. A turn row is never updated once written, so nothing at or
+   ;; before the cursor can have changed (karamazov-rf7d).
+   (db/fetch conn
+             ["SELECT id, run_id, branch_id, turn, tool_name, args, result,
+                      category, parse_error, auto_repaired, created_at,
+                      prompt_tokens, cache_hit_tokens, completion_tokens, elapsed_ms,
+                      prefix_change, forced_tool, forced_via
+                 FROM turns
+                WHERE run_id = ? AND branch_id = ? AND id > ?
+                ORDER BY turn, id"
+              run-id branch-id (or since-id 0)])))
 
 (defn branch-context
   "Each branch's newest MEASURED request (karamazov-pdes): `{branch-id
@@ -729,6 +733,15 @@
                        WHERE run_id = ? AND branch_id = ? AND turn = ?
                        ORDER BY id LIMIT 1"
                       run-id branch-id turn]))
+
+(defn last-turn
+  "The highest turn number `branch-id` has recorded in the run, 0 when it has
+  none — where a branch that is resumed across passes picks up its count."
+  [conn run-id branch-id]
+  (or (:n (db/fetch-one conn ["SELECT MAX(turn) AS n FROM turns
+                                WHERE run_id = ? AND branch_id = ?"
+                               run-id branch-id]))
+      0))
 
 (defn shared-artifact-by-id
   "One shared-pool row of this run, whole, including its encoding.

@@ -395,3 +395,54 @@
     (is (= "Hel" (get-in (first (st/apply-event s {:event "delta"
                                                    :data "{\"branch_id\":\"B1\",\"text\":\"Hel\",\"text-at\":0}"}))
                          [:live "B1" :text])))))
+
+;; --- fetching a branch from where the reader is (karamazov-rf7d) -------------
+
+(deftest a-branch-answered-from-a-cursor-is-appended
+  (let [s (-> (st/initial "b") (assoc :branch-id "B1")
+              (st/apply-branch {:ok true :body {:branch {:id "B1"}
+                                                :turns [{:id 1 :turn 1} {:id 2 :turn 2}]}}))]
+    (is (= 2 (st/turns-cursor s)) "the newest row held")
+    (let [s' (st/apply-branch s {:ok true :body {:branch {:id "B1" :status "done"} :since 2
+                                                 :turns [{:id 5 :turn 3}] :notes [{:id 9}]}})]
+      (is (= [1 2 3] (map :turn (get-in s' [:branch :turns]))))
+      (is (= "done" (get-in s' [:branch :branch :status])) "the rest of the answer is current")
+      (is (= [{:id 9}] (get-in s' [:branch :notes])))
+      (is (= 5 (st/turns-cursor s'))))
+    (testing "a row already held is not held twice"
+      (let [s' (st/apply-branch s {:ok true :body {:branch {:id "B1"} :since 1
+                                                   :turns [{:id 2 :turn 2} {:id 3 :turn 3}]}})]
+        (is (= [1 2 3] (map :id (get-in s' [:branch :turns]))))))
+    (testing "an answer for a branch no longer on screen is dropped"
+      (let [moved (st/select-branch s "B2")]
+        (is (nil? (:branch (st/apply-branch moved {:ok true :body {:branch {:id "B1"} :since 2
+                                                                    :turns [{:id 5 :turn 3}]}}))))
+        (is (nil? (:branch (st/apply-branch moved {:ok true :body {:branch {:id "B1"}
+                                                                    :turns [{:id 5 :turn 3}]}}))))))
+    (testing "nothing held, the cursor is nil and the fetch is whole"
+      (is (nil? (st/turns-cursor (st/initial "b")))))))
+
+;; --- a finished run shows how it finished (karamazov-ttrn) -------------------
+
+(deftest a-finished-run-opens-on-the-branch-that-won
+  ;; Run 74ddebb8 finished on B4 and the TUI stayed on B1, an abandoned
+  ;; branch whose last entry was the critic scoring it stalled — which read
+  ;; as the run having failed. The supervisor's SUP stays active after the
+  ;; run ends, and is never the answer.
+  (let [branches [{:id "B1" :status "abandoned"} {:id "B4" :status "done"}
+                  {:id "SUP" :status "active" :role "supervisor"}]
+        finished {:ok true :body {:run {:status "completed"} :branches branches}}]
+    (is (= "B4" (:branch-id (st/apply-detail (st/initial "b") finished))))
+    (testing "a live run opens on a working branch, not the supervisor"
+      (is (= "B2" (:branch-id (st/apply-detail
+                               (st/initial "b")
+                               {:ok true :body {:run {:status "running"}
+                                                :branches [{:id "SUP" :status "active" :role "supervisor"}
+                                                           {:id "B2" :status "active"}]}})))))
+    (testing "watching a run finish moves to the winner once, and then leaves the choice alone"
+      (let [watching (-> (st/initial "b") (assoc :run-id "R" :branch-id "B1" :branch {:turns []}))
+            done (st/apply-detail watching finished)]
+        (is (= "B4" (:branch-id done)))
+        (is (nil? (:branch done)) "the old branch's turns are not shown under the winner's name")
+        (is (= "B1" (:branch-id (st/apply-detail (st/select-branch done "B1") finished)))
+            "a person who goes back to read B1 stays on B1")))))

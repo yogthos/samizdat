@@ -549,6 +549,29 @@
           "the next read serves the write; the stale fill did not stick")
       (finally (us/unbind!) (db/close c)))))
 
+(deftest a-refused-gates-save-says-which-entry-and-how-to-fix-it
+  ;; The provenance check refused a symbol id correctly, and then crashed
+  ;; writing its own message: `reload-and-verify!` names its parameter `name`,
+  ;; so `(comp name first)` called the string "gates". The agent was told
+  ;; "class java.lang.String cannot be cast to class clojure.lang.IFn" —
+  ;; nothing it could act on.
+  (let [c (db/open! ":memory:")]
+    (try
+      (us/bind! c)
+      (gates/reload-config!)
+      (let [g (us/edn-body! :policy "gates")
+            r (tools/run-tool {:tool-name "policy" :branch {:id "B1"}
+                               :args {:action "save" :name "gates"
+                                      :edn (pr-str (assoc-in g [:cull-threshold :provenance]
+                                                             ['karamazov-x]))
+                                      :rationale "cite the finding"}})]
+        (is (not= :neutral (:category r)) "refused")
+        (is (str/includes? (str (:result r)) ":cull-threshold") "names the entry")
+        (is (str/includes? (str (:result r)) "\"karamazov-x\"")
+            "and shows it as it should be written")
+        (is (not (str/includes? (str (:result r)) "cannot be cast"))))
+      (finally (us/unbind!) (gates/reload-config!) (db/close c)))))
+
 (deftest the-policy-tool-moves-a-threshold-live-and-rolls-back-a-broken-table
   ;; RFC-010 names "move a threshold" as a supervisor instrument and the
   ;; supervisor prompt says so, but no tool wrote the :policy kind — the only

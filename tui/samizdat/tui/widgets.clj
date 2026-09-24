@@ -225,11 +225,16 @@
   with a hanging indent, drawn as markdown (samizdat.tui.markdown) in the
   role's colour. Rows are `:wrapped`: a path or a token wider than the pane
   breaks instead of being cut off."
-  [{:keys [role text pending?]} handles]
-  [:hbox
-   [:text {:class role} (str "<" (get handles role (name role)) "> ")]
-   (into [:vbox {:class role :flex true}]
-         (md/lines (str text (when pending? "  (not applied yet)"))))])
+  [{:keys [role text pending? final?]} handles]
+  (let [said [:hbox
+              [:text {:class role} (str "<" (get handles role (name role)) "> ")]
+              (into [:vbox {:class role :flex true}]
+                    (md/lines (str text (when pending? "  (not applied yet)"))))]]
+    ;; The run's answer, set apart: it is what the person asked for, and it
+    ;; must not read as one more turn in the middle of the log.
+    (if final?
+      [:vbox [:text {:class :panel-title} "── the run's answer ──"] said]
+      said)))
 
 (defn- thinking-entry [state e]
   (fold state (tl/fold-id e)
@@ -261,12 +266,17 @@
                         #(into [:vbox] (map line-of (drop (count shown) lines)))))))))
 
 (defn- shown-entries
-  "The entries for the newest `n` turns — and everything said between them."
+  "The entries for the newest `n` turns — and everything said between them.
+
+  Counted by turn ROW (:turn-key), not turn number: a branch that numbered
+  its turns more than once put the cut at the first row carrying the
+  n-th-newest number, and drew 374 entries where twelve turns were asked for
+  (karamazov-qqqr)."
   [es n]
-  (let [turns (distinct (keep :turn es))
+  (let [turns (distinct (keep :turn-key es))
         keep-from (when (> (count turns) n) (nth turns (- (count turns) n)))]
     (if keep-from
-      (let [start (first (keep-indexed (fn [i e] (when (= keep-from (:turn e)) i)) es))]
+      (let [start (first (keep-indexed (fn [i e] (when (= keep-from (:turn-key e)) i)) es))]
         (subvec es start))
       es)))
 
@@ -306,18 +316,27 @@
   {"in_progress" "▶" "open" "○" "blocked" "⊘" "done" "✓"})
 
 (defn tasks
-  "The board: what is open, what is being worked on, what is blocked."
+  "The board: what is open, what is being worked on, what is blocked.
+
+  The run's board, so every branch's tasks are on it — a beam of five opens
+  five for one problem. Each names its branch, and another branch's is
+  dimmed, or they read as one task listed five times."
   [state props]
-  (let [board (vec (get-in state [:detail :tasks]))]
+  (let [board (vec (get-in state [:detail :tasks]))
+        on-screen (:branch-id state)]
     (panel props
            (if (seq board)
              (into [:vbox {:flex true :frame :y}]
-                   (for [{:keys [title status]} board]
-                     [:hbox
-                      [:text {:class (if (= "in_progress" status) :selected :result)}
-                       (str " " (get task-glyph (str status) "·") " ")]
-                      [:text (clip title 26)]
-                      [:text {:class :dim} (str " " status)]]))
+                   (for [{:keys [title status branch_id]} board
+                         :let [other? (and on-screen branch_id (not= on-screen branch_id))]]
+                     (cond-> (conj (if other? [:hbox {:class :dim}] [:hbox])
+                              [:text {:class (cond other? :dim
+                                                   (= "in_progress" status) :selected
+                                                   :else :result)}
+                               (str " " (get task-glyph (str status) "·") " ")])
+                       branch_id (conj [:text {:class (if other? :dim :tool)} (str branch_id " ")])
+                       :always (conj (if other? [:text {:class :dim} (clip title 23)] [:text (clip title 23)])
+                                     [:text {:class :dim} (str " " status)]))))
              (empty-note "board is empty")))))
 
 (defn files

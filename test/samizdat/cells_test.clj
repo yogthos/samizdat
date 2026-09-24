@@ -20,7 +20,8 @@
   "The cell loader: the kernel is cell-agnostic — it loads whatever cell
   definitions live in resources (and .samizdat overrides), registers them, and
   can reload them into the live image. No cell is baked into src."
-  (:require [clojure.test :refer [deftest testing is use-fixtures]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is use-fixtures]]
             [jolt.fs :as fs]
             [mycelium.cell :as cell]
             [samizdat.cells :as cells]
@@ -34,7 +35,7 @@
   (spit (str dir "/" (name id-kw) ".clj")
         (str "(ns cells.gen." (name id-kw)
              " (:require [mycelium.cell :as cell]))\n"
-             "(cell/defcell " id-kw " {:doc \"a generated cell\" :pure true}\n"
+             "(cell/defcell " id-kw " {:doc \"a generated cell\" :pure true :requires []}\n"
              "  " body ")\n")))
 
 (use-fixtures :each
@@ -201,6 +202,20 @@
     (is (some? rdir) "the classpath carries resources/cells")
     (is (= rdir (first cells/default-dirs))
         "default-dirs' shipped entry is the classpath-resolved dir")))
+
+(deftest with-no-project-bound-the-shipped-cells-are-what-load
+  ;; The override dir in default-dirs is cwd-relative, and a checkout of this
+  ;; repository is itself a samizdat project: its .samizdat/cells held its
+  ;; own evolved oversight.clj, so the suite ran THAT instead of the cell it
+  ;; was testing, and a change to resources/cells was not what the tests saw.
+  ;; A project's cells are read when a project is bound, not by whoever
+  ;; happens to be standing in its directory.
+  (let [stray (str @tmp "/stray")]
+    (cell-file! stray :cwd/stray "(fn [_ d] d)")
+    (with-redefs [cells/default-dirs [(cells/resource-dir) stray]]
+      (cells/load-cells!)
+      (is (some? (cell/get-cell :loop/route)) "the shipped cells load")
+      (is (nil? (cell/get-cell :cwd/stray)) "the cwd's project cells do not"))))
 
 (deftest the-loop-cells-load-from-resources
   ;; No cell is compiled into src: loading from resources/cells registers the
@@ -390,3 +405,37 @@
             critic (some #(when (= "critic" (:id %)) %) srcs)]
         (is (clojure.string/includes? (:content critic) ":proj/critic-override")))
       (finally (userspace/unbind!) (userspace/bind-root! prev-root) (db/close c)))))
+
+;; --- a cell's :requires must say what it reads --------------------------------
+
+(def ^:private reads-undeclared
+  "(ns cells.gen.stray (:require [mycelium.cell :as cell]))
+   (cell/defcell :gen/stray {:doc \"reads more than it says\" :requires [:run-id]}
+     (fn [{:keys [conn run-id] :as ctx} data]
+       (assoc data :w (:beam-width ctx) :c (get-in ctx [:config :run]))))")
+
+(deftest a-cell-that-reads-ctx-keys-it-does-not-declare-is-refused
+  ;; :requires is what compile-definition holds a manifest to — a cell whose
+  ;; key no driver provides is refused there — but only if :requires is TRUE.
+  ;; :beam/escalate read :conn and :beam-width and declared neither, and the
+  ;; only thing that noticed was a test; an agent's edit would have loaded.
+  (is (= [{:cell :gen/stray :undeclared [:beam-width :config :conn]
+           :requires [:beam-width :config :conn :run-id]}]
+         (cells/ctx-problems reads-undeclared)))
+  (let [p ((userspace/validator :cell) "stray" reads-undeclared)]
+    (is (= :requires (:stage p)))
+    (is (str/includes? (:message p) ":gen/stray"))
+    (is (str/includes? (:message p) ":beam-width"))
+    (is (str/includes? (:message p) ":requires [:beam-width :config :conn :run-id]")
+        "and says exactly what to write"))
+  (testing "a cell with no :requires at all is told to declare one"
+    (let [p ((userspace/validator :cell) "bare"
+             "(ns cells.gen.bare (:require [mycelium.cell :as cell]))
+              (cell/defcell :gen/bare {:doc \"d\"} (fn [ctx data] data))")]
+      (is (= :requires (:stage p)))
+      (is (str/includes? (:message p) ":requires []"))))
+  (testing "one that says what it reads loads"
+    (is (nil? ((userspace/validator :cell) "ok"
+               "(ns cells.gen.ok (:require [mycelium.cell :as cell]))
+                (cell/defcell :gen/ok {:doc \"d\" :requires [:run-id]}
+                  (fn [{:keys [run-id]} data] (assoc data :r run-id)))")))))

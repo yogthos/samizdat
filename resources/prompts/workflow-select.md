@@ -10,4 +10,4 @@ HOW THESE HAVE GONE ON THIS PROJECT BEFORE:
 A workflow that keeps failing here is evidence against picking it again, however
 well its description fits. A workflow with no line above has not been tried.
 {% endif %}
-Answer with one name from the list above.
+Answer with the three lines: kind, size, and one workflow name from the list above.

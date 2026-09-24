@@ -172,3 +172,13 @@
         "safe to call twice — the run-end teardown sweeps every branch again")
     (is (nil? (beam/dispose-branch-engines! {:id "B2"}))
         "and a branch that never opened one is not an error")))
+
+(deftest a-fork-keeps-its-parents-role
+  ;; A child inherits its parent's conversation, and the role that
+  ;; conversation was opened under goes with it. Run 756b5572's answerer
+  ;; forked into two branches with no role: unrestricted, with write tools,
+  ;; and held to the implementor's `done` ("you changed no files").
+  (let [parent (assoc (state/new-branch {:id "B1" :problem "p"}) :role :answerer)]
+    (is (= :answerer (:role (state/fork-branch parent {:id "B1.2" :turn 5}))))
+    (is (nil? (:role (state/fork-branch (dissoc parent :role) {:id "B1.3" :turn 5})))
+        "and a parent with none gives none")))

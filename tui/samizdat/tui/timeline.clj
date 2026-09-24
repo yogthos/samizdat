@@ -56,31 +56,58 @@
 (defn- words
   "`s` split into what is said and what was thought: the prose with call
   markup and reasoning blocks removed (fence/prose), and the reasoning those
-  blocks held joined onto `reasoning`."
+  blocks held joined onto `reasoning`.
+
+  Joined only when they differ: a provider that returns reasoning_text AND
+  leaves the same words in a <think> block drew every paragraph of the fold
+  twice (karamazov-mu66)."
   [s reasoning]
   {:say (fence/prose s)
-   :thinking (str/join "\n" (remove str/blank? [(str reasoning) (fence/reasoning-of s)]))})
+   :thinking (let [parts (remove str/blank? [(str reasoning) (fence/reasoning-of s)])]
+               (str/join "\n" (if (and (= 2 (count parts)) (apply = (map str/trim parts))) (take 1 parts) parts)))})
 
-(defn- turn-entries [t text banner]
+(defn- turn-entries
+  "One turn row as its entries. `tid` is the row's name in keys: its turn
+  number, suffixed `.2`, `.3` … when the branch has used that number before."
+  [t tid text banner]
   (let [n (:turn t)
         at (str (:created_at t))
-        {:keys [say thinking]} (words (:assistant_text text) (:reasoning_text text))]
+        {:keys [say thinking]} (words (:assistant_text text) (:reasoning_text text))
+        base {:role :agent :turn n :turn-key tid :at at}]
     (cond-> []
       (not (str/blank? thinking))
-      (conj {:key (str "t" n "/thinking") :role :agent :kind :thinking :turn n :at at
-             :text thinking})
+      (conj (assoc base :key (str "t" tid "/thinking") :kind :thinking :text thinking))
 
       (not (str/blank? say))
-      (conj {:key (str "t" n "/say") :role :agent :kind :say :turn n :at at
-             :text say})
+      (conj (assoc base :key (str "t" tid "/say") :kind :say :text say))
 
       :always
-      (conj {:key (str "t" n "/tool") :role :agent :kind :tool :turn n :at at
+      (conj (assoc base :key (str "t" tid "/tool") :kind :tool
              :tool (str (:tool_name t))
              :arg (banner-arg (str (:tool_name t)) (:args t) banner)
              :result (str (:result t))
              :failed? (failed? t)
-             :turn-row t}))))
+             :turn-row t)))))
+
+(defn- all-turn-entries
+  "Every turn row's entries, in the order the branch wrote them.
+
+  A turn NUMBER is not a turn: runs before karamazov-pefk numbered each
+  supervisor pass from 1 on the one SUP branch, 3067 rows under 233 numbers.
+  The first row with a number keeps the plain key, so a branch that never
+  repeats one is keyed as it always was; a later row with that number is
+  `n.2`, `n.3` — stable as the branch grows, because rows only append. Its
+  prose is the first row's alone: the per-turn endpoint answers a number
+  with the first row that has it, and that text is not the others'."
+  [turns text banner]
+  (loop [[t & more] turns seen {} out (transient [])]
+    (if-not t
+      (persistent! out)
+      (let [n (:turn t)
+            k (inc (get seen n 0))
+            tid (if (= 1 k) (str n) (str n "." k))]
+        (recur more (assoc seen n k)
+               (reduce conj! out (turn-entries t tid (when (= 1 k) (get text n)) banner)))))))
 
 (defn- steer-text [{:keys [kind payload]}]
   (let [p (parse payload)
@@ -125,30 +152,65 @@
       (not (str/blank? say))
       (conj {:key "live/say" :role :agent :kind :say :text say :live? true}))))
 
+(defn- history
+  "Everything but the reply being streamed, oldest first — ending with the
+  run's answer when it has one, because that is what the person asked for.
+  A finished run's answer used to be only a truncated claim in a side panel
+  (karamazov-ttrn)."
+  [problem turns text interventions branch-id notes local-notes answer
+   {:keys [issued-by banner] by-kind :notes}]
+  (let [later (sort-by :at
+                       (concat (all-turn-entries turns text banner)
+                               (steer-entries interventions branch-id issued-by)
+                               (note-entries notes by-kind)
+                               ;; What this TUI printed: command output, /help.
+                               (for [n local-notes]
+                                 {:key (:key n) :role :system :kind :say
+                                  :at (:at n) :text (:text n)})))]
+    (cond-> (vec (cond->> later
+                   (not (str/blank? (str problem)))
+                   (cons {:key "problem" :role :user :kind :say :at "" :text (str problem)})))
+      (not (str/blank? (str answer)))
+      (conj {:key "answer" :role :agent :kind :say :final? true :text (str answer)}))))
+
+;; The last answer, and what it was made from. Every frame asks — a keystroke
+;; is a frame — and rebuilding it from every turn row was 108ms of a 170ms
+;; frame on a 3067-turn branch, for a vector that had not changed: typing
+;; only moves :input (karamazov-iimi). One slot is enough, since one
+;; conversation is drawn. Compared with `=`, which is `identical?` first and
+;; so costs nothing while the state holds the same values.
+(defonce ^:private last-history (atom nil))
+
+(defn- history-of [state settings]
+  (let [in [(get-in state [:detail :run :problem])
+            (get-in state [:branch :turns])
+            (:turn-text state)
+            (get-in state [:detail :interventions])
+            (:branch-id state)
+            (get-in state [:branch :notes])
+            (:local-notes state)
+            (get-in state [:detail :run :final_answer])
+            settings]
+        [held es] @last-history]
+    (if (and held (= held in))
+      es
+      (let [es (apply history in)]
+        (reset! last-history [in es])
+        es))))
+
 (defn entries
   "The branch on screen as a vector of entries, oldest first:
   {:key :role :kind :at …} with :kind one of :say (a line in a role's voice,
-  :text), :thinking (:text) or :tool (:tool :arg :result :failed? :turn).
-  Keys are stable as the story grows, so a fold or a scroll anchor holds."
+  :text), :thinking (:text) or :tool (:tool :arg :result :failed? :turn
+  :turn-key). Keys are stable as the story grows, so a fold or a scroll
+  anchor holds.
+
+  The same vector, not an equal one, while nothing it is made from has
+  changed; the reply being streamed is laid on top of it, which is cheap."
   [state settings]
-  (let [{:keys [issued-by notes banner]} settings
-        problem (get-in state [:detail :run :problem])
-        turns (get-in state [:branch :turns])
-        text (:turn-text state)
-        later (sort-by :at
-                       (concat (mapcat #(turn-entries % (get text (:turn %)) banner) turns)
-                               (steer-entries (get-in state [:detail :interventions])
-                                              (:branch-id state) issued-by)
-                               (note-entries (get-in state [:branch :notes]) notes)
-                               ;; What this TUI printed: command output, /help.
-                               (for [n (:local-notes state)]
-                                 {:key (:key n) :role :system :kind :say
-                                  :at (:at n) :text (:text n)})))]
-    (vec (concat
-          (cond->> later
-            (not (str/blank? (str problem)))
-            (cons {:key "problem" :role :user :kind :say :at "" :text (str problem)}))
-          (live-entries (get-in state [:live (:branch-id state)]))))))
+  (let [es (history-of state settings)
+        live (live-entries (get-in state [:live (:branch-id state)]))]
+    (if (seq live) (into es live) es)))
 
 (defn fold-id
   "The id of the fold an entry's body would sit behind."

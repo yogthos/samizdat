@@ -421,8 +421,13 @@
                    ;; versus wait and retry. Without this the loop knows only
                    ;; `the call failed` and every provider problem looks alike.
                    {:ok false :error (ex-message e)
-                    :reason (or (:reason (ex-data e)) :call-failed)})
-                 (finally (some-> watch :flush! (apply []))))]
+                    :reason (or (:reason (ex-data e)) :call-failed)}))
+             ;; After the call rather than in a `finally` round it: the catch
+             ;; above already turns every throw into a value, and a park under
+             ;; a finally is one ebb refuses where a park is a continuation
+             ;; capture — which is how every call of run 74ddebb8's supervisor
+             ;; failed with "Cannot fork inside a try/finally" (karamazov-ah7d).
+             _ (some-> watch :flush! (apply []))]
          (if (and (:ok r)
                   (< attempt max-call-attempts)
                   ;; The prefill the adapter ACTUALLY sent (nil where it was

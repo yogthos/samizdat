@@ -32,6 +32,14 @@
  {:value 3 :kind :threshold :capability-tunable? false
   :doc "Consecutive failed verifications before a branch is culled."}
 
+ :provider-error-limit
+ {:value 5 :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-e8iw"]
+  :doc "Model calls in a row that fail (each already retried by the client)
+        before a branch stops as abandoned rather than running on to its turn
+        cap. Run 3020cbca's supervisor made 2810 calls to a server that was not
+        running, and 74ddebb8's 1002 that all failed the same way."}
+
  :cull-recent-window
  {:value 5 :kind :threshold :capability-tunable? false
   :doc "A confirmed artifact this recently protects a branch from culling."}
@@ -1413,11 +1421,37 @@
  :workflow-selection
  {:value
   {:enabled?          true
-   :candidates        #{"loop" "decompose" "team" "critic"}
+   :candidates        #{"loop" "decompose" "team" "critic" "answer"}
    :fallback          "loop"
-   :min-problem-chars 120}
+   :min-problem-chars 0
+   ;; What the triage call may say a task IS, and how big.
+   :kinds             #{"answer" "change" "investigate"}
+   :sizes             #{"trivial" "small" "large"}
+   ;; kind x size -> the run's shape. :any is every size of that kind. A
+   ;; request's own :beam-width / :max-turns win over a row, and the config's
+   ;; :run numbers are a ceiling a row does not raise. :reasoning-effort only
+   ;; fills a gap: a run whose model already names one keeps it. :workflow,
+   ;; when a row has one, drives the run whatever the chooser said.
+   :effort
+   {:answer      {:any     {:beam-width 1 :max-turns 40 :workflow "answer"}}
+    :investigate {:any     {:beam-width 1 :max-turns 120}}
+    :change      {:trivial {:beam-width 1 :max-turns 60 :reasoning-effort "low"}
+                  :small   {:beam-width 1 :max-turns 200}
+                  :large   {:beam-width 5 :reasoning-effort "high"}}}}
   :kind :policy :capability-tunable? false
-  :doc "WHICH WORKFLOW DRIVES A RUN THAT DID NOT ASK FOR ONE.
+  :provenance ["karamazov-1wv9"]
+  :doc "WHICH WORKFLOW DRIVES A RUN THAT DID NOT ASK FOR ONE, AND HOW HARD.
+
+        ONE CALL, THREE ANSWERS (karamazov-1wv9). The same small call that
+        picks the manifest says what KIND of task this is — a question to
+        answer, a change to make, something to find out — and how big, and
+        :effort turns that into the run's width, turn cap and reasoning
+        effort. Every run used to get width 5 and a 1000-turn cap: \"explain
+        the project in the chat\" ran five branches through the code-change
+        loop for 50 minutes and wrote four files nobody asked for, where dirge
+        answers it in a handful of reads. :min-problem-chars was 120 and kept
+        exactly such short questions from being asked about at all; a short
+        problem is where length says least about what is wanted.
 
         `workflow/catalog` was written as the menu the self-healing loop
         chooses from, and nothing chose from it — every caller was in test/. A
@@ -1444,13 +1478,26 @@
         wins over selection. This fills the gap where a caller said nothing; it
         never overrides one who did.
 
-        :min-problem-chars is the floor below which no call is made. A one-line
-        problem is the factory loop's case by definition — nothing to split,
-        nothing to decompose — and being told so is not worth a round trip. At
-        0 every run is chosen for.
+        :min-problem-chars is the floor below which no call is made. At 0
+        every run is triaged, which is the point: see the top of this entry.
 
         Not capability-tunable: the tier under observation should not widen
         the set of machinery it may be driven by."}
+
+ :escalation
+ {:value {:enabled? true :after-stalls 2 :to-width 3 :reasoning-effort "high"}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-1wv9"]
+  :doc "WHEN A RUN SIZED SMALL TURNS OUT TO BE STUCK.
+
+        Triage (:workflow-selection :effort) gives most runs one branch, which
+        is right until it is wrong. Once the run's progress-stalled gate has
+        fired :after-stalls times, :beam/escalate hands the stuck branch
+        theses for siblings up to :to-width — :beam/spawn opens them the same
+        round — and raises the run's reasoning effort to :reasoning-effort
+        through the live-switch layer, from its next request. Once per run,
+        and never for a run already :to-width wide: widening is for a run that
+        was sized too small, not a second beam on top of a first."}
 
  :beam-contention
  {:value {:provider-concurrency nil :expected-turn-ms nil :turn-ms-at nil
@@ -3093,17 +3140,26 @@
      ;; grepped its own test file for the coordinates it had quoted, and was
      ;; refused three times: a read is not an artifact, and nothing had said
      ;; what one was.
+     ;; What covers a figure depends on the role: one that can write has to
+     ;; have MEASURED it; an answerer describes what it read, and has no eval
+     ;; to measure with (karamazov-1wv9).
      :message-form (str "Your answer states figures no artifact supports: "
                         (str/join ", " (map (fn [x] (str "`" x "`"))
                                             (take 8 uncovered-numbers)))
-                        ".\nA number in an answer has to come from something"
-                        " confirmed or measured — that is the difference between a"
-                        " report and a fabricated one. A figure is covered when it"
-                        " appears in the OUTPUT of a test run or an `eval` this"
-                        " branch ran; reading or grepping a file that contains it"
-                        " covers nothing. Test inputs, coordinates, seeds and line"
-                        " numbers belong in the code, not the report — drop them,"
-                        " and keep only the figures your test output shows.")}
+                        (if can-write?
+                          (str ".\nA number in an answer has to come from something"
+                               " confirmed or measured — that is the difference between a"
+                               " report and a fabricated one. A figure is covered when it"
+                               " appears in the OUTPUT of a test run or an `eval` this"
+                               " branch ran; reading or grepping a file that contains it"
+                               " covers nothing. Test inputs, coordinates, seeds and line"
+                               " numbers belong in the code, not the report — drop them,"
+                               " and keep only the figures your test output shows.")
+                          (str ".\nA number in an answer has to appear in something you"
+                               " read or ran this session — a file, a listing, a command's"
+                               " output. A total or a count you worked out yourself is not"
+                               " there to be checked: quote the figure as you found it, or"
+                               " drop it.")))}
     {:name :engages-problem
      :when (and (not (str/blank? (str problem)))
                 (not (engages-problem? problem answer)))
@@ -3233,6 +3289,10 @@
  ;; run-tools (provenance R3-6): a name the loop cannot dispatch is a gate whose
  ;; prediction silently narrows to :unmet.
  {:verification #{"eval" "shell"}
+  ;; What a role that cannot write may quote figures from, beside what it
+  ;; measured: for a question about the project, the source it read IS the
+  ;; subject (karamazov-1wv9). A role that can write still has to measure.
+  :describing #{"read_file" "read_digest" "grep" "glob" "lsp" "doc"}
   ;; `patch` writes files exactly as `write_file` and `edit_file` do; it was
   ;; added to the loop and to none of these, so a branch editing by anchor
   ;; scored as having shipped NOTHING and drew studying nudges for work it
@@ -3320,6 +3380,9 @@
          nothing verified. True, and useless to a branch doing exactly what the
          harness just asked of it."
    :when (and (= :build (:phase branch))
+              ;; Only a role that can write is told to (karamazov-1wv9):
+              ;; an answerer reading is doing its job.
+              (roles/may-use? (:role branch) "write_file")
               (not (:any-progress? branch))
               ;; OWN turns: what THIS branch has produced nothing in (blt.16).
               (>= (state/own-turn-count branch) (threshold :prologue-cap)))
@@ -3767,6 +3830,9 @@
          can make progress. Arms only after the first, so exploration is never
          nudged."
    :when (and (:any-progress? branch)
+              ;; Only a role that can write is told to (karamazov-1wv9):
+              ;; an answerer reading is doing its job.
+              (roles/may-use? (:role branch) "write_file")
               (>= (:turns-since-progress branch)
                   (threshold :progress-stall-threshold)))
    ;; RE-ANCHORED. A steer that says "nothing has advanced" without saying at
@@ -3798,6 +3864,9 @@
          and more specific state: not `you declared and did not land`, but
          `you have not said what you are doing at all`."
    :when (and (state/active? branch)
+              ;; Only a role that can write is told to (karamazov-1wv9):
+              ;; an answerer reading is doing its job.
+              (roles/may-use? (:role branch) "write_file")
               (state/orienting-too-long? branch
                                          (tool-vocab :file-write)
                                          (threshold :orient-turns)))
@@ -3959,6 +4028,10 @@
          what a multi-agent supervisor sub-loop reads. Coding-tunable, since it
          reads tool mechanics, not verification."
    :when (and (state/active? branch)
+              ;; Only a role that can write is told to (karamazov-1wv9):
+              ;; `shell` is on the shipping vocabulary, so an answerer's
+              ;; first look armed this, and its reading drew three nudges.
+              (roles/may-use? (:role branch) "write_file")
               (supervisor/over-studying? (tool-vocab :shipping)
                                          (:turns branch)
                                          (threshold :studying-turns)))

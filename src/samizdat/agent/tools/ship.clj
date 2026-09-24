@@ -13,6 +13,7 @@
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.state :as state]
             [samizdat.agent.stubs :as stubs]
+            [samizdat.agent.roles :as roles]
             [samizdat.agent.verify :as verify]
             [samizdat.lexicon :as lexicon]
             [samizdat.store.journal :as journal]
@@ -285,15 +286,16 @@
   value is an input, which is the fabrication this rung exists to catch — and
   a refused `done`'s result echoes the answer's own figures, so it must never
   count either. `turn-rows` are journal/branch-turns rows."
-  [turn-rows]
-  (let [measuring (or (gates/tool-vocab :verification) #{})
+  ([turn-rows] (observed-output turn-rows nil))
+  ([turn-rows extra-vocab]
+  (let [measuring (into (or (gates/tool-vocab :verification) #{}) extra-vocab)
         text (->> turn-rows
                   (filter #(contains? measuring (str (:tool_name %))))
                   (map #(str (:result %)))
                   (remove str/blank?)
                   (str/join "\n"))]
     (when (seq text)
-      {:kind :observed :witness text})))
+      {:kind :observed :witness text}))))
 
 (defn uncovered-tokens
   "Answer tokens no confirmed artifact mentions.
@@ -328,7 +330,13 @@
   A problem with no substantive vocabulary of its own — a stub, a test
   fixture — means there is nothing to be irrelevant to, and this passes."
   [problem answer]
-  (let [terms (set (answer-tokens problem))]
+  ;; Without the words that frame the REQUEST — "explain", "project", "chat"
+  ;; (wordlists.edn :request-framing). They say what to do, not what about:
+  ;; "explain the project in the chat" refused an accurate description of the
+  ;; game for not saying "project", and the branch got past it by prefixing
+  ;; "I am explaining the project in the chat" (karamazov-1wv9).
+  (let [terms (set (remove (or (lexicon/wordlist :request-framing) #{})
+                           (answer-tokens problem)))]
     (or (empty? terms)
         (boolean (some terms (answer-tokens answer))))))
 
@@ -351,7 +359,10 @@
              (let [~'answer            (get ~'ctx :answer)
                    ~'problem           (get ~'ctx :problem)
                    ~'evidence          (get ~'ctx :evidence)
-                   ~'uncovered-numbers (get ~'ctx :uncovered-numbers)]
+                   ~'uncovered-numbers (get ~'ctx :uncovered-numbers)
+                   ;; Whether the branch's role may write: what covers a
+                   ;; figure, and so what a refusal should ask for, differs.
+                   ~'can-write?        (get ~'ctx :can-write? true)]
                ~form)))))
 
 (def ship-gates
@@ -458,7 +469,11 @@
         ;; for THIS check, not an artifact to share (karamazov-3s54).
         observed (when (and (:conn ctx) (:run-id ctx))
                    (observed-output
-                    (journal/branch-turns (:conn ctx) (:run-id ctx) (:id branch))))
+                    (journal/branch-turns (:conn ctx) (:run-id ctx) (:id branch))
+                    ;; A role that cannot write describes what it read, and
+                    ;; may quote it (gates.edn :tool-vocab :describing).
+                    (when-not (roles/may-use? (:role branch) "write_file")
+                      (gates/tool-vocab :describing))))
         own (concat confirmed (state/empirical-artifacts branch)
                     (when observed [observed]))
         ;; And what the rest of the run established: a branch is shown the
@@ -478,7 +493,8 @@
                  (ship-gate-block
                   {:answer answer :problem problem
                    :evidence evidence
-                   :uncovered-numbers uncovered-numbers}))
+                   :uncovered-numbers uncovered-numbers
+                   :can-write? (roles/may-use? (:role branch) "write_file")}))
         ;; The test rung — what makes the loop test-driven rather than one-shot.
         ;; `done` is not terminal until the unit's tests actually pass: run the
         ;; unit's tests, and a red / hollow / untested result is fed back so the
@@ -539,6 +555,13 @@
         ;; the run happened to configure verification.
         verify-on? (and (not advisory?)
                         (nil? block)
+                        ;; A role that cannot write has no change to verify:
+                        ;; the answerer's reply is its whole deliverable, and
+                        ;; this rung refused it for changing no files — run
+                        ;; 3020cbca's branches wrote four documents to get
+                        ;; past it (karamazov-1wv9). A role the table does not
+                        ;; name may write, so every other run is as before.
+                        (roles/may-use? (:role branch) "write_file")
                         (or verify-focused? contracted-tests
                             (not (str/blank? (str verify-cmd)))))
         changed (when verify-on? (gitdiff/changed-files (:root ctx) (:git-baseline ctx)))

@@ -106,10 +106,15 @@
       (let [resolved (for [p paths]
                        {:path p :abs (files/resolve-for-read (or root ".") refs p)})
             outside (first (remove :abs resolved))
-            missing (first (filter #(and (:abs %) (not (fs/exists? (:abs %)))) resolved))]
+            missing (first (filter #(and (:abs %) (not (fs/exists? (:abs %)))) resolved))
+            ;; A directory was slurped, and the branch read the host's
+            ;; "(Is a directory)" — named here, with the move that works.
+            directory (first (filter #(and (:abs %) (.isDirectory (java.io.File. (str (:abs %)))))
+                                     resolved))]
         (cond
           outside (base/malformed branch (msg {:outside-root true :path (:path outside)}))
           missing (base/malformed branch (msg {:missing true :path (:path missing)}))
+          directory (base/malformed branch (msg {:directory true :path (:path directory)}))
           :else
           (let [anchors? (boolean (base/arg ctx :anchors))
                 files (for [{:keys [path abs]} resolved] {:path path :content (slurp abs)})

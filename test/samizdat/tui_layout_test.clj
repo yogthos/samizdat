@@ -277,3 +277,17 @@
         (let [c (layout/current (assoc nowhere :root root :global-dir global))]
           (is (= 3 (:prose-turns c)) "the global layer still counts")
           (is (str/includes? (str (:error c)) bad)))))))
+
+(deftest an-unchanged-layout-is-not-rebuilt-every-frame
+  ;; Every frame, and several keys, ask for the layout. Re-reading the
+  ;; shipped file and re-parsing, merging and validating every layer was 2ms
+  ;; a call (karamazov-lx14) — for an answer that only changes when a layer
+  ;; does.
+  (with-clean-layout
+    (fn []
+      (layout/serve! (pr-str {:prose-turns 5 :layout [:vbox [:widget/status {}]]}))
+      (let [a (layout/current nowhere)]
+        (is (identical? a (layout/current nowhere)))
+        (testing "a new served version is a new answer"
+          (layout/serve! (pr-str {:prose-turns 6 :layout [:vbox [:widget/status {}]]}))
+          (is (= 6 (:prose-turns (layout/current nowhere)))))))))

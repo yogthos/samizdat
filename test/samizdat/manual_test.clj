@@ -8,7 +8,8 @@
   load-bearing test is that every curated entry resolves — and that an entry
   which does not fails LOUD rather than rendering a hole, because a manual
   that quietly lists nothing reads as 'there is nothing here'."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [samizdat.agent.tools :as tools]
             [samizdat.agent.state :as state]
@@ -92,3 +93,25 @@
     (is (str/includes? (:result r) "not in the manual"))
     (is (str/includes? (:result r) "The tape") "it lists the groups")
     (is (str/includes? (:result r) "doc") "and points at the uncurated escape hatch")))
+
+(deftest every-manual-namespace-is-in-the-binary
+  ;; `jolt build` compiles what samizdat.main's require graph reaches; a
+  ;; namespace nothing requires is not in the binary, and the manual's
+  ;; runtime `require` of it fails there — which failed the WHOLE manual tool.
+  ;; Run 756b5572's supervisor spent its pass on "samizdat.agent.tournament/run:
+  ;; its namespace could not be loaded". samizdat.capabilities requires every
+  ;; namespace the shipped manual names, and samizdat.core requires it.
+  (let [ns-form (read-string (slurp "src/samizdat/capabilities.clj"))
+        required (set (for [clause (rest ns-form)
+                            :when (and (seq? clause) (= :require (first clause)))
+                            spec (rest clause)]
+                        (if (vector? spec) (first spec) spec)))
+        named (set (for [g (clojure.edn/read-string (slurp "resources/manual.edn"))
+                         e (:entries g)]
+                     (symbol (namespace (:name e)))))
+        core-form (read-string (slurp "src/samizdat/core.clj"))]
+    (is (empty? (remove required named))
+        (str "manual.edn names namespaces samizdat.capabilities does not require: "
+             (vec (remove required named))))
+    (is (str/includes? (pr-str core-form) "samizdat.capabilities")
+        "and samizdat.core requires it, so both `jolt serve` and the binary load them")))

@@ -569,6 +569,9 @@
    (session/observe! [:provider (or reason :call-failed)]
                      (when (and run-id (:id branch)) [run-id (:id branch)]))
    (log/warn "branch" (:id branch) "turn" turn "model call failed:" error)
+   ;; Failed calls in a row, which :loop/route weighs against gates.edn
+   ;; :provider-error-limit; absorb-response clears it (karamazov-e8iw).
+   (let [branch (update branch :consecutive-provider-errors (fnil inc 0))]
    (journal/record-turn! conn run-id
                          {:branch-id (:id branch) :turn turn
                           :tool-name "__provider_error__" :result error
@@ -584,7 +587,7 @@
      (state/add-message branch "user"
                         (str "[harness] The provider call failed: " error
                              " Try again.")
-                        {:turn turn}))))
+                        {:turn turn})))))
 
 (defn absorb-response
   "Fold the model's response into the branch.
@@ -648,7 +651,9 @@
       :pressure pressure
       :branch (cond-> (-> (infer/into-branch branch tape)
                           (state/record-mechanics signals)
-                          (dissoc :last-prefix :model-change))
+                          ;; The provider answered: whatever outage the
+                          ;; count measured is over (karamazov-e8iw).
+                          (dissoc :last-prefix :model-change :consecutive-provider-errors))
                 (contains? #{:urgent :over} pressure) state/squeeze-context
                 wire (assoc :last-wire wire :last-prefix prefix)
                 model-change (assoc :model-reported reported

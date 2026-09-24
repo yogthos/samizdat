@@ -326,10 +326,14 @@
   row is created BEFORE the selection call and the compile that decide
   these, so the caller of POST /v1/runs has an id at once; until this
   lands the row carries the requested width and no digest."
-  [conn run-id {:keys [beam-width prompt-digest]}]
+  [conn run-id {:keys [beam-width prompt-digest max-turns]}]
   (db/with-writer
     (db/execute! conn ["UPDATE runs SET beam_width = ?, prompt_digest = ? WHERE id = ?"
-                       (or beam-width 1) (or prompt-digest "") run-id])))
+                       (or beam-width 1) (or prompt-digest "") run-id])
+    ;; And the turn cap, when triage sized it after the row was written
+    ;; (karamazov-1wv9): a resume continues the cap on the row.
+    (when max-turns
+      (db/execute! conn ["UPDATE runs SET max_turns = ? WHERE id = ?" max-turns run-id]))))
 
 (defn set-thesis!
   "The branch's current structural plan. Overwriting is allowed — committing to

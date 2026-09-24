@@ -43,8 +43,8 @@
   (fs/create-dirs dir)
   (spit (str dir "/mini.clj")
         (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
-             "(cell/defcell :mini/start {:doc \"start\" :pure true}\n  " start-body ")\n"
-             "(cell/defcell :mini/end {:doc \"end\" :pure true}\n"
+             "(cell/defcell :mini/start {:doc \"start\" :pure true :requires []}\n  " start-body ")\n"
+             "(cell/defcell :mini/end {:doc \"end\" :pure true :requires []}\n"
              "  (fn [_ d] (assoc d :verdict :done)))\n")))
 
 (def ^:private mini-def
@@ -98,7 +98,7 @@
   ;; wires to is gone, so compile-loop cannot resolve it.
   (spit (str @root "/cells/mini.clj")
         (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
-             "(cell/defcell :mini/start {:doc \"s\" :pure true} (fn [_ d] d))\n"))
+             "(cell/defcell :mini/start {:doc \"s\" :pure true :requires []} (fn [_ d] d))\n"))
   (let [r (mut/apply-cell-edit! (opts))]
     (is (= :rolled-back (:status r)))
     (is (str/includes? (str/lower-case (:reason r)) "validate"))
@@ -182,7 +182,7 @@
       (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
       (cells/load-cells! (:dirs (opts)))
       (spit (str @root "/cells/mini.clj")
-            "(ns cells.mini)\n(defcell :mini/step {} (fn [_ d] (BOOM d)))")
+            "(ns cells.mini)\n(defcell :mini/step {:requires []} (fn [_ d] (BOOM d)))")
       (mut/apply-cell-edit! (assoc (opts) :conn conn :run-id rid))
       (let [ev (->> (journal/events-since conn rid 0 100)
                     (filter #(= "mutation-rolled-back" (:kind %)))
@@ -206,7 +206,7 @@
     (try
       (us/bind! c)
       (let [body (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
-                      "(cell/defcell :mini/start {:doc \"s\" :pure true}\n"
+                      "(cell/defcell :mini/start {:doc \"s\" :pure true :requires []}\n"
                       "  (fn [_ d] (update d :n + 100)))\n")
             r (mut/propose-cell! (assoc (opts) :name "mini" :body body))]
         (is (= :committed (:status r)))
@@ -216,6 +216,23 @@
         (is (= body (us/body :cell "mini"))
             "and durable in the project's store"))
       (finally (us/unbind!) (db/close c)))))
+
+(deftest a-proposal-whose-requires-is-not-true-is-refused-with-the-fix
+  ;; The `cell` tool commits through here, and here never ran the userspace
+  ;; validator — so a cell reading ctx keys it does not declare was refused
+  ;; on a file edit and accepted through the tool.
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+  (cells/load-cells! (:dirs (opts)))
+  (let [r (mut/propose-cell!
+           (assoc (opts) :name "mini"
+                  :body (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
+                             "(cell/defcell :mini/start {:doc \"s\" :requires []}\n"
+                             "  (fn [ctx d] (assoc d :n (:max-turns ctx))))\n"
+                             "(cell/defcell :mini/end {:doc \"e\" :requires []}\n"
+                             "  (fn [_ d] (assoc d :verdict :done)))\n")))]
+    (is (= :rolled-back (:status r)))
+    (is (re-find #":mini/start reads ctx keys" (:reason r)))
+    (is (re-find #":requires \[:max-turns\]" (:reason r)) "and says what to write")))
 
 (deftest a-bad-proposal-never-enters-the-projects-history
   ;; The inversion versus the file path: nothing is written until the candidate
@@ -236,7 +253,7 @@
         (let [r (mut/propose-cell!
                  (assoc (opts) :name "mini" :conn c :run-id rid
                         :body (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
-                                   "(cell/defcell :mini/other {:doc \"o\" :pure true}\n"
+                                   "(cell/defcell :mini/other {:doc \"o\" :pure true :requires []}\n"
                                    "  (fn [_ d] d))\n")))]
           ;; :mini/start survives in the registry from the load above, so the
           ;; loop still compiles — what matters is that nothing was stored.
@@ -259,7 +276,7 @@
   ;; a second cell, wired only into a NON-loop manifest
   (binding [*ns* *ns*]
     (load-string (str "(ns cells.other (:require [mycelium.cell :as cell]))\n"
-                      "(cell/defcell :other/thing {:doc \"x\" :pure true}\n"
+                      "(cell/defcell :other/thing {:doc \"x\" :pure true :requires []}\n"
                       "  (fn [_ d] d))\n")))
   (let [extra {"beamish" '{:cells {:start :other/thing :end :mini/end}
                            :edges {:start {:go :end} :end :end}
@@ -310,9 +327,9 @@
   (let [r (mut/propose-cell!
            {:name "mini"
             :body (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
-                       "(cell/defcell :mini/start {:doc \"start\" :pure true}\n"
+                       "(cell/defcell :mini/start {:doc \"start\" :pure true :requires []}\n"
                        "  (fn [_ d] (update d :n + 7)))\n"
-                       "(cell/defcell :mini/end {:doc \"end\" :pure true}\n"
+                       "(cell/defcell :mini/end {:doc \"end\" :pure true :requires []}\n"
                        "  (fn [_ d] (assoc d :verdict :done)))\n")
             :loop-def mini-def
             :soak-input {:n 0}})]
@@ -352,24 +369,24 @@
     (us/bind! conn)
     (try
       (store/save! conn :cell "feature"
-                   "(ns cells.feature) (cell/defcell :feature/route {} (fn [_ d] d))")
+                   "(ns cells.feature) (cell/defcell :feature/route {:requires []} (fn [_ d] d))")
       (testing "the same id under a different name is shadowing"
         (is (= [[:feature/route "feature"]]
                (mut/shadowed-cells
                 "feature/supervise"
-                "(ns cells.copy) (cell/defcell :feature/route {} (fn [_ d] d))"))))
+                "(ns cells.copy) (cell/defcell :feature/route {:requires []} (fn [_ d] d))"))))
       (testing "editing the file that owns the id is not"
         (is (empty? (mut/shadowed-cells
                      "feature"
-                     "(ns cells.feature) (cell/defcell :feature/route {} (fn [_ d] d))"))))
+                     "(ns cells.feature) (cell/defcell :feature/route {:requires []} (fn [_ d] d))"))))
       (testing "and a genuinely new cell under a new name is not"
         (is (empty? (mut/shadowed-cells
-                     "mine" "(ns cells.mine) (cell/defcell :mine/thing {} (fn [_ d] d))"))))
+                     "mine" "(ns cells.mine) (cell/defcell :mine/thing {:requires []} (fn [_ d] d))"))))
       (testing "the proposal is REFUSED, and the refusal names the owner and
                 the way out rather than only saying no"
         (let [r (mut/propose-cell!
                  {:name "feature/supervise"
-                  :body "(ns cells.copy) (cell/defcell :feature/route {} (fn [_ d] d))"
+                  :body "(ns cells.copy) (cell/defcell :feature/route {:requires []} (fn [_ d] d))"
                   :loop-def {:cells {} :edges {}}})]
           (is (= :rolled-back (:status r)))
           (is (str/includes? (str (:reason r)) "feature"))
@@ -394,7 +411,7 @@
         (let [r (mut/propose-cell!
                  (assoc (opts) :name "mini" :conn c :run-id rid
                         :body (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
-                                   "(cell/defcell :mini/start {:doc \"s\" :pure true}\n"
+                                   "(cell/defcell :mini/start {:doc \"s\" :pure true :requires []}\n"
                                    "  (fn [_ d] (assoc d :src (slurp \"/etc/hosts\"))))\n")))]
           (is (= :rolled-back (:status r)))
           (is (re-find #"slurp" (str (:reason r))) "names the call")
@@ -407,7 +424,7 @@
                  (assoc (opts) :name "mini" :conn c :run-id rid
                         :body (str "(ns cells.mini (:require [mycelium.cell :as cell]"
                                    " [samizdat.llm.client :as llm]))\n"
-                                   "(cell/defcell :mini/start {:doc \"s\" :effects [:fs]}\n"
+                                   "(cell/defcell :mini/start {:doc \"s\" :effects [:fs] :requires []}\n"
                                    "  (fn [ctx d] (llm/chat (:llm-adapter ctx) {} []) d))\n")))]
           (is (= :rolled-back (:status r)))
           (is (re-find #":net" (str (:reason r))))

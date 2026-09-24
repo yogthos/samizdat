@@ -14,6 +14,7 @@
             [mycelium.cell :as cell]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.select :as select]
+            [samizdat.lexicon :as lexicon]
             [samizdat.agent.state :as state]
             [samizdat.cells :as cells]
             [samizdat.llm.client :as llm]
@@ -28,7 +29,11 @@
             [samizdat.userspace :as us]
             [samizdat.workflow :as workflow]))
 
-(use-fixtures :once (fn [f] (cells/load-cells!) (f)))
+;; Triage off: these drive the beam with a scripted llm/chat, and the triage
+;; call would take the first scripted reply (karamazov-1wv9). What triage
+;; does is select-test's and beam-test's to say.
+(use-fixtures :once (fn [f] (cells/load-cells!)
+                       (with-redefs [select/triage! (constantly nil)] (f))))
 
 (defn- manifest []
   (workflow/read-definition
@@ -352,35 +357,14 @@
   ;; conventional-ctx-keys gap straight back, with a table on top of it
   ;; asserting otherwise.
   ;;
-  ;; Reads the shipped cell SOURCE, since that is what load-string registers.
+  ;; The same analysis the cell validator refuses an edit with
+  ;; (cells/ctx-problems), run over the shipped SOURCE, since that is what
+  ;; load-string registers.
   (doseq [f (->> (file-seq (java.io.File. "resources/cells"))
                  (filter #(.isFile %))
-                 (filter #(clojure.string/ends-with? (.getName %) ".clj")))
-          :let [src (slurp f)]
-          form (read-string {:read-cond :allow} (str "[" src "]"))
-          :when (and (seq? form) (= 'cell/defcell (first form)))
-          :let [cell-id (second form)
-                meta-map (nth form 2)
-                declared (set (:requires meta-map))
-                handler (last form)
-                ;; What the handler reads out of ctx: the keys it destructures
-                ;; from its first argument, plus any (:key ctx) in its body.
-                binding (first (second handler))
-                destructured (when (map? binding) (map keyword (:keys binding)))
-                direct (->> (tree-seq coll? seq handler)
-                            (filter #(and (seq? %) (= 2 (count %))
-                                          (keyword? (first %))
-                                          (= 'ctx (second %))))
-                            (map first))
-                read-keys (set (concat destructured direct))]]
-    (testing (str cell-id)
-      (is (contains? meta-map :requires)
-          "every cell declares :requires, even when it is empty — an absent
-           declaration and a declared-nothing look identical otherwise")
-      (let [undeclared (remove declared read-keys)]
-        (is (empty? undeclared)
-            (str cell-id " reads ctx keys it does not declare: "
-                 (pr-str (vec undeclared))))))))
+                 (filter #(clojure.string/ends-with? (.getName %) ".clj")))]
+    (testing (.getName f)
+      (is (empty? (cells/ctx-problems (slurp f)))))))
 
 (deftest every-shipped-manifest-compiles-and-is-selectable
   ;; A manifest in the catalogue that cannot compile is a trap: the supervisor
@@ -545,7 +529,7 @@
         order (atom [])
         started (atom nil)]
     (try
-      (with-redefs [select/pick! (fn [{:keys [conn run-id]} _problem]
+      (with-redefs [select/triage! (fn [{:keys [conn run-id]} _problem]
                                    (swap! order conj [:select run-id
                                                       (some? (runs/get-run conn run-id))])
                                    nil)
@@ -561,6 +545,91 @@
       (is (true? (nth (second @order) 2)) "and the row exists by then")
       (testing "the row records the width the compile decided, not only the request"
         (is (= 2 (:beam_width (runs/get-run c @started)))))
+      (finally (db/close c)))))
+
+(deftest a-run-gets-the-effort-its-triage-calls-for
+  ;; "explain the project in the chat" ran at width 5 with a 1000-turn cap,
+  ;; because nothing sized a run by what it was asked (karamazov-1wv9). The
+  ;; triage call's kind and size pick a row of gates.edn's effort table; what
+  ;; the caller asked for explicitly still wins, and the config's own numbers
+  ;; stay the ceiling.
+  (let [go (fn [opts]
+             (let [c (db/open! ":memory:") rid (atom nil)]
+               (try
+                 (with-redefs [select/triage! (fn [_ _] {:kind :answer :size :small :workflow nil})
+                               beam/run-rounds (fn [_ctx _branches _turn] {:status :completed :branches []})
+                               llm/chat (fn [& _] {:content "" :finish-reason "stop"})]
+                   (beam/run! (merge {:conn c :config {:run {:beam-width 5 :max-turns 1000}}
+                                      :llm-adapter :a :llm-config {:max-tokens 100}
+                                      :problem "explain the project in the chat"
+                                      :on-start #(reset! rid %)}
+                                     opts)))
+                 {:row (runs/get-run c @rid)
+                  :note (journal/last-note c @rid :loop-workflow)}
+                 (finally (db/close c)))))
+        answer (select/effort {:kind :answer :size :small})
+        {:keys [row note]} (go {})]
+    (is (= 1 (:beam_width row)) "a question is one line of work")
+    (is (= (:max-turns answer) (:max_turns row)) "on the table's turn cap")
+    (is (= {:kind "answer" :size "small"} (select-keys (:triage note) [:kind :size]))
+        "and the record says why the run got this shape")
+    (testing "an explicit request wins over triage"
+      (is (= 3 (:beam_width (:row (go {:beam-width 3 :max-turns 200}))))))
+    (testing "the config's numbers are a ceiling triage does not raise"
+      (is (= 7 (:max_turns (:row (go {:config {:run {:beam-width 5 :max-turns 7}}}))))))))
+
+(deftest a-lone-branch-of-a-width-one-run-is-not-scored
+  ;; The critic's scores decide which sibling to cull and whether a survivor
+  ;; may fork to regrow the beam. A width-1 run with its one branch has
+  ;; neither: the last branch is never culled and the beam is already at its
+  ;; width. Scoring it was a model call every :critic-every turns for nothing,
+  ;; and its "zero artifacts" note is what an answer branch's log ended on
+  ;; (karamazov-1wv9).
+  (let [calls (atom 0)
+        score (:handler (cell/get-cell! :beam/score))
+        b (fn [id] (assoc (samizdat.agent.state/new-branch {:id id :problem "p"}) :status :active))]
+    (with-redefs [samizdat.agent.critic/score! (fn [& _] (swap! calls inc) {:scores {} :turn 5})]
+      (score {:beam-width 1} {:advanced [(b "B1")] :turn 5})
+      (is (zero? @calls) "one branch, width one: nothing to decide")
+      (score {:beam-width 3} {:advanced [(b "B1")] :turn 5})
+      (is (= 1 @calls) "a thinned beam still scores its survivor, which may be invited to fork")
+      (score {:beam-width 1} {:advanced [(b "B1") (b "B2")] :turn 5})
+      (is (= 3 @calls) "and siblings are always scored"))))
+
+(deftest a-stuck-narrow-run-widens-once
+  ;; Triage sizes most runs at width 1 (karamazov-1wv9), so a misjudged one
+  ;; must be able to grow: once the run's progress-stalled gate has fired
+  ;; :after-stalls times, the stuck branch is handed theses for siblings that
+  ;; :beam/spawn opens, and the run's reasoning effort goes up. Once per run,
+  ;; and never for a run that already has the width.
+  (let [c (db/open! ":memory:")]
+    (try
+      (let [rid (runs/start-run! c {:problem "p"})
+            p (lexicon/policy :escalation)
+            escalate (:handler (cell/get-cell! :beam/escalate))
+            b1 (assoc (samizdat.agent.state/new-branch {:id "B1" :problem "p"}) :status :active)
+            stall! #(journal/record-gate! c rid {:branch-id "B1" :turn % :gate :progress-stalled
+                                                 :prediction "x"})
+            data {:culled [b1] :all-now [b1] :turn 12}]
+        (runs/open-branch! c rid {:branch-id "B1"})
+        (is (pos-int? (:after-stalls p)))
+        (stall! 3)
+        (is (= data (escalate {:conn c :run-id rid :beam-width 1} data))
+            "under the threshold nothing changes")
+        (dotimes [i (dec (:after-stalls p))] (stall! (+ 4 i)))
+        (let [out (escalate {:conn c :run-id rid :beam-width 1} data)
+              theses (:pending-branch-theses (first (:culled out)))]
+          (is (= (dec (:to-width p)) (count theses)) "siblings up to the policy's width")
+          (is (every? #(string? (:goal %)) theses))
+          (is (:escalated? out))
+          (is (some? (journal/last-note c rid :escalated)) "and the run says it did")
+          (is (= (:reasoning-effort p)
+                 (get-in (samizdat.agent.live/get rid) [:all :reasoning-effort]))
+              "thinking harder from the next request")
+          (is (= out (escalate {:conn c :run-id rid :beam-width 1} out)) "once"))
+        (is (= data (escalate {:conn c :run-id rid :beam-width (:to-width p)} data))
+            "a run already that wide is left alone")
+        (samizdat.agent.live/forget-run! rid))
       (finally (db/close c)))))
 
 (deftest a-loop-that-does-not-compile-is-a-failed-run-not-a-running-row

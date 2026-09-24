@@ -56,6 +56,9 @@
             ;; Statically required, both so the ordering bug stays fixed in the
             ;; open rather than by accident and so `jolt build` reaches it.
             [jolt.nrepl]
+            ;; Every namespace the manual names, so the binary carries them
+            ;; (samizdat.capabilities says why).
+            [samizdat.capabilities]
             [nrepl.middleware]
             [samizdat.control :as control]
             [samizdat.llm.client :as llm]

@@ -133,7 +133,7 @@
   `:orient` is the run's opening block (samizdat.agent.orient), and it goes
   where the suffix goes: on a FRESH tape only, since an inheriting child's
   problem turn already carries it."
-  [{:keys [problem prompt-suffix orient]} parent id thesis turn]
+  [{:keys [problem prompt-suffix orient branch-role]} parent id thesis turn]
   (let [{:keys [inherit? depth]} (gates/threshold :fork-inherit)]
     (if (and parent inherit?)
       (state/fork-branch parent {:id id :depth depth :turn turn
@@ -141,8 +141,13 @@
       (cond-> (state/new-branch
                {:id id :parent-id (:id parent) :problem problem
                 :created-at-turn turn
+                ;; The role the manifest names (its `:role`), which scopes
+                ;; the system prompt to that role's tools and prompt.
                 :messages (branch-loop/initial-messages problem prompt-suffix
-                                                        nil orient)})
+                                                        branch-role orient)})
+        ;; And holds the branch to that surface: phases.edn's :role-surface
+        ;; refuses a call outside it (karamazov-1wv9).
+        branch-role (assoc :role branch-role)
         thesis (assoc :thesis thesis)))))
 
 (defn- open-branch!
@@ -160,6 +165,7 @@
     ;; inheriting child, what its parent's system message already carries.
     (runs/open-branch! conn run-id {:branch-id id :parent-id parent-id
                                     :created-at-turn turn
+                                    :role (:role b)
                                     :prompt-suffix (:prompt-suffix ctx)})
     (if thesis
       (do (runs/set-thesis! conn run-id id thesis)
@@ -1005,7 +1011,12 @@
   provider calls after the answer exists is pure waste."
   [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
            token-budget abort on-start seed-run quarantine complete] :as opts}]
-  (let [max-turns (or max-turns (get-in config [:run :max-turns]) 40)
+  (let [;; What the CALLER asked for, kept apart from the config's numbers:
+        ;; triage below may size a run below the config, never over an
+        ;; explicit request (karamazov-1wv9).
+        asked-turns max-turns
+        asked-width beam-width
+        max-turns (or max-turns (get-in config [:run :max-turns]) 40)
         ;; Tokens the whole run may spend; nil is unbounded. Enforced by
         ;; :beam/round-open against the journal, sized against below.
         token-budget (or token-budget (get-in config [:run :token-budget]))
@@ -1070,9 +1081,23 @@
         ;; choice decides which manifest is compiled; a run must not fail to
         ;; start over it — `pick!` answers nil on every uncertainty and the
         ;; precedence in `active-loop-name` falls back to the factory loop.
-        selected (select/pick! {:conn conn :run-id run-id
+        ;; And what KIND of task it is and how big (karamazov-1wv9): the same
+        ;; call, sized into width, turns and effort by gates.edn's
+        ;; :workflow-selection :effort. The caller's explicit numbers win;
+        ;; the config's are a ceiling the table does not raise.
+        triage (select/triage! {:conn conn :run-id run-id
                                 :llm-adapter llm-adapter :llm-config llm-config}
                                problem)
+        effort (select/effort triage)
+        selected (or (:workflow effort) (:workflow triage))
+        ceiling (fn [x cap] (if (and x cap) (min x cap) (or x cap)))
+        max-turns (if asked-turns max-turns (ceiling (:max-turns effort) max-turns))
+        requested-width (if asked-width
+                          requested-width
+                          (ceiling (:beam-width effort) requested-width))
+        llm-config (cond-> llm-config
+                     (and (:reasoning-effort effort) (nil? (:reasoning-effort llm-config)))
+                     (assoc :reasoning-effort (:reasoning-effort effort)))
         loop-nm (workflow/active-loop-name config selected)
         ;; Which loop drives this run, compiled to its per-turn slice. A
         ;; manifest that will not compile can no longer refuse the request —
@@ -1112,6 +1137,7 @@
                           :token-budget token-budget})
         ;; What the compile decided, onto the row that was created before it.
         _ (runs/set-shape! conn run-id {:beam-width width
+                                        :max-turns max-turns
                                         :prompt-digest (branch-loop/prompt-digest
                                                         prompt-suffix)})
         ;; WHERE the prompt came from, per segment, beside the digest that
@@ -1153,6 +1179,9 @@
              :root root
              ;; What the manifest says this run is FOR — see seed-branch.
              :prompt-suffix prompt-suffix
+             ;; The role every branch of this run opens as, when the manifest
+             ;; names one (answer.edn's :answerer).
+             :branch-role (some-> (:role loop-def) keyword)
              ;; And what the problem already names — see seed-branch.
              :orient opening
              ;; The compiled per-turn manifest advance-branch drives, and
@@ -1162,7 +1191,11 @@
              :iterating-loop? iterating?
              ;; What this run changed, for the ship gate's focused verify and
              ;; for a finalization critic reading the run's own diff.
-             :git-baseline (gitdiff/baseline root)
+             ;; Journalled, so a resume measures from the same point.
+             :git-baseline (let [b (gitdiff/baseline root)]
+                             (when (and b conn run-id)
+                               (journal/note! conn run-id :git-baseline {:data {:ref b}}))
+                             b)
              ;; One eval namespace per RUN: defs the agent makes with `eval`
              ;; persist across its turns and die with the run. run-rounds
              ;; closes it in the same finally that disposes the sessions.
@@ -1183,8 +1216,15 @@
                            ;; read back later is otherwise indistinguishable
                            ;; from one somebody configured by hand.
                            :chosen-by (cond (get-in config [:run :loop]) "config"
+                                            (and (:workflow effort) (= selected loop-nm)) "triage"
                                             (= selected loop-nm) "selection"
                                             :else "default")
+                           ;; What the run was sized as, and what that gave it.
+                           :triage (when (:kind triage)
+                                     {:kind (name (:kind triage))
+                                      :size (some-> (:size triage) name)
+                                      :max-turns max-turns
+                                      :reasoning-effort (:reasoning-effort llm-config)})
                            :beam-width width
                            :requested-beam-width requested-width}})
     (when (not= forced-width requested-width)

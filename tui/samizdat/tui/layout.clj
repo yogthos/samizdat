@@ -217,9 +217,19 @@
   (reset! served (not-empty (str (or body ""))))
   nil)
 
+;; The last answer and what it was made from — the options, the served text
+;; and each layer file's stamp. Every frame asks, and several keys; building
+;; it anew was 2ms a call to re-read the shipped file and re-parse, merge and
+;; validate every layer for an answer that changes only when a layer does
+;; (karamazov-lx14). An answer with a layer error is never kept: a file
+;; caught mid-save must be read again even if the finished write does not
+;; move its stamp, which is the same rule samizdat.layers keeps.
+(defonce ^:private last-answer (atom nil))
+
 (defn forget-file!
   "Drop the file cache, so the next read goes to disk. For tests."
   []
+  (reset! last-answer nil)
   (layers/forget-files!))
 
 (defn default-opts
@@ -229,6 +239,18 @@
   []
   {:root (System/getProperty "user.dir")
    :global-dir (layers/global-dir)})
+
+(defn- stamp
+  "What says a layer file changed: [mtime length], nil when it is not there."
+  [path]
+  (let [f (io/file (str path))]
+    (when (.isFile f) [(.lastModified f) (.length f)])))
+
+;; The shipped template's text: in the jar, fixed for the life of the process.
+(defonce ^:private shipped (delay (some-> (io/resource "tui.edn") slurp)))
+
+
+(declare resolve-current)
 
 (defn current
   "The layout to draw, as the merged settings map plus `:sources` (the layers
@@ -245,15 +267,22 @@
   re-read only when its stamp moves."
   ([] (current nil))
   ([opts]
-   (let [r (layers/resolve "tui" (merge (default-opts)
-                                        opts
-                                        {:served @served
-                                         :shipped (some-> (io/resource "tui.edn") slurp)}))
-         layer-error (when (seq (:errors r))
-                       (str/join "; " (for [{:keys [layer path var error]} (:errors r)]
-                                        (str (or path var (name layer)) " " error))))
-         v (validate (or (:value r) {}))]
-     (cond-> (assoc v :sources (:sources r))
-       layer-error (assoc :error (if (:error v)
-                                   (str layer-error "; " (:error v))
-                                   layer-error))))))
+   (let [opts (merge (default-opts) opts)
+         in [opts @served (mapv (comp stamp :path) (layers/candidates "tui" opts))]
+         [held v] @last-answer]
+     (if (and held (= held in))
+       v
+       (let [v (resolve-current opts)]
+         (reset! last-answer (when-not (:error v) [in v]))
+         v)))))
+
+(defn- resolve-current [opts]
+  (let [r (layers/resolve "tui" (assoc opts :served @served :shipped @shipped))
+        layer-error (when (seq (:errors r))
+                      (str/join "; " (for [{:keys [layer path var error]} (:errors r)]
+                                       (str (or path var (name layer)) " " error))))
+        v (validate (or (:value r) {}))]
+    (cond-> (assoc v :sources (:sources r))
+      layer-error (assoc :error (if (:error v)
+                                  (str layer-error "; " (:error v))
+                                  layer-error)))))

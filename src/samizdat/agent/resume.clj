@@ -365,10 +365,14 @@
                :root root
                :turn-workflow turn-wf
                :iterating-loop? iterating?
-               ;; Baselined at the RESUME, so a critic reviewing the resumed
-               ;; run sees what the resumption changed. What the dead process
-               ;; changed is already committed to the tree it starts from.
-               :git-baseline (gitdiff/baseline root)
+               ;; The baseline the run STARTED from, as it journalled it, so
+               ;; what it wrote before the restart is still its work. Taken
+               ;; afresh here it swallowed all of that, and a run that had
+               ;; finished and then restarted was refused `done` for changing
+               ;; nothing. A run from before the note is baselined here, as
+               ;; it always was.
+               :git-baseline (or (:ref (journal/last-note conn run-id :git-baseline))
+                                 (gitdiff/baseline root))
                :repl-session (repl/new-session)
                :abort abort}
           ;; :verify-cmd rides on the policy so the rebuilt window skips

@@ -163,14 +163,17 @@
                      (if (seq stamped)
                        (vec (filter #(contains? stamped (:turn %)) (:turns parent)))
                        []))]
-    (assoc (new-branch {:id id
-                        :parent-id (:id parent)
-                        :problem (or problem (:problem parent))
-                        :created-at-turn turn
-                        :messages messages})
-           :turns kept-turns
-           :forked-at (count messages)
-           :thesis thesis)))
+    (cond-> (assoc (new-branch {:id id
+                                :parent-id (:id parent)
+                                :problem (or problem (:problem parent))
+                                :created-at-turn turn
+                                :messages messages})
+                   :turns kept-turns
+                   :forked-at (count messages)
+                   :thesis thesis)
+      ;; The role the inherited conversation was opened under goes with it:
+      ;; an answerer's fork is an answerer, not an unrestricted branch.
+      (:role parent) (assoc :role (:role parent)))))
 
 (defn active? [branch] (= :active (:status branch)))
 

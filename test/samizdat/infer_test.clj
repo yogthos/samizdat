@@ -253,6 +253,21 @@
           (is (nil? (:context-squeeze b')))
           (is (= (inc n) (count (:messages b')))))))))
 
+(deftest provider-errors-in-a-row-are-counted-and-an-answer-clears-them
+  ;; What lets a branch stop when its provider is down instead of spending
+  ;; its whole turn cap on failed calls: run 3020cbca's supervisor made 2810
+  ;; calls to a server that was not running (karamazov-e8iw).
+  (with-redefs [journal/record-turn! (fn [& _] nil)]
+    (let [b (state/new-branch {:id "B1" :problem "p"})
+          failed (-> b
+                     (#(aloop/provider-error-step {} % 1 "refused" :call-failed))
+                     (#(aloop/provider-error-step {} % 2 "refused" :call-failed)))]
+      (is (= 2 (:consecutive-provider-errors failed)))
+      (is (zero? (or (:consecutive-provider-errors
+                      (aloop/absorb-response failed {:content "fine"} 3))
+                     0))
+          "a call that answered is not an outage"))))
+
 ;; --- prefix identity: what the cache could have kept ------------------------
 
 (deftest a-request-digest-names-one-request

@@ -38,6 +38,7 @@
          :cull       :beam/cull
          :settle     :beam/settle
          :repopulate :beam/repopulate
+         :escalate   :beam/escalate
          :spawn      :beam/spawn
          :tick       :beam/tick
          :aborted    :beam/abort
@@ -55,7 +56,8 @@
          :score      :cull
          :cull       :settle
          :settle     :repopulate
-         :repopulate :spawn
+         :repopulate :escalate
+         :escalate   :spawn
          :spawn      :tick
          ;; The back edge: one round ends where the next begins.
          :tick       :start
@@ -95,4 +97,8 @@
 
   {:type :must-precede :cell :cull :before :spawn :enforced true
    :protects "A branch culled this round must not also spend the branch
-              budget on children."}]}
+              budget on children."}
+
+  {:type :must-precede :cell :escalate :before :spawn :enforced true
+   :protects "The theses a stuck run is handed are opened the same round:
+              :beam/spawn is what turns them into branches (karamazov-1wv9)."}]}

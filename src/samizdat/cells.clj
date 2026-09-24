@@ -43,6 +43,7 @@
             ;; they compile the normal way first and the AOT cache stays sound
             ;; (samizdat.cell-prelude explains the -dirty-build failure it fixes).
             [samizdat.cell-prelude]
+            [samizdat.prompt :as prompt]
             [clojure.tools.logging :as log]
             [samizdat.userspace :as userspace]))
 
@@ -154,6 +155,84 @@
        (map second)
        (filter keyword?)
        vec))
+
+;; --- what a cell reads, against what it declares -------------------------------
+
+(defn- ctx-reads
+  "The ctx keys a handler `(fn [ctx data] …)` reads: what its first parameter
+  destructures (`{:keys [a b]}`, `{x :x}`), and every `(:k ctx)`, `(get ctx :k)`
+  and `(get-in ctx [:k …])` on the symbol it binds ctx to. A read through a
+  function the ctx is handed to is not seen — that function declares its own
+  needs where it is defined."
+  [handler]
+  (when (and (seq? handler) (= "fn" (name (first handler))))
+    (let [params (first (filter vector? handler))
+          binding (first params)
+          ctx-sym (cond (symbol? binding) binding
+                        (map? binding) (:as binding))
+          destructured (when (map? binding)
+                         (concat (map keyword (:keys binding))
+                                 (keep (fn [[k v]] (when (and (symbol? k) (keyword? v)) v))
+                                       binding)))
+          body (rest (drop-while (complement vector?) handler))
+          direct (when ctx-sym
+                   (->> (tree-seq coll? seq body)
+                        (keep (fn [f]
+                                (when (seq? f)
+                                  (let [[h a b] f]
+                                    (cond
+                                      (and (keyword? h) (= a ctx-sym) (= 2 (count f))) h
+                                      (and (= 'get h) (= a ctx-sym) (keyword? b)) b
+                                      (and (= 'get-in h) (= a ctx-sym) (vector? b)
+                                           (keyword? (first b))) (first b))))))))]
+      (set (concat destructured direct)))))
+
+(defn ctx-problems
+  "Every cell `text` defines whose `:requires` does not cover the ctx keys its
+  handler reads, as [{:cell :undeclared :requires}] — :requires being what it
+  should declare. A cell with no :requires at all is listed with :missing?.
+  [] when every cell says what it reads.
+
+  `:requires` is what compile-definition holds a manifest to: a cell asking
+  for a key no driver provides is refused there. That is only worth anything
+  if :requires is TRUE, and nothing checked it outside a test — :beam/escalate
+  read :conn and :beam-width, declared neither, and would have loaded from an
+  agent's edit."
+  [text]
+  (vec (for [form (read-string {:read-cond :allow} (str "[" text "\n]"))
+             :when (and (seq? form) (symbol? (first form))
+                        (= "defcell" (name (first form))))
+             :let [[_ id meta-map handler] form
+                   declared (set (:requires meta-map))
+                   reads (ctx-reads handler)
+                   undeclared (sort (remove declared reads))]
+             :when (or (not (contains? meta-map :requires)) (seq undeclared))]
+         (cond-> {:cell id :undeclared (vec undeclared)
+                  :requires (vec (sort (into declared reads)))}
+           (not (contains? meta-map :requires)) (assoc :missing? true)))))
+
+(declare ctx-problem-message)
+
+(defn requires-problem
+  "Why `text`'s cells are not self-consistent about ctx — the sentence to
+  refuse an edit with, naming each cell and the :requires to write — or nil.
+  The cell validator and the mutation protocol both refuse through this."
+  [text]
+  ;; A text that does not READ is not this check's to report: the load step
+  ;; says what is wrong with it, with a line and column.
+  (when-let [ps (seq (try (ctx-problems text) (catch Throwable _ nil)))]
+    (ctx-problem-message ps)))
+
+(defn- ctx-problem-message
+  "The refusal, from prompts/cell-requires.md."
+  [problems]
+  (str/trim
+   (prompt/render "cell-requires"
+                  {:cells (for [{:keys [cell undeclared requires missing?]} problems]
+                            {:cell (pr-str cell)
+                             :undeclared (str/join ", " undeclared)
+                             :requires (pr-str requires)
+                             :missing-only (and missing? (empty? undeclared))})})))
 
 ;; --- earned effect marks ------------------------------------------------------
 ;;
@@ -422,7 +501,13 @@
    (let [sources (cond
                    (some? dirs) (dir-sources dirs)
                    (userspace/files?) (file-sources)
-                   :else (project-sources default-dirs))]
+                   ;; The project's override dir only for a bound project.
+                   ;; It is cwd-relative, and unbound (a test, a bare REPL)
+                   ;; the cwd is whatever checkout this runs in — this
+                   ;; repository's own .samizdat/cells ran in place of the
+                   ;; shipped cells its tests were testing.
+                   (userspace/bound?) (project-sources default-dirs)
+                   :else (project-sources (take 1 default-dirs)))]
      (if (unchanged-since-last-load? sources)
        @loaded-cells
        (load-sources! dirs sources)))))
@@ -476,6 +561,11 @@
      (cond
        (:problem forms) (:problem forms)
        (empty? (:ids forms)) {:stage :shape :message "defines no cell"}
+       ;; Self-consistent before it loads: a cell's :requires is the promise
+       ;; manifests are compiled against, so one that reads more than it
+       ;; declares is refused with what to write instead.
+       (requires-problem text)
+       {:stage :requires :message (requires-problem text)}
        :else
        (let [snapshot (cell/registry-snapshot)]
          (try (binding [*ns* *ns*] (load-string text)) nil

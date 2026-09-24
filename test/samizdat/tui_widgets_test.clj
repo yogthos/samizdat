@@ -191,6 +191,18 @@
           out (conv {:branch {:turns turns}} {:turns 40})]
       (is (= 3 (count (keep #(:key (props-of %)) (nodes-of :vbox out))))))))
 
+(deftest the-tail-counts-turn-rows-when-a-branch-repeats-its-numbers
+  ;; The supervisor's SUP branch numbered every oversight pass from 1, so
+  ;; 3067 rows carried 233 numbers, interleaved. Counting NUMBERS found the
+  ;; cut at the first row with the twelfth-newest number and drew 374 entries
+  ;; where twelve turns were asked for (karamazov-qqqr).
+  (let [turns (vec (map-indexed (fn [i n] {:id (inc i) :turn n :tool_name "shell" :result "x"
+                                           :created_at (format "2026-09-23T10:%02d:00.000Z" i)})
+                                (concat (range 1 21) (range 1 21) (range 1 6))))
+        out (conv {:branch {:turns turns}} {:turns 3})
+        drawn (keep #(:key (props-of %)) (nodes-of :vbox out))]
+    (is (= ["t3.3/tool" "t4.3/tool" "t5.3/tool"] drawn))))
+
 (deftest the-conversation-is-a-scroll-pane-at-the-top-it-was-left
   (let [pane #(first (nodes-of :scroll %))]
     (is (some? (pane (conv {:branch {:turns turns}} {}))))
@@ -249,6 +261,21 @@
     (is (str/includes? said "wire it"))
     (is (str/includes? said "then test"))
     (is (re-find #"(?i)progress" said) "the one being worked on is marked")))
+
+(deftest the-task-panel-says-whose-task-each-is
+  ;; A beam of five opens five tasks for one problem, one per branch; listed
+  ;; without the branch they read as one task shown five times.
+  (let [board [{:id "a" :title "explain it" :status "in_progress" :branch_id "B1"}
+               {:id "b" :title "explain it" :status "in_progress" :branch_id "B2"}]
+        out (render :widget/tasks {:branch-id "B2" :detail {:tasks board}} {:title "TASKS"})
+        said (texts out)]
+    (is (str/includes? said "B1"))
+    (is (str/includes? said "B2"))
+    (testing "the branch on screen's own task is not dimmed; another branch's is"
+      (let [rows (nodes-of :hbox out)
+            row-of (fn [b] (first (filter #(str/includes? (texts %) b) rows)))]
+        (is (= :dim (:class (props-of (row-of "B1")))))
+        (is (not= :dim (:class (props-of (row-of "B2")))))))))
 
 (deftest the-files-panel-lists-what-the-run-changed
   (let [said (texts (render :widget/files

@@ -95,10 +95,21 @@
                     ;; A :provenance that is not a list of identifiers is
                     ;; refused here, at save time, never by the loader
                     ;; (karamazov-h66o).
+                    ;; No bare `name` in here: this fn's own parameter is called
+                    ;; `name`, and `(comp name first)` invoked the string
+                    ;; "gates" — the refusal crashed into "String cannot be
+                    ;; cast to IFn" instead of saying what to fix.
                     (when-let [bad (gates/provenance-problems (gates/config))]
                       (throw (ex-info (str ":provenance must be a non-empty vector of "
-                                           "identifiers: "
-                                           (str/join ", " (map (comp name first) bad)))
+                                           "strings naming the bead, finding or run behind "
+                                           "the entry. Fix: "
+                                           (str/join "; "
+                                                     (for [[k v] bad]
+                                                       (str (pr-str k) " has "
+                                                            (pr-str v) " — write "
+                                                            (pr-str (if (sequential? v)
+                                                                      (mapv str v)
+                                                                      ["<bead-id>"]))))))
                                       {:provenance bad}))))
     "phases"    (do (phases/reload!)
                     (phases/table)

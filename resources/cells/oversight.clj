@@ -468,12 +468,22 @@
              ;; ran past the run's 300 s three times running; every later
              ;; pass ended abandoned and the stream never steered again
              ;; (karamazov-cz90).
+             ;; A pass picks up the branch's turn count where the last one
+             ;; left it. Every pass used to start at 1 on this one branch:
+             ;; run 3020cbca's SUP held 3067 rows under 233 numbers, so `t8`
+             ;; in its own compacted history named several turns, fetch_turn
+             ;; opened the first of them, and a reader could not tell the
+             ;; passes apart (karamazov-pefk). The cap moves with the start,
+             ;; so a pass keeps a whole allowance of its own.
+             done (safely :last-turn #(journal/last-turn conn run-id bid) 0)
              rctx (let [rc (wf/role-ctx ctx :supervisor)
                         t (:timeout-ms (gates/threshold :oversight))]
-                    (cond-> rc t (assoc-in [:llm-config :timeout-ms] t)))
+                    (cond-> rc
+                      t (assoc-in [:llm-config :timeout-ms] t)
+                      (and (pos? done) (:max-turns rc)) (update :max-turns + done)))
              out (myc/run-compiled (wf/compiled-manifest "supervisor")
                                    rctx
-                                   {:branch b :turn 1})]
+                                   {:branch b :turn (inc done)})]
          (assoc data
                 :oversight/answer (get-in out [:branch :final-answer])
                 ;; How the pass ENDED, kept beside what it said. A pass that

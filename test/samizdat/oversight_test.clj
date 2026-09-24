@@ -14,6 +14,7 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
+            [ebb.core :as ebb]
             [samizdat.agent.gates :as gates]
             [samizdat.cells :as cells]
             [samizdat.events :as events]
@@ -65,6 +66,39 @@
       (Thread/sleep 80)
       (is (= 2 @passes) "another run's turn is not this run's boundary, and a step mid-turn is not a boundary")
       (finally (stop) (events/unsubscribe! ch)))))
+
+(deftest a-pass-that-waits-on-io-finishes
+  ;; Every pass makes a model call, and the call parks on its HTTP read. The
+  ;; stream used to run its pass inside an ebb/reduce over an `ap` flow of
+  ;; bus batches; a park there never came back — the reducer was re-entered
+  ;; on the next tick and the parked call was never resumed, or, under a
+  ;; finally, was refused as a fork. Run 74ddebb8's supervisor answered
+  ;; nothing in 1002 turns (karamazov-ah7d).
+  (let [done (atom [])
+        stop (ov/start! {:enabled? true :poll-ms 5 :every-ms 0 :budget 100 :run-id "R-io"}
+                        (fn [_]
+                          (swap! done conj (ebb/? (ebb/via ebb/blk :answered)))
+                          {:carry nil :spent? true}))]
+    (try
+      (loop [n 0] (when (and (empty? @done) (< n 300)) (Thread/sleep 10) (recur (inc n))))
+      (is (= :answered (first @done)) "the pass's call came back")
+      (finally (stop)))))
+
+(deftest a-branch-whose-provider-keeps-failing-stops
+  ;; The route used to see only the turn cap, so a pass whose every call
+  ;; failed ran to it: 2810 supervisor turns against a server that was down
+  ;; in run 3020cbca, 1002 in 74ddebb8 (karamazov-e8iw).
+  (cells/load-cells!)
+  (let [route (:handler (cell/get-cell! :loop/route))
+        limit (gates/threshold :provider-error-limit)
+        b (assoc (samizdat.agent.state/new-branch {:id "SUP" :problem "p"})
+                 :consecutive-provider-errors limit)]
+    (is (pos-int? limit) "the limit is policy, in gates.edn")
+    (is (= :abandoned (:verdict (route {:max-turns 1000} {:branch b :turn 7}))))
+    (is (= :continue (:verdict (route {:max-turns 1000}
+                                      {:branch (update b :consecutive-provider-errors dec)
+                                       :turn 7})))
+        "under the limit it keeps trying")))
 
 (deftest the-stream-is-bounded
   ;; Every pass is a model call. A supervisor that reasons on every tick of a
@@ -765,3 +799,37 @@
           "and names the gate")
       (is (str/includes? (str prob) "Nothing here is retired for you")
           "surfacing, not acting — the graduation block's discipline"))))
+
+(deftest a-pass-continues-the-streams-turn-numbers
+  ;; One branch for the run, but every pass ran the supervisor manifest from
+  ;; {:turn 1}: run 3020cbca's SUP held 3067 rows under 233 numbers. Then `t8`
+  ;; in its own compacted history named several turns, fetch_turn returned the
+  ;; first of them, and a reader could not tell the passes apart
+  ;; (karamazov-pefk). A pass picks up after the last turn the branch wrote,
+  ;; and keeps a whole pass's allowance of turns to do it in.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        ctx {:conn conn :run-id rid :config {} :max-turns 40}
+        seen (atom nil)]
+    (doseq [n [1 2 3]]
+      (journal/record-turn! conn rid {:branch-id "SUP" :turn n :tool-name "recall" :result "x"
+                                      :category :neutral}))
+    (journal/record-turn! conn rid {:branch-id "B1" :turn 90 :tool-name "shell" :result "x"
+                                    :category :neutral})
+    (with-redefs [myc/run-compiled (fn [_ rctx data]
+                                     (reset! seen {:turn (:turn data) :max-turns (:max-turns rctx)})
+                                     {:branch (assoc (:branch data) :final-answer "ok")})]
+      ((:handler (cell/get-cell! :oversight/reason))
+       ctx {:oversight/idle 30 :oversight/unmet 2 :oversight/turns [] :oversight/firings []}))
+    (is (= 4 (:turn @seen)) "after SUP's own last turn, not another branch's")
+    (is (= 43 (:max-turns @seen)) "the cap moves with the start, so the pass still gets 40")
+    (testing "a branch with no turns yet starts at 1 under the run's cap"
+      (let [rid2 (runs/start-run! conn {:problem "q"})]
+        (with-redefs [myc/run-compiled (fn [_ rctx data]
+                                         (reset! seen {:turn (:turn data) :max-turns (:max-turns rctx)})
+                                         {:branch (assoc (:branch data) :final-answer "ok")})]
+          ((:handler (cell/get-cell! :oversight/reason))
+           (assoc ctx :run-id rid2)
+           {:oversight/idle 30 :oversight/unmet 2 :oversight/turns [] :oversight/firings []}))
+        (is (= {:turn 1 :max-turns 40} @seen))))))

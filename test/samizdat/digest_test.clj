@@ -135,6 +135,15 @@
         (let [r (tools-base/run-tool (ctx :args {:paths ["src/nope.clj"] :question "x?"}))]
           (is (= :mechanics (:category r)))
           (is (str/includes? (:result r) "src/nope.clj"))))
+      (testing "a directory is named, with what to do instead"
+        ;; It was slurped, and the branch read "read_digest failed: …/src (Is
+        ;; a directory)" — run 756b5572's answerer lost a turn to it.
+        (file! "src/a.clj" ["(ns a)"])
+        (let [r (tools-base/run-tool (ctx :args {:paths ["src"] :question "x?"}))]
+          (is (= :mechanics (:category r)))
+          (is (str/includes? (:result r) "src is a directory"))
+          (is (str/includes? (:result r) "glob"))
+          (is (not (str/includes? (:result r) "Is a directory")))))
       (is (empty? @seen) "and the reader was never called for any of them"))))
 
 (deftest the-reader-input-is-capped-and-says-so

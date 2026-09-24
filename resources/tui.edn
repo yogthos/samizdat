@@ -271,50 +271,55 @@
   ;; on a narrow terminal (:flex :shrink), while the side columns — at least
   ;; 32 and 34 wide, :grow — share whatever room is left on a wide one. Each
   ;; column carries its own title in the top frame, so the titles stay over
-  ;; their columns at any width; the bottom strip uses the same widths so the
-  ;; compose box stays under the conversation.
+  ;; their columns at any width.
+  ;;
+  ;; The avatar sits at the foot of the left column and the compose box under
+  ;; the middle and right ones, rather than the two sharing a strip of their
+  ;; own. A strip of its own was sized by a second flex pass, and on a
+  ;; terminal narrower than the columns' minimums the two passes shrank
+  ;; differently, so the box's left edge wandered off the conversation's.
+  ;; Nested, it is the same edge.
   [:hbox {:flex true}
 
-   ;; Left: what the run is spending and doing, and the beam — which branch
-   ;; the conversation beside it is.
+   ;; Left: what the run is spending and doing, the beam — which branch the
+   ;; conversation beside it is — and the avatar.
    [:vbox {:width [:>= 32] :flex :grow}
     [:widget/rule {:title "RUN STATUS"}]
     [:text {:class :panel-title :align :hcenter} "S A M I Z D A T"]
     [:widget/context {:title "CONTEXT" :height 11}]
     [:widget/activity {:title "ACTIVITY" :flex :grow}]
-    [:widget/branches {:title "BEAM" :height 7}]]
+    [:widget/branches {:title "BEAM" :height 7}]
+    [:widget/avatar {}]]
 
-   ;; The middle: the conversation; while a /command is typed, what it could
-   ;; be; when somebody has to answer, the question; and the run's own
-   ;; account of itself — its claims, and the gates it was advised by and
-   ;; has not answered — in a wide short row. `:turns` is how far back the
-   ;; conversation draws.
-   [:vbox {:width 120 :flex :shrink}
-    [:widget/rule {:title "AGENT LOG"}]
-    [:widget/conversation {:flex true :turns 60}]
-    [:widget/command-hints {}]
-    [:widget/approvals {}]
-    [:hbox {:height 6}
-     [:widget/artifacts {:title "CLAIMS" :flex true}]
-     [:widget/gates {:title "GATES" :flex true}]]]
+   [:vbox {:width [:>= 154] :flex :grow}
+    [:hbox {:flex true}
 
-   ;; Right: which run, the board, what has changed, and the tree it is
-   ;; changing. GIT needs three rows inside its chrome, hence 7.
-   [:vbox {:width [:>= 34] :flex :grow}
-    [:widget/rule {:title "HARNESS"}]
-    [:widget/runs {:title "RUNS" :height 6}]
-    [:widget/tasks {:title "TASKS" :height 8}]
-    [:widget/files {:title "MODIFIED" :flex :grow}]
-    [:widget/git {:title "GIT" :height 7}]]]
+     ;; The middle: the conversation; while a /command is typed, what it
+     ;; could be; when somebody has to answer, the question; and the run's
+     ;; own account of itself — its claims, and the gates it was advised by
+     ;; and has not answered — in a wide short row. `:turns` is how far back
+     ;; the conversation draws.
+     [:vbox {:width 120 :flex :shrink}
+      [:widget/rule {:title "AGENT LOG"}]
+      [:widget/conversation {:flex true :turns 60}]
+      [:widget/command-hints {}]
+      [:widget/approvals {}]
+      [:hbox {:height 6}
+       [:widget/artifacts {:title "CLAIMS" :flex true}]
+       [:widget/gates {:title "GATES" :flex true}]]]
 
-  ;; The avatar and the compose box. No height: the strip is as tall as the
-  ;; box, which grows a row per line — typed (Ctrl+J) or wrapped — up to
-  ;; :max-lines. The box runs from under the conversation to the right edge:
-  ;; its minimum is the middle and right columns' together (120 + 34), and
-  ;; it grows alongside the avatar, so the two split the spare width the way
-  ;; the left and right columns above do and the edges line up.
-  [:hbox
-   [:widget/avatar {:width [:>= 32] :flex :grow}]
-   [:widget/input {:width [:>= 154] :flex :grow :boxed true :max-lines 8}]]
+     ;; Right: which run, the board, what has changed, and the tree it is
+     ;; changing. GIT needs three rows inside its chrome, hence 7.
+     [:vbox {:width [:>= 34] :flex :grow}
+      [:widget/rule {:title "HARNESS"}]
+      [:widget/runs {:title "RUNS" :height 6}]
+      [:widget/tasks {:title "TASKS" :height 8}]
+      [:widget/files {:title "MODIFIED" :flex :grow}]
+      [:widget/git {:title "GIT" :height 7}]]]
+
+    ;; The compose box, under the conversation to the right edge. No height:
+    ;; it grows a row per line — typed (Ctrl+J) or wrapped — up to
+    ;; :max-lines.
+    [:widget/input {:boxed true :max-lines 8}]]]
 
   [:widget/status {}]]}
