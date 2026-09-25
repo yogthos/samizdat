@@ -195,16 +195,18 @@
            ;; own toolkit dep, and a strict HTTP client of the server. `jolt
            ;; serve` and `jolt -M:test` never load it.
            ;;
-           ;; :local/root while ftxui-jolt is unreleased. It carries a C++
-           ;; shim that has to be COMPILED (`jolt native` in its checkout,
-           ;; needing cmake and a C++17 compiler) — a git dep would resolve
-           ;; the sources into ~/.jolt/gitlibs with no build step and fail at
-           ;; the first FFI call. Pin a :git/sha here once it tags a release
-           ;; that ships the shared object.
+           ;; ftxui-jolt carries a C++ shim that has to be COMPILED (cmake
+           ;; and a C++17 compiler), and jolt runs no prep step for a git dep:
+           ;; the tag resolves into ~/.jolt/gitlibs as sources only and would
+           ;; fail at the first FFI call. `jolt tui-native` builds it there,
+           ;; once per pinned sha, and the tasks that load the TUI run it
+           ;; first. Bump :git/tag and :git/sha together, in both aliases.
            :tui  {:extra-paths ["tui"]
                   :extra-deps
                   {jlt-commons/ftxui-jolt
-                   {:local/root "/Users/yogthos/src/jlt-commons/ftxui-jolt"}}
+                   {:git/url "https://github.com/jlt-commons/ftxui-jolt"
+                    :git/tag "v0.3.0"
+                    :git/sha "ff40df118b2affe2529b52450dfff789e071cb97"}}
                   ;; samizdat.main: the server and the TUI in one process;
                   ;; --headless for the server alone, --connect URL for the
                   ;; TUI alone against a running server.
@@ -220,7 +222,9 @@
            :tui-test {:extra-paths ["tui" "test-tui"]
                       :extra-deps
                       {jlt-commons/ftxui-jolt
-                       {:local/root "/Users/yogthos/src/jlt-commons/ftxui-jolt"}}
+                       {:git/url "https://github.com/jlt-commons/ftxui-jolt"
+                        :git/tag "v0.3.0"
+                        :git/sha "ff40df118b2affe2529b52450dfff789e071cb97"}}
                       :main-opts ["-m" "samizdat.tui.test-runner"]}}
 
  :tasks {serve {:doc "start the harness (HTTP + nREPL) and park"
@@ -239,13 +243,19 @@
          gui   "jolt -M:gui"
          ;; The whole application: the server and the TUI in one process.
          ;; `jolt tui --connect [URL]` attaches to a server already running.
-         tui   "jolt -M:tui"
+         tui   "jolt tui-native && jolt -M:tui"
+         ;; Build the pinned ftxui-jolt's shim in its gitlibs checkout — found
+         ;; through the classpath, so it follows the pin — unless it is built
+         ;; already (ftxui-jolt's own `native` task checks).
+         ;; Under sh -c because jolt runs a task string's own `jolt ...`
+         ;; steps in-process, where a `cd` before them does not apply.
+         tui-native "sh -c 'd=$(jolt -Spath -A:tui | tr : \"\\n\" | grep ftxui-jolt | head -1) && test -n \"$d\" && cd \"${d%/src}\" && jolt native'"
          ;; The binary, from the same entry point. -A:tui because the TUI's
          ;; toolkit lives only under that alias. `jolt build` itself is
          ;; always the compiler, so the task cannot take that name.
-         bin   "jolt -A:tui build -m samizdat.main -o samizdat"
+         bin   "jolt tui-native && jolt -A:tui build -m samizdat.main -o samizdat"
          ;; A shell string, not :main-opts: a task's main-opts cannot carry an
          ;; -M alias, and this one needs the ftxui dep.
-         tui-test "jolt -M:tui-test"
+         tui-test "jolt tui-native && jolt -M:tui-test"
          export {:doc "runs that shipped and verified, as JSONL trajectories — or with --verdicts, every judgement labelled by its outcome: jolt export <db> [out.jsonl] [--verdicts]"
                  :main-opts ["-m" "samizdat.export"]}}}

@@ -146,10 +146,13 @@ is not the same claim as the widget returning a `:collapsible` with the right
 main suite instead.
 
 The TUI has one prerequisite the rest of the repo does not: ftxui-jolt binds
-a C++ shim that has to be COMPILED. `jolt native` in its checkout builds it
-(cmake 3.14+ and a C++17 compiler); it is a `:local/root` dep until it tags a
-release. If `native/build` carries a `CMakeCache.txt` from a different path,
-`rm -rf native/build` first.
+a C++ shim that has to be COMPILED (cmake 3.14+ and a C++17 compiler). It is
+pinned to a release tag in the `:tui` and `:tui-test` aliases, and jolt runs no
+prep step for a git dep, so `jolt tui-native` builds the shim in the pinned
+checkout under `~/.jolt/gitlibs` — once per sha, a no-op after — and `jolt
+tui`, `jolt tui-test` and `jolt bin` run it first. To work against an
+ftxui-jolt checkout instead, point both aliases at it with `:local/root` and
+run `jolt native` there.
 
 ## Live development over nREPL
 
