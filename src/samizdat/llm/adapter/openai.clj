@@ -46,16 +46,33 @@
 
 (defn- tool-call->fence
   "A native OpenAI tool_call turned into the harness's text-fence convention, so
-  a forced (tool_choice) response parses through exactly the same path a normal
-  fenced response does. `arguments` is a JSON string; it is parsed and re-embedded
-  as `args` so the downstream fence parser reads one object."
+  a native call parses through exactly the same path a fenced one does.
+  `arguments` is a JSON string, re-embedded as `args` when it parses — and
+  embedded AS WRITTEN when it does not, so the fence parser's repair ladder
+  gets its chance and a failure is reported to the model as the parse error
+  it is, rather than becoming an empty `{}` the tool then calls missing."
   [tc]
   (let [name (get-in tc [:function :name])
-        args (try (json/read-str (str (get-in tc [:function :arguments])))
-                  (catch Throwable _ {}))]
+        raw (str (get-in tc [:function :arguments]))
+        args (try (json/read-str raw) (catch Throwable _ ::unparsed))]
     (str "```tool-call\n"
-         (json/write-str {:name name :args args})
+         (if (= ::unparsed args)
+           (str "{\"name\": " (json/write-str name) ", \"args\": " raw "}")
+           (json/write-str {:name name :args args}))
          "\n```")))
+
+(defn- native-content
+  "What a reply said, with every native call it made appended as a fence:
+  the words a model wrote beside its call are kept (glm-5.3 writes a
+  sentence and a call), and several calls stay several fences, for the fence
+  rule to pick from and count rather than for this to drop quietly."
+  [msg]
+  (let [calls (:tool_calls msg)
+        said (str/trim (str (:content msg)))]
+    (if (seq calls)
+      (str/join "\n\n" (cond->> (map tool-call->fence calls)
+                           (seq said) (cons said)))
+      (:content msg))))
 
 (defn- supports-prefill?
   "Whether this endpoint continues a flagged trailing assistant message:
@@ -158,7 +175,7 @@
       {}))
 
   (chat-body [this config {:keys [messages max-tokens temperature prefill force-tool
-                                  cache-key reasoning-effort grammar reasoning-budget]}]
+                                  cache-key reasoning-effort grammar reasoning-budget tools]}]
    ;; The gate is the protocol method on THIS adapter (provenance R3-14), so the
    ;; answer a caller can query and the answer chat-body acts on are one
    ;; path and cannot drift apart.
@@ -182,7 +199,17 @@
          ;; because tool_choice is incompatible with DeepSeek's thinking mode;
          ;; and where a grammar forces it, the tools array is not sent either,
          ;; because the template would render it into the prefix.
-         forcing? (and force-tool (not use-prefill?) (not grammar*))]
+         forcing? (and force-tool (not use-prefill?) (not grammar*))
+         ;; The whole tool surface, natively, on every turn the endpoint takes
+         ;; it (config :native-tools, measured) — the way DeepSeek's and
+         ;; Zhipu's own harnesses call their models (samizdat.llm.toolspec).
+         ;; Never beside a prefill: DeepSeek answers `Function call should
+         ;; not be used with prefix` (400, measured 2026-09-24). Never beside
+         ;; a grammar, which forces the call at sampling on an endpoint that
+         ;; renders tools into the prefix.
+         native (when (and (seq tools) (config/supports? config :native-tools)
+                           (not use-prefill?) (not grammar*))
+                  (mapv (fn [t] {:type "function" :function t}) tools))]
     (cond-> {:model (:model config)
              :messages (if use-prefill?
                          ;; `:prefix true` is what makes the provider CONTINUE
@@ -205,9 +232,16 @@
 
       grammar* (assoc :grammar grammar*)
 
-      ;; Only the forced tool is exposed.
+      native (assoc :tools native)
+
+      ;; A force names its tool. With the surface already native the array
+      ;; stays whole, so the forced turn's prefix is the same bytes as every
+      ;; other turn's; otherwise only the forced tool is exposed.
       forcing?
-      (assoc :tools [{:type "function" :function force-tool}]
+      (assoc :tools (cond
+                      (nil? native) [{:type "function" :function force-tool}]
+                      (some #(= (:name force-tool) (get-in % [:function :name])) native) native
+                      :else (conj native {:type "function" :function force-tool}))
              :tool_choice {:type "function"
                            :function {:name (:name force-tool)}})
 
@@ -230,12 +264,9 @@
   (parse-chat [_ body]
     (when-let [choice (first (:choices body))]
       (let [msg (:message choice)]
-        {;; A forced tool_choice response carries the call in tool_calls, not
-         ;; content — fold it into the fence convention so downstream is blind to
-         ;; how the call was produced.
-         :content (if-let [tc (first (:tool_calls msg))]
-                    (tool-call->fence tc)
-                    (:content msg))
+        {;; A native call arrives in tool_calls, not content — folded into the
+         ;; fence convention so downstream is blind to how the call was made.
+         :content (native-content msg)
          :reasoning (get msg reasoning-key)
          :finish-reason (or (:finish_reason choice) "stop")
          ;; The model that ANSWERED, as the provider names it, or nil when

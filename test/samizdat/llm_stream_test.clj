@@ -99,3 +99,14 @@
                            (fn [_] (throw (ex-info "no deltas on an error" {}))))]
         (is (= 400 (:status r)))
         (is (= "{\"error\":{\"message\":\"bad request\"}}" (:body r)))))))
+
+(deftest an-error-frame-mid-stream-is-the-reply
+  ;; A stream can end in `data: {"error": {...}}` — GLM sends its business
+  ;; codes that way. The frame has no choices, so it folded into nothing and
+  ;; the call read as an empty reply, misreported and never classified
+  ;; (karamazov-jvdu). The error is what comes back.
+  (let [acc (reduce stream/accumulate nil
+                    [(chunk {:content "Hel"})
+                     {:error {:code "1302" :message "请求过快"}}])]
+    (is (= {:error {:code "1302" :message "请求过快"}}
+           (select-keys (stream/completion acc) [:error])))))

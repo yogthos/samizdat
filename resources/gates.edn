@@ -4054,6 +4054,15 @@
    :prediction "the branch commits a change, runs a test, or ships"
    :window 3}]
 
+ :native-tool-description-chars
+ {:value 240 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-jl1f"]
+  :doc "How many characters of each tool's description go in the native
+        `tools` array (samizdat.llm.toolspec), cut at a sentence end. The
+        array rides in every request and the full prose is already in the
+        system prompt, so a sentence or two is what it is for; eval's
+        paragraph is ~1500 characters. Absent, descriptions go whole."}
+
  :forceable-tools
  ;; Schemas for the tools a gate may FORCE via native tool_choice (tier 3b:
  ;; data). Only the terminal tools — forcing a mid-task tool would be the

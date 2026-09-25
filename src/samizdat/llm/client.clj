@@ -169,15 +169,39 @@
                     overhead)]
     (min ceiling (max floor derived))))
 
+(defn business-codes
+  "The provider business codes an error body carries, as strings: its
+  `error.code`, `code` or `error_code`, and a `[1302]`-style prefix on its
+  message — how BigModel reports them (ZCode reads the same places). Never a
+  number found in free text: a token count is not a code."
+  [body]
+  (let [fields [(get-in body [:error :code]) (:code body) (:error_code body)]
+        texts [(get-in body [:error :message]) (:message body) (:msg body) (:error_msg body)]]
+    (into #{}
+          (concat (keep #(when (and (some? %) (re-matches #"\d{3,6}" (str %))) (str %)) fields)
+                  (keep #(second (re-find #"^\s*\[(\d{3,6})\]" (str %))) texts)))))
+
+(defn- retryable-code?
+  "Whether the body names a business code wordlists.edn
+  :retryable-business-codes lists — a per-minute limit, an overload, a
+  server hiccup — which is retried whatever status carries it
+  (karamazov-jvdu). An older project without the list retries none this way."
+  [body]
+  (boolean (some (or (lexicon/wordlist :retryable-business-codes) #{})
+                 (business-codes body))))
+
 (defn classify
-  "Decide what to do about a non-2xx response.
+  "Decide what to do about a response that failed.
 
   :retry — transient, try again. :fatal — do not retry, the answer will not
   change. Anything unrecognized is fatal, because retrying an error we do not
-  understand spends budget to learn nothing."
+  understand spends budget to learn nothing. A retryable business code wins
+  over the status: GLM carries per-minute limits under a 400, and inside a
+  200."
   [adapter status body]
   (cond
     (and (= 429 status) (adapter/usage-cap? adapter status body)) :fatal
+    (retryable-code? body) :retry
     (= 429 status) :retry
     (>= status 500) :retry
     (= 408 status) :retry
@@ -238,6 +262,38 @@
         (cancel/after-blocking!)
         r))))
 
+(defn- failure
+  "The outcome of a response that failed — a non-2xx, or a 2xx whose body is
+  an error: the retry decision, the error text, and the reason when there is
+  one (a context overflow, a usage cap)."
+  [adapter status decoded resp]
+  ;; A context overflow outranks the status-code ladder: it is the one
+  ;; 5xx that is deterministic, and the reason travels from where it is
+  ;; detected so the loop can respond by compacting rather than retrying
+  ;; (karamazov-d41).
+  (let [overflow? (context-overflow? (:body resp))
+        ;; A wall, not a window: DeepSeek answers 402 "Insufficient
+        ;; Balance", and any status can carry the usage-cap wording the
+        ;; adapter knows. Retrying spends the run's budget against
+        ;; something that will not move (dirge PR 689), so it is fatal and
+        ;; the reason travels so a supervisor tells a wall from a bug.
+        cap? (and (not overflow?)
+                  (or (= 402 status)
+                      (adapter/usage-cap? adapter status decoded)))]
+    (cond-> {:outcome (if (or overflow? cap?)
+                        :fatal
+                        (classify adapter status decoded))
+             :headers (:headers resp)
+             :error (str (adapter/display-name adapter) " error " status
+                         (when-let [m (or (adapter/error-message adapter decoded)
+                                          (some-> (:msg decoded) str not-empty))]
+                           (str " — " m))
+                         (when-not decoded
+                           (str " — " (subs (str (:body resp))
+                                            0 (min 300 (count (str (:body resp))))))))}
+      overflow? (assoc :reason :context-overflow)
+      cap?      (assoc :reason :usage-cap))))
+
 (defn- post-once* [adapter config request url]
   (let [;; Whether the prefill in the request was actually sent — the adapter
         ;; drops it where the endpoint cannot continue a trailing assistant
@@ -277,9 +333,13 @@
       (log/warn (adapter/display-name adapter) "rate-limited for"
                 (long (/ ms 1000)) "s — latched for every branch"))
     (if (<= 200 status 299)
-      (if-let [err (adapter/error-message adapter decoded)]
-        ;; Some providers return 200 with an error object in the body.
-        {:outcome :fatal :error (str (adapter/display-name adapter) " API error: " err)}
+      (if (or (adapter/error-message adapter decoded)
+              (and (false? (:success decoded)) (seq (business-codes decoded))))
+        ;; Some providers return 200 with an error object in the body — GLM
+        ;; with its business codes. Classified like any other failure, so a
+        ;; per-minute limit there is retried and a 1261 is an overflow
+        ;; rather than a flat "API error" (karamazov-jvdu).
+        (failure adapter status decoded resp)
         (if-let [parsed (adapter/parse-chat adapter decoded)]
           (let [merged (message/merge-reasoning (:content parsed) (:reasoning parsed))]
             (if (str/blank? merged)
@@ -341,30 +401,7 @@
            :error (str (adapter/display-name adapter)
                        " reply had no completion in it: "
                        (subs (str (:body resp)) 0 (min 300 (count (str (:body resp))))))}))
-      ;; A context overflow outranks the status-code ladder: it is the one
-      ;; 5xx that is deterministic, and the reason travels from where it is
-      ;; detected so the loop can respond by compacting rather than retrying
-      ;; (karamazov-d41).
-      (let [overflow? (context-overflow? (:body resp))
-            ;; A wall, not a window: DeepSeek answers 402 "Insufficient
-            ;; Balance", and any status can carry the usage-cap wording the
-            ;; adapter knows. Retrying spends the run's budget against
-            ;; something that will not move (dirge PR 689), so it is fatal and
-            ;; the reason travels so a supervisor tells a wall from a bug.
-            cap? (and (not overflow?)
-                      (or (= 402 status)
-                          (adapter/usage-cap? adapter status decoded)))]
-        (cond-> {:outcome (if (or overflow? cap?)
-                            :fatal
-                            (classify adapter status decoded))
-                 :headers (:headers resp)
-                 :error (str (adapter/display-name adapter) " error " status
-                             (when-let [m (adapter/error-message adapter decoded)] (str " — " m))
-                             (when-not decoded
-                               (str " — " (subs (str (:body resp))
-                                                0 (min 300 (count (str (:body resp))))))))}
-          overflow? (assoc :reason :context-overflow)
-          cap?      (assoc :reason :usage-cap))))))
+      (failure adapter status decoded resp))))
 
 ;; --- the public surface -----------------------------------------------------
 
@@ -379,7 +416,7 @@
   ([adapter config messages] (chat adapter config messages nil))
   ([adapter config messages {:keys [max-tokens temperature max-retries prefill force-tool
                                     cache-key reasoning-effort grammar reasoning-budget
-                                    on-delta]}]
+                                    on-delta tools]}]
    (let [request {:messages (message/prepare messages)
                   :max-tokens (or max-tokens (:max-tokens config))
                   :temperature (or temperature (:temperature config))
@@ -414,7 +451,10 @@
                   ;; Somebody watching the reply as it is written: with an
                   ;; endpoint that can stream (:stream), each delta goes to
                   ;; it as it arrives (samizdat.llm.stream).
-                  :on-delta on-delta}
+                  :on-delta on-delta
+                  ;; The tool surface as native specs (samizdat.llm.toolspec);
+                  ;; the adapter sends it where the endpoint's features say.
+                  :tools tools}
          ;; The read timeout is sized to the budget being asked for: a big
          ;; max-tokens legitimately takes longer than a small one, and a fixed
          ;; bound cut off long generations and re-billed them (see

@@ -1040,9 +1040,49 @@
         "credit_balance_exhausted" "organization_spend_limit_exceeded"
         "project_spend_limit_exceeded" "organization_usage_limit_exceeded")
       ;; and the codes that same table marks RETRYABLE stay a window: a
-      ;; concurrency cap or a per-minute limit clears on its own.
+      ;; per-minute limit, an overload or a server hiccup clears on its own.
       (are [code] (= :retry (client/classify a 429 {:error {:code code :message "请求过快"}}))
-        "1302" "1303" "1305" "3008" "3010"))))
+        "1302" "1303" "1305" "1312"))
+
+    (testing "3008-3010 and 1304 are walls: ZCode's table marks them terminal"
+      ;; An earlier reading recorded them as retryable concurrency caps; the
+      ;; table, read directly on 2026-09-24, has retryable false for all four
+      ;; (karamazov-jvdu).
+      (are [code] (= :fatal (client/classify a 429 {:error {:code code :message "限额"}}))
+        "1304" "3008" "3009" "3010"))
+
+    (testing "a retryable business code is retried whatever status carries it"
+      ;; GLM answers some of these under a 400 (or a 200); the status ladder
+      ;; alone called them fatal and the branch lost the turn.
+      (are [body] (= :retry (client/classify a 400 body))
+        {:error {:code "1302" :message "并发数过高"}}
+        {:error {:code 1312 :message "overloaded"}}
+        {:error {:message "[1305][rate limit] slow down"}}
+        {:code 1234 :msg "network error" :success false}
+        {:error_code "2007" :error_msg "server busy"})
+      (is (= :fatal (client/classify a 400 {:error {:code "1214" :message "bad param"}}))
+          "a code the table does not list keeps the status's answer")
+      (is (= :fatal (client/classify a 400 {:error {:message "token count 13022 too long"}}))
+          "a figure in the text is not a code"))))
+
+(deftest an-error-in-a-200-body-is-classified-like-any-other
+  ;; GLM can answer 200 with {success false, code ...}; that was always a
+  ;; fatal "API error", so a per-minute limit ended the call.
+  (let [a (registry/adapter-for :glm)
+        calls (atom 0)]
+    (with-redefs [http/post (fn [& _]
+                              (swap! calls inc)
+                              (if (= 1 @calls)
+                                {:status 200 :body (json/write-str {:error {:code "1302" :message "请求过快"}})}
+                                {:status 200 :body (json/write-str {:choices [{:message {:content "ok"}
+                                                                               :finish_reason "stop"}]})}))
+                  samizdat.cancel/sleep! (fn [_] nil)]
+      (is (= "ok" (:content (client/chat a {:model "m" :max-retries 1} [{:role "user" :content "x"}]))))
+      (is (= 2 @calls)))
+    (testing "and a context overflow in one is an overflow"
+      (with-redefs [http/post (fn [& _] {:status 200 :body (json/write-str {:error {:code "1261" :message "Prompt exceeds max length"}})})]
+        (let [e (try (client/chat a {:model "m"} [{:role "user" :content "x"}]) (catch Exception ex ex))]
+          (is (= :context-overflow (:reason (ex-data e)))))))))
 
 (deftest a-402-is-a-usage-cap-and-is-not-retried
   ;; DeepSeek answers 402 "Insufficient Balance" when the account is out of
@@ -1942,3 +1982,106 @@
       (with-redefs [client/probe-llama-cpp (fn [_] (throw (ex-info "probed" {})))]
         (is (= {:provider :local} (client/with-discovery {:provider :local})))))
     (client/forget-discoveries!)))
+
+(deftest deepseeks-dsml-call-is-the-call-it-unmistakably-is
+  ;; deepseek-v4-flash writes its native call syntax into the text: the XML
+  ;; form with every tag prefixed `｜DSML｜` in FULLWIDTH bars (U+FF5C), in
+  ;; run ab935047 doubled and followed by a space. Nothing matched it — the
+  ;; call parser looked for <invoke>, the display for an ASCII `|DSML|` — so
+  ;; all 11 such turns in endless-flight were answered "No ```tool-call
+  ;; block", and the agent log showed the raw markup.
+  (let [doubled (str "<think>Let me read the file.</think>\n"
+                     "<｜｜DSML｜｜ calls>\n"
+                     "<｜｜DSML｜｜ invoke name=\"read_file\">\n"
+                     "<｜｜DSML｜｜ parameter name=\"path\" string=\"true\">.samizdat/manual.edn</｜｜DSML｜｜ parameter>\n"
+                     "<｜｜DSML｜｜ parameter name=\"anchors\" string=\"false\">true</｜｜DSML｜｜ parameter>\n"
+                     "</｜｜DSML｜｜ invoke>\n"
+                     "</｜｜DSML｜｜ calls>\n")
+        single (str "Reading it.\n"
+                    "<｜DSML｜function_calls>\n"
+                    "<｜DSML｜invoke name=\"patch\">\n"
+                    "<｜DSML｜parameter name=\"path\" string=\"true\">src/flight/draw.clj</｜DSML｜parameter>\n"
+                    "<｜DSML｜parameter name=\"edits\" string=\"false\">[{\"from\": \"24:bf3\", \"to\": \"24:bf3\"}]</｜DSML｜parameter>\n"
+                    "<｜DSML｜parameter name=\"count\" string=\"false\">3</｜DSML｜parameter>\n"
+                    "</｜DSML｜invoke>\n"
+                    "</｜DSML｜function_calls>")]
+    (testing "the doubled form run ab935047 wrote"
+      (let [p (fence/parse-tool-call doubled {})]
+        (is (= "read_file" (:name p)))
+        (is (= ".samizdat/manual.edn" (get-in p [:args :path])))
+        (is (true? (get-in p [:args :anchors])) "string=\"false\" is a JSON value: a boolean")
+        (is (:dsml? p) "recorded, not quietly normalised")))
+    (testing "the documented single-bar form"
+      (let [p (fence/parse-tool-call single {})]
+        (is (= "patch" (:name p)))
+        (is (= [{:from "24:bf3" :to "24:bf3"}] (get-in p [:args :edits])))
+        (is (= 3 (get-in p [:args :count])))))
+    (testing "a reader sees the words, not the markup"
+      (is (= "Reading it." (fence/prose single)))
+      (is (= "" (fence/prose doubled))))))
+
+(deftest string-true-keeps-a-json-looking-value-a-string
+  ;; `string="true"` is the model saying the body is TEXT; a body that happens
+  ;; to parse as JSON (an EDN vector, a numeric id) stays the string it is.
+  (let [p (fence/parse-tool-call
+           (str "<invoke name=\"write_file\">\n"
+                "<parameter name=\"content\" string=\"true\">[\"a\" \"b\"]</parameter>\n"
+                "<parameter name=\"id\" string=\"true\">42</parameter>\n"
+                "</invoke>") {})]
+    (is (= "[\"a\" \"b\"]" (get-in p [:args :content])))
+    (is (= "42" (get-in p [:args :id])))))
+
+(deftest the-tools-travel-natively-where-the-endpoint-takes-them
+  ;; DeepSeek's and Zhipu's own harnesses send `tools` on every request; with
+  ;; none, deepseek-v4-flash wrote DSML into its content (karamazov-jl1f).
+  (let [specs [{:name "done" :description "Finish." :parameters {:type "object" :properties {:answer {}}}}
+               {:name "read_file" :description "Read." :parameters {:type "object" :properties {:path {}}}}]
+        ds (registry/adapter-for :deepseek)
+        glm (registry/adapter-for :glm)
+        ds-cfg {:base-url "https://api.deepseek.com/beta" :model "deepseek-v4-flash"
+                :features (config/features-of :deepseek)}
+        glm-cfg {:base-url "https://open.bigmodel.cn/api/coding/paas/v4" :model "glm-5.3"
+                 :features (config/features-of :glm)}
+        msgs [{:role "user" :content "x"}]]
+    (testing "every turn, not only a forced one"
+      (doseq [[a cfg] [[ds ds-cfg] [glm glm-cfg]]]
+        (let [body (adapter/chat-body a cfg {:messages msgs :tools specs})]
+          (is (= (mapv (fn [s] {:type "function" :function s}) specs) (:tools body)))
+          (is (nil? (:tool_choice body)) "the model chooses"))))
+    (testing "not where the endpoint was not measured to take them"
+      (is (nil? (:tools (adapter/chat-body ds (assoc ds-cfg :features #{}) {:messages msgs :tools specs})))))
+    (testing "not beside a prefill: DeepSeek 400s `Function call should not be used with prefix`"
+      (let [body (adapter/chat-body ds ds-cfg {:messages msgs :tools specs
+                                               :prefill "```tool-call\n{\"name\": \"done\""})]
+        (is (nil? (:tools body)))
+        (is (some :prefix (:messages body)))))
+    (testing "a native force keeps the whole array — the prefix it lands in unchanged — and names the tool"
+      (let [body (adapter/chat-body glm glm-cfg {:messages msgs :tools specs
+                                                 :force-tool {:name "done" :description "Finish."
+                                                              :parameters {:type "object"}}})]
+        (is (= ["done" "read_file"] (mapv #(get-in % [:function :name]) (:tools body))))
+        (is (= {:type "function" :function {:name "done"}} (:tool_choice body)))))))
+
+(deftest a-native-call-keeps-the-words-around-it
+  ;; glm-5.3 answered a tools request with a sentence AND a tool_call. The
+  ;; sentence is what the agent log shows; replacing the content with the
+  ;; fence dropped it.
+  (let [glm (registry/adapter-for :glm)
+        reply (fn [msg] {:choices [{:message msg :finish_reason "tool_calls"}]})]
+    (let [p (adapter/parse-chat glm (reply {:content "I'll add inc2."
+                                            :tool_calls [{:function {:name "write_file"
+                                                                     :arguments "{\"path\":\"a.clj\"}"}}]}))]
+      (is (str/starts-with? (:content p) "I'll add inc2."))
+      (is (= {:name "write_file" :args {:path "a.clj"}}
+             (select-keys (fence/parse-tool-call (:content p) {}) [:name :args]))))
+    (testing "arguments that are not JSON stay as written, for the repair ladder and the model to see"
+      (let [p (adapter/parse-chat glm (reply {:tool_calls [{:function {:name "write_file"
+                                                                       :arguments "{\"path\": \"a.clj\",}"}}]}))
+            parsed (fence/parse-tool-call (:content p) {})]
+        (is (str/includes? (:content p) "\"path\": \"a.clj\",}"))
+        (is (= "a.clj" (get-in parsed [:args :path])) "a trailing comma is the ladder's to fix")))
+    (testing "every call the reply made is kept; the fence rule picks and counts"
+      (let [p (adapter/parse-chat glm (reply {:tool_calls [{:function {:name "read_file" :arguments "{\"path\":\"a\"}"}}
+                                                           {:function {:name "read_file" :arguments "{\"path\":\"b\"}"}}]}))
+            parsed (fence/parse-tool-call (:content p) {})]
+        (is (= 2 (:fences parsed)))))))

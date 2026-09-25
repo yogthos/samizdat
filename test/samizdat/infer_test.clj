@@ -503,3 +503,18 @@
       (is (nil? @seen) "no watcher asked for, so the call is not streamed")
       (is (empty? (filter #(= :delta (:kind %)) (events/collect sub))))
       (finally (events/unsubscribe! sub)))))
+
+(deftest a-call-carries-the-branchs-tools-where-the-endpoint-takes-them
+  ;; The specs come from the branch's own system prompt (llm.toolspec), and
+  ;; only an endpoint with :native-tools is handed them (karamazov-jl1f).
+  (let [seen (atom nil)
+        tape {:id "B1" :messages [{:role "system" :content "Tools:\n```\nread_file({path})\n    Read a file.\n```"}
+                                  {:role "user" :content "go"}]
+              :turns []}]
+    (with-redefs [samizdat.llm.client/chat
+                  (fn [_ _ _ opts] (reset! seen opts)
+                    {:content (fenced "read_file" "{\"path\": \"a\"}") :finish-reason "stop"})]
+      ((infer/complete-fn {:llm-adapter ::a :llm-config {:features #{:native-tools}}} {:journal? false}) tape)
+      (is (= ["read_file"] (mapv :name (:tools @seen))))
+      ((infer/complete-fn {:llm-adapter ::a :llm-config {:features #{}}} {:journal? false}) tape)
+      (is (nil? (:tools @seen)) "an endpoint not measured to take them is not sent them"))))
