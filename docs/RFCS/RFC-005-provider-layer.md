@@ -156,6 +156,7 @@ is the question a cell, a gate or an adapter asks.
 |---|---|
 | `:prefill` | a trailing assistant message is continued (DeepSeek /beta, llama.cpp --jinja) |
 | `:native-tool-choice` | tools + `tool_choice {type function}` |
+| `:native-tools` | the whole tool surface as `tools` on every turn not forced by a prefill or grammar |
 | `:grammar` | a GBNF `grammar` applied at sampling (llama.cpp) |
 | `:cache-prompt` | `cache_prompt` / `id_slot` prefix reuse (llama.cpp) |
 | `:reasoning-budget` | `reasoning_budget_tokens` per call (llama.cpp) |

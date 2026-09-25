@@ -175,6 +175,7 @@
             [samizdat.kanban-test]
             [samizdat.security.policy-test]
             [samizdat.llm-test]
+            [samizdat.toolspec-test]
             [samizdat.llm-stream-test]
             [samizdat.prompt-test]
             [samizdat.server-test]
@@ -274,6 +275,7 @@
     samizdat.tui-widgets-test
     samizdat.store-test
     samizdat.llm-test
+    samizdat.toolspec-test
     samizdat.llm-stream-test
     samizdat.agent-test
     samizdat.approval-test

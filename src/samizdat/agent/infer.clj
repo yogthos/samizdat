@@ -63,6 +63,7 @@
             [samizdat.llm.fence :as fence]
             [samizdat.llm.grammar :as grammar]
             [samizdat.llm.message :as message]
+            [samizdat.llm.toolspec :as toolspec]
             [samizdat.store.journal :as journal]
             [samizdat.tape :as tape]))
 
@@ -378,7 +379,16 @@
            ;; endpoint's features and policy (force-mechanism).
            {:keys [grammar] forced-prefill :prefill forced-tool :force-tool}
            (force-mechanism ctx tape)
-           reasoning-budget (reasoning-budget-for ctx tape)]
+           reasoning-budget (reasoning-budget-for ctx tape)
+           ;; The tool surface as native specs, read off the documentation
+           ;; this branch's system prompt gives it, gates.edn's exact schemas
+           ;; winning (llm.toolspec). Only for an endpoint measured to take
+           ;; them; the adapter still leaves them off a prefilled or grammar
+           ;; turn (karamazov-jl1f).
+           tools (when (config/supports? (:llm-config ctx) :native-tools)
+                   (not-empty (toolspec/for-messages (:messages tape)
+                                                     (gates/threshold :forceable-tools)
+                                                     (gates/threshold :native-tool-description-chars))))]
      (loop [attempt 1]
        (let [;; Somebody may be watching the run: its calls stream, and what
              ;; the model writes goes onto the bus as it is written. Not a
@@ -408,6 +418,7 @@
                                         ;; A per-call thinking cap on llama.cpp
                                         ;; (reasoning-budget-for).
                                         reasoning-budget (assoc :reasoning-budget reasoning-budget)
+                                        tools (assoc :tools tools)
                                         ;; The stable conversation key an endpoint
                                         ;; pins its prefix cache to. Only the local
                                         ;; adapter emits it; see LR-5.

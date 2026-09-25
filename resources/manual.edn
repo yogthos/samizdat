@@ -213,7 +213,7 @@
    {:name samizdat.llm.grammar/fence-grammar
     :summary "The GBNF under which a llama.cpp reply's tool calls are well-formed fences naming only the listed tools — required (the force) or optional (the restriction). Cache-safe: applied at sampling, never in the prompt. gates.edn :local-grammar says when it is sent."}
    {:name samizdat.config/supports?
-    :summary "Whether this run's endpoint has a feature (:prefill :grammar :cache-prompt :reasoning-budget :thinking-toggle :native-tool-choice :reasoning-effort) — declared per provider preset, added to by the startup probe, editable in a config file's :llm :features. The one question to ask before choosing a mechanism; the adapter emits only what the features allow."}
+    :summary "Whether this run's endpoint has a feature (:prefill :grammar :cache-prompt :reasoning-budget :thinking-toggle :native-tool-choice :native-tools :reasoning-effort) — declared per provider preset, added to by the startup probe, editable in a config file's :llm :features. The one question to ask before choosing a mechanism; the adapter emits only what the features allow."}
    {:name samizdat.config/features-of
     :summary "The features a provider preset declares, before discovery."}
    {:name samizdat.agent.infer/force-mechanism

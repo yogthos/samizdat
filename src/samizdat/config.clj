@@ -257,7 +257,11 @@
               ;; URL continues a flagged assistant prefix; `thinking {type
               ;; disabled}` reliably yields no reasoning; a native tool_choice
               ;; is honoured, but only with thinking off (the adapter knows).
-              :features #{:prefill :native-tool-choice :thinking-toggle :reasoning-effort :stream}
+              ;; :native-tools — the tool surface sent on every request —
+              ;; measured 2026-09-24: native tool_calls back with thinking on,
+              ;; and no DSML in the content (samizdat.llm.toolspec).
+              :features #{:prefill :native-tool-choice :native-tools :thinking-toggle
+                          :reasoning-effort :stream}
               :key-env  "DEEPSEEK_API_KEY"
               ;; deepseek-v4-flash is the development and test model: cheap
               ;; enough to run the beam repeatedly. deepseek-v4-pro is the
@@ -275,7 +279,9 @@
               ;; Measured 2026-09-06: ignores a trailing assistant prefix
               ;; entirely, cannot be told not to think (effort low is the
               ;; least), honours tool_choice {type function} despite its docs.
-              :features #{:native-tool-choice :reasoning-effort :stream}
+              ;; :native-tools measured 2026-09-24 as for DeepSeek, and it is
+              ;; how Zhipu's own harness (ZCode) calls every GLM model.
+              :features #{:native-tool-choice :native-tools :reasoning-effort :stream}
               :key-env  "ZHIPU_API_KEY"
               :model    "glm-5.3"
               ;; GLM benefits from a low temperature on coding tasks (dirge
@@ -320,6 +326,8 @@
 ;;   :prefill             continues a trailing assistant message (the fence
 ;;                        force; the reply content may or may not repeat it)
 ;;   :native-tool-choice  tools + tool_choice {type function}
+;;   :native-tools        the whole tool surface sent as `tools` on every turn
+;;                        a prefill or grammar does not force (llm.toolspec)
 ;;   :grammar             a GBNF `grammar` field applied at sampling (llama.cpp)
 ;;   :cache-prompt        `cache_prompt` / `id_slot` prefix-cache reuse (llama.cpp)
 ;;   :reasoning-budget    `reasoning_budget_tokens` per call (llama.cpp)

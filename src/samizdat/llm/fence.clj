@@ -470,11 +470,17 @@
   ;; contains a literal `</parameter` — and silently merging two parameters is
   ;; the worst available failure: it produces a call that looks well-formed and
   ;; is wrong.
-  #"(?s)<parameter\s+name=\"([^\"]+)\"[^>]*>(.*?)</param(?:eter)?[^>]*>")
+  ;;
+  ;; The attributes are captured: `string="false"` is the model saying the
+  ;; body is a JSON value (see xml-value).
+  #"(?s)<parameter\s+name=\"([^\"]+)\"([^>]*)>(.*?)</param(?:eter)?[^>]*>")
 
 (defn- xml-value
-  "A parameter's value. Verbatim, except that something which is entirely a
-  number becomes one.
+  "A parameter's value, given the tag's attributes. DeepSeek's form says
+  which it is: `string=\"true\"` is text, kept verbatim, and `string=\"false\"`
+  is a JSON value — a boolean, a number, a list — read as one (verbatim if it
+  does not parse). Without the attribute: verbatim, except that something
+  which is entirely a number becomes one.
 
   Values here are NOT JSON-escaped — that is the whole reason a model reaches
   for this form when handing over a Lean proof — so the text is kept exactly
@@ -482,9 +488,15 @@
   not cosmetic: `top_k` reaches `(take k)` and a string throws there. Anchored
   and strict, so `s#1392` and a claim that merely mentions a figure stay
   strings."
-  [s]
-  (let [t (str/trim s)]
+  [attrs s]
+  (let [t (str/trim s)
+        declared (second (re-find #"string=\"(true|false)\"" (str attrs)))]
     (cond
+      (= "true" declared) s
+
+      (= "false" declared)
+      (let [{:keys [ok value]} (read-json t)] (if ok value s))
+
       (re-matches #"-?\d+" t) (parse-long t)
 
       ;; A JSON array or object. The XML parameter form has no way to express
@@ -504,6 +516,25 @@
 
       :else s)))
 
+;; DeepSeek's DSML: the same XML call form with each tag name prefixed
+;; `｜DSML｜`, in FULLWIDTH bars (U+FF5C) — documented as
+;; `<｜DSML｜function_calls>`, and written by deepseek-v4-flash in run ab935047
+;; as `<｜｜DSML｜｜ calls>`, bars doubled and a space after. Neither matched
+;; <invoke>, so every such call was a no-call (11 turns in endless-flight).
+;; Rewritten to the plain form rather than given patterns of its own, so it
+;; gets every tolerance the XML form has already earned. ASCII bars too.
+(def ^:private dsml-calls-re #"(</?)[|｜]+\s*DSML\s*[|｜]+\s*(?:function_)?calls\s*>")
+(def ^:private dsml-tag-re #"(</?)[|｜]+\s*DSML\s*[|｜]+\s*")
+
+(defn- dsml? [s] (boolean (re-find dsml-tag-re (str s))))
+
+(defn- undsml
+  "`s` with DSML's tag prefixes removed, so its calls read as the XML form."
+  [s]
+  (-> (str s)
+      (str/replace dsml-calls-re "$1function_calls>")
+      (str/replace dsml-tag-re "$1")))
+
 (defn- xml-call
   "The response's last complete <invoke>, as {:name :args}, or nil.
 
@@ -511,12 +542,15 @@
   model that drafts one call while reasoning and then issues the real one puts
   the real one last."
   [response]
-  (when-let [m (last (re-seq invoke-re (or response "")))]
-    (let [[_ nm body] m]
-      (when-not (str/blank? nm)
-        {:name nm
-         :args (reduce (fn [acc [_ k v]] (assoc acc (keyword k) (xml-value v)))
-                       {} (re-seq parameter-re (or body "")))}))))
+  (let [dsml (dsml? response)]
+    (when-let [m (last (re-seq invoke-re (undsml response)))]
+      (let [[_ nm body] m]
+        (when-not (str/blank? nm)
+          (cond-> {:name nm
+                   :args (reduce (fn [acc [_ k attrs v]] (assoc acc (keyword k) (xml-value attrs v)))
+                                 {} (re-seq parameter-re (or body "")))}
+            dsml (assoc :dsml? true)))))))
+
 
 ;; Qwen's chat template wraps its native calls in <tool_call> tags around
 ;; plain JSON. Under a prefilled fence the model emits prose then its native
@@ -660,7 +694,6 @@
    #"(?s)<tool[-_]call>.*?(?:</tool[-_]calls?>|\z)"
    #"(?s)<function_calls>.*?(?:</function_calls>|\z)"
    #"(?s)<invoke\b[^>]*>.*?(?:</invoke>|\z)"
-   #"(?s)<\|DSML\|[^>]*>.*?(?:</\|DSML\|[^>]*>|\z)"
    #"</?(?:invoke|parameter|function_calls|tool[-_]calls?)\b[^>]*>"])
 
 (defn prose
@@ -669,7 +702,7 @@
   the other — and the blank runs the cuts leave collapsed. Display only; the
   transcript keeps the reply as it came."
   [s]
-  (-> (reduce #(str/replace %1 %2 "") (strip-think s) call-markup-res)
+  (-> (reduce #(str/replace %1 %2 "") (undsml (strip-think s)) call-markup-res)
       (str/replace #"\n[ \t]*(?:\n[ \t]*){2,}" "\n\n")
       str/trim))
 

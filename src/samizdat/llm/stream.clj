@@ -56,6 +56,10 @@
   (let [{:keys [delta finish_reason]} (first (:choices chunk))]
     (cond-> (merge acc (select-keys chunk [:id :model :created]))
       (:usage chunk) (assoc :usage (:usage chunk))
+      ;; An error frame mid-stream — GLM sends its business codes this way.
+      ;; It has no choices, so it folded into nothing and the call read as an
+      ;; empty reply (karamazov-jvdu); kept, it comes back as the reply.
+      (:error chunk) (assoc :error (:error chunk))
       finish_reason (assoc :finish-reason finish_reason)
       delta
       (update :message
@@ -79,7 +83,8 @@
                                              (update :role #(or % "assistant")))
                                    (seq calls) (assoc :tool_calls (mapv val (sort-by key calls))))
                         :finish_reason finish-reason}]}
-      usage (assoc :usage usage))))
+      usage (assoc :usage usage)
+      (:error acc) (assoc :error (:error acc)))))
 
 (defn delta
   "What a chunk adds that a reader sees: {:text} and/or {:reasoning}, or nil."
