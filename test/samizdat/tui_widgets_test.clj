@@ -797,3 +797,15 @@
                                                         {:settings cmds :input "/zz x"} {})))))
   (testing "and nothing at all while typing a directive"
     (is (= [:empty] (render :widget/command-hints {:settings cmds :input "fix it"} {})))))
+
+(deftest up-and-down-at-the-edges-of-the-box-walk-the-history
+  ;; The box says when Up leaves its top row or Down its bottom one — only it
+  ;; knows which row the cursor is on — and those are the history's, the way
+  ;; a shell's prompt has them. Inside a longer entry they still move rows.
+  (let [hit (atom [])
+        state {:on {:history-back #(swap! hit conj :back)
+                    :history-forward #(swap! hit conj :forward)}}
+        inp (first (nodes-of :input (render :widget/input state {})))]
+    ((:on-up-edge (props-of inp)))
+    ((:on-down-edge (props-of inp)))
+    (is (= [:back :forward] @hit))))

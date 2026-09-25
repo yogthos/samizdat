@@ -39,7 +39,8 @@
   trigger: it used to fire the pass every two minutes whether or not the
   implementer had done anything, which evaluated no turn in particular and
   spent looks on a run that was idle."
-  (:require [clojure.tools.logging :as log]
+  (:require [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [ebb.core :as ebb]
             [samizdat.cancel :as cancel]
             [samizdat.events :as events]
@@ -142,6 +143,14 @@
                  (not (contains? wanted (keyword (name (:severity %))))))
             findings)))
 
+(defn evidence-text
+  "A finding's measurements as words — `turns 1, retried 10` — for a notice
+  a person reads in the agent log as well as the branch. Printing the map
+  put `{:turns 1, :retried 10}` in front of both (karamazov-8cih)."
+  [evidence]
+  (str/join ", " (for [[k v] evidence]
+                   (str (str/replace (name k) "-" " ") " " v))))
+
 (defn- react!
   "Say something about one finding, through the one write path.
 
@@ -159,7 +168,7 @@
     :payload {:text (prompt/render "watch-intervention"
                                    {:kind (name kind)
                                     :detail detail
-                                    :evidence (pr-str evidence)})}})
+                                    :evidence (evidence-text evidence)})}})
   (journal/note! conn run-id :watch-intervention
                  {:data {:finding kind :evidence evidence}})
   (log/info "watch: raised" kind "-" detail))

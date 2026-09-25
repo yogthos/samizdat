@@ -141,38 +141,35 @@
          ;; point gets it: the tests, the benchmark runner and a REPL session
          ;; all bring the system up through start! without going through -main.
          _ (platform/set-max-response-ms! (get-in cfg [:llm :max-response-ms]))
-         ;; Ask the endpoint what it is, once, at startup. A llama.cpp server
-         ;; answers /props with a total_slots; anything else answers something
-         ;; else, and the probe returns nil. RFC-005 recorded that :local was
-         ;; decided by which config key an endpoint sat under, so a
-         ;; llama-server configured as :openai silently lost prefix pinning —
-         ;; asking is what fixes that, and asking is specifically NOT the same
-         ;; as sending the knob hopefully, which a strict OpenAI-compatible
-         ;; server answers with a 422 on the whole request.
+         ;; Ask the endpoint what it is. A llama.cpp server answers /props
+         ;; with a total_slots; anything else answers something else. RFC-005
+         ;; recorded that :local was decided by which config key an endpoint
+         ;; sat under, so a llama-server configured as :openai silently lost
+         ;; prefix pinning — asking is what fixes that, and asking is
+         ;; specifically NOT the same as sending the knob hopefully, which a
+         ;; strict OpenAI-compatible server answers with a 422 on the whole
+         ;; request. A llama.cpp server is also asked whether its chat
+         ;; template takes a system message after a user turn — the shape of
+         ;; every compaction fold; Qwen3.5's 500s on it (karamazov-fp21.2).
          ;;
-         ;; Merged into the LLM config so it reaches chat-body the way every
-         ;; other endpoint fact does, and so a test can set it directly.
-         probed (llm-client/probe-llama-cpp (:llm cfg))
-         ;; What the endpoint can do: the preset's declared set plus what
-         ;; the probe found (config/apply-discovery). Everything downstream
-         ;; reads :llm :features rather than guessing from a URL or an id.
-         cfg (update cfg :llm config/apply-discovery probed)
-         _ (when probed
-             (log/info "endpoint identified as llama.cpp:"
-                       (:total-slots probed) "KV slots — prefix caching on"
-                       (when-let [m (:model-id probed)] (str "— serving " m))))
+         ;; llm-client/with-discovery remembers the answer per endpoint, and
+         ;; only an answer: a server that is down now is asked again when a
+         ;; run starts, rather than being taken for `not llama.cpp` for the
+         ;; life of the process (karamazov-k9q3). Merged into the LLM config
+         ;; so it reaches chat-body the way every other endpoint fact does.
+         discovered (llm-client/with-discovery (:llm cfg))
+         cfg (assoc cfg :llm (dissoc discovered :unreachable))
+         _ (if-let [why (:unreachable discovered)]
+             (log/warn "model endpoint" (:base-url discovered) "is not answering:" why
+                       "— it will be asked again when a run starts")
+             (when (:llama-cpp? discovered)
+               (log/info "endpoint identified as llama.cpp:"
+                         (:total-slots discovered) "KV slots — prefix caching on"
+                         (when-let [m (:model-id discovered)] (str "— serving " m)))
+               (log/info "compaction fold marker role:"
+                         (or (:fold-role discovered) "system (probe inconclusive)"))))
          _ (log/info "provider" (get-in cfg [:llm :provider]) "features:"
                      (str/join " " (map name (sort (get-in cfg [:llm :features])))))
-         ;; And whether its chat template takes a system message after a user
-         ;; turn — the shape of every compaction fold. Qwen3.5's template 500s
-         ;; on it (karamazov-fp21.2); asked once here so the fold cell knows
-         ;; which role to carry before the first fold, not after the first
-         ;; fatal call. gates.edn :fold-role decides what to do with the answer.
-         fold-role (when probed (llm-client/probe-fold-role (:llm cfg)))
-         cfg (cond-> cfg fold-role (assoc-in [:llm :fold-role] fold-role))
-         _ (when probed
-             (log/info "compaction fold marker role:"
-                       (or fold-role "system (probe inconclusive)")))
          ;; Which config files were read, so a surprising value is traceable
          ;; to its layer rather than to a guess about which file won.
          _ (doseq [{:keys [layer path present? error]} (config/config-sources

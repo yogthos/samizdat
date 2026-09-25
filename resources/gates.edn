@@ -286,6 +286,17 @@
         images alive through a slow foreign call, at the cost of a branch
         waiting that much longer for a REPL that may never answer."}
 
+ :endpoint-preflight
+ {:value true :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-rhrf"]
+  :doc "Whether starting or resuming a run is refused, with a 503 naming the
+        endpoint, when the run's model endpoint does not answer at all
+        (refused, unresolvable, timed out) — the same probe that learns what
+        the endpoint is. Run 0f4b9b55 started with the local model server
+        down and spent six turns of three attempts on every branch and the
+        supervisor before :provider-error-limit abandoned them. False starts
+        the run anyway and leaves the outage to that limit."}
+
  :run-start-deadline-ms
  {:value 120000 :kind :threshold :capability-tunable? true
   :provenance ["karamazov-iev2" "karamazov-5fyo"]

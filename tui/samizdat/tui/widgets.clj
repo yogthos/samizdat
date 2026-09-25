@@ -744,7 +744,12 @@
                                        "the problem to work on — Enter starts a run, /help for commands"
                                        "a directive for the run — Enter sends, /help for commands"))
                       :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
-                      :on-enter on-enter}]
+                      :on-enter on-enter
+                      ;; Up past the top row, Down past the bottom one: the
+                      ;; history, as at a shell prompt. Only the box knows
+                      ;; which row its cursor is on, so it says when.
+                      :on-up-edge (fn [] (when-let [f (get-in state [:on :history-back])] (f)))
+                      :on-down-edge (fn [] (when-let [f (get-in state [:on :history-forward])] (f)))}]
              [:button {:label "start" :style :ascii
                        :on-click (fn [] (when-let [f (get-in state [:on :start])]
                                           (f (or (:input state) ""))))}]

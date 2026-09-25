@@ -40,6 +40,7 @@
             [samizdat.workflow :as wf]
             [samizdat.agent.state :as state]
             [samizdat.agent.resume :as resume]
+            [samizdat.api.client :as api-client]
             [samizdat.api.control :as api-control]
             [samizdat.api.openai :as openai]
             [samizdat.api.runs :as api-runs]
@@ -949,3 +950,99 @@
         (is (= ["B1"] (mapv :id (:branches (resume/resume! {:conn c :config {}
                                                             :llm-adapter :a :llm-config {}
                                                             :run-id rid})))))))))
+
+(deftest a-run-on-an-endpoint-that-refuses-connections-is-refused-at-the-door
+  ;; Run 0f4b9b55 started with the local model server down: every branch and
+  ;; the supervisor spent 6 turns of 3 attempts each on `connection refused`
+  ;; before the provider-error limit abandoned them (karamazov-rhrf). The
+  ;; run start asks the endpoint first — the same probe that learns what it
+  ;; is — and a refusal is a 503 that says what to do, not a run.
+  (with-db [c]
+    (let [ran (atom nil)]
+      (with-redefs [beam/run! (fn [{:keys [on-start llm-config]}]
+                                (reset! ran llm-config)
+                                (let [rid (str (random-uuid))]
+                                  (on-start rid)
+                                  {:run-id rid :status :completed}))]
+        (testing "unreachable: refused, and no run"
+          (with-redefs [llm/with-discovery
+                        (fn [llm] (assoc llm :unreachable "connection refused: 127.0.0.1:8080"))]
+            (let [r (api-control/start-run! {:conn c :config {:llm {:provider :local
+                                                                    :base-url "http://127.0.0.1:8080/v1"}}}
+                                            {:problem "p"})]
+              (is (= 503 (:status r)))
+              (is (str/includes? (get-in r [:body :error :message]) "127.0.0.1:8080"))
+              (is (nil? @ran)))))
+        (testing "reachable: the run gets what the probe learned, and not the probe's bookkeeping"
+          (with-redefs [llm/with-discovery (fn [llm] (assoc llm :llama-cpp? true))]
+            (let [r (api-control/start-run! {:conn c :config {:llm {:provider :local
+                                                                    :base-url "http://127.0.0.1:8080/v1"}}}
+                                            {:problem "p"})]
+              (is (= "running" (get-in r [:body :status])))
+              (is (loop [n 0] (cond @ran true (< n 100) (do (Thread/sleep 10) (recur (inc n))) :else false)))
+              (is (:llama-cpp? @ran))
+              (is (not (contains? @ran :unreachable))))))
+        (testing "the policy can turn the refusal off"
+          (reset! ran nil)
+          (with-redefs [llm/with-discovery
+                        (fn [llm] (assoc llm :unreachable "connection refused: 127.0.0.1:8080"))
+                        gates/threshold (let [t gates/threshold]
+                                          (fn [k] (if (= k :endpoint-preflight) false (t k))))]
+            (let [r (api-control/start-run! {:conn c :config {:llm {:provider :local
+                                                                    :base-url "http://127.0.0.1:8080/v1"}}}
+                                            {:problem "p"})]
+              (is (= "running" (get-in r [:body :status])))
+              (is (loop [n 0] (cond @ran true (< n 100) (do (Thread/sleep 10) (recur (inc n))) :else false)))
+              (is (not (contains? @ran :unreachable))))))))))
+
+(deftest a-resume-on-an-endpoint-that-refuses-connections-is-refused-too
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          resumed (atom nil)]
+      (runs/finish-run! c rid :failed nil)
+      (with-redefs [resume/resumable? (constantly true)
+                    resume/resume! (fn [m] (reset! resumed m) {:status :completed})
+                    llm/with-discovery
+                    (fn [llm] (assoc llm :unreachable "connection refused: 127.0.0.1:8080"))]
+        (let [r (api-control/resume! {:conn c :config {:llm {:provider :local
+                                                             :base-url "http://127.0.0.1:8080/v1"}}}
+                                     rid {})]
+          (is (= 503 (:status r)))
+          (is (nil? @resumed))
+          (is (nil? (get @api-control/active rid)) "the refused resume claims no slot"))))))
+
+(deftest a-front-end-waits-longer-for-a-run-than-the-server-does
+  ;; A client that gives up first reports a failure for a run that started,
+  ;; and a re-post starts a second one (karamazov-5fyo). The server's wait
+  ;; went to 120 s and the front ends' stayed at 40.
+  (is (< (lexicon/policy :run-start-deadline-ms) api-client/start-timeout-ms)))
+
+(deftest a-project-that-has-not-adopted-the-preflight-still-starts-runs
+  ;; A project's gates.edn and role map are its own copies, and a key a later
+  ;; release adds reaches it only when the supervisor adopts the new file.
+  ;; endless-flight's lacked :endpoint-preflight and the endpoint-unreachable
+  ;; role, and POST /v1/runs answered 500 over the missing key.
+  (with-db [c]
+    (let [ran (atom nil)
+          cfg {:llm {:provider :local :base-url "http://127.0.0.1:8080/v1"}}
+          down (fn [llm] (assoc llm :unreachable "connection refused: 127.0.0.1:8080"))]
+      (with-redefs [beam/run! (fn [{:keys [on-start llm-config]}]
+                                (reset! ran llm-config)
+                                (let [rid (str (random-uuid))]
+                                  (on-start rid)
+                                  {:run-id rid :status :completed}))
+                    llm/with-discovery down]
+        (testing "no such policy: the run starts as it did before the key existed"
+          (with-redefs [gates/threshold (let [t gates/threshold]
+                                          (fn [k] (when-not (= k :endpoint-preflight) (t k))))]
+            (let [r (api-control/start-run! {:conn c :config cfg} {:problem "p"})]
+              (is (= "running" (get-in r [:body :status]))))))
+        (testing "the policy but no prose for it: still a 503, saying what the endpoint said"
+          (with-redefs [samizdat.prompt/render (let [r samizdat.prompt/render]
+                                                 (fn [role & more]
+                                                   (if (= role "endpoint-unreachable")
+                                                     (throw (ex-info "no role endpoint-unreachable" {}))
+                                                     (apply r role more))))]
+            (let [r (api-control/start-run! {:conn c :config cfg} {:problem "p"})]
+              (is (= 503 (:status r)))
+              (is (str/includes? (get-in r [:body :error :message]) "connection refused: 127.0.0.1:8080")))))))))

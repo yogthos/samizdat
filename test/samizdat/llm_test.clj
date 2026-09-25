@@ -1855,3 +1855,90 @@
         (is (= "ok" (:content (client/chat (registry/adapter-for :local)
                                            {:base-url "http://h/v1" :model "m" :features features}
                                            [{:role "user" :content "x"}] opts))))))))
+
+(deftest only-a-transport-failure-is-retried-as-one
+  ;; Run 74ddebb8's supervisor logged `transport: Cannot fork inside a
+  ;; try/finally` 2004 times: an error raised by the harness's own code
+  ;; inside the call was retried as a network blip, each retry failing the
+  ;; same way, and the run read it as an unreliable provider
+  ;; (karamazov-q8dy). A socket failure is an IOException; anything else
+  ;; is a bug here, and retrying a bug only reproduces it.
+  (let [a (registry/adapter-for :deepseek)]
+    (testing "a harness error is fatal, not retried, and not called transport"
+      (let [calls (atom 0)]
+        (with-redefs [http/post (fn [& _]
+                                  (swap! calls inc)
+                                  (throw (ex-info "Cannot fork inside a try/finally" {})))]
+          (let [e (try (client/chat a {:model "m"} [{:role "user" :content "go"}])
+                       (catch Exception ex ex))]
+            (is (= :harness-error (:reason (ex-data e))))
+            (is (= 1 @calls))
+            (is (not (str/includes? (ex-message e) "transport")))))))
+    (testing "a refused connection is still retried"
+      (let [calls (atom 0)]
+        (with-redefs [http/post (fn [& _]
+                                  (swap! calls inc)
+                                  (throw (java.net.ConnectException. "connection refused: h:1")))
+                      samizdat.cancel/sleep! (fn [_] nil)]
+          (let [e (try (client/chat a {:model "m" :max-retries 1}
+                                    [{:role "user" :content "go"}])
+                       (catch Exception ex ex))]
+            (is (= 2 @calls))
+            (is (str/includes? (ex-message e) "transport: connection refused"))))))))
+
+(deftest a-probe-that-gets-no-answer-says-so
+  ;; The startup probe used to read `connection refused` as `not llama.cpp`,
+  ;; so a harness started before its model server ran every run without
+  ;; prefix caching or the fold role the template needs, for the life of the
+  ;; process (karamazov-k9q3). No answer is not an answer.
+  (let [cfg {:base-url "http://127.0.0.1:1/v1" :model "m"}]
+    (with-redefs [http/get (fn [& _] (throw (java.net.ConnectException.
+                                             "connection refused: 127.0.0.1:1")))]
+      (is (= {:unreachable "connection refused: 127.0.0.1:1"}
+             (client/probe-llama-cpp cfg))))
+    (with-redefs [http/get (fn [& _] {:status 404 :body "nope"})]
+      (is (nil? (client/probe-llama-cpp cfg)) "an answer that is not llama.cpp stays nil"))))
+
+(deftest discovery-remembers-answers-and-never-a-failure
+  (client/forget-discoveries!)
+  (let [probes (atom 0)
+        up? (atom false)
+        cfg {:base-url "http://127.0.0.1:8080/v1" :model "local-model" :features #{:stream}}]
+    (with-redefs [client/probe-llama-cpp (fn [_]
+                                           (swap! probes inc)
+                                           (if @up?
+                                             {:llama-cpp? true :total-slots 4 :model-id "Bonsai"}
+                                             {:unreachable "connection refused: 127.0.0.1:8080"}))
+                  client/probe-fold-role (fn [_] "user")]
+      (testing "down: the llm is unchanged but for the reason, and nothing is kept"
+        (let [llm (client/with-discovery cfg)]
+          (is (= "connection refused: 127.0.0.1:8080" (:unreachable llm)))
+          (is (not (:llama-cpp? llm)))
+          (is (nil? (:fold-role llm)))))
+      (testing "up later: the next ask probes again and gets the facts"
+        (reset! up? true)
+        (let [llm (client/with-discovery cfg)]
+          (is (nil? (:unreachable llm)))
+          (is (:llama-cpp? llm))
+          (is (= "Bonsai" (:model-id llm)))
+          (is (= "user" (:fold-role llm)))
+          (is (contains? (:features llm) :stream) "declared features kept")
+          (is (< 1 (count (:features llm))) "llama.cpp features added")))
+      (testing "an answer is remembered per endpoint"
+        (let [n @probes]
+          (client/with-discovery cfg)
+          (is (= n @probes)))))
+    (testing "a hosted endpoint that is not llama.cpp is asked once and never for a fold role"
+      (client/forget-discoveries!)
+      (let [asked-fold (atom 0) n (atom 0)
+            hosted {:base-url "https://api.example.com/v1" :model "x"}]
+        (with-redefs [client/probe-llama-cpp (fn [_] (swap! n inc) nil)
+                      client/probe-fold-role (fn [_] (swap! asked-fold inc) "system")]
+          (is (= hosted (client/with-discovery hosted)))
+          (client/with-discovery hosted)
+          (is (= 1 @n))
+          (is (zero? @asked-fold)))))
+    (testing "an endpoint with no url is not probed"
+      (with-redefs [client/probe-llama-cpp (fn [_] (throw (ex-info "probed" {})))]
+        (is (= {:provider :local} (client/with-discovery {:provider :local})))))
+    (client/forget-discoveries!)))

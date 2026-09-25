@@ -74,7 +74,7 @@
 (defn chat-completion
   "Run the harness on the last user message and answer in OpenAI's shape."
   [{:keys [conn config]} body]
-  (let [llm-config (:llm config)
+  (let [[llm-config refusal] (api-control/discovered (:llm config))
         adapter (registry/adapter-for (:provider llm-config))
         model (:model llm-config)
         messages (or (:messages body) (get body "messages"))
@@ -83,6 +83,9 @@
       (str/blank? problem)
       {:status 400
        :body {:error {:message "no user message in `messages`" :type "invalid_request_error"}}}
+
+      ;; The endpoint did not answer at all (gates.edn :endpoint-preflight).
+      refusal refusal
 
       ;; The bypass. Same model, same question, no verification.
       (or (:raw body) (get body "raw"))

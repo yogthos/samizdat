@@ -23,9 +23,10 @@
   a compiled C++ shim. The main suite stays buildable with nothing but jolt;
   everything about the TUI that can be checked as data is over there."
   (:require [clojure.test :as t]
+            [samizdat.tui.input-test]
             [samizdat.tui.mouse-test]))
 
-(def namespaces '[samizdat.tui.mouse-test])
+(def namespaces '[samizdat.tui.input-test samizdat.tui.mouse-test])
 
 (defn run []
   (apply t/run-tests namespaces))

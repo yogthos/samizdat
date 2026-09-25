@@ -88,6 +88,7 @@
    :dispatch-refused "prompts/dispatch-refused.md"
    :drift "prompts/drift.md"
    :emergency-review "prompts/emergency-review.md"
+   :endpoint-unreachable "prompts/endpoint-unreachable.md"
    :eval-calls-main "prompts/eval-calls-main.md"
    :eval-error "prompts/eval-error.md"
    :eval-image "prompts/eval-image.md"
