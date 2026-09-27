@@ -25,6 +25,7 @@
   every other panel work identically on a live run and a finished one."
   (:require [clojure.test :refer [deftest testing is]]
             [db.jdbc]
+            [samizdat.agent.live :as live]
             [samizdat.api.runs :as api-runs]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
@@ -49,6 +50,38 @@
       (let [board (:tasks (api-runs/get-run c rid))]
         (is (= 2 (count board)))
         (is (= #{"wire the panel" "and close it"} (set (map :title board))))))))
+
+(def ^:private cfg
+  "A server whose default is a local model and which also declares a hosted
+  one: the endless-flight arrangement, where a run started on DeepSeek was
+  captioned with the server's model and gauged against its 32k window."
+  {:llm {:provider :local :provider-name :bonsai :model "local-model"
+         :context-window 32768}
+   :providers {:bonsai {:type :local}
+               :deepseek-flash {:type :deepseek :model "deepseek-v4-flash"}}})
+
+(deftest the-run-detail-says-which-model-the-run-is-on
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p" :provider "deepseek-flash"
+                                  :model "deepseek-v4-flash"})]
+      (try
+        (is (= {:provider "deepseek-flash" :model "deepseek-v4-flash" :context_window 128000}
+               (:llm (:run (api-runs/get-run c rid cfg))))
+            "the run's own provider and ITS window, not the server's default")
+        (testing "and a live switch, which the row never learns about"
+          (live/set! rid nil {:model "deepseek-v4-pro"})
+          (is (= "deepseek-v4-pro" (get-in (api-runs/get-run c rid cfg) [:run :llm :model])))
+          (live/set! rid nil {:provider :bonsai})
+          (is (= {:provider "bonsai" :model "local-model" :context_window 32768}
+                 (select-keys (get-in (api-runs/get-run c rid cfg) [:run :llm])
+                              [:provider :model :context_window]))
+              "a provider switch is the default's own config, probe and all"))
+        (finally (live/forget-run! rid)))))
+  (testing "a provider nothing declares any more still names what the row says"
+    (with-db [c]
+      (let [rid (runs/start-run! c {:problem "p" :provider "gone" :model "m1"})]
+        (is (= {:provider "gone" :model "m1"}
+               (get-in (api-runs/get-run c rid cfg) [:run :llm])))))))
 
 (deftest a-closed-task-leaves-the-board
   ;; The panel shows what is being worked on. A board that accumulated every

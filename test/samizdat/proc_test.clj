@@ -21,7 +21,11 @@
             [clojure.test :refer [deftest is]]
             [samizdat.engine.proc :as proc]))
 
-(def ^:private needle "sleep 987")
+;; Unique to this test process. The sweep is `pkill -f` on it, so a fixed
+;; name let two suites on one machine — two worktrees, CI beside a dev run —
+;; kill each other's child mid-test: the victim's `wait` returned, the run
+;; ended before its timeout, and the other side found a survivor.
+(def ^:private needle (str "sleep " (+ 900000 (rand-int 99999))))
 
 (defn- survivors []
   ;; pgrep exits 1 when nothing matches — an empty list, not an error.
@@ -43,8 +47,8 @@
   (sweep!)
   (try
     (let [r (proc/run {:timeout-ms 1500} "sh" "-c"
-                      "trap '' TERM; sleep 987 & wait")]
-      (is (:timeout r) "the run times out")
+                      (str "trap '' TERM; " needle " & wait"))]
+      (is (:timeout r) (str "the run times out; it returned " (pr-str r)))
       (Thread/sleep 300)
       (is (empty? (survivors))
           "a TERM-trapping child tree must not outlive the reap"))

@@ -19,10 +19,8 @@
 (ns samizdat.server
   "The HTTP surface.
 
-  Routes are matched against a vector of [method path-or-pattern handler]
-  rather than through a router library. There are a dozen of them, and a
-  dependency that needs its :clj reader branches switched on costs more to load
-  than it saves.
+  Routes are a table of ruuter route maps, matched best-match: a literal
+  segment beats a parameter, so the table's order does not matter.
 
   This namespace is pure logic: redefining `handler` against a running process
   takes effect on the next request. See samizdat.system."
@@ -42,7 +40,8 @@
             [samizdat.llm.client :as llm-client]
             [samizdat.store.db :as db]
             [samizdat.system :as system]
-            [samizdat.userspace :as userspace]))
+            [samizdat.userspace :as userspace]
+            [ruuter.core :as ruuter]))
 
 (defn json-response
   ([body] (json-response 200 body))
@@ -219,6 +218,9 @@
      :untracked (:untracked snap)
      :last_commit (:last-commit snap)
      :provider (some-> (get-in cfg [:llm :provider]) name)
+     ;; The alias config.edn declared (bonsai, deepseek-flash): what the
+     ;; footer names and what /model takes. :provider is its adapter type.
+     :provider_name (some-> (get-in cfg [:llm :provider-name]) name)
      :model (get-in cfg [:llm :model])
      :context_window (get-in cfg [:llm :context-window])
      ;; What happens when a run needs a person: refuse, block (ask), or a
@@ -230,8 +232,15 @@
 
 ;; --- routing ----------------------------------------------------------------
 ;;
-;; A route is [method pattern handler]. A pattern segment starting with ':'
-;; binds; the bindings arrive under :path-params.
+;; ruuter route maps: {:method :path :response}. A path segment starting with
+;; ':' binds, and the bindings arrive under the request's :params. Matching is
+;; best-match — a literal segment beats a parameter — so the order of the
+;; table does not matter.
+;;
+;; A handler defined above is named as #(handler %), not #'handler: ruuter
+;; calls :response only when it is a fn?, which a var is not, and calling
+;; through the name still reads the var on every request, so a REPL
+;; redefinition lands without restarting the server.
 
 (def ^:private slow-ms-cap 10000)
 
@@ -251,103 +260,110 @@
     (Thread/sleep ms)
     (json-response {:slept_ms ms})))
 
+(defn- not-found [req]
+  (json-response 404 {:error {:message (str "Not found: "
+                                            (str/upper-case (name (:request-method req)))
+                                            " " (:uri req))
+                              :type "not_found"}}))
+
 (def routes
-  [[:get "/health" #'health]
-   [:get "/slow" #'slow]
-   [:get "/v1/models" #'models]
-   [:post "/v1/chat/completions" #'chat-completions]
-   [:get "/v1/harness/gates" #'gate-table]
+  [{:method :get :path "/health" :response #(health %)}
+   {:method :get :path "/slow" :response #(slow %)}
+   {:method :get :path "/v1/models" :response #(models %)}
+   {:method :post :path "/v1/chat/completions" :response #(chat-completions %)}
+   {:method :get :path "/v1/harness/gates" :response #(gate-table %)}
    ;; The terminal UI's own arrangement, so a front end that holds no
    ;; database handle can still see the version the agent saved.
-   [:get "/v1/harness/layout" #'layout-table]
-   [:get "/v1/harness/models" #'harness-models]
+   {:method :get :path "/v1/harness/layout" :response #(layout-table %)}
+   {:method :get :path "/v1/harness/models" :response #(harness-models %)}
    ;; Which project, which branch, how dirty, which model — the footer and the
    ;; GIT panel. Served because only this process is bound to the project.
-   [:get "/v1/harness/project" #'project-table]
+   {:method :get :path "/v1/harness/project" :response #(project-table %)}
    ;; The approval mode for this server session: {"mode": "block"} to have
    ;; the runs ask a person, "refuse" to not, null for the project's own.
-   [:post "/v1/harness/approval-mode"
+   {:method :post :path "/v1/harness/approval-mode" :response
     (fn [req] (let [m (:mode (body-json req))]
                 (if-let [now (approval/set-mode! m)]
                   (json-response {:mode (name now)})
                   (json-response 400 {:error {:message (str "not a mode: " (pr-str m)
                                                             "; one of "
-                                                            (str/join ", " (map name (sort approval/modes))))}}))))]
-   [:get "/v1/runs" (fn [req] (json-response (api-runs/list-runs (system/conn)
-                                                                 (long-param req "limit"))))]
+                                                            (str/join ", " (map name (sort approval/modes))))}}))))}
+   {:method :get :path "/v1/runs" :response
+    (fn [req] (json-response (api-runs/list-runs (system/conn) (long-param req "limit"))))}
    ;; `(or (:status r) 200)`, the same shape resume uses: a handler that refuses
    ;; says so with a status, and success carries none. Answering 200 with an
    ;; error body let a caller checking only the code read a refusal as success.
-   [:post "/v1/runs" (fn [req] (let [r (control/start-run! (ctx) (body-json req))]
-                                 (json-response (or (:status r) 200) (:body r))))]
-   [:get "/v1/runs/:id" (fn [req]
-                          (if-let [r (api-runs/get-run (system/conn)
-                                                       (get-in req [:path-params :id]))]
-                            (json-response r)
-                            (json-response 404 {:error {:message "no such run"}})))]
-   [:get "/v1/runs/:id/journal"
+   {:method :post :path "/v1/runs" :response
+    (fn [req] (let [r (control/start-run! (ctx) (body-json req))]
+                (json-response (or (:status r) 200) (:body r))))}
+   {:method :get :path "/v1/runs/:id" :response
+    (fn [req] (if-let [r (api-runs/get-run (system/conn) (get-in req [:params :id])
+                                           (system/config))]
+                (json-response r)
+                (json-response 404 {:error {:message "no such run"}})))}
+   {:method :get :path "/v1/runs/:id/journal" :response
     (fn [req] (json-response (api-runs/journal-tail (system/conn)
-                                                    (get-in req [:path-params :id])
+                                                    (get-in req [:params :id])
                                                     (long-param req "since")
-                                                    (long-param req "limit"))))]
+                                                    (long-param req "limit"))))}
    ;; The run PUSHED: every journal event after the cursor (Last-Event-ID, or
    ;; ?since=), then each one as it lands, plus the steps and approvals that
    ;; are never journalled. See samizdat.api.stream.
-   [:get "/v1/runs/:id/events"
-    (fn [req] (stream/response (system/conn) (get-in req [:path-params :id])
-                               (stream/cursor req)))]
-   [:get "/v1/events"
-    (fn [req] (stream/response (system/conn) nil (stream/cursor req)))]
+   {:method :get :path "/v1/runs/:id/events" :response
+    (fn [req] (stream/response (system/conn) (get-in req [:params :id])
+                               (stream/cursor req)))}
+   {:method :get :path "/v1/events" :response
+    (fn [req] (stream/response (system/conn) nil (stream/cursor req)))}
    ;; The live manifest-state trace. No conn: steps are held in memory, not
    ;; journalled — see samizdat.steps.
-   [:get "/v1/runs/:id/steps"
-    (fn [req] (json-response (api-runs/steps-tail (get-in req [:path-params :id])
+   {:method :get :path "/v1/runs/:id/steps" :response
+    (fn [req] (json-response (api-runs/steps-tail (get-in req [:params :id])
                                                   (long-param req "since")
-                                                  (long-param req "limit"))))]
+                                                  (long-param req "limit"))))}
    ;; One turn, whole. The branch listing drops the model's prose because it
    ;; is the bulk; this is how a reader gets it back, a turn at a time.
-   [:get "/v1/runs/:id/branches/:branch/turns/:turn"
-    (fn [req] (let [{:keys [id branch turn]} (:path-params req)]
+   {:method :get :path "/v1/runs/:id/branches/:branch/turns/:turn" :response
+    (fn [req] (let [{:keys [id branch turn]} (:params req)]
                 (if-let [t (api-runs/turn-detail (system/conn) id branch
                                                  (parse-long (str turn)))]
                   (json-response t)
-                  (json-response 404 {:error {:message "no such turn"}}))))]
-   [:get "/v1/runs/:id/branches/:branch"
-    (fn [req] (let [{:keys [id branch]} (:path-params req)]
+                  (json-response 404 {:error {:message "no such turn"}}))))}
+   {:method :get :path "/v1/runs/:id/branches/:branch" :response
+    (fn [req] (let [{:keys [id branch]} (:params req)]
                 (if-let [b (api-runs/branch-detail (system/conn) id branch
                                                    (some-> (query-param req "notes")
                                                            (str/split #",")
                                                            (->> (remove str/blank?)))
                                                    (long-param req "since"))]
                   (json-response b)
-                  (json-response 404 {:error {:message "no such branch"}}))))]
-    [:post "/v1/runs/:id/interventions"
-     (fn [req] (let [r (control/intervene! (system/conn) (system/config)
-                                           (get-in req [:path-params :id])
-                                           (body-json req))]
-                 (json-response (or (:status r) 200) (:body r))))]
-   [:post "/v1/runs/:id/abort"
+                  (json-response 404 {:error {:message "no such branch"}}))))}
+   {:method :post :path "/v1/runs/:id/interventions" :response
+    (fn [req] (let [r (control/intervene! (system/conn) (system/config)
+                                          (get-in req [:params :id])
+                                          (body-json req))]
+                (json-response (or (:status r) 200) (:body r))))}
+   {:method :post :path "/v1/runs/:id/abort" :response
     (fn [req] (let [r (control/abort! (system/conn)
-                                      (get-in req [:path-params :id]))]
-                (json-response (or (:status r) 200) (:body r))))]
-   [:post "/v1/runs/:id/resume"
+                                      (get-in req [:params :id]))]
+                (json-response (or (:status r) 200) (:body r))))}
+   {:method :post :path "/v1/runs/:id/resume" :response
     (fn [req] (let [r (control/resume! {:conn (system/conn)
                                         :config (system/config)}
-                                       (get-in req [:path-params :id])
+                                       (get-in req [:params :id])
                                        (body-json req))]
-                (json-response (or (:status r) 200) (:body r))))]
+                (json-response (or (:status r) 200) (:body r))))}
    ;; Questions waiting on a person: the permission gate and ask_human, which
    ;; share one queue because they differ only in what they carry.
-   [:get "/v1/runs/:id/approvals"
+   {:method :get :path "/v1/runs/:id/approvals" :response
     (fn [req] (json-response {:approvals (approval/pending
-                                          (get-in req [:path-params :id]))}))]
-   [:get "/v1/approvals"
-    (fn [_] (json-response {:approvals (approval/pending nil)}))]
-   [:post "/v1/approvals/:aid"
+                                          (get-in req [:params :id]))}))}
+   {:method :get :path "/v1/approvals" :response
+    (fn [_] (json-response {:approvals (approval/pending nil)}))}
+   {:method :post :path "/v1/approvals/:aid" :response
     (fn [req]
       (let [{:keys [decision note answers always]} (body-json req)
             d (keyword (or decision "deny"))]
-        (if (approval/decide! (get-in req [:path-params :aid])
+        (if (approval/decide! (get-in req [:params :aid])
                               (cond-> {:decision d}
                                 note (assoc :note note)
                                 answers (assoc :answers answers)
@@ -358,34 +374,16 @@
           ;; operator answering a question the first already settled, or a
           ;; wait that expired. 409 says which, in the house style the other
           ;; handlers use — a short noun phrase, not a sentence.
-          (json-response 409 {:error {:message "approval not open"}}))))]
-   [:get "/v1/interventions/kinds" (fn [_] (json-response (control/kinds)))]])
-
-(defn- match-path [pattern uri]
-  (let [ps (str/split (str/replace pattern #"^/" "") #"/")
-        us (str/split (str/replace (or uri "") #"^/" "") #"/")]
-    (when (= (count ps) (count us))
-      (reduce (fn [acc [p u]]
-                (cond
-                  (str/starts-with? p ":") (assoc acc (keyword (subs p 1)) u)
-                  (= p u) acc
-                  :else (reduced nil)))
-              {} (map vector ps us)))))
-
-(defn- match [{:keys [request-method uri]}]
-  (some (fn [[m pattern h]]
-          (when (= m request-method)
-            (when-let [params (match-path pattern uri)]
-              [h params])))
-        routes))
+          (json-response 409 {:error {:message "approval not open"}}))))}
+   {:method :get :path "/v1/interventions/kinds" :response (fn [_] (json-response (control/kinds)))}
+   ;; Anything unmatched, a known path under the wrong method included.
+   {:path :not-found :response #(not-found %)}])
 
 (defn handler [req]
   (try
-    (if-let [[h params] (match req)]
-      (h (assoc req :path-params params))
-      (json-response 404 {:error {:message (str "Not found: "
-                                                (str/upper-case (name (:request-method req)))
-                                                " " (:uri req))
-                                  :type "not_found"}}))
+    ;; The table by name on every request, so a redefined one is what routes.
+    ;; ruuter compiles a table once and caches it by value, which is why the
+    ;; table is a def and not built here.
+    (ruuter/route routes req)
     (catch Throwable e
       (json-response 500 {:error {:message (ex-message e) :type "internal_error"}}))))

@@ -879,96 +879,13 @@
     (is (pos? total) "if this is zero, delete prose-backlog and this test")))
 
 ;; --- the fiber rules (RFC-013, ebb ADR-001) ---------------------------------
-
-(def ^:private ebb-aliases
-  ;; How ebb.core is referred to. The alias is a convention the ratchet
-  ;; depends on: a park spelled through another alias is invisible to it.
-  #{"m" "ebb" "ebb.core"})
-
-(def ^:private park-heads
-  ;; Every ebb operator that parks the fiber or hands work to a thread.
-  '#{? ! via sleep join race any timeout reduce})
-
-(def ^:private park-helpers
-  ;; Samizdat's own helpers that park, by alias: starting a task parks the
-  ;; caller at the spawn handshake, awaiting one parks it on the signal, and
-  ;; a provider call is a `via blk` underneath. The first live run on ebb
-  ;; died at `cancel/start!` inside a `mapv` (2026-09-07), which the ebb-only
-  ;; list above could not see.
-  {"cancel" '#{start! await-or-cancel with-deadline}
-   "llm" '#{chat}
-   "critic" '#{score!}})
-
-(def ^:private lazy-fn-heads
-  ;; Lazy HOFs: their FUNCTION argument runs when the seq is realized, under
-  ;; a counted lock, where a park hangs the carrier. Their collection
-  ;; arguments are evaluated eagerly and are not the hazard.
-  ;;
-  ;; `mapv` and `filterv` are here because in jolt they ARE lazy underneath:
-  ;; jolt-core/clojure/core/00-kernel.clj defines mapv as (vec (apply map f
-  ;; colls)), so the function runs inside the lazy seq's realization, lock
-  ;; held. Measured 2026-09-07 with jolt-locks-held: mapv, filterv, vec/into/
-  ;; doall/first/set/count over a lazy map all run f at 1; reduce, loop,
-  ;; doseq, run!, some, every?, group-by, sort-by, reduce-kv and `into` with
-  ;; a transducer run it at 0. So the loops that may park are loop/recur,
-  ;; reduce, doseq, run! and (into [] (map f) coll) — NOT mapv.
-  '#{map filter remove keep mapcat map-indexed keep-indexed take-while drop-while
-     mapv filterv})
-
-(def ^:private lazy-body-heads
-  ;; Everything inside these is realized lazily.
-  '#{for lazy-seq lazy-cat iterate repeatedly})
-
-(defn- park-call? [x]
-  (and (seq? x)
-       (symbol? (first x))
-       (let [s (first x)]
-         (or (contains? '#{? !} s)
-             (and (namespace s)
-                  (contains? ebb-aliases (namespace s))
-                  (contains? park-heads (symbol (name s))))
-             (and (namespace s)
-                  (contains? (get park-helpers (namespace s) #{}) (symbol (name s))))))))
-
-(defn- parks-under-lazy
-  "Every ebb park call in `form` whose realization would happen inside a lazy
-  sequence body: ADR-001 rule 5, the hang that is not an error."
-  [form]
-  (letfn [(head [x] (when (and (seq? x) (symbol? (first x))) (symbol (name (first x)))))
-          (go [x lazy? acc]
-            (cond
-              (and lazy? (park-call? x)) (conj acc x)
-              (seq? x)
-              (let [h (head x)]
-                (cond
-                  (contains? lazy-body-heads h)
-                  (reduce #(go %2 true %1) acc (rest x))
-                  (contains? lazy-fn-heads h)
-                  ;; the fn argument is lazy, the rest eager
-                  (let [[f & more] (rest x)]
-                    (reduce #(go %2 lazy? %1) (go f true acc) more))
-                  :else (reduce #(go %2 lazy? %1) acc (rest x))))
-              (coll? x) (reduce #(go %2 lazy? %1) acc x)
-              :else acc))]
-    (go form false [])))
+;;
+;; A park inside a lazy body used to raise on a fiber, and a ratchet here
+;; scanned for one. jolt 0.8.13 (the :jolt/min-version) lets a fiber park
+;; there, so the rule and its scanner are gone (jolt-lang/jolt#1142).
 
 (defn- cell-files []
   (sort (map str (fs/glob "resources/cells" "**.clj"))))
-
-(deftest no-park-inside-a-lazy-body
-  ;; Realizing a lazy seq takes a counted lock, and a fiber cannot leave the
-  ;; CPU while its carrier holds one, so an ebb park inside a map/for/lazy-seq
-  ;; body hangs rather than fails. Loops that park are loop/recur, mapv,
-  ;; doseq, reduce, run!. Over src/samizdat and the cells, because both run
-  ;; on the turn's fiber.
-  (let [found (for [file (concat (src-files) (cell-files))
-                    form (forms-of file)
-                    hit (parks-under-lazy form)]
-                {:file file :form (pr-str hit)})]
-    (is (empty? found)
-        (str "an ebb park inside a lazy body is a hang (RFC-013, ADR-001 rule 5); "
-             "realize the sequence eagerly (mapv, doseq, loop/recur, reduce):\n"
-             (str/join "\n" (map #(str "  " (:file %) "  " (:form %)) found))))))
 
 (deftest the-image-runs-the-same-nrepl-as-the-harness
   ;; RFC-013: the project image is started with jolt-lang/nrepl merged over

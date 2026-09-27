@@ -131,16 +131,11 @@
 ;; --- the driver runs on a fiber, and so must these tests -------------------
 ;;
 ;; Every test above drives advance-all from the test thread, where a park is
-;; a plain block and jolt asserts nothing. The live driver is an sp process
-;; on a fiber, and there a park under a counted lock throws "a fiber cannot
-;; leave the CPU while its carrier holds a counted lock". jolt's `mapv` is
-;; (vec (map …)), so a park inside its function IS under one — which is how
-;; the first live run on ebb died at the spawn handshake in advance-all
-;; (2026-09-07, karamazov-p3jo) while the whole suite stayed green. Measured
-;; in isolation: (ebb/sp (mapv #(ebb/? (ebb/sleep 10)) xs)) throws that
-;; error, (ebb/sp (reduce …)) does not. Driven this way against the old
-;; advance-all, the first of these did not fail but HUNG the calling thread
-;; (fifteen minutes at 0% CPU), so a hang here is the bug, not a slow test.
+;; a plain block. The live driver is an sp process on a fiber, and the first
+;; live run on ebb died at the spawn handshake there while the whole suite
+;; stayed green (2026-09-07, karamazov-p3jo; a jolt before 0.8.13 raised on a
+;; park inside mapv). Driven this way, that bug HUNG the calling thread, so
+;; a hang here is the bug, not a slow test.
 
 (deftest advancing-a-branch-whose-turn-parks-works-on-a-fiber
   (let [b (state/new-branch {:id "B1" :problem "p"})]

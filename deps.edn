@@ -1,7 +1,12 @@
 {;; jolt.ffi/write takes the value BEFORE the offset as of jolt 0.8.0, and the
  ;; two spellings are both integers — an older runtime writes to the wrong
  ;; place rather than failing. Declare the floor so it refuses instead.
- :jolt/min-version "0.8.3"
+ ;; 0.8.13: a fiber may park inside a lazy seq's realization (mapv over two
+ ;; collections, filterv, for, doall over map) — before it, a store call
+ ;; there raised whenever another fiber held the connection lock, which is
+ ;; what killed run ab935047 — and a caught exception carries its stack,
+ ;; which a failed run's record hands the agent (jolt-lang/jolt#1142).
+ :jolt/min-version "0.8.13"
 
  :paths ["src" "resources"]
 
@@ -32,6 +37,13 @@
         {:git/url "https://github.com/jolt-lang/ring-chez-adapter"
          :git/tag "v0.7.8"
          :git/sha "124a7399641e409a52a73d2eaa072f031ebbbe38"}
+
+        ;; the HTTP server's routing: a table of route maps, best-match (a
+        ;; literal segment beats a parameter), no dependencies of its own.
+        askonomm/ruuter
+        {:git/url "https://git.nmm.ee/asko/ruuter.git"
+         :git/tag "v2.1.1"
+         :git/sha "263f868cf19e73ccda7cda6b4d4af1d8fe504749"}
 
         ;; durable sessions: jdbc.core over the system libsqlite3 via jolt.ffi
         jolt-lang/db

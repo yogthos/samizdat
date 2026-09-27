@@ -22,7 +22,8 @@
   The first code samizdat wrote about itself: truncate-middle was authored by
   the harness in a supervised self-modification run, then wired into the shell
   tool's output truncation."
-  (:require [clojure.string :as str]))
+  (:require [clojure.main :as main]
+            [clojure.string :as str]))
 
 (defn sh-quote
   "`s` as a single-quoted shell word, safe to interpolate into `sh -c`.
@@ -80,3 +81,16 @@
           head-len (quot (- max-len marker-len) 2)
           tail-len (- max-len marker-len head-len)]
       (str (subs s 0 head-len) marker (subs s (- (count s) tail-len))))))
+
+(defn stack-lines
+  "`e`'s stack as readable lines, innermost first: `ns/fn (file:line)`, the
+  way a person would name the function — `samizdat.agent.beam/spawn-children!`
+  rather than `samizdat.agent.beam$spawn_children_BANG_`. At most `n` lines;
+  nil `n` keeps them all. A throwable with no stack yields []."
+  [e n]
+  (let [frames (keep (fn [[cls _method file line]]
+                       (when cls
+                         (str (main/demunge (str cls))
+                              (when file (str " (" file (when line (str ":" line)) ")")))))
+                     (:trace (Throwable->map e)))]
+    (vec (if n (take n frames) frames))))

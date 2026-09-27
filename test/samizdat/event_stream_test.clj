@@ -24,6 +24,7 @@
             [clojure.test :refer [deftest testing is]]
             [samizdat.api.sse :as sse]
             [samizdat.api.stream :as stream]
+            [samizdat.system :as system]
             [samizdat.approval :as approval]
             [samizdat.events :as events]
             [ring-chez.adapter :as adapter]
@@ -203,9 +204,15 @@
 
 (deftest the-server-routes-both-streams
   (require 'samizdat.server)
-  (let [match @(resolve 'samizdat.server/match)]
-    (is (= {:id "abc"} (second (match {:request-method :get :uri "/v1/runs/abc/events"}))))
-    (is (some? (match {:request-method :get :uri "/v1/events"})))))
+  (let [seen (atom [])]
+    (with-redefs [stream/response (fn [_conn run-id _cursor]
+                                    (swap! seen conj run-id)
+                                    {:status 200})
+                  system/conn (constantly nil)]
+      (let [handler @(resolve 'samizdat.server/handler)]
+        (is (= 200 (:status (handler {:request-method :get :uri "/v1/runs/abc/events"}))))
+        (is (= 200 (:status (handler {:request-method :get :uri "/v1/events"}))))))
+    (is (= ["abc" nil] @seen) "one run's stream, then every run's")))
 
 (deftest the-approval-mode-can-be-set-for-the-session
   (try

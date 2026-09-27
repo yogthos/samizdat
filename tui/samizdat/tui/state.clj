@@ -52,6 +52,9 @@
   {:base base
    :connected? false
    :error nil
+   ;; Whether :error is an outage, which the next poll that gets through
+   ;; clears, rather than an action's refusal, which it must not.
+   :error-outage? false
    ;; Beside :error rather than sharing it: the status line paints an error
    ;; red, and "starting…" is not a failure.
    :notice nil
@@ -97,14 +100,21 @@
 
 ;; --- folding what the pollers fetch -----------------------------------------
 
-(defn- connected [s]
-  (assoc s :connected? true :error nil))
+(defn- connected
+  "A poll got through. It clears the error only when the error was an outage:
+  one an action was answered with — a refused start, abort or steer — is not
+  the poll's to take back. Clearing every error here wiped a refused start
+  before a frame drew it, since start! polls straight after, so \"starting…\"
+  blinked and nothing followed."
+  [s]
+  (cond-> (assoc s :connected? true)
+    (:error-outage? s) (assoc :error nil :error-outage? false)))
 
 (defn- disconnected [s {:keys [error]}]
   ;; Cursors and everything already drawn survive: the point of a cursor is
   ;; that an outage costs nothing, and a panel that blanked on a dropped
   ;; connection would lose the history that says what happened before it.
-  (assoc s :connected? false :error (or error "no server")))
+  (assoc s :connected? false :error (or error "no server") :error-outage? true))
 
 (defn apply-steps
   "Fold a steps tail into the trace.
@@ -389,7 +399,7 @@
   \"starting…\" beside \"HTTP 503\" tells the reader nothing about which
   happened."
   [s msg]
-  (cond-> (assoc s :error (when (not-empty (str msg)) (str msg)))
+  (cond-> (assoc s :error (when (not-empty (str msg)) (str msg)) :error-outage? false)
     (not-empty (str msg)) (assoc :notice nil)))
 
 (defn note-notice
@@ -426,6 +436,8 @@
   (let [status (some-> (get-in s [:detail :run :status]) str)]
     (if (and (:run-id s) (or (nil? status) (= "running" status))) :submit :start)))
 
+(declare note-local)
+
 (defn apply-start
   "Fold the answer to POST /v1/runs.
 
@@ -445,8 +457,11 @@
           ;; having failed.
           (assoc :error nil)
           (note-notice (str "started " (str id))))
-      (note-error s (or (not-empty (str error))
-                        "the server accepted the request and returned no run id")))))
+      ;; Into the conversation as well: the status strip clips at 40
+      ;; columns, which cut an endpoint refusal off at its URL.
+      (let [why (or (not-empty (str error))
+                    "the server accepted the request and returned no run id")]
+        (-> s (note-error why) (note-local [(str "run not started: " why)]))))))
 
 ;; --- the pushed event stream -------------------------------------------------
 

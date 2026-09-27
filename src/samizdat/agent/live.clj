@@ -37,9 +37,14 @@
 
 (defn set!
   "Merge `m` ({:model …}, {:provider …}, {:reasoning-effort …}) into
-  `run-id`'s overrides for `role` — :all when it names none."
+  `run-id`'s overrides for `role` — :all when it names none.
+
+  A provider named without a model drops the model an earlier switch set:
+  it means that provider's declared model, and keeping the old one asked
+  the new endpoint for a model it does not serve."
   [run-id role m]
-  (swap! overrides update-in [run-id (or role :all)] merge m)
+  (swap! overrides update-in [run-id (or role :all)]
+         (fn [o] (merge (cond-> o (and (:provider m) (not (:model m))) (dissoc :model)) m)))
   nil)
 
 (defn get

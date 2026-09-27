@@ -31,6 +31,8 @@
             [jolt.time]
             [clojure.data.json :as json]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.live :as live]
+            [samizdat.config :as config]
             [samizdat.store.db :as db]
             [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
@@ -84,7 +86,40 @@
                               WHERE run_id = ? AND kind = 'run-seeded' LIMIT 1"
                              run-id])))
 
-(defn get-run [conn run-id]
+(defn run-llm
+  "Which model `run` is on: the provider alias and model its row recorded,
+  with any live switch (samizdat.agent.live) over them, and that provider's
+  context window — what a front end captions the run with and gauges its
+  fill against. The row alone is the model the run STARTED on, and the
+  server's own :llm is the model the NEXT run starts on; neither is this.
+
+  The server's default provider resolves to `config`'s own :llm, which
+  carries what the startup probe learned (a llama.cpp -c); any other is
+  resolved afresh. One nothing declares any more names what the row says
+  and claims no window."
+  [config {:keys [id provider model]}]
+  (let [row {:provider (not-empty (str provider)) :model (not-empty (str model))}
+        default (:llm config)
+        default? (fn [p] (some #(= (some-> p name) (some-> % name))
+                               [(:provider-name default) (:provider default)]))
+        base (try (cond
+                    (nil? (:provider row)) nil
+                    (default? (:provider row)) (assoc default :model (:model row))
+                    :else (config/provider-llm config (keyword (:provider row))
+                                               {:model (:model row)}))
+                  (catch Throwable _ nil))
+        llm (when base
+              (try (live/apply-to base id nil config) (catch Throwable _ base)))]
+    (if-not llm
+      (into {} (remove (comp nil? val)) row)
+      (into {} (remove (comp nil? val))
+            {:provider (some-> (or (:provider-name llm) (:provider llm)) name)
+             :model (:model llm)
+             :context_window (:context-window llm)}))))
+
+(defn get-run
+  ([conn run-id] (get-run conn run-id nil))
+  ([conn run-id config]
   (when-let [r (runs/get-run conn run-id)]
     (let [branches (runs/branches conn run-id)]
       {:run (-> r
@@ -92,7 +127,8 @@
               ;; A status of 'running' is a claim the loop makes once and never
               ;; revisits, so on its own it cannot distinguish a working run
               ;; from a dead one. These two let a client tell.
-              (assoc :last_progress_at (runs/last-progress-at conn run-id)
+              (assoc :llm (run-llm config r)
+                     :last_progress_at (runs/last-progress-at conn run-id)
                      :stalled (runs/stalled? conn run-id stall-threshold-ms)
                      ;; beam_width is the repopulation FLOOR — repopulate only
                      ;; fires below it and branch-out grows past it — so the
@@ -149,7 +185,7 @@
        ;; that threw (karamazov-atgu). nil until the run has ended and
        ;; distilled; the front ends hold no database handle, so the note
        ;; has to ride the detail to reach an operator.
-       :distilled (journal/last-note conn run-id :distilled)})))
+       :distilled (journal/last-note conn run-id :distilled)}))))
 
 (defn journal-tail
   "Everything after `since`. The `next` cursor is what the client sends back,

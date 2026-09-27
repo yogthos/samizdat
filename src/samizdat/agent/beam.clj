@@ -78,6 +78,7 @@
             [samizdat.session :as session]
             [samizdat.lexicon :as lexicon]
             [samizdat.symbolic :as sym]
+            [samizdat.util :as util]
             [samizdat.agent.oversight :as oversight]
             [samizdat.agent.live :as live]
             [samizdat.repl :as repl]
@@ -192,12 +193,6 @@
   branch per :critic-every window. A scoring that fails leaves the previous
   scores in place — stale information beats invented information."
   [ctx branches turn]
-  ;; reduce, not mapv: the critic call parks (a provider call), and in jolt
-  ;; `mapv` runs its function under a counted lock — measured 2026-09-07, see
-  ;; the base-test ratchet no-park-inside-a-lazy-body. A park there is
-  ;; "a fiber cannot leave the CPU while its carrier holds a counted lock",
-  ;; and it only shows on a fiber, which is exactly where the live driver
-  ;; runs and the tests did not.
   (reduce (fn [acc b]
             (conj acc
                   (if (and (state/active? b)
@@ -625,14 +620,6 @@
                               (handoff/forfeit! (:conn ctx) (:run-id ctx) b turn
                                                 (quot (or deadline 0) 1000)))
                       (update :timeouts (fnil inc 0))))
-        ;; Both passes are `reduce`, not `mapv`: starting a task parks the
-        ;; driver at the spawn handshake and awaiting one parks it on the
-        ;; signal, and in jolt `mapv` runs its function under a counted lock
-        ;; (measured 2026-09-07; ratchet no-park-inside-a-lazy-body). Under
-        ;; mapv the first live run on ebb died here, at the spawn, with
-        ;; "a fiber cannot leave the CPU while its carrier holds a counted
-        ;; lock" — and only live, because the tests drove advance-all from a
-        ;; plain thread, where a park is a block and nothing is asserted.
         pending (reduce (fn [acc b]
                           (let [prev (when cancelling (get @cancelling (:id b)))]
                             (conj acc
@@ -805,10 +792,20 @@
   ;; (the round drives a turn manifest per branch) wraps once per level, and
   ;; peeling a single layer still reports "execution error" from the level
   ;; above.
+  ;;
+  ;; The NODE is the state whose handler threw: maestro's per-handler wrapper
+  ;; carries it as :current-state-id. The machine's own wrapper holds
+  ;; :current-state-id ::error and :last-state-id, which is the state that
+  ;; last COMPLETED — reading that one named :escalate for run ab935047 when
+  ;; :spawn had thrown. It is the fallback for an error raised between
+  ;; handlers (a dispatch that matched nothing).
   (loop [cur e, node nil, depth 0]
     (let [d (ex-data cur)
           inner (:error d)
-          node (or (:last-state-id d) node)]
+          s (:current-state-id d)
+          node (cond (and s (not= :maestro.core/error s)) s
+                     (:last-state-id d) (:last-state-id d)
+                     :else node)]
       (if (and (instance? Throwable inner) (< depth 8))
         (recur inner node (inc depth))
         {:throwable cur :node node}))))
@@ -912,14 +909,18 @@
           (try
             (journal/note! conn run-id :run-error
                            {:data {:error (ex-message throwable)
-                                   ;; jolt's Throwable has an empty stack trace,
-                                   ;; so the type and the failing node are all
-                                   ;; there is. NOT the wrapper's ex-data: it
-                                   ;; holds the whole compiled FSM.
+                                   ;; NOT the wrapper's ex-data: it holds the
+                                   ;; whole compiled FSM.
                                    :type (some-> (:via (Throwable->map throwable))
                                                  first :type str)
                                    :node (some-> node str)
-                                   :ex-data (some-> (ex-data throwable) pr-str)}})
+                                   :ex-data (some-> (ex-data throwable) pr-str)
+                                   ;; Where it broke, for the supervisor a
+                                   ;; resume opens: the frames say whether
+                                   ;; the fault is a cell it can fix or the
+                                   ;; base it cannot.
+                                   :trace (util/stack-lines
+                                           throwable (lexicon/policy :run-error-frames))}})
             (runs/finish-run! conn run-id :failed nil)
             (catch Throwable _ nil))
           ;; Rethrow what the cell threw, not the wrapper: the callers of run!

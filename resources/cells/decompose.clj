@@ -253,16 +253,6 @@
 (defn- fan-out
   "Run the sub-unit solves, one at a time, in order.
 
-  A `reduce` AND NOT A `mapv`, which is what this was. Each thunk is a whole
-  sub-unit solve — an implementor worker branch, so `llm/chat` and a park at
-  every provider call — and jolt's `mapv` is `(vec (apply map f colls))`, so
-  its function runs while the lazy seq's counted lock is held, and a fiber
-  cannot leave the CPU there (karamazov-p3jo, RFC-013 ADR-001). The whole
-  decompose loop therefore died on its first sub-unit under ebb while the
-  suite stayed green, because a test drives it from a plain thread where a
-  park is only a block. base-test's ratchet could not see it either: the lazy
-  body was `#(%)`, which names no parking call lexically.
-
   SEQUENTIAL ON PURPOSE, not merely for now. `attempt-node` takes a fresh git
   baseline per attempt and asks whether THIS attempt changed files, so
   siblings running at the same time would each be credited with the others'

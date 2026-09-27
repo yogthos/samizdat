@@ -297,6 +297,19 @@
         supervisor before :provider-error-limit abandoned them. False starts
         the run anyway and leaves the outage to that limit."}
 
+ :run-error-frames
+ {:value 12 :kind :threshold :capability-tunable? false
+  :provenance ["run ab935047" "karamazov-ma00"]
+  :doc "How many stack frames, innermost first, a failed run's :run-error
+        note keeps. The frames are what the supervisor stream reads to tell
+        whose fault a crash is — a cell's, which it can fix, or the base's,
+        which it cannot — and where. The frames below the cell are the
+        scheduler's own (maestro, mycelium), so a dozen covers the cell and
+        what it called. Absent (a project's older gates.edn), every frame is
+        kept. jolt eliminates tail calls, so a function whose last act was
+        the failing call has no frame to keep; :node names the cell either
+        way."}
+
  :run-start-deadline-ms
  {:value 120000 :kind :threshold :capability-tunable? true
   :provenance ["karamazov-iev2" "karamazov-5fyo"]

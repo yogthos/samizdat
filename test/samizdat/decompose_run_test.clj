@@ -159,15 +159,10 @@
 ;; --- the fan runs on a fiber, and so must this test -------------------------
 ;;
 ;; Every test above drives the loop from the test thread, where a park is a
-;; plain block and jolt asserts nothing. The live loop is an sp process on a
-;; fiber, and there a park under a counted lock throws "a fiber cannot leave
-;; the CPU while its carrier holds a counted lock". jolt's `mapv` is
-;; (vec (apply map f colls)), so a park inside its function IS under one
-;; (karamazov-p3jo) — and the fan's function is a whole sub-unit solve, which
-;; parks at every provider call. base-test's no-park-inside-a-lazy-body
-;; ratchet could not see it: the lazy body was `#(%)`, which names no parking
-;; call lexically. Same shape as beam/advance-all, same fix shape as its test.
-;; A HANG here is the bug, not a slow test.
+;; plain block. The live loop is an sp process on a fiber, and the fan's
+;; function is a whole sub-unit solve, which parks at every provider call —
+;; before jolt 0.8.13 that raised inside the mapv this used to be
+;; (karamazov-p3jo). A HANG here is the bug, not a slow test.
 
 (deftest the-fan-runs-parking-sub-units-on-a-fiber
   (let [fan-out (cell-fn 'fan-out)]
