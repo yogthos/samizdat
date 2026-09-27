@@ -69,6 +69,23 @@
     (is (nil? (live/get rid)))
     (db/close conn)))
 
+(deftest a-provider-switch-does-not-carry-the-last-model-with-it
+  ;; `/model deepseek-v4-pro` then `/model bonsai` merged the two, and the
+  ;; next request asked the local server for deepseek-v4-pro. A provider
+  ;; named alone means its declared model.
+  (let [rid (str (random-uuid))]
+    (try
+      (live/set! rid nil {:model "deepseek-v4-pro"})
+      (live/set! rid nil {:provider :bonsai})
+      (is (= {:provider :bonsai} (get-in (live/get rid) [:all])))
+      (testing "while a provider named WITH its model keeps that model"
+        (live/set! rid nil {:provider :deepseek :model "deepseek-v4-flash"})
+        (is (= {:provider :deepseek :model "deepseek-v4-flash"} (get-in (live/get rid) [:all]))))
+      (testing "and an effort switch leaves the model alone"
+        (live/set! rid nil {:reasoning-effort "low"})
+        (is (= "deepseek-v4-flash" (get-in (live/get rid) [:all :model]))))
+      (finally (live/forget-run! rid)))))
+
 ;; --- per role ---------------------------------------------------------------
 
 (deftest a-switch-can-name-the-role-it-is-for

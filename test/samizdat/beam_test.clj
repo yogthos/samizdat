@@ -11,6 +11,7 @@
   endings, and the driver's ownership of the crash record and teardown — the
   two things a manifest cannot own."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
+            [ebb.core :as ebb]
             [mycelium.cell :as cell]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.select :as select]
@@ -98,6 +99,29 @@
                   ;; scores as "no opinion", which is the path under test.
                   beam/ensure-scored (fn [_ctx bs _turn] bs)]
       (beam/run-rounds ctx branches 1))))
+
+(defn- boom! [] (throw (ex-info "the round broke" {:why "test"})))
+
+(deftest a-failed-run-records-the-cell-that-threw-and-its-stack
+  ;; The record is what the supervisor gets to fix the fault from, so it has
+  ;; to name the right place. :node was mycelium's :last-state-id — the state
+  ;; that COMPLETED — so run ab935047's record said :escalate when :spawn
+  ;; threw; and it had no frames, from when jolt's exceptions carried none.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})]
+    (try
+      (is (thrown-with-msg? Exception #"the round broke"
+                            (drive c rid (fn [_ _] (boom!)))))
+      (let [e (journal/last-note c rid :run-error)]
+        (is (= "the round broke" (:error e)))
+        (is (str/includes? (str (:node e)) "advance") "the cell that threw, not the one before it")
+        (is (vector? (:trace e)))
+        (is (str/includes? (str (first (:trace e))) "samizdat.beam-test/boom!")
+            "frames demunged, innermost first")
+        (is (str/includes? (str (first (:trace e))) "beam_test.clj"))
+        (is (<= (count (:trace e)) (lexicon/policy :run-error-frames))
+            "as many frames as gates.edn allows"))
+      (finally (db/close c)))))
 
 (deftest a-shipped-branch-completes-the-run
   (let [c (db/open! ":memory:")
@@ -631,6 +655,40 @@
             "a run already that wide is left alone")
         (samizdat.agent.live/forget-run! rid))
       (finally (db/close c)))))
+
+(deftest escalation-opens-its-branches-on-a-fiber-whose-store-calls-wait
+  ;; Run ab935047 died at :beam/spawn, right after escalating, on jolt
+  ;; 0.8.12: spawn-children! opens the children in a two-collection mapv, and
+  ;; opening a branch INSERTs through db/with-conn, which parks the fiber
+  ;; whenever another holds the lock — a park that jolt raised on inside
+  ;; mapv until 0.8.13 (jolt-lang/jolt#1142). Every DB call parks here, so
+  ;; the contention that made it rare is made certain.
+  (let [c (db/open! ":memory:")
+        parking (fn [f] (fn [& a] (ebb/? (ebb/sleep 1)) (apply f a)))]
+    (try
+      (let [rid (runs/start-run! c {:problem "p"})
+            p (lexicon/policy :escalation)
+            b1 (-> (state/new-branch {:id "B1" :problem "p"})
+                   (assoc :status :active)
+                   (state/add-message "user" "hello"))
+            ctx {:conn c :run-id rid :beam-width 1 :problem "p"}
+            escalate (:handler (cell/get-cell! :beam/escalate))
+            spawn (:handler (cell/get-cell! :beam/spawn))]
+        (runs/open-branch! c rid {:branch-id "B1"})
+        (dotimes [i (:after-stalls p)]
+          (journal/record-gate! c rid {:branch-id "B1" :turn i :gate :progress-stalled
+                                       :prediction "x"}))
+        (let [kids (with-redefs [db/fetch (parking db/fetch)
+                                 db/fetch-one (parking db/fetch-one)
+                                 db/execute! (parking db/execute!)
+                                 db/last-insert-id (parking db/last-insert-id)]
+                     (ebb/? (ebb/sp
+                             (let [d (escalate ctx {:culled [b1] :all-now [b1] :turn 12})]
+                               (:children (spawn ctx (assoc d :all-now [b1])))))))]
+          (is (= (dec (:to-width p)) (count kids)) "every sibling opened")
+          (is (= (inc (count kids)) (count (runs/branches c rid))) "and is on the record")))
+      (finally (samizdat.agent.live/forget-run! (:id (first (runs/list-runs c 1))))
+               (db/close c)))))
 
 (deftest a-loop-that-does-not-compile-is-a-failed-run-not-a-running-row
   ;; With the row created first, a manifest that will not compile can no

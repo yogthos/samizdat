@@ -331,6 +331,16 @@
     (is (str/includes? said "forced 19") "and why")
     (is (str/includes? said "1240") "and what the harness's own block adds per turn")
     (is (>= (count (nodes-of :gauge out)) 3) "the fill is a gauge like the other two"))
+  (testing "against the RUN's window when the server resolved one"
+    ;; A DeepSeek run on a server whose default is a 32k local model read
+    ;; 12k / 32k (38%) when it was 12k / 128k.
+    (let [said (texts (render :widget/context
+                              {:project {:context_window 32768} :branch-id "B1"
+                               :detail {:run {:llm {:context_window 128000}
+                                              :usage {:total-tokens 1 :turns 1}}
+                                        :branches [{:id "B1" :context {:turn 1 :prompt-tokens 12800}}]}}
+                              {:title "CONTEXT"}))]
+      (is (re-find #"12k */ *128k" said))))
   (testing "no measured branch, no window: the fill line is simply absent"
     (let [said (texts (render :widget/context
                               {:detail {:run {:usage {:total-tokens 4000 :turns 4}
@@ -499,6 +509,38 @@
     (is (re-find #"3 */ *40" said) "turns against the ceiling")
     (is (str/includes? said "running") "and what the run is doing")
     (is (str/includes? said "61aba012") "the run, short")))
+
+(deftest the-footer-names-the-model-that-will-answer
+  ;; It read (or (:model run) (:model project)): the model a run STARTED on,
+  ;; kept on screen after it ended, so a failed DeepSeek run captioned a
+  ;; server that would start the next one on a local model — and a start
+  ;; refused because that local model was down read as a DeepSeek problem.
+  (let [p {:project "ef" :provider "local" :provider_name "bonsai"
+           :model "local-model" :context_window 32768}
+        ended {:connected? true :run-id "r1" :project p
+               :detail {:run {:status "failed" :model "deepseek-v4-flash"
+                              :llm {:provider "deepseek-flash" :model "deepseek-v4-flash"
+                                    :context_window 128000}}}}
+        running (assoc-in ended [:detail :run :status] "running")]
+    (let [said (texts (render :widget/status ended {}))]
+      (is (str/includes? said "bonsai:local-model") "what a start from here would use")
+      (is (not (str/includes? said "deepseek")) "not what the ended run used"))
+    (is (str/includes? (texts (render :widget/status (assoc ended :next-llm {:model "glm"}) {}))
+                       "glm")
+        "a /model kept for the next run is the next run's model")
+    (let [said (texts (render :widget/status running {}))]
+      (is (str/includes? said "deepseek-flash:deepseek-v4-flash")
+          "a running run: the model it is on now, live switch included"))
+    (testing "and the gauge is against the run's window, not the server's"
+      (let [said (texts (render :widget/status
+                                (-> running
+                                    (assoc :branch-id "B1")
+                                    (assoc-in [:detail :branches]
+                                              [{:id "B1" :status "active"
+                                                :context {:turn 3 :prompt-tokens 12800}}]))
+                                {}))]
+        (is (re-find #"/ *128k" said))
+        (is (not (re-find #"/ *32k" said)))))))
 
 (deftest the-footer-draws-before-anything-has-answered
   ;; The first frame: no project, no run, offline. Every segment is optional

@@ -445,23 +445,17 @@ Ebb's `doc/adr/001-fiber-affinity.md` states six disciplines for code on jolt
 fibers. Four of them are landmines for samizdat code the moment it parks, and
 they hold for `src/` and for cells alike:
 
-- **Never park inside a lazy sequence.** Realizing a lazy seq takes a counted
-  lock, and a fiber cannot leave the CPU while its carrier holds one, so a
-  `?`, `sleep`, `via blk`, `join` or `timeout` inside a `map`, `for`,
-  `filter`, `keep`, `mapcat`, `lazy-seq`, `iterate` or `repeatedly` body is a
-  hang, not an error — and so is one inside `mapv` or `filterv`, because jolt
-  defines `mapv` as `(vec (apply map f colls))`, so the function runs during
-  lazy realization with the lock held (measured 2026-09-07 with
-  `jolt-locks-held`; karamazov-p3jo). The first live run on ebb died exactly
-  there, at the spawn handshake inside `advance-all`'s `mapv`, while the suite
-  stayed green because every test drove it from a plain thread, where a park
-  is a block and nothing asserts. Loops that park are `loop/recur`, `doseq`,
-  `reduce`, `run!`, and `into` with a transducer. *Enforced by* the base-test
-  ratchet `no-park-inside-a-lazy-body` over `src/` and `resources/cells`,
-  which treats `mapv`/`filterv` as lazy and knows samizdat's own parking
-  helpers (`cancel/start!`, `cancel/await-or-cancel`, `cancel/with-deadline`,
-  `llm/chat`, `critic/score!`). Tests of code that parks must run it on a
-  fiber (`(ebb/? (ebb/sp …))`), as `beam_cancel_test` now does.
+- **A lazy sequence is no longer a place a fiber cannot park.** Until jolt
+  0.8.13, realizing a lazy seq held a counted lock, so a park inside a `map`,
+  `for` or `lazy-seq` body — and inside `mapv` over several collections or
+  `filterv`, which jolt built on them — raised instead of parking
+  (karamazov-p3jo). The first live run on ebb died at the spawn handshake
+  inside `advance-all`'s `mapv`, and run ab935047 died at a store call inside
+  `spawn-children!`'s, because waiting on a contended `locking` is a park.
+  0.8.13 fixed it (jolt-lang/jolt#1142) and is samizdat's `:jolt/min-version`,
+  so the base-test ratchet that enforced the rule was removed. Tests of code
+  that parks still run it on a fiber (`(ebb/? (ebb/sp …))`), as
+  `beam_cancel_test` does, because a park on the test thread is only a block.
 - **A continuation is bound to (thread, fiber), not fiber alone.** A timer
   thread can resume a main-thread continuation undetected. Never move a task's
   continuation across OS threads by hand; ebb's executors do it. *Unenforced*:
@@ -554,10 +548,10 @@ day `src/` first requires it.
 - The lazy-seq audit (ADR-001 rule 5) found no park inside a lazy body on the
   turn path: maestro's loop is `loop/recur`, cells are called directly, the
   team fan-out uses `mapv`, and mycelium's lazy forms are compile-time. Child
-  3cll.7's ratchet is the durable check. That audit was wrong about `mapv`:
-  in jolt it is lazy underneath (see the rules below, karamazov-p3jo), and the
-  beam's `advance-all` and `ensure-scored` parked inside one. Both are
-  `reduce` now.
+  3cll.7's ratchet was the durable check. That audit was wrong about `mapv`:
+  in jolt before 0.8.13 it was lazy underneath (see the rules above,
+  karamazov-p3jo), and the beam's `advance-all` and `ensure-scored` parked
+  inside one. Both became `reduce`, and the ratchet went with the jolt fix.
 
 ## What this RFC does not cover
 

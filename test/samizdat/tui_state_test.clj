@@ -80,6 +80,34 @@
     (is (true? (:connected? s)))
     (is (nil? (:error s)))))
 
+(deftest a-good-poll-does-not-erase-what-an-action-was-told
+  ;; A refused start set its reason and then forced a poll; the poll's
+  ;; `connected` cleared :error before a frame drew it, so "starting…"
+  ;; blinked and nothing followed. Only an error the connection raised is
+  ;; the connection's to clear.
+  (let [refused (-> (st/initial "b")
+                    (st/set-input "add fog")
+                    (st/apply-start {:ok false :error "HTTP 503: model endpoint not answering"}))]
+    (doseq [[what poll] [[:steps #(st/apply-steps % {:ok true :body {:steps [] :next 0}})]
+                         [:runs #(st/apply-runs % {:ok true :body {:runs []}})]
+                         [:detail #(st/apply-detail % {:ok true :body {:run {:status "failed"}}})]
+                         [:branch #(st/apply-branch % {:ok true :body {:turns []}})]
+                         [:approvals #(st/apply-approvals % {:ok true :body {:approvals []}})]]]
+      (is (re-find #"503" (str (:error (poll refused)))) (str what " kept the refusal"))))
+  (testing "while an outage is still cleared by the poll that gets through"
+    (let [s (-> (st/initial "b")
+                (st/note-error "HTTP 409: refused")
+                (st/apply-runs {:ok false :error "connection refused"})
+                (st/apply-runs {:ok true :body {:runs []}}))]
+      (is (nil? (:error s))))))
+
+(deftest a-refused-start-says-why-in-full
+  ;; The status strip clips at 40 columns, which cut the reason off at the
+  ;; endpoint's URL. The whole of it goes into the conversation.
+  (let [s (st/apply-start (st/initial "b")
+                          {:ok false :error "HTTP 503: model endpoint http://127.0.0.1:8080/v1 - connection refused"})]
+    (is (some #(re-find #"connection refused" (:text %)) (:local-notes s)))))
+
 (deftest selecting-a-run-resets-everything-that-belonged-to-the-last-one
   ;; The bug this exists to prevent: cursors and traces carried across a run
   ;; change, so the new run's panel opened showing the old run's steps and

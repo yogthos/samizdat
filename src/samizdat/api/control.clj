@@ -41,7 +41,8 @@
             [samizdat.store.grants :as grants]
             [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
-            [samizdat.store.runs :as runs]))
+            [samizdat.store.runs :as runs]
+            [samizdat.util :as util]))
 
 ;; run-id -> {:future f :abort (atom false)}. A run outlives the request that
 ;; started it, so something has to hold it.
@@ -188,7 +189,10 @@
                       (catch Throwable e
                         (if (cancel/control-signal? e)
                           (log/info "run aborted:" (ex-message e))
-                          (log/error "run failed:" (ex-message e)))
+                          (log/error "run failed:" (ex-message e)
+                                     (apply str (map #(str "\n    at " %)
+                                                     (util/stack-lines
+                                                      e (lexicon/policy :run-error-frames))))))
                         (when-let [rid (deref promised 0 nil)]
                           (swap! active dissoc rid)
                           (approval/abandon! rid))

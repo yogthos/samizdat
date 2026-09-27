@@ -25,12 +25,64 @@
             [ring-chez.http]
             [ring-chez.adapter :as adapter]
             [ring-chez.socket :as socket]
+            ;; the java.time.* host shim, before data.json
+            [jolt.time]
+            [clojure.data.json :as json]
             [samizdat.agent.gitdiff :as gitdiff]
+            [samizdat.api.runs :as api-runs]
+            [samizdat.approval :as approval]
             [samizdat.api.control :as control]
             [samizdat.server :as server]
             [samizdat.store.db :as db]
             [samizdat.system :as system]
             [samizdat.userspace :as userspace]))
+
+(defn- call
+  "The handler's answer to `method` `uri`, with the JSON body read back."
+  [method uri]
+  (let [r (server/handler {:request-method method :uri uri})]
+    (assoc r :json (some-> (:body r) (json/read-str :key-fn keyword)))))
+
+(deftest a-route-binds-its-path-parameters
+  (with-redefs [system/conn (constantly nil)
+                system/config (constantly {})
+                api-runs/get-run (fn [_ id _] {:run {:id id}})
+                api-runs/turn-detail (fn [_ id branch turn] {:id id :branch branch :turn turn})]
+    (is (= "r1" (get-in (call :get "/v1/runs/r1") [:json :run :id])))
+    (is (= {:id "r1" :branch "B2" :turn 7}
+           (:json (call :get "/v1/runs/r1/branches/B2/turns/7")))
+        "every segment, the deepest route included")
+    (is (= "r1" (get-in (call :get "/v1/runs/r1/") [:json :run :id]))
+        "a trailing slash is the same resource")))
+
+(deftest a-literal-route-wins-over-a-parameter-at-the-same-depth
+  ;; /v1/approvals and /v1/runs/:id/approvals must not be confused, and
+  ;; /v1/events is its own route, not a run id.
+  (with-redefs [approval/pending (fn [run-id] [{:run run-id}])]
+    (is (= [{:run nil}] (:approvals (:json (call :get "/v1/approvals")))))
+    (is (= [{:run "r9"}] (:approvals (:json (call :get "/v1/runs/r9/approvals")))))))
+
+(deftest an-unknown-route-is-a-json-404-naming-what-was-asked
+  (let [r (call :get "/v1/nope")]
+    (is (= 404 (:status r)))
+    (is (= "not_found" (get-in r [:json :error :type])))
+    (is (= "Not found: GET /v1/nope" (get-in r [:json :error :message]))))
+  (testing "and so is a known path under the wrong method"
+    (let [r (call :delete "/v1/runs")]
+      (is (= 404 (:status r)))
+      (is (= "Not found: DELETE /v1/runs" (get-in r [:json :error :message]))))))
+
+(deftest a-handler-that-throws-is-a-json-500
+  (with-redefs [system/conn (fn [] (throw (ex-info "no database" {})))]
+    (let [r (call :get "/v1/runs")]
+      (is (= 500 (:status r)))
+      (is (= "no database" (get-in r [:json :error :message]))))))
+
+(deftest a-redefined-handler-answers-the-next-request
+  ;; The table names handlers by var so a REPL redefinition lands without
+  ;; restarting the server. The router must call through the var.
+  (with-redefs [server/health (fn [_] (server/json-response {:status "redefined"}))]
+    (is (= "redefined" (get-in (call :get "/health") [:json :status])))))
 
 (deftest slow-clamps-its-sleep
   ;; /slow exists so the smoke probe can prove /health still answers while a
@@ -99,8 +151,15 @@
       (is (= [1 2 3] [(:staged b) (:unstaged b) (:untracked b)]))
       (is (= "did a thing" (:last_commit b)))
       (is (= "glm" (:provider b)) "a string on the wire, not a keyword")
+      (is (nil? (:provider_name b)) "no alias declared, none claimed")
       (is (= "glm-5.3" (:model b)))
       (is (= 128000 (:context_window b)))))
+  (testing "the alias config.edn declared, which is what /model takes"
+    (with-redefs [system/config (fn [] {:run {:root "/tmp/p"}
+                                        :llm {:provider :local :provider-name :bonsai
+                                              :model "local-model"}})
+                  server/cached-snapshot (fn [_] nil)]
+      (is (= "bonsai" (:provider_name (server/project-body))))))
   (testing "outside a git tree it still names the project"
     (with-redefs [system/config (fn [] {:run {:root "/tmp/plain"}
                                         :llm {:provider :local :model "m"}})

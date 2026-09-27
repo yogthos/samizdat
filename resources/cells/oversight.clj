@@ -165,10 +165,14 @@
                 (not-any? #(= :done (:status %)) results))))
 
 (defn- crash-line
-  "A :stage-error note as the one-line form the digest's layer classifier
-  reads — the same shape the feature loop's stage guard accumulates."
-  [{:keys [stage node error]}]
-  (str stage (when (seq (str node)) (str "/" node)) ": " error))
+  "A :stage-error or :run-error note as the form the digest's layer
+  classifier reads — the same shape the feature loop's stage guard
+  accumulates — with the note's frames under it when it has them. The frames
+  are what tell the classifier, and the supervisor, whether the fault is in a
+  cell or in the base."
+  [{:keys [stage node error trace]}]
+  (str stage (when (seq (str node)) (str "/" node)) ": " error
+       (apply str (map #(str "\n    at " %) trace))))
 
 (cell/defcell :oversight/gather
   {:doc "Read the run's health from the JOURNAL rather than from a stage's data
@@ -245,7 +249,13 @@
              ;; file tool made was rejected back to the branch that made it
              ;; (:by), in its own turn (karamazov-1a51.8).
              rejected (vec (remove :by (userspace/rejections)))
-             crashes (journal/notes conn run-id :stage-error)
+             ;; And the crash that ENDED the run, when this is a resume of
+             ;; it: beam/run! notes :run-error with the node and the frames,
+             ;; and a failed run is resumable, so this pass is the first one
+             ;; that can do anything about it.
+             crashes (into (journal/notes conn run-id :stage-error)
+                           (map #(assoc % :stage "run"))
+                           (journal/notes conn run-id :run-error))
              ;; WHAT THE PROJECT HAS NOT TAKEN, until a pass of this run has
              ;; shown it (the :adoption-offered note the reason cell leaves).
              offers (when-not (journal/last-note conn run-id :adoption-offered)

@@ -529,12 +529,6 @@
   Successes are distilled too. A store that only remembers what went wrong
   teaches the next session that everything is broken."
   [conn findings {:keys [run-id]}]
-  ;; reduce, not (vec (for …)) and not mapv: the body writes to the store,
-  ;; and a store call waits on the connection lock when another fiber holds
-  ;; it — a park, which is forbidden while a counted lock is held (ADR-001
-  ;; rule 1). Both `for` and jolt's `mapv` run the body under one (measured
-  ;; 2026-09-07; ratchet no-park-inside-a-lazy-body); the live symptom is
-  ;; "a fiber cannot leave the CPU while its carrier holds a counted lock".
   (reduce
    (fn [acc {:keys [kind severity detail evidence]}]
     (let [content (str "[" (name kind) "] " detail " " (pr-str evidence))

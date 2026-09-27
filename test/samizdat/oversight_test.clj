@@ -254,6 +254,25 @@
       (is (str/includes? (str prob) "STAGE CRASHED"))
       (is (str/includes? (str prob) "boom in the judge")))))
 
+(deftest a-run-that-died-reaches-the-supervisor-with-its-stack
+  ;; A failed run is resumable, and the resumed run's stream is the one role
+  ;; that can edit a cell. It gets the run's :run-error beside the stages'
+  ;; crashes, with the frames, so it can tell whose fault it is and where —
+  ;; a cell frame makes the layer userspace, which the digest says outright.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :run-error
+                   {:data {:error "boom in spawn" :node ":spawn"
+                           :trace ["samizdat.agent.beam/spawn-children! (beam.clj:272)"
+                                   "cells.beam/fn--612 (beam.clj:600)"]}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (true? (:oversight/worth-a-look? gather)))
+      (is (= 1 (count (:oversight/crashes gather))))
+      (is (str/includes? (str prob) "boom in spawn"))
+      (is (str/includes? (str prob) "samizdat.agent.beam/spawn-children! (beam.clj:272)")
+          "the frames, not just the message")
+      (is (str/includes? (str prob) "layer: userspace")))))
+
 (deftest the-loops-soft-cap-is-the-supervisors-to-decide
   ;; The feature loop's route note carries the revision and the soft cap. At
   ;; the cap the loop keeps solving on its own ladder, and the supervisor is

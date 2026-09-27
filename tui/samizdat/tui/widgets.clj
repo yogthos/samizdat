@@ -432,7 +432,8 @@
         ;; last request against the model's context window, and the run's
         ;; hit rate with the turns that missed, by cause. Each line draws
         ;; only when its number was measured — nil is unknown, not zero.
-        window (get-in state [:project :context_window])
+        window (or (get-in run [:llm :context_window])
+                   (get-in state [:project :context_window]))
         fill (branch-fill state)
         rate (get-in run [:usage :cache-hit-rate])
         misses (get-in run [:usage :cache-misses])
@@ -765,6 +766,27 @@
                       (assoc row 1 {:flex true :height rows})]
       :else row)))
 
+(defn- model-label [{:keys [provider model]}]
+  (cond (and provider model) (str provider ":" model)
+        :else (or model provider)))
+
+(defn- footer-model
+  "The model that answers from here: while the run on screen runs, the one
+  it is on now (the server's :llm on the run, a live switch included);
+  otherwise the one a start would use — a /model kept for the next run, else
+  the server's default. The run row's :model is where the run STARTED, and
+  captioning an ended run's model beside a server that would start the next
+  one elsewhere is how a refusal from a local model that was down read as a
+  DeepSeek problem."
+  [state]
+  (let [run (get-in state [:detail :run])
+        p (:project state)]
+    (if (and run (= "running" (str (:status run))))
+      (or (model-label (:llm run)) (:model run))
+      (or (get-in state [:next-llm :model])
+          (model-label {:provider (or (:provider_name p) (:provider p))
+                        :model (:model p)})))))
+
 (defn status
   "The footer: where the harness is pointed, what is answering, what the run
   has spent, and what it is doing.
@@ -784,12 +806,15 @@
   [state props]
   (let [run (get-in state [:detail :run])
         p (:project state)
-        model (or (:model run) (:model p))
+        model (footer-model state)
         turns (get-in run [:usage :turns])
         ;; The branch's last request, not the run's total (karamazov-pdes,
         ;; see branch-fill); no measured request, no segment.
         fill (when-let [used (branch-fill state)]
-               (fill-segment used (:context_window p)))
+               ;; The run's window: a run on another provider than the
+               ;; server's default was gauged against the default's.
+               (fill-segment used (or (get-in run [:llm :context_window])
+                                      (:context_window p))))
         sep [:text {:class :dim} " \u2502 "]]
     (into [:hbox {:class :status}]
           (remove nil?
@@ -799,7 +824,7 @@
                    (when-let [l (project-label p)]
                      [:text {:bold true} (str " " (clip l 34))])
                    (when model sep)
-                   (when model [:text {:class :model} (clip (str model) 20)])
+                   (when model [:text {:class :model} (clip (str model) 34)])
                    (when fill sep)
                    (when fill [:text {:class :dim} fill])
                    (when turns sep)
