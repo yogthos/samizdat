@@ -86,7 +86,8 @@
                                          (not (and (string? v) (str/blank? v))))
                                 v))
                            ks))
-        coll (fn [v] (cond (nil? v) [] (coll? v) (vec (map str v)) :else [(str v)]))]
+        coll (fn [v] (let [v (base/listed v)]
+                       (cond (nil? v) [] (coll? v) (vec (map str v)) :else [(str v)])))]
     {:name (some-> (g :name) str str/trim)
      :description (some-> (g :description :desc) str str/trim)
      :file (some-> (g :file :path) str str/trim)
@@ -153,7 +154,7 @@
 
 (defmethod base/run-tool "split"
   [{:keys [branch conn run-id root] :as ctx}]
-  (let [raw (or (base/arg ctx :parts) (base/arg ctx :subtasks))
+  (let [raw (base/listed (or (base/arg ctx :parts) (base/arg ctx :subtasks)))
         parts (mapv part-of (if (coll? raw) raw []))
         reason (some-> (base/arg ctx :reason) str str/trim)
         {:keys [min-parts max-parts]} (gates/threshold :split-parts)

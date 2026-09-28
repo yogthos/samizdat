@@ -2307,9 +2307,10 @@
         forced native tool_choice come off the turn row (migration v30)."}
 
  :repetition
- {:value {:window 80 :step 1 :min-repeats 3 :min-period 20 :max-gap-variance 0.5}
+ {:value {:window 80 :step 1 :min-repeats 3 :min-period 20 :max-gap-variance 0.5
+          :short-min-period 8 :short-min-repeats 20}
   :kind :threshold :capability-tunable? true
-  :provenance ["karamazov-o4wm.5"]
+  :provenance ["karamazov-o4wm.5" "karamazov-na2k.19"]
   :doc "WHEN A REPLY COUNTS AS REPEATING ITSELF (samizdat.llm.repetition).
 
         A :window-character slice that recurs :min-repeats times at gaps
@@ -2319,7 +2320,11 @@
         taken every :step characters — 1, because a coarser step sees only
         the periods it divides — and a period under :min-period is a run
         (a line of dashes, a column of zeros), not a model repeating
-        itself. The shape is floatboat's LoopDetector
+        itself — unless the period is at least :short-min-period and it
+        recurs :short-min-repeats times: GLM-5.3 once wrote
+        "action":"close", (a 17-character period) about 900 times in one
+        reply and nothing called it a loop (run 390dcd17, na2k.19). The
+        scan also runs on a reply that ended in a parse error. The shape is floatboat's LoopDetector
         (350-char windows, three near-matches, period variance under half)
         over exact text rather than SimHash, since samizdat reads the
         finished reply and a degenerate repeat is verbatim.

@@ -194,6 +194,7 @@
    :system-tools "prompts/system-tools.md"
    :system-turn "prompts/system-turn.md"
    :task-busy "prompts/task-busy.md"
+   :task-board-owned "prompts/task-board-owned.md"
    :task-claimed "prompts/task-claimed.md"
    :task-current "prompts/task-current.md"
    :task-folded "prompts/task-folded.md"

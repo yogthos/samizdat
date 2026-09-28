@@ -326,6 +326,86 @@
       (is (str/includes? (str prob) "REVISION CAP REACHED"))
       (is (str/includes? (str prob) "revision 3")))))
 
+(defn- gather-now [conn rid]
+  (cells/load-cells!)
+  ((:handler (cell/get-cell! :oversight/gather)) {:conn conn :run-id rid :config {}} {}))
+
+(defn- spent-pass! [conn rid g]
+  ;; What the reason cell leaves behind a pass that spent a model call: the
+  ;; signals it was woken on, so the next gather can tell new from seen.
+  (journal/note! conn rid :oversight
+                 {:data {:verdict "done" :idle (:oversight/idle g) :unmet (:oversight/unmet g)
+                         :signals (:oversight/signals g)}}))
+
+(deftest a-pass-is-not-spent-again-on-evidence-it-already-read
+  ;; karamazov-na2k.16. Run 390dcd17 spent all 12 passes in 24 minutes: after
+  ;; one real pass, every gather still saw unmet 5 over the floor of 2 and
+  ;; woke the supervisor to say 'already done', and the run then went two
+  ;; hours with no supervision at all. The trigger has to be what CHANGED
+  ;; since the last pass that spent a call, not the level.
+  (testing "a crash wakes it once"
+    (let [conn (db/open! ":memory:")
+          rid (runs/start-run! conn {:problem "p"})]
+      (journal/note! conn rid :run-error {:data {:error "boom" :node ":spawn"}})
+      (let [g1 (gather-now conn rid)]
+        (is (true? (:oversight/worth-a-look? g1)))
+        (spent-pass! conn rid g1)
+        (is (false? (:oversight/worth-a-look? (gather-now conn rid)))
+            "the same crash, already read, is not worth another call")
+        (journal/note! conn rid :stage-error {:data {:error "boom again" :node ":board"}})
+        (is (true? (:oversight/worth-a-look? (gather-now conn rid)))
+            "a new crash is"))))
+  (testing "the soft cap wakes it once per round"
+    (let [conn (db/open! ":memory:")
+          rid (runs/start-run! conn {:problem "p"})]
+      (journal/note! conn rid :route {:data {:decision "revise" :revision 3 :soft-cap 3}})
+      (let [g1 (gather-now conn rid)]
+        (is (true? (:oversight/worth-a-look? g1)))
+        (spent-pass! conn rid g1)
+        (is (false? (:oversight/worth-a-look? (gather-now conn rid))))
+        (journal/note! conn rid :route {:data {:decision "revise" :revision 4 :soft-cap 3}})
+        (is (true? (:oversight/worth-a-look? (gather-now conn rid)))
+            "the next round at the cap is a new decision"))))
+  (testing "a refusal wakes it once"
+    (let [conn (db/open! ":memory:")
+          rid (runs/start-run! conn {:problem "p"})]
+      (journal/note! conn rid :mutation-rolled-back {:data {:reason "no" :target "manifest x"}})
+      (let [g1 (gather-now conn rid)]
+        (is (true? (:oversight/worth-a-look? g1)))
+        (spent-pass! conn rid g1)
+        (is (false? (:oversight/worth-a-look? (gather-now conn rid))))))))
+
+(deftest the-apply-cell-records-what-the-pass-was-woken-on
+  ;; The same claim through the real cells: gather, a stubbed reason, apply's
+  ;; note, and the next gather sees the evidence as read.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        ctx {:conn conn :run-id rid :config {}}]
+    (journal/note! conn rid :run-error {:data {:error "boom" :node ":spawn"}})
+    (let [g (gather-now conn rid)
+          r (with-redefs [myc/run-compiled (fn [_ _ data]
+                                             {:branch (assoc (:branch data) :final-answer "looked")})]
+              ((:handler (cell/get-cell! :oversight/reason)) ctx g))]
+      ((:handler (cell/get-cell! :oversight/apply)) ctx (assoc r :oversight/verdict :done))
+      (is (= 1 (:errors (:signals (journal/last-note conn rid :oversight)))))
+      (is (false? (:oversight/worth-a-look? (gather-now conn rid)))))))
+
+(deftest unmet-and-idle-count-from-the-last-look
+  (let [since @(ns-resolve 'cells.oversight 'since-last-look)
+        floors {:idle-floor 25}]
+    (testing "no earlier pass: the levels, as before"
+      (is (= 5 (:unmet-gates (since {:unmet 5 :idle 3} nil floors)))))
+    (testing "unmet counts only the firings since"
+      (is (= 0 (:unmet-gates (since {:unmet 5} {:unmet 5} floors))))
+      (is (= 3 (:unmet-gates (since {:unmet 8} {:unmet 5} floors)))))
+    (testing "a stall already seen needs another floor's worth to wake it"
+      (is (= 5 (:idle-turns (since {:idle 30} {:idle 25} floors))))
+      (is (= 25 (:idle-turns (since {:idle 50} {:idle 25} floors)))))
+    (testing "a stall not yet seen counts whole, and a write resets it"
+      (is (= 30 (:idle-turns (since {:idle 30} {:idle 10} floors))))
+      (is (= 26 (:idle-turns (since {:idle 26} {:idle 40} floors)))))))
+
 (deftest a-round-under-the-cap-with-nothing-else-wrong-is-still-quiet
   (let [conn (db/open! ":memory:")
         rid (runs/start-run! conn {:problem "p"})]

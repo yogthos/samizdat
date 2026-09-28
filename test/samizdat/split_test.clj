@@ -171,6 +171,16 @@
           (is (= 2 (count kids)) "the pieces are children of the held task")
           (is (= #{"parse-line" "render-report"} (set (map :title kids)))))))))
 
+(deftest parts-sent-as-a-json-string-are-the-parts
+  ;; karamazov-na2k.15: GLM-5.3 sends array arguments as JSON strings. Read
+  ;; as-is, `parts` was not a collection and the split saw no parts at all.
+  (with-project
+    (fn [{:keys [conn run-id] :as p}]
+      (let [r (call p {:reason "two responsibilities"
+                       :parts ((requiring-resolve 'clojure.data.json/write-str) good-parts)})]
+        (is (= :neutral (:category r)) (str "accepted: " (:result r)))
+        (is (= 2 (count (filter :parent_id (tasks/board conn {:run-id run-id})))))))))
+
 (deftest a-split-parks-the-branch-and-blocks-the-row-it-was-working
   ;; karamazov-ioo.15.4. The split IS the branch's last act. It had nothing
   ;; left to do until its pieces came back, and the worst thing it could do

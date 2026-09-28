@@ -105,7 +105,16 @@
   drive it with three names and what keeps a store-level check from dragging
   in the agent's whole capability surface."
   [claim turns tools]
-  (if-not (denial? claim)
+  ;; PER SENTENCE. The denial and the tool it denies have to share one: a
+  ;; steer that said "run the suite via shell" and, two clauses on, "no
+  ;; test_runner change needed" was refused as saying shell does not work
+  ;; (run 390dcd17, karamazov-na2k.17). A period only ends a sentence when
+  ;; a space follows it, so flight.render stays one word.
+  (let [denials (->> (str/split (str claim) #"(?<=[.!?])\s+|[;\n]+")
+                     (filter denial?)
+                     (mapcat #(map vector (subject-tools % (map str tools)) (repeat %)))
+                     (reduce (fn [m [t sentence]] (if (contains? m t) m (assoc m t sentence))) {}))]
+  (if (empty? denials)
     []
     (let [tuples (record-facts turns)
           db (sym/facts tuples)
@@ -116,8 +125,7 @@
           ;; how much, and an escalation saying \"it worked 14 times in this
           ;; run\" is a different argument from one saying it worked.
           n-worked (frequencies (keep (fn [[rel t]] (when (= :worked rel) t)) tuples))
-          tools (subject-tools claim (map str tools))
-          hits (for [t tools
+          hits (for [[t sentence] denials
                      :when (seq (sym/query db [[:worked t]]))]
-                 {:tool t :worked (get n-worked t 0) :claim (str claim)})]
-      (vec hits))))
+                 {:tool t :worked (get n-worked t 0) :claim (str/trim sentence)})]
+      (vec hits)))))

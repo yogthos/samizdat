@@ -922,6 +922,33 @@
     (is (= ["src/flight/draw.clj" "test/flight/ghost_test.clj"]
            (:files (state/plan (:branch r)))))))
 
+(deftest a-plan-list-sent-as-a-json-string-is-read-as-the-list
+  ;; karamazov-na2k.15, run 390dcd17 on GLM-5.3: files arrived as the STRING
+  ;; "[\"src/flight/render.clj\"]". Several entries were refused as not a
+  ;; path (6 of 8 plan calls wasted); ONE entry had no whitespace and was
+  ;; declared as the path ["src/flight/render.clj"], which no write could ever
+  ;; discharge — done was withheld for it at turn 99 of 100 and the branch
+  ;; ended with no answer.
+  (let [b (state/new-branch {:id "b1" :problem "p"})
+        plan-of (fn [args] (tools/run-tool {:tool-name "plan" :branch b :args args}))]
+    (testing "several entries"
+      (let [r (plan-of {"files" "[\"src/flight/render.clj\", \"src/flight/draw.clj\"]"
+                        "tests" "[\"test/flight/render_test.clj\"]"
+                        "goal" "fade"})]
+        (is (not= :mechanics (:category r)) (:result r))
+        (is (= ["src/flight/render.clj" "src/flight/draw.clj" "test/flight/render_test.clj"]
+               (:files (state/plan (:branch r)))))))
+    (testing "one entry is the path inside, not the brackets"
+      (let [r (plan-of {"files" "[\"src/flight/render.clj\"]" "goal" "fade"})]
+        (is (= ["src/flight/render.clj"] (:files (state/plan (:branch r)))))))
+    (testing "an empty list string is an empty plan, refused as one"
+      (let [r (plan-of {"files" "[]" "tests" "[]" "goal" "report"})]
+        (is (= :mechanics (:category r)))
+        (is (not (state/planned? (or (:branch r) b))))))
+    (testing "an entry that still carries list syntax is not a path"
+      (let [r (plan-of {"files" ["[\"src/a.clj\"" "b.clj"] "goal" "g"})]
+        (is (= :mechanics (:category r)))))))
+
 ;; --- a refusal a branch cannot discharge is a deadlock ----------------------
 ;;
 ;; karamazov-iwm4, seen live in run b8ae2b1f. The supervisor stream's first

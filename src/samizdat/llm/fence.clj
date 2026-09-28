@@ -320,6 +320,34 @@
          :before (subs s (max 0 (- index excerpt-chars)) index)
          :after (subs s index (min (count s) (+ index excerpt-chars)))}))))
 
+(defn invalid-escape
+  "The first backslash inside a JSON string that starts no valid escape, as
+  {:escape \"\\\\&\" :index :line :column :before :after}, or nil. data.json
+  reports one as \"No matching clause: 38\" (the character code) and the
+  grammar above places it at the start of the string, which named nothing a
+  model could fix (run 390dcd17, karamazov-na2k.20)."
+  [^String s]
+  (let [n (count s)]
+    (loop [i 0 in? false]
+      (when (< i n)
+        (let [c (.charAt s i)]
+          (cond
+            (not in?) (recur (inc i) (= c \"))
+            (= c \") (recur (inc i) false)
+            (= c \\)
+            (let [nx (when (< (inc i) n) (.charAt s (inc i)))]
+              (if (and nx (contains? #{\" \\ \/ \b \f \n \r \t \u} nx))
+                (recur (+ i 2) true)
+                (let [pre (subs s 0 i)
+                      nl (str/last-index-of pre "\n")]
+                  {:escape (str "\\" (or nx ""))
+                   :index i
+                   :line (inc (count (filter #(= \newline %) pre)))
+                   :column (inc (- i (if nl (inc nl) 0)))
+                   :before (subs s (max 0 (- i excerpt-chars)) i)
+                   :after (subs s i (min n (+ i excerpt-chars)))})))
+            :else (recur (inc i) true)))))))
+
 (defn- read-json [s]
   (try
     {:ok true :value (json/read-str s :key-fn keyword)}
@@ -786,8 +814,12 @@
           ;; one, whose positions have drifted by every character the repair
           ;; inserted. The same location serves both complaints below, which
           ;; is why it is computed once here.
-          (let [where (locate-json-failure body)
-                complaint (merge {:error (:error first-try)} where)
+          (let [bad (invalid-escape body)
+                where (if bad
+                        (dissoc bad :escape)
+                        (locate-json-failure body))
+                complaint (merge {:error (:error first-try) :bad-escape (:escape bad)}
+                                 where)
                 fail (fn [msg]
                        (if-let [x (or (some-> (tagged-call body)
                                               (assoc :tagged-call? true))
@@ -826,7 +858,11 @@
         ;; A reply repeating itself, checked only where it matters — a
         ;; truncated reply, or one that made no call — so a long healthy
         ;; reply that reached its fence is not scanned (karamazov-o4wm.5).
-        periodic (when (or truncated (nil? parsed))
+        periodic (when (or truncated (nil? parsed)
+                           ;; a loop that ended in broken JSON is still a
+                           ;; loop, and a JSON complaint is the wrong steer
+                           ;; for it (karamazov-na2k.19)
+                           (= "__parse_error__" (:name parsed)))
                    (repetition/periodic content (lexicon/policy :repetition)))]
     {:no-fence (and (nil? parsed) (not truncated))
      :truncated truncated

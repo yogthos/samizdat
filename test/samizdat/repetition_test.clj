@@ -43,3 +43,18 @@
       "a run of whitespace repeats perfectly and means nothing")
   (is (nil? (rep/periodic (apply str (repeat 200 "-=")) policy))
       "so does a rule of dashes: a period under the floor is a run, not a loop"))
+
+(deftest a-short-period-repeated-hundreds-of-times-is-a-loop
+  ;; karamazov-na2k.19, run 390dcd17 T0 turn 73: GLM-5.3 emitted
+  ;; "action":"close", about 900 times — a 17-character period, under the
+  ;; :min-period floor meant for rules of dashes — and nothing called it a
+  ;; loop. A short period counts when it repeats far past the long floor.
+  (let [policy (assoc policy :short-min-period 8 :short-min-repeats 20)
+        loop-text (str "{\"name\": \"task\", \"args\": {"
+                       (apply str (repeat 300 "\"action\":\"close\",")))]
+    (is (some? (rep/periodic loop-text policy)))
+    (testing "a few short repeats are still not a loop"
+      (is (nil? (rep/periodic (str "{" (apply str (repeat 5 "\"action\":\"close\",")) "}")
+                              (assoc policy :window 20)))))
+    (testing "and a rule of dashes is still a run"
+      (is (nil? (rep/periodic (apply str (repeat 200 "-=")) policy))))))

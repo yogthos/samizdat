@@ -558,7 +558,12 @@
   explicit FALSE_POSITIVE verdicts account for every candidate. Anything else
   — nothing parseable, a partial answer, silence — keeps pass 1."
   [{:keys [reply candidates]}]
-  (let [cands (finding-segments candidates)]
+  ;; Through `usable`, like pass 1: a verify reply with its reasoning inline
+  ;; kept a thought that mentioned "[low]" as the findings (run 390dcd17,
+  ;; karamazov-na2k.21). An unterminated think block reads as blank, which
+  ;; keeps the candidates — the fail-safe case.
+  (let [reply (usable reply)
+        cands (finding-segments candidates)]
     (cond
       (empty? cands) nil
       (clean-pass? reply) nil

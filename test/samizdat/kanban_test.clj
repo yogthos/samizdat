@@ -17,6 +17,7 @@
             [samizdat.agent.tools :as tools]
             [samizdat.llm.message :as message]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
             [samizdat.store.tasks :as tasks]
             [samizdat.tape :as tape]))
@@ -93,6 +94,32 @@
       (is (nil? (:task (:branch r)))
           "so the next turn asks for the next task rather than pointing at finished work")
       (is (= "done" (:status (tasks/get-task c id)))))))
+
+(deftest a-board-owner-finishes-its-task-with-done-not-task-close
+  ;; karamazov-na2k.18, run 390dcd17 turn 74: after a compaction the owner
+  ;; closed the task the board had dispatched to it with `task close`. The
+  ;; board closes a task only when its per-diff review passes, so that close
+  ;; skipped review, critic and acceptance, and every later round read the
+  ;; task as done.
+  (with-run [c rid]
+    (let [id (tasks/create! c {:title "the board's task"})
+          _ (journal/note! c rid :board-task {:branch-id "B1" :data {:task id :title "t"}})
+          held (:branch (run-task c rid (branch) {:action "claim" :id id}))
+          r (run-task c rid held {:action "close" :id id})]
+      (is (= :mechanics (:category r)))
+      (is (str/includes? (:result r) "done") "it names the way to finish")
+      (is (not= "done" (:status (tasks/get-task c id))) "and the row is not closed")
+      (testing "cancelling it is still the owner's to say"
+        (let [r2 (run-task c rid held {:action "close" :id id :status "cancelled"})]
+          (is (= "cancelled" (:status (tasks/get-task c id))) (:result r2))))))
+  (testing "a claimed task that is busy points a board owner at done too"
+    (with-run [c rid]
+      (let [a (tasks/create! c {:title "board work"})
+            b (tasks/create! c {:title "another"})
+            _ (journal/note! c rid :board-task {:branch-id "B1" :data {:task a :title "t"}})
+            held (:branch (run-task c rid (branch) {:action "claim" :id a}))
+            r (run-task c rid held {:action "claim" :id b})]
+        (is (not (str/includes? (:result r) "task close")) (:result r))))))
 
 (deftest closing-somebody-elses-task-does-not-free-your-slot
   (with-run [c rid]
