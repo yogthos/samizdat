@@ -460,7 +460,12 @@
           (is (seq at-verify) "the verdicts are on the journal from the verify stage")
           (is (= [true false] (mapv :passed? (:results (first at-verify))))
               "the check passed and the judge failed, each on its own line"))
-        (is (some #(false? (:tests-passed %)) route) "route saw gate 2 red")
+        ;; karamazov-na2k.23: the two halves stay apart on the route note. It
+        ;; used to say :tests-passed false here — the suite was green — and so
+        ;; the supervisor's green-but-sent-back trigger never fired and its
+        ;; brief said the tests were failing.
+        (is (some #(and (true? (:tests-passed %)) (false? (:accepted %))) route)
+            "route saw gate 2 red on acceptance, with the tests green")
         (is (some #(str/includes? (str (:note %)) "says what it saw") verify)
             "and the verify note names the criterion, in the failure's own words")))
     (testing "the same run with a YES completes"

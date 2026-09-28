@@ -282,7 +282,7 @@
   deserve the supervisor's attention is mechanism — it is the same question
   whatever the project builds — while the words that carry them, and the two
   numbers behind the thrash judgement, are `gates.edn :run-health`."
-  [{:keys [results review revision errors hollow? tests-passed? verify-note
+  [{:keys [results review revision errors hollow? tests-passed? accepted? verify-note
            at-cap? soft-cap self-graded]} health]
   (let [total (count results)
         shipped (count (filter #(= :done (:status %)) results))
@@ -315,6 +315,12 @@
       (and (some? tests-passed?) (not tests-passed?) (not hollow?))
       (conj (signal :tests-failing
                     {:detail (or verify-note (signal :tests-failing-fallback))}))
+
+      ;; Green, and refused on the operator's criteria: its own signal, with
+      ;; gate 2's words, because 'the tests did not pass' is the wrong story
+      ;; and the supervisor acted on it (karamazov-na2k.23).
+      (and (false? accepted?) (not (false? tests-passed?)))
+      (conj (signal :acceptance-failing {:detail (or verify-note "")}))
 
       at-cap?
       (conj (signal :revision-cap {:revision revision :soft-cap soft-cap}))

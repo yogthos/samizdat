@@ -261,3 +261,23 @@
                        :roles {:default :local}
                        :run {:acceptance [{:check "no name"}]}})))
   (is (not (system/started?))))
+
+(deftest a-check-the-environment-blocked-is-undecided-not-failed
+  ;; karamazov-na2k.24, run eb64f59d: three hours in, the game-run check
+  ;; failed with raylib's "Failed to initialize platform" — no window server
+  ;; at that moment; the same check passed earlier in the run — and the round
+  ;; was sent back to fix work that was not broken.
+  (let [calls (atom 0)
+        blocked {:green? false :output "WARNING: SYSTEM: Failed to initialize platform"}
+        [r] (acceptance/check [{:name "the game runs" :kind :check :text "run-game"}]
+                              {:kinds #{:check}
+                               :run-check (fn [_] (swap! calls inc) blocked)})]
+    (is (nil? (:passed? r)) "undecided, like a judge that could not answer")
+    (is (true? (:blocked r)))
+    (is (= 2 @calls) "it was tried again once before being called blocked")
+    (is (acceptance/all-passed? [r]) "so it does not send the round back on its own"))
+  (testing "a check that failed for any other reason still fails"
+    (let [[r] (acceptance/check [{:name "suite" :kind :check :text "t"}]
+                                {:kinds #{:check}
+                                 :run-check (fn [_] {:green? false :output "2 failures"})})]
+      (is (false? (:passed? r))))))

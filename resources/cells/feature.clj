@@ -517,7 +517,9 @@
    :input  [:map [:branch :map] [:review/decision :keyword] [:critic/decision :keyword]]
    ;; Both keys on every branch of the cond, the note carrying WHY on the
    ;; paths where nothing ran.
-   :output [:map [:verify/passed? :boolean] [:verify/note :any]]}
+   :output [:map [:verify/passed? :boolean] [:verify/note :any]
+            [:verify/tests-passed? {:optional true} :any]
+            [:verify/accepted? {:optional true} :any]]}
   (fn [{:keys [conn run-id root config] :as ctx} data]
     (let [cmd (get-in config [:run :verify-cmd])
           criteria? (seq (get-in config [:run :acceptance]))]
@@ -565,7 +567,10 @@
                          {:data {:passed passed? :exit (:exit r) :timeout (:timeout r)
                                  :tests-passed tests-passed? :accepted accepted?
                                  :note (judge/for-the-record :reply-chars note)}})
-          (assoc data :verify/passed? passed? :verify/note note))))))
+          ;; The two halves as well as the verdict, so the route note can
+          ;; say which one refused (karamazov-na2k.23).
+          (assoc data :verify/passed? passed? :verify/note note
+                 :verify/tests-passed? tests-passed? :verify/accepted? accepted?))))))
 
 (cell/defcell :feature/supervise
   {:doc "Where the supervisor's directives about the OUTER loop land.
@@ -687,7 +692,16 @@
                      {:data {:decision decision :revision rev :soft-cap soft-cap
                              :hard-cap hard-cap :hollow hollow :strategy strategy
                              :auto-switch auto-next
-                             :tests-passed (:verify/passed? data)
+                             ;; THE TESTS, not gate 2 as a whole: a green
+                             ;; suite refused on an acceptance criterion
+                             ;; read as a red one, so the supervisor's
+                             ;; green-but-sent-back trigger never fired
+                             ;; (karamazov-na2k.23). Where verify did not run
+                             ;; the halves, the verdict stands in.
+                             :tests-passed (if (contains? data :verify/tests-passed?)
+                                             (:verify/tests-passed? data)
+                                             (:verify/passed? data))
+                             :accepted (:verify/accepted? data)
                              :gave-up (boolean give-up?) :runaway runaway?}})
       (case decision
         :ship

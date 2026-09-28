@@ -23,9 +23,10 @@ give_up({reason})
 ### Developing at the REPL
 
 ```
-plan({files, tests?, goal?})
+plan({files, tests?, goal?, rfc?})
     Say which files you are about to create or edit, which tests you will
-    write, and why — one line. Every entry in files and tests is a bare
+    write, and why — one line. When the design step asks for an RFC, `rfc`
+    carries the whole document; it is what the reviewer reads. Every entry in files and tests is a bare
     relative path such as test/flight/ghost_test.clj, nothing else: a path
     with a description after it is refused, because a declared file is what
     you are held to and a sentence can never be written. REQUIRED before eval: the REPL stays closed

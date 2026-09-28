@@ -938,6 +938,25 @@
             "the finding reaches the brief beside the change it was measured under")))
     (finally (session/reset!))))
 
+(deftest a-green-round-refused-on-acceptance-wakes-the-supervisor-and-says-why
+  ;; karamazov-na2k.23, run eb64f59d: every task shipped, the suite was green,
+  ;; one acceptance judge said no, and three supervisor passes concluded
+  ;; 'shipped clean, nothing wrong'. The brief has to say which criterion.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    (journal/note! conn rid :verify
+                   {:data {:passed false :tests-passed true :accepted false
+                           :note "tests passed\nacceptance criteria not met:\nFAIL  the game was exercised, not only unit-tested"}})
+    (journal/note! conn rid :route
+                   {:data {:decision "revise" :revision 0 :soft-cap 6 :strategy "board"
+                           :tests-passed true :accepted false}})
+    (let [{:keys [gather prob]} (reasoning-over conn rid)]
+      (is (true? (:oversight/worth-a-look? gather)) "green work sent back is worth a look")
+      (is (str/includes? (str prob) "the game was exercised, not only unit-tested")
+          "and the brief names the criterion that refused it")
+      (is (not (str/includes? (str prob) "the tests did not pass"))
+          "rather than saying the tests failed"))))
+
 (deftest a-refused-mutation-is-worth-a-model-call
   ;; A refusal means the supervisor tried to change the harness and the
   ;; protocol said no. That is precisely a moment where the next pass will

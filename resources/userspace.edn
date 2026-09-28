@@ -191,6 +191,7 @@
    :system-structure "prompts/system-structure.md"
    :system-tools "prompts/system-tools.md"
    :system-turn "prompts/system-turn.md"
+   :design-no-plan "prompts/design-no-plan.md"
    :experiment-reviews "prompts/experiment-reviews.md"
    :pruning "prompts/pruning.md"
    :reply-format-dropped "prompts/reply-format-dropped.md"
