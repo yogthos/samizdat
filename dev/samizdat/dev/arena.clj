@@ -1131,7 +1131,14 @@
                            :turns-to-first-artifact (med (map :turns-to-first-artifact rs))}
                   :spread {:turns [(med (map :turns rs))
                                    (apply min (or (seq (keep :turns rs)) [nil]))
-                                   (apply max (or (seq (keep :turns rs)) [nil]))]}}]))
+                                   (apply max (or (seq (keep :turns rs)) [nil]))]
+                           ;; Tokens are the one column steady enough to read
+                           ;; at the n this rig affords, so an arm's cost is
+                           ;; shown with its range, not only its median
+                           ;; (karamazov-na2k.3).
+                           :tokens [(med (map :tokens rs))
+                                    (apply min (or (seq (keep :tokens rs)) [nil]))
+                                    (apply max (or (seq (keep :tokens rs)) [nil]))]}}]))
       ;; Pairwise, on the same rows the arms' own :reliability reads — and
       ;; only where both arms decided something. Read it with the :by of
       ;; each arm: two arms decided by different columns are not comparable

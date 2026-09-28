@@ -324,6 +324,8 @@
     :summary "Every part the per-turn context block can carry, in reading order. A branch holds what each cost last turn as :context-sizes; `introspect` renders both, so a cap in gates.edn :context-budget can be retuned against a measurement."}
    {:name samizdat.store.journal/gate-tally
     :summary "Fired / met / met-late / unmet per gate for a run — whether the steering is being obeyed, per steer."}
+   {:name samizdat.store.journal/gate-checks
+    :summary "Every check of a gate that declares :measure — the value it compared, whether its :when held, whether it fired. Both sides of a threshold's cut, which gate firings alone never had; the data a threshold is fitted from."}
    {:name samizdat.store.journal/retirement-candidates
     :summary "Gates that fired across several runs and were never once met — deletion candidates. It surfaces them; deciding is yours."}
    {:name samizdat.agent.telemetry/failure-exemplars
@@ -333,7 +335,9 @@
    {:name samizdat.session/branch-fitness
     :summary "One branch's fitness per turn, by the same weights the session and every experiment are scored with — the number the cull reads and the digest shows (RFC-012 F3)."}
    {:name samizdat.session/verdict
-    :summary "What an experiment measured, and every reason the number might not be a measurement of it: `confounded` when the reading with the provider's own failures discounted disagrees with the full one, `regraded` when the run moved the weights it is being scored by, and a count of the branches that went backwards under an aggregate that did not."}
+    :summary "What an experiment measured, and every reason the number might not be a measurement of it: `confounded` when the reading with the provider's own failures discounted disagrees with the full one, `regraded` when the run moved the weights it is being scored by, and a count of the branches that went backwards under an aggregate that did not. The deadband is measured from each side's own spread (`:band`); a gain that added more tokens per turn than it earned is `costly`, a flat change that cut them is `cheaper`, and a result under the best a kept change reached is `below-best`. An experiment started with kind/target/predicts carries the version it tested and whether the predicted signal moved."}
+   {:name samizdat.session/signal-names
+    :summary "The fitness signals an experiment may predict a move in — `predicts` takes one of them and up or down."}
    {:name samizdat.events/subscribe
     :summary "A channel of every event published from now on, for watching a run without polling."}]}
 

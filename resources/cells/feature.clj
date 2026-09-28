@@ -341,7 +341,7 @@
                                                   :usage (:usage r)})
                                     (catch Throwable _ nil))
                                (:content r)))
-                      {:keys [verdict findings]}
+                      {:keys [verdict findings unread]}
                       (judge/review {:chat chat
                                      :requirement (:problem branch)
                                      :evidence (judge/evidence rows)
@@ -361,12 +361,16 @@
                                  (judge/blocking-findings (str "FINDINGS:\n" all)))]
                   {:decision (if (and (= :complete verdict) (not blocking)) :ship :revise)
                    :verdict verdict
+                   :unread unread
                    :findings (judge/for-the-record :reply-chars all)}))
               decision (:decision judged)]
           (journal/note! conn run-id :critique
                          {:data {:decision decision :deterministic (boolean det)
                                  :reason (judge/for-the-record :reply-chars det)
                                  :verdict (:verdict judged)
+                                 ;; true when no verdict line was read and
+                                 ;; :verdict is the fail-open default
+                                 :unread (boolean (:unread judged))
                                  :findings (:findings judged)}})
           (assoc data :critic/decision decision :critique/findings (or det ""))))
       ;; fail-open: a broken critic ships rather than wedging the loop

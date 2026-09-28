@@ -148,7 +148,7 @@
                                     ", its cells promise " (pr-str (vec (sort produces))))))}))))
 
 (def ^:private usage
-  "Actions: list, show {name, version?}, save {name, edn | file, rationale}, patch {name, ops, rationale, expect-version?}, refs {name, cell}, diff {name, from?, to?}. A manifest is the loop as data — a :cells map, :edges, and dispatch patterns. Save and patch validate by compiling before they store; the run that uses it is chosen by config :run :loop. Show, save and patch report where only branch order decides and name every dispatch entry written as a form, which the analysis cannot read. Prefer patch to save for an edit: it names the change and keeps the rest of the file, comments included. rationale: one sentence on why — the history shows it to the next supervisor deciding whether your change stays.")
+  "Actions: list, show {name, version?}, versions {name}, save {name, edn | file, rationale}, patch {name, ops, rationale, expect-version?}, refs {name, cell}, diff {name, from?, to?}. A manifest is the loop as data — a :cells map, :edges, and dispatch patterns. Save and patch validate by compiling before they store; the run that uses it is chosen by config :run :loop. Show, save and patch report where only branch order decides and name every dispatch entry written as a form, which the analysis cannot read. Prefer patch to save for an edit: it names the change and keeps the rest of the file, comments included. rationale: one sentence on why — the history shows it to the next supervisor deciding whether your change stays.")
 
 (defn- deflag
   "The vendored op refusals speak the CLI's `--rewire`; here an argument is a
@@ -308,6 +308,20 @@
 
         "list"
         (base/ok branch (render-list conn))
+
+        ;; The history with its rationales and how each version has fared —
+        ;; the one kind that had no way to read it (karamazov-na2k.5).
+        "versions"
+        (let [name (base/arg ctx :name)]
+          (if (str/blank? (str name))
+            (base/malformed branch (base/missing ctx :name))
+            (let [rows (if (userspace/bound?)
+                         (userspace/versions :manifest name)
+                         (us/versions conn :manifest name))]
+              (base/ok branch
+                       (if (seq rows)
+                         (str/join "\n" (map base/version-line rows))
+                         (say :no-versions :name name))))))
 
         "show"
         (let [name (base/arg ctx :name)

@@ -246,7 +246,11 @@
                  (let [churn (->> (group-by :name rs)
                                   (mapv (fn [[nm vs]]
                                           {:name nm :saves (count vs)
-                                           :reverts (count (filter revert? vs))}))
+                                           :reverts (count (filter revert? vs))
+                                           ;; why the latest version was made,
+                                           ;; which the block says to read
+                                           ;; (karamazov-na2k.5)
+                                           :why (some-> (last vs) :rationale str not-empty)}))
                                   (sort-by (juxt (comp - :reverts) (comp - :saves) :name))
                                   vec)]
                    {:kind kind

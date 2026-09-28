@@ -147,9 +147,23 @@
 
 ;; A prompt edit is checked before it is what renders (karamazov-1a51.8): the
 ;; template has to parse. Whether every variable it names is supplied is the
-;; caller's business and not knowable from the text alone.
+;; caller's business and not knowable from the text alone. A side call's
+;; prompt also has to keep asking for what its parser reads, gates.edn
+;; :reply-formats (karamazov-na2k.6).
+(defn- dropped-tokens
+  "The reply tokens prompt `nm` no longer asks for."
+  [nm text]
+  (let [formats (try ((requiring-resolve 'samizdat.agent.gates/threshold) :reply-formats)
+                     (catch Throwable _ nil))
+        l (str/lower-case (str text))]
+    (vec (remove #(str/includes? l (str/lower-case (str %))) (get formats (str nm))))))
+
 (userspace/register-validator!
  :prompt
- (fn [_ text]
-   (try (render-str text {}) nil
-        (catch Throwable e (userspace/problem :render e)))))
+ (fn [nm text]
+   (or (try (render-str text {}) nil
+            (catch Throwable e (userspace/problem :render e)))
+       (when-let [missing (seq (dropped-tokens nm text))]
+         {:stage :format
+          :message (render-str (userspace/body :prompt "reply-format-dropped")
+                               {:name nm :missing (str/join ", " missing)})}))))

@@ -158,6 +158,25 @@
       (is (= :compile (:stage p)))
       (is (str/includes? (:message p) "no-such/cell")))))
 
+(deftest a-judge-prompt-that-stops-asking-for-what-its-parser-reads-is-rejected
+  ;; karamazov-na2k.6. The judge's parser reads a VERDICT line, and a judge
+  ;; reply with none falls through to :complete — fail-open by design. So a
+  ;; reworded prompts/judge.md that stopped asking for VERDICT turned the
+  ;; judge off with no error anywhere. Both halves are userspace; the save
+  ;; that separates them is refused, naming what the parser reads.
+  (with-project [root]
+    (let [text (str/replace (us/body :prompt "judge") "VERDICT" "OUTCOME")
+          p (problem-for root :prompt "judge" "prompts/judge.md" text)]
+      (is (= :format (:stage p)))
+      (is (str/includes? (:message p) "VERDICT")))))
+
+(deftest every-shipped-side-call-prompt-asks-for-what-its-parser-reads
+  (with-project [_root]
+    (doseq [[nm tokens] ((requiring-resolve 'samizdat.agent.gates/threshold) :reply-formats)
+            t tokens]
+      (is (str/includes? (str/lower-case (us/body :prompt nm)) (str/lower-case t))
+          (str "prompts/" nm ".md does not ask for " t)))))
+
 (deftest a-prompt-that-does-not-render-is-rejected
   (with-project [root]
     (let [p (problem-for root :prompt "critic" "prompts/critic.md" "{% if x %} never closed")]

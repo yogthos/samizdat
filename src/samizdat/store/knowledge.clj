@@ -608,7 +608,7 @@
   discovered it.
 
   The verdict becomes the memory's RECORD, not just its text: `better` is a
-  success and `worse` or `unchanged` a failure, so a lever tried repeatedly
+  success (and so is `cheaper`) and `worse`, `unchanged` or `costly` a failure, so a lever tried repeatedly
   without result accumulates a negative record and sinks in the ranking on its
   own. `too-early` is not written at all — an unfinished experiment has
   concluded nothing, and recording it would teach the next session that the
@@ -626,16 +626,25 @@
   ;; call under the lazy seq's realization lock is a forbidden park when the
   ;; connection is contended (ADR-001 rule 1). Same as distill-findings!.
   (reduce
-   (fn [acc {:keys [name change hypothesis verdict before after regraded]}]
+   (fn [acc {:keys [name change hypothesis verdict before after regraded target prediction]}]
      (if-not (and change (not regraded) (not (#{:too-early :confounded} verdict)))
        acc
        (let [pattern (lever-key change)
              content (str "[lever] " change " — " (clojure.core/name verdict)
                           (when (and before after)
                             (format " (fitness %.2f -> %.2f)" before after))
-                          ". Expected: " hypothesis)
+                          ". Expected: " hypothesis
+                          ;; The ledger's two extra columns (karamazov-na2k.5):
+                          ;; which edit, and whether what it said would move did.
+                          (when target
+                            (str " Edit: " (:kind target) " " (:name target)
+                                 (when (:version target) (str " v" (:version target))) "."))
+                          (when-let [{:keys [signal direction hit?]} prediction]
+                            (str " Predicted " (clojure.core/name signal) " "
+                                 (clojure.core/name direction) ": "
+                                 (if hit? "it did." "it did not."))))
              existing (by-pattern conn pattern)
-             worked? (= :better verdict)]
+             worked? (contains? #{:better :cheaper} verdict)]
          (conj acc
                (if existing
                  ;; Here the outcome IS earned: the lever was pulled and measured.

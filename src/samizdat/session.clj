@@ -132,8 +132,13 @@
    nil))
 
 (defn- count-turn
-  [t {:keys [tool category signals]}]
+  [t {:keys [tool category signals tokens]}]
   (cond-> (update t :turns (fnil inc 0))
+    ;; What the turn cost, so a verdict can ask whether a gain paid for it
+    ;; (karamazov-na2k.3). Absent on a turn with no usage, never counted as 0.
+    (and (number? tokens) (pos? tokens))
+    (update :tokens (fnil + 0) tokens)
+
     (and tool category)
     (update-in [:tools (str tool) (keyword (name category))] (fnil inc 0))
 
@@ -220,6 +225,52 @@
 
 ;; --- distillation -----------------------------------------------------------
 
+(declare named-counts)
+
+(defn- weighted-counts
+  "Every count the fitness weighs, with its weight: [[count weight] ...]."
+  [tally p]
+  (let [w (:weights p)]
+    (map (fn [[k n]] [n (or (get w k) 0)]) (named-counts tally))))
+
+(defn- named-counts
+  "Every count the fitness weighs, keyed by the name of its weight."
+  [tally]
+  (let [sig (:signals tally)
+        tool-counts (reduce (fn [acc [_ cats]]
+                              (merge-with + acc (select-keys cats
+                                                             [:success :failure :mechanics])))
+                            {} (:tools tally))
+        gate-counts (reduce (fn [acc [_ o]]
+                              (merge-with + acc (select-keys o [:met :met-late :unmet])))
+                            {} (:gates tally))
+        v (:verify tally)
+        prov (:provider tally)]
+    (into (array-map)
+          (map (fn [[k n]] [k (or n 0)]))
+          [[:provider-empty (:empty-reply prov)]
+           [:provider-failed (+ (or (:call-failed prov) 0) (or (:usage-cap prov) 0))]
+           [:provider-retry (:retried prov)]
+           [:tool-success (:success tool-counts)]
+           [:tool-failure (:failure tool-counts)]
+           [:tool-mechanics (:mechanics tool-counts)]
+           [:parse-error (:parse-error sig)]
+           [:no-fence (:no-fence sig)]
+           [:truncated (:truncated sig)]
+           [:auto-repaired (:auto-repaired sig)]
+           [:verify-green (:green v)]
+           [:verify-red (:red v)]
+           [:verify-skipped (:skipped v)]
+           [:gate-met (:met gate-counts)]
+           [:gate-met-late (:met-late gate-counts)]
+           [:gate-unmet (:unmet gate-counts)]])))
+
+(defn signal-names
+  "The signals an experiment may predict a move in: the counts the fitness
+  weighs, by the names gates.edn :fitness :weights gives them."
+  []
+  (keys (named-counts {})))
+
 (defn fitness-of
   "How well the loop ran, per turn, over a tally-shaped map.
 
@@ -236,35 +287,27 @@
   ([tally p]
    (let [turns (or (:turns tally) 0)]
      (when (pos? turns)
-       (let [w (:weights p)
-             sig (:signals tally)
-             tool-counts (reduce (fn [acc [_ cats]]
-                                   (merge-with + acc (select-keys cats
-                                                                  [:success :failure :mechanics])))
-                                 {} (:tools tally))
-             gate-counts (reduce (fn [acc [_ o]]
-                                   (merge-with + acc (select-keys o [:met :met-late :unmet])))
-                                 {} (:gates tally))
-             v (:verify tally)
-             prov (:provider tally)
-             score (+ (* (or (:empty-reply prov) 0) (:provider-empty w))
-                      (* (+ (or (:call-failed prov) 0) (or (:usage-cap prov) 0))
-                         (:provider-failed w))
-                      (* (or (:retried prov) 0) (:provider-retry w))
-                      (* (or (:success tool-counts) 0) (:tool-success w))
-                      (* (or (:failure tool-counts) 0) (:tool-failure w))
-                      (* (or (:mechanics tool-counts) 0) (:tool-mechanics w))
-                      (* (or (:parse-error sig) 0) (:parse-error w))
-                      (* (or (:no-fence sig) 0) (:no-fence w))
-                      (* (or (:truncated sig) 0) (:truncated w))
-                      (* (or (:auto-repaired sig) 0) (:auto-repaired w))
-                      (* (or (:green v) 0) (:verify-green w))
-                      (* (or (:red v) 0) (:verify-red w))
-                      (* (or (:skipped v) 0) (:verify-skipped w))
-                      (* (or (:met gate-counts) 0) (:gate-met w))
-                      (* (or (:met-late gate-counts) 0) (:gate-met-late w))
-                      (* (or (:unmet gate-counts) 0) (:gate-unmet w)))]
-         (/ score (double turns)))))))
+       (/ (reduce + (map (fn [[n w]] (* n w)) (weighted-counts tally p)))
+          (double turns))))))
+
+(defn fitness-variance
+  "How much one turn's fitness varies, estimated from the same counts
+  `fitness-of` sums — nil for an empty tally.
+
+  Each weighted count is read as an event that happens on a turn with rate
+  count / turns, so a turn's fitness varies by sum w^2 p(1-p). It is an
+  estimate (a signal can fire twice in a turn, and signals are not
+  independent), but it needs nothing the tally does not already hold, and it
+  is the right order: a stretch where half the calls fail is noisy and one
+  where every call succeeds is not (karamazov-na2k.4)."
+  ([tally] (fitness-variance tally (lexicon/policy :fitness)))
+  ([tally p]
+   (let [turns (or (:turns tally) 0)]
+     (when (pos? turns)
+       (reduce + (map (fn [[n w]]
+                        (let [q (min 1.0 (/ (double n) turns))]
+                          (* w w q (- 1.0 q))))
+                      (weighted-counts tally p)))))))
 
 (defn fitness
   "The session's fitness as it stands."
@@ -307,7 +350,7 @@
   and what the supervisor expected. The hypothesis matters as much as the
   measurement: a change with no stated expectation cannot be wrong, and a
   change that cannot be wrong teaches nothing whichever way the numbers go."
-  [name {:keys [change hypothesis]}]
+  [name {:keys [change hypothesis target predicts]}]
   (let [in-flight (filterv #(and (nil? (:settled %))
                                  (not= :too-early (:verdict %)))
                            (experiments))
@@ -343,7 +386,12 @@
             ;; `snapshot` deliberately drops them, and a regression count
             ;; needs a before per branch, not one for the session.
             :before-branches (:branches @tally)
-            :before-fitness (fitness-of before)})
+            :before-fitness (fitness-of before)
+            ;; WHAT is being tested and WHAT should move (karamazov-na2k.5):
+            ;; the userspace version the change made, and one fitness signal
+            ;; with the direction it is expected to go.
+            :target target
+            :predicts predicts})
     (mark! name)
     nil))
 
@@ -370,13 +418,43 @@
   (update p :weights #(reduce (fn [w k] (assoc w k 0.0)) % health-weights)))
 
 (defn- direction
-  "Which way a per-turn move counts as having gone, inside `p`'s deadband."
-  [move p]
+  "Which way a per-turn move counts as having gone, inside `band`."
+  [move band]
   (cond
     (nil? move) :too-early
-    (>= move (:meaningful-delta p)) :better
-    (<= move (- (:meaningful-delta p))) :worse
+    (>= move band) :better
+    (<= move (- band)) :worse
     :else :unchanged))
+
+(defn band
+  "The deadband for a move between two tallies: z standard errors of the
+  difference of their per-turn means, from each side's own spread
+  (karamazov-na2k.4, RRSI's calibrated delta), never under :min-band. With
+  either side shorter than :min-turns-for-verdict the spread is not worth
+  estimating, and the fixed :meaningful-delta stands in."
+  [before-tally delta p]
+  (let [{:keys [z min-band]} (:noise p)
+        nb (or (:turns before-tally) 0)
+        na (or (:turns delta) 0)
+        vb (fitness-variance before-tally p)
+        va (fitness-variance delta p)]
+    (if (and z vb va (>= nb (:min-turns-for-verdict p)) (>= na (:min-turns-for-verdict p)))
+      (max (or min-band 0.0)
+           (* z (Math/sqrt (+ (/ vb nb) (/ va na)))))
+      (:meaningful-delta p))))
+
+(defn- floor-band
+  "How far under the best kept fitness a stretch may sit and still be read as
+  noise: z standard errors of the stretch's OWN per-turn mean. Not the
+  difference band — the floor compares one estimate against a number, and a
+  noisy stretch before the change says nothing about this one."
+  [delta p]
+  (let [{:keys [z min-band]} (:noise p)
+        n (or (:turns delta) 0)
+        v (fitness-variance delta p)]
+    (if (and z v (>= n (:min-turns-for-verdict p)))
+      (max (or min-band 0.0) (* z (Math/sqrt (/ v n))))
+      (:meaningful-delta p))))
 
 (defn- reading
   "One scoring of an experiment's two tallies: before, after, and the direction
@@ -388,8 +466,9 @@
   [before-tally delta p]
   (let [b (fitness-of before-tally p)
         a (fitness-of delta p)
-        move (when (and a b) (- a b))]
-    {:before b :after a :delta move :verdict (direction move p)}))
+        move (when (and a b) (- a b))
+        width (band before-tally delta p)]
+    {:before b :after a :delta move :band width :verdict (direction move width)}))
 
 (defn- branch-regressions
   "How many branches measured on both sides of the change went backwards, and
@@ -409,6 +488,47 @@
     (when (seq moves)
       {:measured (count moves)
        :regressed (count (filter #(<= % (- (:meaningful-delta p))) moves))})))
+
+(defn- cost
+  "Tokens per turn before the change and since it, and the relative change —
+  nil when either side has no token count to divide."
+  [before delta]
+  (let [per (fn [t] (let [n (:turns t) k (:tokens t)]
+                      (when (and (number? k) (pos? k) (number? n) (pos? n))
+                        (/ (double k) n))))
+        b (per before)
+        a (per delta)]
+    (when (and b a)
+      {:before b :after a :change (/ (- a b) b)})))
+
+(defn- prediction
+  "An experiment's predicted move, settled: the signal's per-turn rate before
+  and since, and whether it went the stated way. nil with no prediction."
+  [{:keys [signal direction]} before delta]
+  (when signal
+    (let [rate (fn [t] (let [n (or (:turns t) 0)]
+                         (when (pos? n) (/ (double (get (named-counts t) signal 0)) n))))
+          b (rate before)
+          a (rate delta)]
+      {:signal signal :direction direction :before b :after a
+       :hit? (boolean (and a b (case direction
+                                 :up (> a b)
+                                 :down (< a b)
+                                 false)))})))
+
+(defn- priced
+  "A verdict with RRSI's cost rule applied (2609.24972 eq. 7, karamazov-na2k.3):
+  a gain has to pay for the tokens it added, relative change dC <= base +
+  per-fitness * dS, or it is `:costly`; a change that moved fitness inside
+  the deadband but cut tokens by more than `base` is `:cheaper`. Anything
+  else, and any verdict with no token count, is left as it was."
+  [v {:keys [cost delta]} {:keys [base per-fitness]}]
+  (let [dc (:change cost)]
+    (cond
+      (or (nil? dc) (nil? base)) v
+      (and (= :better v) (> dc (+ base (* (or per-fitness 0) (or delta 0))))) :costly
+      (and (= :unchanged v) (< dc (- base))) :cheaper
+      :else v)))
 
 (defn verdict
   "What happened after an experiment, or nil when there is no such experiment.
@@ -442,6 +562,9 @@
    (when-let [e (get-in @tally [:experiments (str name)])]
      (let [delta (deep-diff (:before e) (snapshot))
            turns (or (:turns delta) 0)
+           ;; The best fitness any OTHER experiment reached and was kept at.
+           best (some->> (vals (dissoc (:experiments @tally) (str name)))
+                         (keep :kept-after) seq (apply max))
            full (reading (:before e) delta p)
            blind (reading (:before e) delta (health-blind p))
            stamped (:before-fitness e)
@@ -452,7 +575,7 @@
            regraded? (boolean (and stamped (:before full)
                                    (not= (:before full) stamped)))]
        (merge (select-keys e [:change :hypothesis :at])
-              (select-keys full [:before :after :delta])
+              (select-keys full [:before :after :delta :band])
               {:turns-since turns
                :full full
                :health-blind blind
@@ -462,12 +585,23 @@
                ;; both numbers rather than only asserting the scale moved.
                :before-as-stamped stamped
                :branches (branch-regressions e p)
+               :cost (cost (:before e) delta)
+               :target (:target e)
+               :prediction (prediction (:predicts e) (:before e) delta)
                :verdict
                (cond
                  (< turns (:min-turns-for-verdict p)) :too-early
                  (nil? (:delta full)) :too-early
                  (not= (:verdict full) (:verdict blind)) :confounded
-                 :else (:verdict full))})))))
+                 ;; RRSI's floor (eq. 5): under the best a kept change
+                 ;; reached, less the band, is a loss whichever way it moved
+                 ;; from the stretch just before it.
+                 (and best (:after full) (< (:after full) (- best (floor-band delta p))))
+                 :below-best
+                 :else (priced (:verdict full)
+                               {:cost (cost (:before e) delta) :delta (:delta full)}
+                               (:cost-rule p)))
+               :best best})))))
 
 (defn reverted!
   "Record that the supervisor acted on a verdict — reverted the change, or
@@ -478,8 +612,12 @@
   answer was clear, and the change stayed anyway. Marking it settles it and
   stops the block nagging; NOT marking it is what makes the nagging escalate."
   [name kept?]
-  (swap! tally update-in [:experiments (str name)]
-         (fn [e] (when e (assoc e :settled (if kept? :kept :reverted)))))
+  (let [after (when kept? (:after (verdict name)))]
+    (swap! tally update-in [:experiments (str name)]
+           (fn [e] (when e (cond-> (assoc e :settled (if kept? :kept :reverted))
+                             ;; what a kept change reached: the floor later
+                             ;; changes are held to (karamazov-na2k.4)
+                             after (assoc :kept-after after))))))
   nil)
 
 (defn experiments
@@ -491,7 +629,8 @@
              (:experiments @tally))))
 
 (defn unsettled-losses
-  "Experiments that measured `worse` or `unchanged` and have not been acted on.
+  "Experiments that measured `worse`, `unchanged` or `costly` and have not
+  been acted on.
 
   The one thing a supervisor under selection pressure must not be allowed to
   quietly skip. A change that was measured and found wanting, and then left in
@@ -500,7 +639,7 @@
   supervisor inherits it with no way to tell it was ever questioned."
   []
   (vec (filter #(and (nil? (:settled %))
-                     (contains? #{:worse :unchanged} (:verdict %)))
+                     (contains? #{:worse :unchanged :costly :below-best} (:verdict %)))
                (experiments))))
 
 (defn- detail

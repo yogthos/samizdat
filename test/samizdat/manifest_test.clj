@@ -251,6 +251,21 @@
             (is (= :mechanics (:category r)))
             (is (nil? (us/load-latest conn :manifest "bad")) "nothing broken was stored")))))))
 
+(deftest the-manifest-history-can-be-read-with-its-rationales
+  ;; karamazov-na2k.5: cell, prompt and policy had `versions`; manifest did
+  ;; not, so the supervisor could not read why a manifest was changed.
+  (with-db
+    (fn [conn]
+      (let [good (slurp (io/resource "manifests/loop.edn"))]
+        (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                        :args {:action "save" :name "loop2" :edn good
+                               :rationale "a second loop to compare"}})
+        (let [r (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                :args {:action "versions" :name "loop2"}})]
+          (is (= :neutral (:category r)) (:result r))
+          (is (str/includes? (:result r) "v1"))
+          (is (str/includes? (:result r) "a second loop to compare")))))))
+
 (deftest a-composed-manifest-registers-and-compiles-its-sub-loops
   (with-db
     (fn [conn]

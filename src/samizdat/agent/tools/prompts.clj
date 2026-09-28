@@ -57,10 +57,15 @@
   with an unbalanced `{% if %}` throws where it is USED, which for a gate
   message is in the middle of a run and for the system prompt is at the top of
   every branch. Better to refuse the save."
-  [body]
-  (try (prompt/render-str body {}) nil
-       (catch Throwable e
-         (str "this does not render: " (ex-message e)))))
+  [name body]
+  ;; The registered prompt validator, not a second copy of it: it also
+  ;; refuses a side call's prompt that stopped asking for what its parser
+  ;; reads (gates.edn :reply-formats, karamazov-na2k.6).
+  (when-let [p (try ((userspace/validator :prompt) name body)
+                    (catch Throwable e {:stage :render :message (ex-message e)}))]
+    (if (= :render (:stage p))
+      (str "this does not render: " (:message p))
+      (:message p))))
 
 (defn- shipped? [name]
   (some? (userspace/template :prompt name)))
@@ -183,7 +188,7 @@
             (nil? body) (base/malformed branch (base/missing ctx :body))
             (nil? why) (base/malformed branch (base/missing ctx :rationale))
             :else
-            (if-let [complaint (render-check (str body))]
+            (if-let [complaint (render-check name (str body))]
               ;; The render check is this surface's whole validation, so a
               ;; body that fails it is a rejected edit — nothing was stored.
               (base/rejected branch (msg {:bad-render true :name name

@@ -127,6 +127,17 @@
   (is (empty? (judge/finding-segments "")))
   (is (empty? (judge/finding-segments nil))))
 
+(deftest a-reply-with-no-verdict-line-is-marked-unread-not-just-passed
+  ;; karamazov-na2k.6. Fail-open stays — a judge that cannot answer must not
+  ;; wedge the loop — but a pass because nothing was read must not look like
+  ;; a pass because the judge said so.
+  (let [said (judge/review {:chat (fn [_ _] "VERDICT: COMPLETE") :requirement "r" :diff "d"})
+        mute (judge/review {:chat (fn [_ _] "Looks fine to me overall.") :requirement "r" :diff "d"})]
+    (is (= :complete (:verdict said)))
+    (is (not (:unread said)))
+    (is (= :complete (:verdict mute)) "still fails open")
+    (is (true? (:unread mute)) "and says it read no verdict")))
+
 (deftest the-verify-pass-reads-what-the-judge-said-not-what-it-thought
   ;; karamazov-na2k.21, run 390dcd17: GLM-5.3's verify reply carried its
   ;; reasoning inline, the reasoning mentioned "[low]" while weighing a

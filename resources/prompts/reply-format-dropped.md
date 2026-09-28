@@ -1,0 +1,1 @@
+The prompt {{name}} no longer asks for {{missing}}, which is what its parser reads (gates.edn :reply-formats). A reply without it is read as a default, silently — for a judge, as a pass. Keep asking for it, or change the parser rule in gates.edn :judge-rules and the list in :reply-formats together.

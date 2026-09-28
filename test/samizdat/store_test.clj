@@ -1594,3 +1594,17 @@
                (journal/last-note c rid :forfeit))))
       (testing "another branch's dispatch is not this branch's"
         (is (nil? (journal/in-flight-dispatch c rid "B2")))))))
+
+(deftest gate-checks-are-kept-with-their-value-and-outcome
+  ;; karamazov-na2k.7: every check of a measured gate, fired or not.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})]
+    (journal/record-gate-checks! c rid "B1" 7
+                                 [{:gate :progress-stalled :value 9 :held true}
+                                  {:gate :stuck :value 1 :held false}]
+                                 :progress-stalled)
+    (let [rows (journal/gate-checks c rid)]
+      (is (= 2 (count rows)))
+      (is (= #{["progress-stalled" 9.0 1 1] ["stuck" 1.0 0 0]}
+             (set (map (juxt :gate #(double (:value %)) :held :fired) rows)))))))
+

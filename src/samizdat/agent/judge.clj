@@ -636,6 +636,11 @@
                                 :diff diff :answer answer
                                 :transcript transcript}))
         verdict (if reply (parse-verdict reply) :complete)
+        ;; Nothing on a verdict line: the verdict above is the default, not
+        ;; the judge's (karamazov-na2k.6). Still fail-open; now visible.
+        unread (boolean (and reply
+                             (not-any? #(re-find (re-pattern (:verdict-line-regex (rules))) %)
+                                       (str/split-lines (usable reply)))))
         candidates (when reply (findings reply))
         verified (if (and candidates (gates/threshold :judge-verify?))
                    ;; Skipped when pass 1 found nothing, so a clean review
@@ -645,7 +650,7 @@
                                   (verify-prompt {:candidates candidates :diff diff}))
                      :candidates candidates})
                    candidates)]
-    {:verdict verdict :candidates candidates :findings verified}))
+    {:verdict verdict :candidates candidates :findings verified :unread unread}))
 
 (defn review-plan
   "Judge a PLAN against a requirement, both passes, against an injected `chat`.

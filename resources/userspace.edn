@@ -193,6 +193,7 @@
    :system-structure "prompts/system-structure.md"
    :system-tools "prompts/system-tools.md"
    :system-turn "prompts/system-turn.md"
+   :reply-format-dropped "prompts/reply-format-dropped.md"
    :task-busy "prompts/task-busy.md"
    :task-board-owned "prompts/task-board-owned.md"
    :task-claimed "prompts/task-claimed.md"
