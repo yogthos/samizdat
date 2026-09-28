@@ -593,11 +593,20 @@
   The deadline is skipped for a NON-ITERATING manifest (team, feature,
   decompose): there a `turn` is the branch's entire job rather than one model
   call, so the turn deadline would abandon the run partway through the work it
-  was asked to do. Those runs stop by the abort flag, which is the stop path
-  that never depended on cooperation anyway."
+  was asked to do. What bounds such a job instead is SILENCE: gates.edn
+  :job-stall-ms of nothing journalled anywhere in the run and the job is
+  cancelled and its branch abandoned, saying so. A job may run for hours as
+  long as it keeps journalling; run sweep5/2 went quiet for twenty minutes
+  and nothing in the harness could stop it (karamazov-abzd). An abort
+  reaches a job either way: it cancels the run's task, which this wait sees."
   [ctx branches turn]
-  (let [deadline (when (get ctx :iterating-loop? true)
+  (let [iterating? (get ctx :iterating-loop? true)
+        deadline (when iterating?
                    (or (:turn-deadline-ms ctx) (turn-deadline-ms)))
+        ;; nil — no key in a project's older gates.edn — is the behaviour
+        ;; from before the bound existed.
+        stall-ms (when (and (not iterating?) (:conn ctx) (:run-id ctx))
+                   (or (:job-stall-ms ctx) (gates/threshold :job-stall-ms)))
         ;; {branch-id promise} of turns cancelled at their deadline and not yet
         ;; terminated. A cancel is observed at the turn's next check
         ;; (RFC-013); until then it is still a running turn that shares the
@@ -643,9 +652,20 @@
                         ;; Parks on the turn's SIGNAL, never on the turn task itself:
                         ;; ebb's timeout would wait for the cancelled child, and the
                         ;; barrier must not stall on a read the cancel cannot reach.
-                        (let [[tag r] (cancel/await-or-cancel t deadline)]
+                        (let [[tag r] (if stall-ms
+                                        (cancel/await-unless
+                                         t (max 1 (quot stall-ms 10))
+                                         #(runs/stalled? (:conn ctx) (:run-id ctx) stall-ms))
+                                        (cancel/await-or-cancel t deadline))]
                           (case tag
                             :ok r
+                            :stalled
+                            (do (log/warn "branch" (:id b) "has journalled nothing for"
+                                          stall-ms "ms on turn" turn "— cancelled")
+                                (when cancelling (swap! cancelling assoc (:id b) (:done t)))
+                                (assoc b :status :abandoned
+                                       :inactive-reason (str "stalled: silent "
+                                                             (quot stall-ms 1000) " s")))
                             :timeout
                             (do (log/warn "branch" (:id b) "exceeded the turn deadline on turn" turn
                                           "— cancelled")

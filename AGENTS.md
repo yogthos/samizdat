@@ -197,10 +197,13 @@ at 2048 tokens a turn, the vendor's sampling, and the vision projector.
 The machine-wide config (`~/.config/samizdat/config.edn`) declares it as the
 `:bonsai` provider (`:type :local`) with the knobs sized for it: `:thinking?
 true`, `:gen-floor-tps 15`, `:max-tokens 8192`, `:read-timeout-overhead-ms
-120000`, `:max-response-ms 870000`, and selects it with `:roles {:default
-:bonsai}`. A `:roles :default` in any file beats `HARNESS_PROVIDER`, so a
-project that wants GLM says `{:roles {:default :glm}}` in its own
-`.samizdat/config.edn`, as endless-flight does.
+120000`, `:max-response-ms 870000`. Since 2026-09-25 it no longer selects
+it: `:roles {:default :deepseek-flash}` makes DeepSeek flash the default, and
+Bonsai is a switch away — `/model bonsai` for a run, or `{:roles {:default
+:bonsai}}` in a project's `.samizdat/config.edn`. A `:roles :default` in any
+file beats `HARNESS_PROVIDER`, so that project file is how one project runs
+on a different model than the machine's default. endless-flight has none and
+runs on the machine's.
 
 What was measured on this M1 Max, and what it costs a run: decode is 20
 tok/s on short replies and 14-17 on long ones; prefill is 135 tok/s, so the

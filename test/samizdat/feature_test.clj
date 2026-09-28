@@ -266,6 +266,22 @@
     (is (= :done (get-in r [:branch :status]))
         "the verdict lands — figures, red tree and all")))
 
+(deftest an-advisory-branch-still-has-to-say-something
+  ;; karamazov-qtj5, the second defect. Exempting advisory branches from the
+  ;; evidence rungs exempted them from :answer-exists too, so run 9ead0638's
+  ;; supervisor called done with {} and got "Answer accepted." — on a branch
+  ;; whose answer IS its product. The rung that binds an advisory branch says
+  ;; so in gates.edn, and asks for a verdict rather than for what was built.
+  (let [ctx {:branch (assoc (ag-state/new-branch {:id "SUP" :problem "supervise the run"})
+                            :advisory? true)
+             :config {:run {}}
+             :root "/nonexistent"
+             :tool-name "done"}]
+    (doseq [args [{} {:answer ""} {:answer "   "}]]
+      (let [r (ag-tools/run-tool (assoc ctx :args args))]
+        (is (not= :done (get-in r [:branch :status])) (str "refused for " (pr-str args)))
+        (is (str/includes? (str (:result r)) "verdict") "and asked for a verdict")))))
+
 (deftest per-role-models-reach-each-role
   ;; karamazov-reo: implementor on one model, critic on another. The captured
   ;; :provider per role proves each role's sub-loop ran on its assigned model.

@@ -297,6 +297,20 @@
         supervisor before :provider-error-limit abandoned them. False starts
         the run anyway and leaves the outage to that limit."}
 
+ :job-stall-ms
+ {:value 1800000 :kind :threshold :capability-tunable? false
+  :provenance ["karamazov-abzd" "sweep5 run 2"]
+  :doc "How long a NON-ITERATING manifest's job (feature, team, decompose —
+        the whole job is one turn, so there is no turn deadline) may go
+        without anything journalled anywhere in the run before it is
+        cancelled and its branch abandoned. A bound on silence rather than
+        length: a job may run for hours while it keeps journalling. Run
+        sweep5/2 went quiet for twenty minutes and only a rig outside the
+        harness stopped it. Twice the turn deadline, the same line the run
+        detail's stalled flag draws, so a single slow model call inside the
+        job never trips it. Absent (a project's older gates.edn), a job has
+        no bound but an abort."}
+
  :run-error-frames
  {:value 12 :kind :threshold :capability-tunable? false
   :provenance ["run ab935047" "karamazov-ma00"]
@@ -1256,7 +1270,8 @@
           :poll-ms 5000
           ;; A pass may be a model call, so the spacing is minutes and the
           ;; budget is small. The stream is meant to be the thing that
-          ;; notices, not the thing that runs.
+          ;; notices, not the thing that runs. The spacing runs from the END
+          ;; of one pass to the start of the next.
           :every-ms 120000
           :budget 12
           ;; The read timeout for the supervisor's OWN model calls, in ms;
@@ -3139,8 +3154,15 @@
   ;; of its own eval and shell calls (ship.clj observed-output) — beside any
   ;; artifacts; before that was added the rung checked a branch's figures
   ;; against its siblings' accepted answers and nothing else (karamazov-3s54).
+  ;; An advisory branch (reviewer, supervisor) delivers a verdict that quotes
+  ;; the run's own figures, so only the rungs marked :advisory? true bind it;
+  ;; `advisory?` is in scope for a rung's forms.
   {:value
    [{:name :answer-exists
+     ;; The one rung an advisory branch (reviewer, supervisor) is held to:
+     ;; its verdict is its product, and run 9ead0638's supervisor called done
+     ;; with {} and was told "Answer accepted." (karamazov-qtj5).
+     :advisory? true
      :when (str/blank? (str answer))
      ;; Shows the CALL, not just the missing name. base/missing already works
      ;; this way, on the reasoning that a bare list of argument names teaches
@@ -3150,13 +3172,21 @@
      ;; cost two live runs: both did the work, passed their tests, closed
      ;; their task, then spent their remaining turns calling `done` empty and
      ;; ended :exhausted with nothing shipped.
-     :message-form (str "`done` needs an `answer` — the text a person reads as"
-                        " the result of this run. Not a status line: say what"
-                        " you built and what shows it works.\n\n"
-                        "```tool-call\n"
-                        "{\"name\": \"done\", \"args\": {\"answer\":"
-                        " \"<what you built, and the evidence for it>\"}}\n"
-                        "```")}
+     :message-form (if advisory?
+                     (str "`done` needs an `answer` — your verdict on the run, which"
+                          " is what this branch is for: what you found, and what"
+                          " you did or want done about it.\n\n"
+                          "```tool-call\n"
+                          "{\"name\": \"done\", \"args\": {\"answer\":"
+                          " \"<your verdict, and what it rests on>\"}}\n"
+                          "```")
+                     (str "`done` needs an `answer` — the text a person reads as"
+                          " the result of this run. Not a status line: say what"
+                          " you built and what shows it works.\n\n"
+                          "```tool-call\n"
+                          "{\"name\": \"done\", \"args\": {\"answer\":"
+                          " \"<what you built, and the evidence for it>\"}}\n"
+                          "```"))}
     {:name :figure-coverage
      :when (and (seq evidence) (seq uncovered-numbers))
      ;; Says what COVERS a figure, not only that these are uncovered. Run

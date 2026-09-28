@@ -128,6 +128,23 @@
       (do (cancel) [:timeout])
       r)))
 
+(defn await-unless
+  "Park on a started task's signal, asking `stalled?` every `slice-ms`.
+  Returns its [:ok v] or [:err e], or [:stalled] after asking it to stop the
+  first time `stalled?` answers true — detached, as `await-or-cancel` leaves a
+  timed-out task. The bound for work that may rightly take hours but must
+  not go quiet: a slice that ends is not a timeout, only a chance to look."
+  [{:keys [signal cancel]} slice-ms stalled?]
+  (loop []
+    (let [r (try (ebb/? (ebb/timeout signal slice-ms ::slice))
+                 (catch Throwable e
+                   (when (control-signal? e) (cancel))
+                   (throw e)))]
+      (cond
+        (not= ::slice r) r
+        (stalled?) (do (cancel) [:stalled])
+        :else (recur)))))
+
 (defn with-deadline
   "Run `task` and wait up to `ms` for it: [:ok v], [:err e], or [:timeout]
   with the task cancelled and detached. The one deadline idiom for every wait

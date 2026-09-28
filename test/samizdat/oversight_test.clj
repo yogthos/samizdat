@@ -84,6 +84,43 @@
       (is (= :answered (first @done)) "the pass's call came back")
       (finally (stop)))))
 
+(deftest passes-never-overlap
+  ;; karamazov-qtj5. Run 9ead0638's SUP branch interleaved two and three
+  ;; passes, each cold start recorded as an abandoned pass with no notes. A
+  ;; GLM pass deliberates for minutes, far longer than the tick; a pass that
+  ;; parks across many ticks must still be the only one running.
+  (let [in-flight (atom 0) peak (atom 0) passes (atom 0)
+        stop (ov/start! {:enabled? true :poll-ms 5 :every-ms 0 :budget 100 :run-id "R-overlap"}
+                        (fn [_]
+                          (swap! peak max (swap! in-flight inc))
+                          (ebb/? (ebb/sleep 80))
+                          (swap! in-flight dec)
+                          (swap! passes inc)
+                          {:carry nil :spent? true}))]
+    (try
+      (loop [n 0] (when (and (< @passes 3) (< n 300)) (Thread/sleep 10) (recur (inc n))))
+      (is (<= 3 @passes) "passes keep coming")
+      (is (= 1 @peak) "one at a time")
+      (finally (stop)))))
+
+(deftest the-spacing-is-between-passes-not-between-their-starts
+  ;; :last-at was stamped when a pass STARTED, so a pass longer than
+  ;; :every-ms — a GLM deliberation of 3-4 minutes against 2 — was due again
+  ;; the moment it ended, and the passes ran back to back through the budget.
+  (let [spans (atom [])
+        stop (ov/start! {:enabled? true :poll-ms 5 :every-ms 150 :budget 100 :run-id "R-gap"}
+                        (fn [_]
+                          (let [t0 (System/currentTimeMillis)]
+                            (ebb/? (ebb/sleep 200))
+                            (swap! spans conj [t0 (System/currentTimeMillis)])
+                            {:carry nil :spent? true})))]
+    (try
+      (loop [n 0] (when (and (< (count @spans) 2) (< n 300)) (Thread/sleep 10) (recur (inc n))))
+      (let [[[_ end1] [start2 _]] @spans]
+        (is (some? start2) "a second pass ran")
+        (is (>= (- start2 end1) 140) (str "the gap was " (- start2 end1) " ms against a spacing of 150")))
+      (finally (stop)))))
+
 (deftest a-branch-whose-provider-keeps-failing-stops
   ;; The route used to see only the turn cap, so a pass whose every call
   ;; failed ran to it: 2810 supervisor turns against a server that was down
