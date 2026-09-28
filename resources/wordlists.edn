@@ -378,6 +378,14 @@
  ;; refuses refinements is worse than no detector.
  #{"not" "never" "fails" "failed" "cannot" "can't" "no" "without" "refuses"}
 
+ :environment-blocked
+ ;; Output that says the HOST refused an acceptance :check, not the work
+ ;; (karamazov-na2k.24): raylib with no window server. A check that prints one
+ ;; of these is tried once more and then counted as undecided rather than
+ ;; failed. Narrow on purpose: every phrase here is a way for a real failure
+ ;; to be excused, so add one only for an output that measured as the host's.
+ #{"Failed to initialize platform"}
+
  :completeness-blocked
  ;; A stated LIMIT, which is a result rather than a plan. Same first-person
  ;; voice and the same work verb as an abandoned intention — "I have not been

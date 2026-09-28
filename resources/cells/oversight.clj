@@ -424,6 +424,11 @@
                                     :at-cap? (at-cap? round)
                                     :hollow? (:hollow round)
                                     :tests-passed? (:tests-passed round)
+                                    ;; Whether the operator's criteria held,
+                                    ;; and gate 2's own words for why not
+                                    ;; (karamazov-na2k.23).
+                                    :accepted? (:accepted round)
+                                    :verify-note (:note (journal/last-note conn run-id :verify))
                                     :review (some-> (journal/last-note conn run-id :review)
                                                     :decision keyword)
                                     :critic (some-> (journal/last-note conn run-id :critique)

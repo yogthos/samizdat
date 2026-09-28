@@ -2228,6 +2228,7 @@
     :nobody-shipped "NO IMPLEMENTOR SHIPPED — the implement round produced nothing verified"
     :tests-failing "TESTS FAILING — {{detail}}"
     :tests-failing-fallback "the tests did not pass"
+    :acceptance-failing "ACCEPTANCE NOT MET, TESTS GREEN — the round was sent back on the operator's criteria, not on its tests: {{detail}}"
     :revision-cap "REVISION CAP REACHED — {{revision}} revisions (soft cap {{soft-cap}}) with no verified solution. This is a soft stop for YOU to decide: keep solving with a new approach, or STOP if it is a genuine dead end."
     :thrash "THRASH — a branch spent a third+ of its turns on empty/mis-parsed calls"
     :reviewer-bounced "REVIEWER BOUNCED — the reviewer sent the work back"

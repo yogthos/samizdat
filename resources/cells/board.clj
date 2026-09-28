@@ -682,7 +682,8 @@
    :requires [:conn :run-id]
    :input  [:map [:board/task {:optional true} :any]
             [:board/plan-text {:optional true} :any]
-            [:board/plan-attempts {:optional true} :int]]
+            [:board/plan-attempts {:optional true} :int]
+            [:board/plan-decision {:optional true} :any]]
    :output [:map [:board/design-decision :keyword]
             [:board/design-findings {:optional true} :any]]}
   (fn [{:keys [conn run-id] :as ctx} {:keys [board/task board/plan-text] :as data}]
@@ -729,10 +730,12 @@
                          :else :revise)
               findings (cond
                          (and no-plan? (= :revise decision))
-                         (str "You did not produce a plan. End your planning step "
-                              "with a `plan` call that names the files this change "
-                              "touches, the tests that pin it, and a one- or "
-                              "two-sentence goal stating how it meets the WHOLE ask.")
+                         ;; Named by the path: an RFC task's plan-text is the
+                         ;; plan's `rfc`, and asking it for files, tests and a
+                         ;; goal it had already given told it nothing
+                         ;; (karamazov-na2k.22).
+                         (prompt/render "design-no-plan"
+                                        {:rfc (= :rfc (:board/plan-decision data))})
                          (= :revise decision) (:findings reviewed)
                          :else nil)]
           (journal/note! conn run-id :design-review

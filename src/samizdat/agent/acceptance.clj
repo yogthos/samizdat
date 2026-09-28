@@ -40,6 +40,7 @@
   policy already refuse to let a run write (karamazov-kvw, files/run-config?).
   A spec the run could edit would be Gate 2 all over again."
   (:require [clojure.string :as str]
+            [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]))
 
 ;; --- the spec ---------------------------------------------------------------
@@ -91,13 +92,27 @@
       (assoc base :passed? nil :output "not run")
 
       (= :check kind)
-      (let [{:keys [green? timeout? output]}
-            (try (run-check text)
-                 (catch Throwable e {:green? false :output (str "check failed to run: " (ex-message e))}))]
-        (assoc base :passed? (boolean green?)
-               :output (if timeout?
-                         (str "timed out" (when-not (str/blank? (str output)) (str "\n" output)))
-                         (str output))))
+      (let [attempt (fn [] (try (run-check text)
+                                (catch Throwable e {:green? false :output (str "check failed to run: " (ex-message e))})))
+            blocked? (fn [{:keys [green? output]}]
+                       (and (not green?)
+                            (some #(str/includes? (str output) %)
+                                  (lexicon/wordlist :environment-blocked))))
+            ;; A check the ENVIRONMENT refused — no window server, say — is
+            ;; tried once more, and if it is still refused it is undecided,
+            ;; not failed: the work was not what stopped it, and sending the
+            ;; round back to fix it asks an owner to repair the host
+            ;; (run eb64f59d, karamazov-na2k.24).
+            first-try (attempt)
+            r (if (blocked? first-try) (attempt) first-try)
+            {:keys [green? timeout? output]} r]
+        (if (blocked? r)
+          (assoc base :passed? nil :blocked true
+                 :output (str "blocked by the environment\n" output))
+          (assoc base :passed? (boolean green?)
+                 :output (if timeout?
+                           (str "timed out" (when-not (str/blank? (str output)) (str "\n" output)))
+                           (str output)))))
 
       :else
       (let [{:keys [yes? reply]}

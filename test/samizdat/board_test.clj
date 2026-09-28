@@ -18,6 +18,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.judge :as judge]
             [samizdat.cells :as cells]
+            [mycelium.cell :as cell]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
@@ -331,6 +332,36 @@
             (is (not (contains? kinds "plan-review")))))
         (testing "fail-open held: construction still ran and the task closed"
           (is (= "done" (:status (first (db/fetch conn ["SELECT status FROM tasks"]))))))))))
+
+(deftest an-rfc-design-with-no-rfc-is-asked-for-the-rfc
+  ;; karamazov-na2k.22, runs 390dcd17 and eb64f59d: an RFC-triaged design
+  ;; called plan with files, tests and a goal but no rfc — plan's signature
+  ;; did not declare one — and was sent back with "you did not produce a
+  ;; plan ... name the files, the tests and a goal", which it had just done.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        t (tasks/create! conn {:title "fade the terrain" :body "b"})
+        review (fn [decision]
+                 ((:handler (cell/get-cell! :board/design-review))
+                  {:conn conn :run-id rid :config {}}
+                  {:board/task t :board/plan-text nil :board/plan-attempts 1
+                   :board/plan-decision decision}))]
+    (let [r (review :rfc)]
+      (is (= :revise (:board/design-decision r)))
+      (is (str/includes? (str (:board/design-findings r)) "`rfc`")
+          "the re-prompt names the field the RFC path reads"))
+    (let [r (review :plan)]
+      (is (not (str/includes? (str (:board/design-findings r)) "`rfc`"))
+          "and a plain plan is not asked for one"))))
+
+(deftest the-plan-tool-declares-its-rfc-argument
+  ;; Native tool specs are derived from the signature lines; an argument the
+  ;; signature leaves out is not in the schema a native-tool provider sends.
+  (let [specs (into {} (map (juxt :name identity))
+                    ((requiring-resolve 'samizdat.llm.toolspec/signatures)
+                     (slurp (clojure.java.io/resource "prompts/system-tools.md"))))]
+    (is (contains? (get-in specs ["plan" :parameters :properties]) :rfc))))
 
 (deftest triage-is-three-way-by-size
   ;; karamazov-dq1r: trivial skips, a multi-part task gets an RFC, an ordinary
