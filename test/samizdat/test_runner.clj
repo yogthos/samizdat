@@ -162,6 +162,7 @@
             [samizdat.user-sim-test]
             [samizdat.userspace-test]
             [samizdat.userspace-files-test]
+            [samizdat.leakage-test]
             [samizdat.userspace-validation-test]
             [samizdat.userspace-adoption-test]
             [samizdat.event-stream-test]
@@ -373,6 +374,7 @@
     samizdat.user-sim-test
     samizdat.userspace-test
     samizdat.userspace-files-test
+    samizdat.leakage-test
     samizdat.userspace-validation-test
     samizdat.userspace-adoption-test
     samizdat.event-stream-test

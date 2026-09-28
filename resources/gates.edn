@@ -1966,6 +1966,16 @@
         judgement — it hands over the episodes that have earned the
         question."}
 
+ :pruning
+ {:value {:min-runs 3 :limit 5}
+  :provenance ["karamazov-na2k.10" "2609.24972v2"]
+  :kind :policy :capability-tunable? false
+  :doc "WHEN A PROJECT EDIT HAS EARNED THE QUESTION OF BEING REMOVED: the
+        version in force for at least :min-runs failed runs and no shipped
+        one. RRSI's pruning rule (a component with no positive gain over a
+        window is offered for deletion), the edit-level twin of :retirement
+        for gates. At most :limit are shown per pass. Crashes are excluded."}
+
  :retirement
  {:value {:min-runs 3 :limit 5}
   :provenance ["karamazov-ylte.3" "2609.09153v1"]

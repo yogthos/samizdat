@@ -1006,6 +1006,23 @@
                           ORDER BY id"
                         run-id (name kind)])))
 
+(defn notes-since
+  "Notes of any of `kinds` on this run created at or after `since` (an ISO
+  instant), oldest first, each its parsed data with :kind beside it."
+  [conn run-id kinds since]
+  (when (seq kinds)
+    (into []
+          (keep (fn [row]
+                  (try (assoc (json/read-str (str (:data row)) :key-fn keyword)
+                              :kind (:kind row))
+                       (catch Throwable _ nil))))
+          (db/fetch conn (into [(str "SELECT kind, data FROM events
+                                      WHERE run_id = ? AND created_at >= ? AND kind IN ("
+                                     (str/join ", " (repeat (count kinds) "?"))
+                                     ") ORDER BY id")
+                                run-id (str since)]
+                               (map name kinds))))))
+
 (def ^:private record-tables
   "The tables holding a run's account of itself, and how each one names its
   run. Ordered so an FTS mirror goes before the rows it indexes — deleted the

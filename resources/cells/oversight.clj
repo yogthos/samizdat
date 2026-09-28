@@ -507,6 +507,37 @@
                                                            [])]
                                             (when (seq rs)
                                               (prompt/render "retirement" {:gates rs})))
+                                  ;; What the reviews said while each open
+                                  ;; change was in force, beside it — the
+                                  ;; verdict is a number, these are the why
+                                  ;; (GEPA's feedback, karamazov-na2k.12).
+                                  :reviews (let [open (safely :experiments
+                                                              #(vec (remove :settled (session/experiments)))
+                                                              [])
+                                                 rows (for [e open
+                                                            :let [rs (safely :reviews
+                                                                             #(journal/notes-since
+                                                                               conn run-id [:critique :board-review] (:at e))
+                                                                             [])]
+                                                            :when (seq rs)]
+                                                        {:name (:name e)
+                                                         :reviews (mapv (fn [r]
+                                                                          {:kind (:kind r)
+                                                                           :verdict (:verdict r)
+                                                                           :findings (some-> (:findings r)
+                                                                                             (clip (gates/threshold :oversight-note-chars)))})
+                                                                        (take-last 3 rs))})]
+                                             (when (seq rows)
+                                               (prompt/render "experiment-reviews" {:changes rows})))
+                                  ;; The same question for a project edit:
+                                  ;; current, failed runs, never shipped one
+                                  ;; (karamazov-na2k.10).
+                                  :prune (let [ps (safely :pruning
+                                                          #(store-us/pruning-candidates
+                                                            conn (gates/threshold :pruning))
+                                                          [])]
+                                           (when (seq ps)
+                                             (prompt/render "pruning" {:edits ps})))
                                   :catalog (safely :catalog #(wf/render-catalog conn) "")})
              ;; ONE branch for the run, carried by the stream. Opened once;
              ;; re-opening an existing id is a no-op that returns the row.

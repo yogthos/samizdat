@@ -94,7 +94,7 @@
    {:name samizdat.workflow/turn-manifest
     :summary "A whole-run manifest reduced to one turn — the slice the beam schedules. Refuses a manifest that declares :turn-sliceable? false, and one that routes an edge back to :start without iterating (that edge is cut into :end, so each cycle would run as a fresh turn with a fresh data map)."}
    {:name samizdat.workflow/turn-sliceable?
-    :summary "Whether a manifest may be a run's LOOP at all. Default true; declare :turn-sliceable? false at the top of a manifest for one whose back edge to :start is structural rather than a turn — beam.edn (the scheduler, which drives branches rather than being driven) and repl.edn (a shape whose four pure cells classify a branch, enforced by phases.edn refusals). Such a manifest stays in the catalogue but is off the supervisor's switch menu and off selection's candidate list, and both drivers refuse to run it."}
+    :summary "Whether a manifest may be a run's LOOP at all. Default true; declare :turn-sliceable? false at the top of a manifest for one whose back edge to :start is structural rather than a turn — beam.edn, the scheduler, which drives branches rather than being driven. Such a manifest stays in the catalogue but is off the supervisor's switch menu and off selection's candidate list, and both drivers refuse to run it."}
    {:name samizdat.workflow/workflow-prompt
     :summary "A manifest's own instructions: `:prompt \"name\"` at the top names resources/prompts/<name>.md, appended to the base system prompt for every branch the run opens. This is how a manifest declares what its graph is FOR — review.edn is the same loop framed as a code review — so a new task shape is a manifest plus a prompt rather than a code path. A manifest may also name `:role` (roles.edn): every branch it opens runs as that role, on its tools and its prompt — answer.edn runs as the read-only `answerer`. Read from the LOADED definition, so an edit to the manifest reframes the next run."}
    {:name samizdat.agent.select/triage!
@@ -324,6 +324,8 @@
     :summary "Every part the per-turn context block can carry, in reading order. A branch holds what each cost last turn as :context-sizes; `introspect` renders both, so a cap in gates.edn :context-budget can be retuned against a measurement."}
    {:name samizdat.store.journal/gate-tally
     :summary "Fired / met / met-late / unmet per gate for a run — whether the steering is being obeyed, per steer."}
+   {:name samizdat.leakage/screen
+    :summary "Whether an edit is fit to promote into the shipped templates: the subject-specific terms it introduces and the guards (gates, refusals, invariants) the template had and it dropped. Flags only; promoting is a person's call."}
    {:name samizdat.store.journal/gate-checks
     :summary "Every check of a gate that declares :measure — the value it compared, whether its :when held, whether it fired. Both sides of a threshold's cut, which gate firings alone never had; the data a threshold is fitted from."}
    {:name samizdat.store.journal/retirement-candidates

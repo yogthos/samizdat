@@ -978,6 +978,26 @@
              project's — the shipped copy does not answer for it"))
       (finally (rm-rf (java.io.File. root))))))
 
+;; --- pruning: project edits that have not earned their place (na2k.10) ------
+
+(deftest a-project-edit-that-never-shipped-a-run-is-a-pruning-candidate
+  ;; RRSI's Lasso step: machinery that stops producing a gain is offered for
+  ;; deletion. retirement-candidates does it for gates; this is the same for
+  ;; an edit: the current project version, on runs that ended failed and
+  ;; never once shipped. Crashes are the harness's, not the edit's.
+  (store/seed! *conn* :prompt "system" "the template")
+  (store/save! *conn* :prompt "system" "v2" "project" "tightened the split rule")
+  (store/save! *conn* :cell "loop" "c2" "project" "a cell edit")
+  (dotimes [_ 3] (store/record-run-outcome! *conn* :failed))
+  (store/record-run-outcome! *conn* :error)
+  (store/save! *conn* :cell "loop" "c3" "project" "fixed the cell edit")
+  (let [cs (store/pruning-candidates *conn* {:min-runs 3 :limit 5})]
+    (is (= [["prompt" "system"]] (mapv (juxt :kind :name) cs))
+        "the prompt's current version failed three runs and shipped none; the
+         cell's current version is new and has no record yet")
+    (is (= 3 (:failed (first cs))) "the crash is not counted against it")
+    (is (= "tightened the split rule" (:rationale (first cs))))))
+
 ;; --- drift: how much each surface has moved (karamazov-00qw) -----------------
 
 (deftest drift-counts-saves-reverts-and-standing-per-surface

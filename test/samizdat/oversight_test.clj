@@ -908,6 +908,36 @@
       (is (str/includes? (str prob) "manifest broken")
           "and the brief names what was refused"))))
 
+(deftest an-edit-that-has-not-earned-its-place-reaches-the-supervisor
+  ;; karamazov-na2k.10: the brief offers it for removal, with why it was made.
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})]
+    ((requiring-resolve 'samizdat.store.userspace/save!) conn :prompt "system" "v2" "project" "tightened the split rule")
+    (dotimes [_ 3] ((requiring-resolve 'samizdat.store.userspace/record-run-outcome!) conn :failed))
+    (journal/note! conn rid :run-error {:data {:error "boom" :node ":x"}})
+    (let [{:keys [prob]} (reasoning-over conn rid)]
+      (is (str/includes? (str prob) "not earned their place"))
+      (is (str/includes? (str prob) "tightened the split rule")))))
+
+(deftest an-open-experiment-is-shown-with-what-the-reviews-said-since
+  ;; karamazov-na2k.12, from GEPA: reflection reads {inputs, outputs,
+  ;; feedback}, not a bare score. The verdict is a fitness number; the
+  ;; reviews written while the change was in force say why it moved.
+  (session/reset!)
+  (try
+    (let [conn (db/open! ":memory:")
+          rid (runs/start-run! conn {:problem "p"})]
+      (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
+      (session/experiment! "tighter-fence" {:change "one example call" :hypothesis "fewer parse errors"})
+      (journal/note! conn rid :critique {:data {:decision "revise" :verdict "incomplete"
+                                                :findings "- [high] the screenshot was never described"}})
+      (journal/note! conn rid :run-error {:data {:error "boom" :node ":x"}})
+      (let [{:keys [prob]} (reasoning-over conn rid)]
+        (is (str/includes? (str prob) "tighter-fence"))
+        (is (str/includes? (str prob) "the screenshot was never described")
+            "the finding reaches the brief beside the change it was measured under")))
+    (finally (session/reset!))))
+
 (deftest a-refused-mutation-is-worth-a-model-call
   ;; A refusal means the supervisor tried to change the harness and the
   ;; protocol said no. That is precisely a moment where the next pass will

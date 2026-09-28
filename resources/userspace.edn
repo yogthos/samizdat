@@ -28,8 +28,7 @@
    :board-bt "manifests/board-bt.edn"
    :feature "manifests/feature.edn"
    :decompose "manifests/decompose.edn"
-   :repair "manifests/repair.edn"
-   :repl "manifests/repl.edn"}
+   :repair "manifests/repair.edn"}
 
  :policies
   {:gates "gates.edn"
@@ -51,7 +50,6 @@
    "cells/probe.clj"
    "cells/repair.clj"
    "cells/oversight.clj"
-   "cells/repl.clj"
    "cells/team.clj"]
 
  :prompts
@@ -193,6 +191,8 @@
    :system-structure "prompts/system-structure.md"
    :system-tools "prompts/system-tools.md"
    :system-turn "prompts/system-turn.md"
+   :experiment-reviews "prompts/experiment-reviews.md"
+   :pruning "prompts/pruning.md"
    :reply-format-dropped "prompts/reply-format-dropped.md"
    :task-busy "prompts/task-busy.md"
    :task-board-owned "prompts/task-board-owned.md"

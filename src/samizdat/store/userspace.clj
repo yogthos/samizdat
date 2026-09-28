@@ -263,6 +263,30 @@
          (sort-by (juxt (comp - :saves) :kind))
          vec)))
 
+(defn pruning-candidates
+  "Project edits that have not earned their place: the CURRENT project
+  version of a name that has been current for at least `min-runs` failed runs
+  and never once for a shipped one, most-failed first, at most `limit`.
+
+  RRSI's structural pruning (2609.24972 eq. 14): a component with no
+  positive measured gain over a window is offered for deletion, because
+  score-only evolution has no incentive to remove anything. retirement
+  candidates do it for gates; this is the same for an edit (karamazov-
+  na2k.10). Crashes are not counted — a run the harness could not finish is
+  evidence about the harness, not the edit. It surfaces them; deciding is the
+  supervisor's."
+  [conn {:keys [min-runs limit]}]
+  (db/fetch conn ["SELECT u.kind, u.name, u.version, u.failure_count AS failed, u.rationale
+                   FROM userspace u
+                   WHERE u.source = 'project'
+                     AND u.version = (SELECT MAX(v.version) FROM userspace v
+                                      WHERE v.kind = u.kind AND v.name = u.name)
+                     AND u.success_count = 0
+                     AND u.failure_count >= ?
+                   ORDER BY u.failure_count DESC, u.kind, u.name
+                   LIMIT ?"
+                  min-runs limit]))
+
 (defn names
   "Every name at `kind`, with its latest version and how many versions it
   has — the catalogue a tool lists."
