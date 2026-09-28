@@ -1026,11 +1026,14 @@
   parsed — for the process and for this branch, whose own tally is the
   number the cull and the supervisor share (RFC-012 F3). Never allowed to
   throw: a counter must not be able to cost a turn."
-  [run-id branch tool result signals]
+  [run-id branch tool result signals tokens]
   (try
     (session/observe-turn! {:tool tool
                             :category (:category result)
                             :signals signals
+                            ;; what the turn cost, for a verdict's cost rule
+                            ;; (karamazov-na2k.3)
+                            :tokens tokens
                             :branch (when (and run-id (:id branch))
                                       [run-id (:id branch)])})
     (catch Throwable _ nil)))
@@ -1047,7 +1050,8 @@
                                  ;; and those are the ones a supervisor is least
                                  ;; able to infer from outcomes.
                                  {:parse-error (= "__parse_error__" (:name parsed))
-                                  :auto-repaired (:auto-repaired? parsed)}))
+                                  :auto-repaired (:auto-repaired? parsed)})
+                 (some-> response :usage :total-tokens))
   (journal/record-turn! conn run-id
                         {:branch-id (:id branch) :turn turn
                          ;; The task the turn served: the caller's, else the
@@ -1241,16 +1245,21 @@
                      (assoc branch :lines-written
                             (gitdiff/changed-lines (:root ctx) (:git-baseline ctx)))
                      branch)
-            decision (arbiter/decide
-                      {:branch branch
-                       :max-turns max-turns
-                       ;; How wide the beam already is, so the reproduction
-                       ;; rung knows whether the run can afford offspring.
-                       :branch-count (or (:branch-count ctx) 1)
-                       :done-block (:done-block result)
-                       :directive (or (:pending-directive branch)
-                                      (:directive ctx))
-                       :safe-state-coverage coverage})
+            gate-ctx {:branch branch
+                      :max-turns max-turns
+                      ;; How wide the beam already is, so the reproduction
+                      ;; rung knows whether the run can afford offspring.
+                      :branch-count (or (:branch-count ctx) 1)
+                      :done-block (:done-block result)
+                      :directive (or (:pending-directive branch)
+                                     (:directive ctx))
+                      :safe-state-coverage coverage}
+            decision (arbiter/decide gate-ctx)
+            ;; Every measured gate's value this check, fired or not, so its
+            ;; threshold can be fitted later (karamazov-na2k.7).
+            _ (journal/record-gate-checks! conn run-id (:id branch) turn
+                                           (arbiter/measurements gate-ctx)
+                                           (:gate decision))
             {ctx-block :block branch :branch}
             (context-block conn run-id branch
                            (get-in parsed [:args :claim])

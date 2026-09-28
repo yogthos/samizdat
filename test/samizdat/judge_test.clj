@@ -127,6 +127,31 @@
   (is (empty? (judge/finding-segments "")))
   (is (empty? (judge/finding-segments nil))))
 
+(deftest a-reply-with-no-verdict-line-is-marked-unread-not-just-passed
+  ;; karamazov-na2k.6. Fail-open stays — a judge that cannot answer must not
+  ;; wedge the loop — but a pass because nothing was read must not look like
+  ;; a pass because the judge said so.
+  (let [said (judge/review {:chat (fn [_ _] "VERDICT: COMPLETE") :requirement "r" :diff "d"})
+        mute (judge/review {:chat (fn [_ _] "Looks fine to me overall.") :requirement "r" :diff "d"})]
+    (is (= :complete (:verdict said)))
+    (is (not (:unread said)))
+    (is (= :complete (:verdict mute)) "still fails open")
+    (is (true? (:unread mute)) "and says it read no verdict")))
+
+(deftest the-verify-pass-reads-what-the-judge-said-not-what-it-thought
+  ;; karamazov-na2k.21, run 390dcd17: GLM-5.3's verify reply carried its
+  ;; reasoning inline, the reasoning mentioned "[low]" while weighing a
+  ;; candidate, and that paragraph survived as the findings the next round
+  ;; was handed. Pass 1 already reads through `usable`; pass 2 did not.
+  (let [candidates "- [low] The fade never quite completes at the cull radius.\n"
+        reply (str "<think>The candidates are mostly positive observations plus one [low]\n"
+                   "finding. Let me verify each against the diff.</think>\n"
+                   "- [low] The fade never quite completes at the cull radius. VERIFIED.\n")
+        out (judge/verified-findings {:reply reply :candidates candidates})]
+    (is (str/includes? (str out) "cull radius"))
+    (is (not (str/includes? (str out) "think")) out)
+    (is (not (str/includes? (str out) "Let me verify")) out)))
+
 (deftest the-verify-pass-drops-only-what-it-explicitly-calls-a-false-positive
   ;; Pass 2, ported from dirge (roborev's VerifyDedupePreamble). The judge
   ;; re-reads each candidate against the diff and marks it VERIFIED or

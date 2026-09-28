@@ -60,6 +60,7 @@
             [samizdat.events]
             [samizdat.export]
             [samizdat.hashline]
+            [samizdat.leakage]
             [samizdat.layers]
             [samizdat.lisp]
             [samizdat.llm.client]

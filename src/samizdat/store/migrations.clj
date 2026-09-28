@@ -861,7 +861,30 @@
   column."
   ["ALTER TABLE turns ADD COLUMN task_id TEXT"])
 
+(def v36
+  "EVERY CHECK of a gate that declares a :measure, fired or not
+  (karamazov-na2k.7).
+
+  gate_firings holds the checks that fired, so a threshold's data was
+  censored: the value it compared was never kept, and the checks under it
+  not at all. A threshold cannot be fitted from one side of its own cut
+  (DSPy's ReAnchor fits cut points at midpoints of observed values and keeps
+  one only if it wins a held-out check). value is what the :measure form
+  returned, held whether the :when held, fired whether this gate was the
+  one chosen."
+  ["CREATE TABLE IF NOT EXISTS gate_checks (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     run_id TEXT NOT NULL,
+     branch_id TEXT,
+     turn INTEGER,
+     gate TEXT NOT NULL,
+     value REAL,
+     held INTEGER NOT NULL,
+     fired INTEGER NOT NULL,
+     created_at TEXT NOT NULL)"
+   "CREATE INDEX IF NOT EXISTS idx_gate_checks_run ON gate_checks(run_id, gate)"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35])
+   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36])

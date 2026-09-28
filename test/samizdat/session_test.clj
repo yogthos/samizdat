@@ -183,6 +183,111 @@
     (is (= "budget 50k -> 80k" (:change v)))
     (is (seq (:hypothesis v)) "a change with no stated expectation cannot be wrong")))
 
+(deftest tokens-are-counted-per-turn
+  (session/observe-turn! {:tool "eval" :category :success :signals {} :tokens 1200})
+  (session/observe-turn! {:tool "eval" :category :success :signals {} :tokens 800})
+  (session/observe-turn! {:tool "eval" :category :success :signals {}})
+  (is (= 2000 (:tokens (session/snapshot)))))
+
+(defn- turns! [n tool cat tokens & [signals]]
+  (dotimes [_ n] (session/observe-turn! {:tool tool :category cat
+                                         :signals (or signals {}) :tokens tokens})))
+
+(deftest a-verdict-weighs-what-the-change-cost
+  ;; karamazov-na2k.3, RRSI eq. 7: added tokens have to be paid for by
+  ;; measured gain, dC <= base + per-fitness * dS with dC relative. Their
+  ;; acceptance rules cut tokens per trial from 3.59M to 2.42M in ablation;
+  ;; samizdat's fitness had no cost term and its verdicts no token count.
+  (testing "the verdict carries tokens per turn on both sides"
+    (turns! 6 "eval" :success 1000)
+    (session/experiment! "same" {:change "c" :hypothesis "h"})
+    (turns! 8 "eval" :success 1000)
+    (let [v (session/verdict "same")]
+      (is (= 1000.0 (get-in v [:cost :before])))
+      (is (= 1000.0 (get-in v [:cost :after])))
+      (is (= :unchanged (:verdict v)))))
+  (session/reset!)
+  (testing "a gain bought with far more tokens than it earned is costly"
+    (turns! 6 "eval" :mechanics 1000 {:parse-error true})
+    (session/experiment! "pricey" {:change "c" :hypothesis "h"})
+    (turns! 8 "eval" :success 9000)
+    (is (= :costly (:verdict (session/verdict "pricey")))))
+  (session/reset!)
+  (testing "a gain that paid for its tokens is better"
+    (turns! 6 "eval" :mechanics 1000 {:parse-error true})
+    (session/experiment! "fair" {:change "c" :hypothesis "h"})
+    (turns! 8 "eval" :success 1300)
+    (is (= :better (:verdict (session/verdict "fair")))))
+  (session/reset!)
+  (testing "no measurable change in fitness at a clearly lower cost is cheaper"
+    (turns! 6 "eval" :success 1000)
+    (session/experiment! "lean" {:change "c" :hypothesis "h"})
+    (turns! 8 "eval" :success 600)
+    (is (= :cheaper (:verdict (session/verdict "lean")))))
+  (session/reset!)
+  (testing "with no token counts the rule stays out of it"
+    (turns! 6 "eval" :mechanics nil {:parse-error true})
+    (session/experiment! "blind" {:change "c" :hypothesis "h"})
+    (turns! 8 "eval" :success nil)
+    (is (= :better (:verdict (session/verdict "blind"))))))
+
+(deftest the-deadband-is-the-noise-the-tally-shows
+  ;; karamazov-na2k.4. :meaningful-delta 0.15 was one number for every run.
+  ;; RRSI calibrates its band from how much the baseline itself varies, and
+  ;; a stretch where half the calls fail moves by more than 0.15 on noise.
+  (turns! 3 "eval" :success nil)
+  (turns! 3 "eval" :failure nil)
+  (session/experiment! "noisy" {:change "c" :hypothesis "h"})
+  (turns! 5 "eval" :success nil)
+  (turns! 3 "eval" :failure nil)
+  (let [v (session/verdict "noisy")]
+    (is (> (:delta v) 0.15) "a move the fixed deadband would have called better")
+    (is (> (:band v) (:delta v)) "is inside the band this tally's own spread gives")
+    (is (= :unchanged (:verdict v)))))
+
+(deftest a-kept-gain-sets-the-floor-the-next-change-is-held-to
+  ;; karamazov-na2k.4, RRSI eq. 5: a candidate has to clear the best score
+  ;; seen so far minus the band, or a run walks downhill through changes each
+  ;; of which beat only the one before it.
+  (turns! 6 "eval" :mechanics nil {:parse-error true})
+  (session/experiment! "first" {:change "c1" :hypothesis "h"})
+  (turns! 8 "eval" :success nil)
+  (is (= :better (:verdict (session/verdict "first"))))
+  (session/reverted! "first" true)
+  (session/experiment! "second" {:change "c2" :hypothesis "h"})
+  (turns! 5 "eval" :success nil)
+  (turns! 3 "eval" :failure nil)
+  (let [v (session/verdict "second")]
+    (is (pos? (:delta v)) "better than the stretch before it")
+    (is (= :below-best (:verdict v)) "and still below what a kept change reached")
+    (is (some #(= "second" (:name %)) (session/unsettled-losses))
+        "so it is a loss to act on")))
+
+(deftest an-experiment-states-what-should-move-and-hears-whether-it-did
+  ;; karamazov-na2k.5. RRSI records per edit what it predicted would change
+  ;; and scores the hit; samizdat's gates carry predictions, its edits did
+  ;; not. A prediction is one fitness signal and a direction.
+  (turns! 6 "eval" :mechanics nil {:parse-error true})
+  (session/experiment! "fence" {:change "c" :hypothesis "h"
+                                :target {:kind "prompt" :name "system-turn" :version 3}
+                                :predicts {:signal :parse-error :direction :down}})
+  (turns! 8 "eval" :success nil)
+  (let [v (session/verdict "fence")
+        pr (:prediction v)]
+    (is (= {:kind "prompt" :name "system-turn" :version 3} (:target v)))
+    (is (= :parse-error (:signal pr)))
+    (is (> (:before pr) (:after pr)))
+    (is (true? (:hit? pr))))
+  (session/reverted! "fence" true)
+  (session/experiment! "wrong-way" {:change "c2" :hypothesis "h2"
+                                    :predicts {:signal :tool-success :direction :down}})
+  (turns! 8 "eval" :success nil)
+  (is (false? (get-in (session/verdict "wrong-way") [:prediction :hit?]))))
+
+(deftest a-prediction-names-a-signal-the-fitness-weighs
+  (is (contains? (set (session/signal-names)) :parse-error))
+  (is (contains? (set (session/signal-names)) :gate-unmet)))
+
 (deftest a-change-that-moved-nothing-is-unchanged-not-better
   (dotimes [_ 6] (session/observe-turn! {:tool "eval" :category :success :signals {}}))
   (session/experiment! "noop" {:change "reworded a prompt" :hypothesis "nothing"})
@@ -265,6 +370,23 @@
     (is (str/includes? (:detail f) "widening the beam will not help")
         "the finding has to name the fix it rules OUT, or it will be read as
          an argument for a wider beam")))
+
+(deftest the-lever-memory-names-the-edit-and-the-prediction
+  ;; karamazov-na2k.5: the next session reads which version was tried and
+  ;; whether what it was meant to move did.
+  (let [c (db/open! ":memory:")]
+    (try
+      (turns! 6 "eval" :mechanics nil {:parse-error true})
+      (session/experiment! "fence" {:change "one example call in system-turn"
+                                    :hypothesis "fewer parse errors"
+                                    :target {:kind "prompt" :name "system-turn" :version 4}
+                                    :predicts {:signal :parse-error :direction :down}})
+      (turns! 8 "eval" :success nil)
+      (let [w (knowledge/distill-verdicts! c (session/experiments) {:run-id "r1"})
+            row (knowledge/get-by-id c (:id (first w)))]
+        (is (str/includes? (:content row) "prompt system-turn v4"))
+        (is (str/includes? (:content row) "Predicted parse-error down: it did.")))
+      (finally (db/close c)))))
 
 (deftest a-verdict-becomes-a-lever-fact-that-outlives-the-session
   ;; The heredity of selection. Without it a lever that was tried and made

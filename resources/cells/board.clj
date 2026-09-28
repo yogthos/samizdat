@@ -1219,6 +1219,9 @@
       (journal/note! conn run-id :board-review
                      {:data {:task task :attempt attempts :verdict verdict
                              :decision decision :landed (boolean landed?)
+                             ;; the verdict is the fail-open default: the
+                             ;; judge's reply had no verdict line (na2k.6)
+                             :unread (boolean (:unread reviewed))
                              ;; WHY, beside the verdict (karamazov-3htz).
                              :reason (judge/for-the-record :reply-chars det)
                              ;; The VERIFIED findings, which is what the retry

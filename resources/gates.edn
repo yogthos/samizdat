@@ -1201,6 +1201,17 @@
              :provider-retry  -0.5}
    :min-turns-for-verdict 6
    :meaningful-delta 0.15
+   ;; RRSI's cost rule (karamazov-na2k.3): a gain may add tokens per turn only
+   ;; up to base + per-fitness * the fitness it gained, relative; past that the
+   ;; verdict is :costly. Inside the deadband, tokens cut by more than base
+   ;; make it :cheaper. So the deadband's own 0.15 of gain buys 25% more tokens.
+   ;; Provisional: set by argument, not yet measured here.
+   :cost-rule {:base 0.10 :per-fitness 1.0}
+   ;; The deadband measured rather than fixed (karamazov-na2k.4): z standard
+   ;; errors of the before/after difference, each side's spread estimated
+   ;; from its own counts, never under :min-band. :meaningful-delta above is
+   ;; what stands in while either side is shorter than :min-turns-for-verdict.
+   :noise {:z 2.0 :min-band 0.02}
    :max-open-experiments 1}
   :kind :policy :capability-tunable? false
   :provenance ["RFC-012 F3"]
@@ -1955,6 +1966,16 @@
         judgement — it hands over the episodes that have earned the
         question."}
 
+ :pruning
+ {:value {:min-runs 3 :limit 5}
+  :provenance ["karamazov-na2k.10" "2609.24972v2"]
+  :kind :policy :capability-tunable? false
+  :doc "WHEN A PROJECT EDIT HAS EARNED THE QUESTION OF BEING REMOVED: the
+        version in force for at least :min-runs failed runs and no shipped
+        one. RRSI's pruning rule (a component with no positive gain over a
+        window is offered for deletion), the edit-level twin of :retirement
+        for gates. At most :limit are shown per pass. Crashes are excluded."}
+
  :retirement
  {:value {:min-runs 3 :limit 5}
   :provenance ["karamazov-ylte.3" "2609.09153v1"]
@@ -2307,9 +2328,10 @@
         forced native tool_choice come off the turn row (migration v30)."}
 
  :repetition
- {:value {:window 80 :step 1 :min-repeats 3 :min-period 20 :max-gap-variance 0.5}
+ {:value {:window 80 :step 1 :min-repeats 3 :min-period 20 :max-gap-variance 0.5
+          :short-min-period 8 :short-min-repeats 20}
   :kind :threshold :capability-tunable? true
-  :provenance ["karamazov-o4wm.5"]
+  :provenance ["karamazov-o4wm.5" "karamazov-na2k.19"]
   :doc "WHEN A REPLY COUNTS AS REPEATING ITSELF (samizdat.llm.repetition).
 
         A :window-character slice that recurs :min-repeats times at gaps
@@ -2319,7 +2341,11 @@
         taken every :step characters — 1, because a coarser step sees only
         the periods it divides — and a period under :min-period is a run
         (a line of dashes, a column of zeros), not a model repeating
-        itself. The shape is floatboat's LoopDetector
+        itself — unless the period is at least :short-min-period and it
+        recurs :short-min-repeats times: GLM-5.3 once wrote
+        "action":"close", (a 17-character period) about 900 times in one
+        reply and nothing called it a loop (run 390dcd17, na2k.19). The
+        scan also runs on a reply that ended in a parse error. The shape is floatboat's LoopDetector
         (350-char windows, three near-matches, period variance under half)
         over exact text rather than SimHash, since samizdat reads the
         finished reply and a degenerate repeat is verbatim.
@@ -3060,6 +3086,24 @@
         it matches :decompose-max-parts — each piece is an agent, and a parent
         that lists eight has not thought about the boundary."}
 
+ :reply-formats
+ {:value {"judge"                  ["VERDICT" "FINDINGS" "COMPLETE" "INCOMPLETE" "ABSTAIN"]
+          "judge-plan"             ["VERDICT" "FINDINGS" "COMPLETE" "INCOMPLETE" "ABSTAIN"]
+          "judge-verify"           ["VERIFIED" "FALSE_POSITIVE" "No issues found"]
+          "acceptance-judge"       ["YES" "NO"]
+          "critic-system"          ["SCORE"]
+          "workflow-select-system" ["kind:" "size:" "workflow:"]}
+  :kind :policy :capability-tunable? false
+  :provenance ["karamazov-na2k.6"]
+  :doc "WHAT EACH SIDE CALL'S PARSER READS, per prompt: the words the prompt
+        has to keep asking for. A side call's prompt and its parser are two
+        halves of one format (judge.clj says so), both are userspace, and the
+        judges fail OPEN — so a reworded judge prompt that stopped asking for
+        a VERDICT line switched the judge off with no error anywhere. A prompt
+        save that drops one of these tokens is refused, naming it (matched
+        without regard to case). Change a format by changing the parser rule
+        (:judge-rules), this list and the prompt together."}
+
  :judge-rules
  ;; drg-4026 #55: the judge's deterministic finalization rules — what counts
  ;; as a test run, a code edit, an outside claim — as data. A fixed
@@ -3525,6 +3569,8 @@
          Above :storm because a branch making no calls at all is further
          gone than one repeating a call, and the storm window cannot even
          see it: nothing reaches dispatch."
+   ;; the quantity the :when compares, recorded at every check (na2k.7)
+   :measure (or (:consecutive-mechanics-failures branch) 0)
    :when (and (state/active? branch)
               (>= (or (:consecutive-mechanics-failures branch) 0)
                   (threshold :mechanics-streak-threshold)))
@@ -3828,6 +3874,8 @@
          until the branch puts a different one on record. A gate is data
          and cannot mutate the branch, so that effect lives in the loop
          beside the turn-budget bookkeeping."
+   ;; the quantity the :when compares, recorded at every check (na2k.7)
+   :measure (:consecutive-failures branch)
    :when (>= (:consecutive-failures branch) (threshold :stuck-threshold))
    ;; Rendered rather than read raw: the prose names `split` only where the
    ;; branch may call it, which is a {% if %} over message-context's
@@ -3865,6 +3913,8 @@
          Between prologue-cap and progress-stalled: sharper than the generic
          stall (it names the files), broader than the build-phase prologue.
          Settles by rule, not by tool: met when the streak actually broke."
+   ;; the quantity the :when compares, recorded at every check (na2k.7)
+   :measure (get-in branch [:file-touch :streak] 0)
    :when (>= (get-in branch [:file-touch :streak] 0)
              (threshold :file-thrash-threshold))
    :message-form (str (prompt "file-thrash")
@@ -3883,6 +3933,8 @@
    :doc "Turns passing with no progress event, after the branch has shown it
          can make progress. Arms only after the first, so exploration is never
          nudged."
+   ;; the quantity the :when compares, recorded at every check (na2k.7)
+   :measure (:turns-since-progress branch)
    :when (and (:any-progress? branch)
               ;; Only a role that can write is told to (karamazov-1wv9):
               ;; an answerer reading is doing its job.

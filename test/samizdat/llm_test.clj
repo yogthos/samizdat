@@ -1683,6 +1683,31 @@
     (is (nil? (:position (fence/parse-tool-call (fenced "[1, 2, 3]")))))))
 
 
+(deftest an-invalid-escape-is-named-where-it-is
+  ;; karamazov-na2k.20, run 390dcd17: the model wrote 2>\\&1 in a shell command
+  ;; and was told "No matching clause: 38" — data.json's reader hitting `&`
+  ;; after a backslash — pointed at the start of the string. Not repaired:
+  ;; whether the backslash was meant (a regex's \\d) or not (\\&) changes
+  ;; what the command does, so the model is told exactly what to fix.
+  (let [p (fence/parse-tool-call
+           (fenced "{\"name\":\"shell\",\"args\":{\"command\":\"jolt -M:test 2>\\&1 | tail\"}}"))]
+    (is (= "__parse_error__" (:name p)))
+    (is (not (str/includes? (:parse-error p) "No matching clause")) (:parse-error p))
+    (is (str/includes? (:parse-error p) "\\&") "it names the escape")
+    (is (= 51 (get-in p [:position :column])) "and points at the backslash itself")))
+
+(deftest a-parse-error-that-is-a-loop-is-flagged-as-one
+  ;; karamazov-na2k.19: the degenerate reply parsed as __parse_error__, and
+  ;; the repetition scan ran only on replies with no call or a truncation, so
+  ;; the branch was told about JSON syntax instead of that it was looping.
+  (let [content (fenced (str "{\"name\": \"task\", \"args\": {"
+                             (apply str (repeat 300 "\"action\":\"close\","))
+                             "\"action</arg_key><arg_value>close</arg_value></tool_call>}"))
+        parsed (fence/parse-tool-call content)
+        sig (fence/signals {:content content :finish-reason "stop"} parsed)]
+    (is (= "__parse_error__" (:name parsed)))
+    (is (true? (:periodic sig)))))
+
 ;; --- a drifted closing tag must not swallow the next parameter --------------
 ;; Run c377260b turn 300: the model wrote a complete, correct boundary_test.clj
 ;; and closed its parameters with `</parameter-name>` — mirroring the `name=`

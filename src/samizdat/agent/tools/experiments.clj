@@ -20,23 +20,64 @@
   (:require [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
             [samizdat.prompt :as prompt]
-            [samizdat.session :as session]))
+            [samizdat.session :as session]
+            [samizdat.userspace :as userspace]))
 
 (defn- msg [ctx] (prompt/render "experiment-tool" ctx))
 
 (def ^:private usage (delay (msg {:usage true})))
 
+(defn- read-prediction
+  "`predicts` as {:signal :direction}: \"<signal> up\" or \"<signal> down\",
+  the signal one of the counts the fitness weighs. nil for nothing given,
+  :bad for something that is not that shape."
+  [s]
+  (when-let [t (some-> s str str/trim not-empty)]
+    (let [[sig dir] (str/split (str/lower-case t) #"\s+")
+          sig (keyword sig)]
+      (if (and (contains? (set (session/signal-names)) sig) (#{"up" "down"} dir))
+        {:signal sig :direction (keyword dir)}
+        :bad))))
+
+(defn- target-of
+  "The userspace version an experiment tests: the latest stored version of
+  `kind`/`name` in this project, so the ledger names the edit and not only
+  the idea behind it (karamazov-na2k.5)."
+  [kind name]
+  (when (and kind name)
+    {:kind kind :name name
+     :version (try (some-> (userspace/versions (keyword kind) name) last :version)
+                   (catch Throwable _ nil))}))
+
 (defmethod base/run-tool "experiment" [{:keys [branch] :as ctx}]
   (let [name (some-> (base/arg ctx :name) str str/trim not-empty)
         change (some-> (base/arg ctx :change) str str/trim not-empty)
-        hypothesis (some-> (base/arg ctx :hypothesis) str str/trim not-empty)]
-    (if-not (and name change hypothesis)
+        hypothesis (some-> (base/arg ctx :hypothesis) str str/trim not-empty)
+        predicts (read-prediction (base/arg ctx :predicts))
+        target (target-of (some-> (base/arg ctx :kind) str str/trim not-empty)
+                          (some-> (base/arg ctx :target) str str/trim not-empty))]
+    (cond
+      (not (and name change hypothesis))
       (base/malformed branch (str (base/missing ctx :name :change :hypothesis)
                                   "\n\n" @usage))
+
+      (= :bad predicts)
+      (base/malformed branch (msg {:bad-prediction true
+                                   :signals (str/join ", " (map clojure.core/name
+                                                                (session/signal-names)))}))
+
+      :else
       (try
-        (session/experiment! name {:change change :hypothesis hypothesis})
+        (session/experiment! name {:change change :hypothesis hypothesis
+                                   :target target :predicts predicts})
         (base/ok branch (msg {:started true :name name
-                              :change change :hypothesis hypothesis})
+                              :change change :hypothesis hypothesis
+                              :target (when target
+                                        (str (:kind target) " " (:name target)
+                                             (when (:version target) (str " v" (:version target)))))
+                              :predicts (when predicts
+                                          (str (clojure.core/name (:signal predicts)) " "
+                                               (clojure.core/name (:direction predicts))))})
                  :progress? true)
         (catch clojure.lang.ExceptionInfo e
           (if (= :samizdat.session/too-many-open (:type (ex-data e)))
@@ -76,9 +117,23 @@
                        :verdict (clojure.core/name (:verdict v))
                        :change (:change v) :hypothesis (:hypothesis v)
                        :numbers (when (and (:before v) (:after v))
-                                  (format "fitness %.2f -> %.2f over %d turns"
-                                          (:before v) (:after v) (:turns-since v)))
+                                  (str (format "fitness %.2f -> %.2f over %d turns"
+                                               (:before v) (:after v) (:turns-since v))
+                                       (when-let [c (:cost v)]
+                                         (format ", tokens/turn %.0f -> %.0f"
+                                                 (:before c) (:after c)))))
                        :better (= :better (:verdict v))
+                       :costly (= :costly (:verdict v))
+                       :cheaper (= :cheaper (:verdict v))
+                       :prediction (when-let [p (:prediction v)]
+                                     {:said (str (clojure.core/name (:signal p)) " "
+                                                 (clojure.core/name (:direction p)))
+                                      :moved (if (and (:before p) (:after p))
+                                               (format "%.2f -> %.2f per turn" (:before p) (:after p))
+                                               "not measurable yet")
+                                      :hit (:hit? p)})
+                       :below-best (when (= :below-best (:verdict v))
+                                     (format "%.2f" (double (:best v))))
                        :worse (= :worse (:verdict v))
                        :unchanged (= :unchanged (:verdict v))
                        :too-early (= :too-early (:verdict v))

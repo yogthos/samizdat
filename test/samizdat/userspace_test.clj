@@ -310,6 +310,19 @@
       (is (= :mechanics (:category r)) (str tool " " (:action args)))
       (is (re-find #"rationale" (str (:result r))) (str tool " " (:action args))))))
 
+(deftest the-prompt-tool-refuses-a-judge-prompt-that-drops-its-format
+  ;; karamazov-na2k.6, through the tool the supervisor actually uses.
+  (us/bind! *conn*)
+  (let [r (tools/run-tool {:tool-name "prompt"
+                           :branch (state/new-branch {:id "B1" :problem "p"})
+                           :conn *conn*
+                           :args {:action "save" :name "judge"
+                                  :body "Say whether the work is done, in your own words."
+                                  :rationale "friendlier"}})]
+    (is (:edit-rejected? r) (str (:result r)))
+    (is (re-find #"VERDICT" (str (:result r))))
+    (is (empty? (store/versions *conn* :prompt "judge")) "nothing was stored")))
+
 (deftest a-rationale-rides-the-version-and-shows-in-the-history
   (us/bind! *conn*)
   (let [run-prompt (fn [args]
@@ -965,6 +978,26 @@
              project's — the shipped copy does not answer for it"))
       (finally (rm-rf (java.io.File. root))))))
 
+;; --- pruning: project edits that have not earned their place (na2k.10) ------
+
+(deftest a-project-edit-that-never-shipped-a-run-is-a-pruning-candidate
+  ;; RRSI's Lasso step: machinery that stops producing a gain is offered for
+  ;; deletion. retirement-candidates does it for gates; this is the same for
+  ;; an edit: the current project version, on runs that ended failed and
+  ;; never once shipped. Crashes are the harness's, not the edit's.
+  (store/seed! *conn* :prompt "system" "the template")
+  (store/save! *conn* :prompt "system" "v2" "project" "tightened the split rule")
+  (store/save! *conn* :cell "loop" "c2" "project" "a cell edit")
+  (dotimes [_ 3] (store/record-run-outcome! *conn* :failed))
+  (store/record-run-outcome! *conn* :error)
+  (store/save! *conn* :cell "loop" "c3" "project" "fixed the cell edit")
+  (let [cs (store/pruning-candidates *conn* {:min-runs 3 :limit 5})]
+    (is (= [["prompt" "system"]] (mapv (juxt :kind :name) cs))
+        "the prompt's current version failed three runs and shipped none; the
+         cell's current version is new and has no record yet")
+    (is (= 3 (:failed (first cs))) "the crash is not counted against it")
+    (is (= "tightened the split rule" (:rationale (first cs))))))
+
 ;; --- drift: how much each surface has moved (karamazov-00qw) -----------------
 
 (deftest drift-counts-saves-reverts-and-standing-per-surface
@@ -985,7 +1018,11 @@
            (select-keys (by-kind "prompt") [:names :saves :reverts :shipped :failed]))
         "three project versions of one name, one of them a revert; the
          current one has survived a green run")
-    (is (= [{:name "system" :saves 3 :reverts 1}] (:churn (by-kind "prompt"))))
+    (is (= [{:name "system" :saves 3 :reverts 1}]
+           (mapv #(dissoc % :why) (:churn (by-kind "prompt")))))
+    (is (str/includes? (str (:why (first (:churn (by-kind "prompt")))))
+                       "v3 made the model hedge")
+        "and why the latest version was made, which the block says to read")
     (is (= "prompt" (:kind (first d))) "the surface that moved most comes first"))
   (testing "the window bounds it, and top-names bounds the churn list"
     (is (empty? (store/drift *conn* {:since "9999-01-01T00:00:00.000Z"})))

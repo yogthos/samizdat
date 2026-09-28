@@ -22,7 +22,10 @@
   missing-argument complaints, the :default method, tool-names, and the
   per-phase refusal the branch loop consults before dispatch. Tool groups
   require this namespace; nothing here requires a group back."
-  (:require [clojure.string :as str]
+  (:require ;; the java.time host shim, before data.json — see samizdat.store.journal
+            [jolt.time]
+            [clojure.data.json :as json]
+            [clojure.string :as str]
             [jolt.fs :as fs]
             [samizdat.agent.files :as files]
             ;; gates and storm are not used by name here: the phases.edn
@@ -122,6 +125,20 @@
   turns-since-progress still ticks because nothing was established."
   [branch capability e]
   (ok branch (str capability " is unavailable: " (ex-message e))))
+
+(defn listed
+  "`v` as the list it stands for when it is a STRING holding a JSON array,
+  else `v` unchanged. GLM-5.3 sends array arguments as the string
+  \"[\\\"src/a.clj\\\"]\" (run 390dcd17, karamazov-na2k.15): plan then took one
+  entry as the path [\"src/a.clj\"], and split read its parts as none."
+  [v]
+  (if (string? v)
+    (let [t (str/trim v)]
+      (or (when (str/starts-with? t "[")
+            (let [d (try (json/read-str t) (catch Throwable _ nil))]
+              (when (sequential? d) d)))
+          v))
+    v))
 
 (defn arg
   "A tool call's argument `k`, however the model spelled it.

@@ -41,7 +41,8 @@
   within `max-gap-variance` of their mean and a period of at least
   `min-period`, else nil. Slices are taken every `step` characters; a step
   of 1 sees every period, a coarser one only periods it divides."
-  [text {:keys [window step min-repeats min-period max-gap-variance]}]
+  [text {:keys [window step min-repeats min-period max-gap-variance
+               short-min-period short-min-repeats]}]
   (let [text (str text)
         n (count text)]
     (when (and (pos? (or window 0)) (pos? (or step 0))
@@ -68,7 +69,13 @@
                          ;; A period under :min-period is a RUN — a line of
                          ;; dashes, a column of zeros — which repeats
                          ;; perfectly and is not a model repeating itself.
-                         (when (>= period (or min-period 1))
+                         ;; Unless it is a short phrase repeated far past
+                         ;; the floor: GLM wrote "action":"close", (17
+                         ;; characters) some 900 times (karamazov-na2k.19).
+                         (when (or (>= period (or min-period 1))
+                                   (and short-min-period short-min-repeats
+                                        (>= period short-min-period)
+                                        (>= (count ps) short-min-repeats)))
                            {:repeats (count ps) :period period})))))
              (sort-by (juxt (comp - :repeats) :period))
              first)))))

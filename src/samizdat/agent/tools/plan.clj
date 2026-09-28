@@ -26,7 +26,8 @@
 
 (defmethod base/run-tool "plan" [{:keys [branch] :as ctx}]
   (let [coerce (fn [k]
-                 (let [v (or (base/arg ctx k) (get (:args ctx) (name k)))]
+                 (let [v (or (base/arg ctx k) (get (:args ctx) (name k)))
+                       v (base/listed v)]
                    (cond (nil? v) []
                          (coll? v) (vec (remove empty? (map str v)))
                          :else [(str v)])))
@@ -45,7 +46,9 @@
         ;; `done` from turn 117 was refused for it after the real files had
         ;; landed (karamazov-j9ow). Refused on the turn it is declared,
         ;; naming the entry, rather than withheld a hundred turns later.
-        not-paths (filterv #(re-find #"\s" %) (concat files tests))]
+        ;; List syntax left in an entry ([, ], a quote) is the same failure
+        ;; by another road: a list the call half-encoded.
+        not-paths (filterv #(re-find #"[\s\[\]\"]" %) (concat files tests))]
     (cond
       (seq not-paths)
       (base/malformed branch (msg {:not-a-path (first not-paths)}))

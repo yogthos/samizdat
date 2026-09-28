@@ -50,6 +50,25 @@
                    "do not ship until the ring course test is re-pinned"
                    record ["eval" "shell"]))))))
 
+(deftest a-denial-has-to-be-about-the-tool-it-names
+  ;; karamazov-na2k.17, run 390dcd17 supervisor turn 6: a steer that told the
+  ;; branch to run the suite VIA shell was refused as saying shell does not
+  ;; work, because it said "no test_runner change needed" two clauses later.
+  ;; The denial and the tool have to share a sentence.
+  (let [record (turns ["shell" "success"] ["shell" "success"])
+        directive (str "Good recovery after the REPL went down \u2014 the fade math in "
+                       "flight.render is on disk now. Next steps, concretely: (1) run "
+                       "`jolt -M:test` via shell and get the suite green before anything "
+                       "else; (2) the new pure functions are exactly the kind of no-raylib "
+                       "pure code this project unit-tests \u2014 add cases to the existing "
+                       "test/flight/render_test.clj (no test_runner change needed since the "
+                       "namespace exists), especially edge cases.")]
+    (is (empty? (claims/contradicted-by-record directive record ["shell" "eval"])))
+    (testing "the same denial in one sentence with the tool is still caught"
+      (is (seq (claims/contradicted-by-record
+                "Fine work. shell does not work in this sandbox, so stop using it."
+                record ["shell" "eval"]))))))
+
 (deftest a-directive-that-contradicts-the-run-is-refused-with-the-count
   ;; The wiring, in the tool where karamazov-ko5b actually landed — an
   ;; intervene directive, not a knowledge row.

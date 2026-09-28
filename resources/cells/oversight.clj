@@ -113,6 +113,44 @@
                sent-back-green?
                (seq offers))))
 
+(defn since-last-look
+  "The signals worth-a-look? judges, reduced to what is NEW since the last
+  pass that spent a model call (karamazov-na2k.16).
+
+  `now` is this gather's reading as counts and flags; `prev` is the :signals
+  the last spent pass recorded, nil when there was none, in which case the
+  levels are the news. worth-a-look? read levels on every pass, so evidence a
+  pass had already read woke the next one too: run 390dcd17 spent all 12
+  passes in 24 minutes on unmet 5 over a floor of 2, then went two hours with
+  no supervision left. A quiet pass records nothing, so `prev` is always the
+  last look that cost something.
+
+  - unmet: the firings since, not the total.
+  - idle: a stall the last pass already saw wakes the next only after another
+    floor's worth of idle turns; one it did not see, or a new one after a
+    write reset the count, counts whole.
+  - errors and refusals: the entries past the ones already read. Both lists
+    come from the journal in order, so the count is a position.
+  - the round's flags (at the cap, nothing shipped, green work sent back):
+    once per round, the round being how many :route notes there are.
+  - offers are already once per run."
+  [{:keys [unmet idle errors refused round at-cap? nothing-shipped?
+           sent-back-green? offers]}
+   prev {:keys [idle-floor]}]
+  (let [idle (or idle 0)
+        p-idle (or (:idle prev) 0)
+        new-round? (or (nil? prev) (not= round (:round prev)))]
+    {:unmet-gates (- (or unmet 0) (if prev (or (:unmet prev) 0) 0))
+     :idle-turns (if (and prev (>= p-idle idle-floor) (>= idle p-idle))
+                   (- idle p-idle)
+                   idle)
+     :errors (seq (drop (if prev (or (:errors prev) 0) 0) errors))
+     :refused (seq (drop (if prev (or (:refused prev) 0) 0) refused))
+     :at-cap? (and at-cap? new-round?)
+     :nothing-shipped? (and nothing-shipped? new-round?)
+     :sent-back-green? (and sent-back-green? new-round?)
+     :offers offers}))
+
 (defn sent-back-green?
   "Whether the last round passed its own tests and was sent back regardless.
 
@@ -197,6 +235,7 @@
                       [:oversight/crashes :any] [:oversight/results :any]
                       [:oversight/self-graded :any]
                       [:oversight/refused :any]
+                      [:oversight/signals :any]
                       [:oversight/worth-a-look? :boolean]]
              :quiet  [:map [:oversight/worth-a-look? :boolean]]}]}
   (fn [{:keys [conn run-id]} data]
@@ -259,7 +298,15 @@
              ;; WHAT THE PROJECT HAS NOT TAKEN, until a pass of this run has
              ;; shown it (the :adoption-offered note the reason cell leaves).
              offers (when-not (journal/last-note conn run-id :adoption-offered)
-                      (safely :offers userspace/offers []))]
+                      (safely :offers userspace/offers []))
+             errors (vec (concat (filter :error findings) crashes))
+             refusals (vec (concat refused rejected))
+             idle-floor (gates/threshold :oversight-idle-floor)
+             ;; What a pass that spends a call records, so the next gather
+             ;; can tell new evidence from evidence already read.
+             signals {:unmet unmet :idle since
+                      :errors (count errors) :refused (count refusals)
+                      :round (count (journal/notes conn run-id :route))}]
          (assoc data
                 :oversight/turns turns
                 :oversight/firings firings
@@ -273,16 +320,19 @@
                 :oversight/rejected rejected
                 :oversight/crashes crashes
                 :oversight/offers (vec offers)
+                :oversight/signals signals
                 :oversight/worth-a-look?
-                (worth-a-look? {:unmet-gates unmet :idle-turns since
-                                :errors (seq (concat (filter :error findings) crashes))
-                                :at-cap? (at-cap? round)
-                                :nothing-shipped? (nothing-shipped? results)
-                                :refused (seq (concat refused rejected))
-                                :sent-back-green? (sent-back-green? round)
-                                :offers offers}
+                (worth-a-look? (since-last-look
+                                (assoc signals
+                                       :errors errors :refused refusals
+                                       :at-cap? (at-cap? round)
+                                       :nothing-shipped? (nothing-shipped? results)
+                                       :sent-back-green? (sent-back-green? round)
+                                       :offers offers)
+                                (:signals (journal/last-note conn run-id :oversight))
+                                {:idle-floor idle-floor})
                                {:unmet-floor (gates/threshold :oversight-unmet-floor)
-                                :idle-floor (gates/threshold :oversight-idle-floor)}))))
+                                :idle-floor idle-floor}))))
      (assoc data :oversight/worth-a-look? false))))
 
 ;; --- reason -----------------------------------------------------------------
@@ -457,6 +507,37 @@
                                                            [])]
                                             (when (seq rs)
                                               (prompt/render "retirement" {:gates rs})))
+                                  ;; What the reviews said while each open
+                                  ;; change was in force, beside it — the
+                                  ;; verdict is a number, these are the why
+                                  ;; (GEPA's feedback, karamazov-na2k.12).
+                                  :reviews (let [open (safely :experiments
+                                                              #(vec (remove :settled (session/experiments)))
+                                                              [])
+                                                 rows (for [e open
+                                                            :let [rs (safely :reviews
+                                                                             #(journal/notes-since
+                                                                               conn run-id [:critique :board-review] (:at e))
+                                                                             [])]
+                                                            :when (seq rs)]
+                                                        {:name (:name e)
+                                                         :reviews (mapv (fn [r]
+                                                                          {:kind (:kind r)
+                                                                           :verdict (:verdict r)
+                                                                           :findings (some-> (:findings r)
+                                                                                             (clip (gates/threshold :oversight-note-chars)))})
+                                                                        (take-last 3 rs))})]
+                                             (when (seq rows)
+                                               (prompt/render "experiment-reviews" {:changes rows})))
+                                  ;; The same question for a project edit:
+                                  ;; current, failed runs, never shipped one
+                                  ;; (karamazov-na2k.10).
+                                  :prune (let [ps (safely :pruning
+                                                          #(store-us/pruning-candidates
+                                                            conn (gates/threshold :pruning))
+                                                          [])]
+                                           (when (seq ps)
+                                             (prompt/render "pruning" {:edits ps})))
                                   :catalog (safely :catalog #(wf/render-catalog conn) "")})
              ;; ONE branch for the run, carried by the stream. Opened once;
              ;; re-opening an existing id is a no-op that returns the row.
@@ -527,6 +608,7 @@
    :input  [:map [:oversight/verdict :keyword] [:oversight/answer :any]
             [:oversight/idle {:optional true} :any]
             [:oversight/unmet {:optional true} :any]
+            [:oversight/signals {:optional true} :any]
             [:oversight/branch {:optional true} :any]]
    ;; Returns `data`: the record is the effect, and the row is the product.
    :output [:map]}
@@ -564,6 +646,7 @@
          (journal/note! conn run-id :oversight
                         {:data {:idle (:oversight/idle data)
                                 :unmet (:oversight/unmet data)
+                                :signals (:oversight/signals data)
                                 ;; A blank note means one of several things and
                                 ;; the verdict is which: `:done` said nothing,
                                 ;; `:exhausted` ran out of turns, `:error` threw.

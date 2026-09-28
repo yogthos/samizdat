@@ -54,6 +54,12 @@
             [samizdat.agent.beam :as beam]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.verify :as verify]
+            [samizdat.config :as config]
+            [samizdat.leakage :as leakage]
+            [samizdat.llm.client :as client]
+            [samizdat.llm.fence :as fence]
+            [samizdat.llm.registry :as registry]
+            [samizdat.prompt :as prompt]
             [samizdat.server :as server]
             [samizdat.session :as session]
             [samizdat.stats :as stats]
@@ -458,6 +464,17 @@
         (do (kill! p) false)))
     (catch Throwable _ nil)))
 
+(defn subject-terms
+  "The subject's own words, for the leakage screen: its top-level namespace
+  prefixes (src/flight -> \"flight.\") and the project directory's name."
+  [root]
+  (let [src (io/file root "src")]
+    (vec (distinct
+          (concat (for [f (or (some-> src .listFiles seq) [])
+                        :when (.isDirectory ^java.io.File f)]
+                    (str (str/replace (.getName ^java.io.File f) "_" "-") "."))
+                  [(.getName (io/file root))])))))
+
 (defn edits
   "What the SUPERVISOR changed about the loop during this run, and what became
   of each change.
@@ -482,9 +499,13 @@
   [conn run-id]
   (let [rows (db/fetch conn ["SELECT kind, name, version, rationale,
                                     success_count, failure_count, error_count,
-                                    length(body) AS body_len
+                                    length(body) AS body_len, body
                              FROM userspace WHERE source = 'project'
                              ORDER BY kind, name, version"])
+        seed-body (into {} (for [r (db/fetch conn ["SELECT kind, name, body FROM userspace
+                                                   WHERE source = 'factory'"])]
+                             [[(:kind r) (:name r)] (:body r)]))
+        terms (subject-terms (System/getProperty "user.dir"))
         ;; The factory seed for each name, to size the edit against the
         ;; TEMPLATE rather than against the previous edit: three small saves
         ;; that walk a cell a long way from the shipped one is the shape drift
@@ -501,7 +522,16 @@
                      ;; not the version's doing (karamazov-a6mj.1).
                      :standing [(:success_count r) (:failure_count r) (:error_count r)]
                      :chars-vs-seed (when-let [b (get seed [(:kind r) (:name r)])]
-                                      (- (:body_len r) b))})
+                                      (- (:body_len r) b))
+                     ;; Whether it could be promoted as it stands: does it
+                     ;; name this subject, or drop a guard the template had
+                     ;; (karamazov-na2k.13). Against the factory seed, which
+                     ;; is what a promotion would replace.
+                     :leakage (when-let [t (get seed-body [(:kind r) (:name r)])]
+                                (let [f (leakage/screen {:kind (:kind r) :template t
+                                                         :edited (:body r)
+                                                         :subject-terms terms})]
+                                  (when-not (leakage/clean? f) f)))})
                   rows)
      ;; journal/notes returns the note's DATA map already parsed; wrapping it
      ;; in (mapv :data ...) yields a vector of nils, which reads as 'edits
@@ -850,7 +880,11 @@
                        :wall-ms (- (System/currentTimeMillis) started)
                        :budget budget
                        :load [load-at-start (load-average)]
-                       :at (str (java.time.Instant/now))}
+                       :at (str (java.time.Instant/now))
+                    ;; where this run's database is kept, so a later reader
+                    ;; (contrast, karamazov-na2k.11) can open the run itself
+                    :recording (when recordings
+                                 (str recordings "/" (.getName (io/file dest)) ".sqlite3"))}
                       (harness-revision) extra))]
     (try
       ;; WHAT THIS ARM ALREADY KNOWS, before the child opens the database.
@@ -1131,7 +1165,14 @@
                            :turns-to-first-artifact (med (map :turns-to-first-artifact rs))}
                   :spread {:turns [(med (map :turns rs))
                                    (apply min (or (seq (keep :turns rs)) [nil]))
-                                   (apply max (or (seq (keep :turns rs)) [nil]))]}}]))
+                                   (apply max (or (seq (keep :turns rs)) [nil]))]
+                           ;; Tokens are the one column steady enough to read
+                           ;; at the n this rig affords, so an arm's cost is
+                           ;; shown with its range, not only its median
+                           ;; (karamazov-na2k.3).
+                           :tokens [(med (map :tokens rs))
+                                    (apply min (or (seq (keep :tokens rs)) [nil]))
+                                    (apply max (or (seq (keep :tokens rs)) [nil]))]}}]))
       ;; Pairwise, on the same rows the arms' own :reliability reads — and
       ;; only where both arms decided something. Read it with the :by of
       ;; each arm: two arms decided by different columns are not comparable
@@ -1170,9 +1211,17 @@
                      (mapv (fn [[k rids]]
                              {:surface k :runs (count rids) :of n
                               :rate (double (/ (count rids) (max 1 n)))
-                              :run-ids (vec rids)}))))]
+                              :run-ids (vec rids)}))))
+        ;; Any run's version of a surface that the screen flagged: a
+        ;; recurring fix is a promotion candidate only if it does not name
+        ;; the subject or drop a guard (karamazov-na2k.13).
+        leaks (->> rows
+                   (mapcat (comp :saves :edits))
+                   (keep (fn [e] (when (:leakage e) [[(:kind e) (:name e)] (:leakage e)])))
+                   (into {}))]
     {:runs n
-     :saved (tally :saves)
+     :saved (mapv #(cond-> % (leaks (:surface %)) (assoc :leakage (leaks (:surface %))))
+                  (tally :saves))
      :refused (tally (fn [e] (map (fn [d] {:kind "attempt" :name (str (:reason d))})
                                   (:refused e))))
      :rationales (->> rows
@@ -1181,6 +1230,52 @@
                       frequencies
                       (sort-by (comp - val))
                       vec)}))
+
+(defn contrast-pairs
+  "A passed and a failed run of the SAME task, one pair per task that has
+  both — the corpus SIMBA distils rules from (a good and a bad trajectory of
+  one input), which a sweep produces for free: n runs of a task from one
+  pinned sha (karamazov-na2k.11). Only rows the rig or the loop decided, and
+  only rows with a recording to read."
+  [rows]
+  (->> rows
+       (filter :recording)
+       (group-by :task)
+       (keep (fn [[task rs]]
+               (let [good (first (filter #(true? (first (passed? %))) rs))
+                     bad (first (filter #(false? (first (passed? %))) rs))]
+                 (when (and good bad) {:task task :good good :bad bad}))))
+       vec))
+
+(defn run-summary
+  "One recorded run as text a reader can compare: its outcome, and each
+  branch's turns as `turn tool category`, with the answer it shipped."
+  [db-path]
+  (let [c (db/open! db-path)]
+    (try
+      (let [run (first (db/fetch c ["SELECT id, status, final_answer FROM runs ORDER BY started_at DESC LIMIT 1"]))
+            turns (db/fetch c ["SELECT branch_id, turn, tool_name, category FROM turns
+                                WHERE run_id = ? ORDER BY id" (:id run)])]
+        (str "status: " (:status run) "\n"
+             (str/join "\n" (map #(str (:branch_id %) " t" (:turn %) " " (:tool_name %) " " (:category %))
+                                 turns))
+             "\nanswer: " (some-> (:final_answer run) (subs 0 (min 1500 (count (:final_answer run)))))))
+      (finally (db/close c)))))
+
+(defn contrast!
+  "For each passed/failed pair of one task, ask `chat` (fn [prompt] -> text)
+  what the passing run did that the failing one did not, and return
+  [{:task :good :bad :difference}]. A report for the operator, like
+  `recurring-edits`: a difference seen once is an anecdote, and promoting one
+  into a memory or the shipped templates is a person's decision."
+  [rows chat]
+  (vec (for [{:keys [task good bad]} (contrast-pairs rows)]
+         {:task task :good (:run-id good) :bad (:run-id bad)
+          :difference (chat (prompt/render-str
+                             (slurp (io/resource "samizdat/dev/contrast.md"))
+                             {:task (name task)
+                              :good (run-summary (:recording good))
+                              :bad (run-summary (:recording bad))}))})))
 
 (defn tasks
   "The sweep task set, with `:standing-requirements` already appended to each
@@ -1345,5 +1440,13 @@
     (clojure.pprint/pprint (summarize rows))
     (println "\n=== RECURRING EDITS ===")
     (clojure.pprint/pprint (recurring-edits rows))
+    ;; Opt-in, because it spends a model call per task that has both a
+    ;; passed and a failed run (karamazov-na2k.11).
+    (when (System/getenv "ARENA_CONTRAST")
+      (let [cfg (:llm (config/load-config))
+            ad (registry/adapter-for (:provider cfg))
+            chat (fn [p] (fence/prose (:content (client/chat ad cfg [{:role "user" :content p}]))))]
+        (println "\n=== WHAT THE PASSING RUN DID ===")
+        (clojure.pprint/pprint (contrast! rows chat))))
     (flush)
     (System/exit 0)))

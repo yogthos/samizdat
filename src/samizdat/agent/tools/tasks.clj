@@ -14,6 +14,14 @@
 
 ;; --- the task board ----------------------------------------------------------
 
+(defn- board-task?
+  "Whether the board dispatched task `id` to an owner in this run — its work
+  finishes through `done` and the board's review, not through `task close`."
+  [conn run-id id]
+  (boolean (and conn run-id id
+                (some #(= (str id) (str (:task %)))
+                      (journal/notes conn run-id :board-task)))))
+
 (defn- task-line
   "One line for a task. Shows the HOLDER when a branch has claimed it, which
   is what makes the board usable by a team: several implementors fanned out
@@ -162,7 +170,8 @@
                 (base/ok branch (str "Already working on " (task-line held)))
                 (base/malformed branch (prompt/render "task-busy"
                                          {:current-id (:id held)
-                                          :current-title (:title held)})))
+                                          :current-title (:title held)
+                                          :board (board-task? conn run-id (:id held))})))
               (if-let [t (tasks/claim! conn (base/arg ctx :id) run-id (:id branch))]
                 (base/ok (take-task branch t)
                          (str "Claimed " (task-line t))
@@ -227,6 +236,17 @@
                                 (str "Task " (:id row) " is held by "
                                      (:branch_id row) "; only the holder"
                                      " closes it."))
+
+                ;; The board's own work closes when its per-diff review
+                ;; passes (cells/board.clj), and `done` is what that review
+                ;; reads. An owner that closed it here marked it done with no
+                ;; review, no critic and no acceptance check, and every later
+                ;; round read it as shipped (karamazov-na2k.18). Cancelling it
+                ;; is still the owner's call.
+                (and (= "done" (str (or (base/arg ctx :status) "done")))
+                     (board-task? conn run-id (:id row)))
+                (base/malformed branch (prompt/render "task-board-owned"
+                                                      {:id (:id row) :title (:title row)}))
 
                 :else
               (let [t (tasks/close! conn (base/arg ctx :id) (or (base/arg ctx :status) "done"))

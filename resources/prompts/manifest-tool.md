@@ -12,4 +12,4 @@
   set-dispatches {{args.set-dispatches}}
     Replace a node's dispatch table: "[[label pattern] ...]", first match wins.
   set-edge {{args.set-edge}}
-    Set a node's outgoing edge, or one labelled transition of it. A label on a plain edge makes it a map — add the dispatch in the same batch.{% endif %}
+    Set a node's outgoing edge, or one labelled transition of it. A label on a plain edge makes it a map — add the dispatch in the same batch.{% endif %}{% if no-versions %}No stored versions of manifest {{name}} in this project — it is still the shipped template.{% endif %}

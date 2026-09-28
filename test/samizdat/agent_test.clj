@@ -92,6 +92,17 @@
       (is (string? (:message d)))
       (is (string? (:prediction d)) "every gate declares what it expects next")))
 
+  (testing "a gate that declares :measure reports the quantity it compares"
+    ;; karamazov-na2k.7: gate_firings recorded only that a gate fired, not the
+    ;; value it compared or the checks where it did not, so its threshold
+    ;; could never be fitted from data (DSPy's ReAnchor needs both sides).
+    (let [b (branch-with :any-progress? true :turns-since-progress 9
+                         :turns (vec (repeat 5 {})))
+          ms (arbiter/measurements {:branch b :max-turns 40})
+          ps (first (filter #(= :progress-stalled (:gate %)) ms))]
+      (is (= 9 (:value ps)))
+      (is (boolean? (:held ps)))))
+
   (testing "a human directive outranks every machine gate"
     ;; dirge PR 717 as a design property rather than a bug fix.
     (let [b (branch-with :consecutive-failures 5

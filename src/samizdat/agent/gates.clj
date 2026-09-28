@@ -350,7 +350,11 @@
          :message (if (:message-form entry)
                     (compile-form (:message-form entry))
                     (compile-message entry))
-         :prediction (let [p (:prediction entry)] (fn [_] p))))
+         :prediction (let [p (:prediction entry)] (fn [_] p))
+         ;; The quantity a threshold gate compares, when it declares one —
+         ;; recorded at every check so the threshold can be fitted from data
+         ;; rather than set by hand (karamazov-na2k.7).
+         :measure (some-> (:measure entry) compile-form)))
 
 (def gates
   "The steer table, compiled from gates.edn :gates — all data since tier 3b.

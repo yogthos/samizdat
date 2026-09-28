@@ -837,6 +837,29 @@
                      WHERE run_id = ? AND branch_id = ? AND outcome IS NULL
                      ORDER BY id" run-id branch-id]))
 
+(defn record-gate-checks!
+  "One row per measured gate check this turn: value, whether it held, and
+  whether it was the gate chosen (karamazov-na2k.7). Best effort — a lost
+  measurement must not cost the turn."
+  [conn run-id branch-id turn checks fired-gate]
+  (when (and conn run-id (seq checks))
+    (try
+      (db/with-writer
+        (doseq [{:keys [gate value held]} checks
+                :when (number? value)]
+          (db/execute! conn
+                       ["INSERT INTO gate_checks (run_id, branch_id, turn, gate, value, held, fired, created_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                        run-id branch-id turn (name gate) (double value)
+                        (if held 1 0) (if (= gate fired-gate) 1 0) (db/now)])))
+      (catch Throwable e (log/warn "gate checks not recorded:" (ex-message e))))))
+
+(defn gate-checks
+  "Every recorded check of a measured gate on this run, oldest first."
+  [conn run-id]
+  (db/fetch conn ["SELECT gate, branch_id, turn, value, held, fired FROM gate_checks
+                   WHERE run_id = ? ORDER BY id" run-id]))
+
 (defn gate-firings [conn run-id]
   (db/fetch conn ["SELECT * FROM gate_firings WHERE run_id = ? ORDER BY id" run-id]))
 
@@ -982,6 +1005,23 @@
                           WHERE run_id = ? AND kind = ?
                           ORDER BY id"
                         run-id (name kind)])))
+
+(defn notes-since
+  "Notes of any of `kinds` on this run created at or after `since` (an ISO
+  instant), oldest first, each its parsed data with :kind beside it."
+  [conn run-id kinds since]
+  (when (seq kinds)
+    (into []
+          (keep (fn [row]
+                  (try (assoc (json/read-str (str (:data row)) :key-fn keyword)
+                              :kind (:kind row))
+                       (catch Throwable _ nil))))
+          (db/fetch conn (into [(str "SELECT kind, data FROM events
+                                      WHERE run_id = ? AND created_at >= ? AND kind IN ("
+                                     (str/join ", " (repeat (count kinds) "?"))
+                                     ") ORDER BY id")
+                                run-id (str since)]
+                               (map name kinds))))))
 
 (def ^:private record-tables
   "The tables holding a run's account of itself, and how each one names its

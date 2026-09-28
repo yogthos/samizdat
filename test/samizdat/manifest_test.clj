@@ -128,14 +128,14 @@
               (str nm " declares itself unsliceable, so slicing it must be
                        refused rather than quietly producing a turn")))))))
 
-(deftest exactly-two-shipped-manifests-declare-themselves-unsliceable
+(deftest exactly-one-shipped-manifest-declares-itself-unsliceable
   ;; Declaring it is a real decision and not a way out of fixing a graph, so
   ;; the set is pinned: `beam` is the scheduler, which drives branches rather
-  ;; than being driven, and `repl` is a SHAPE — four pure cells classifying a
-  ;; branch, with the enforcement in phases.edn — that no driver should ever
-  ;; be pointed at. A third name here is a decision somebody has to make on
-  ;; purpose.
-  (is (= #{"beam" "repl"}
+  ;; than being driven. `repl` was the second — a SHAPE whose enforcement
+  ;; lived in phases.edn and which no driver could run — and was removed as
+  ;; machinery that could not earn its place (karamazov-na2k.9). A second
+  ;; name here is a decision somebody has to make on purpose.
+  (is (= #{"beam"}
          (set (remove #(manifests/turn-sliceable? (shipped-definition %))
                       (manifests/shipped-manifests))))))
 
@@ -172,7 +172,7 @@
   ;; compiles the whole-run form.
   (let [menu (wf/render-catalog nil)]
     (is (str/includes? menu "loop"))
-    (doseq [nm ["beam" "repl"]]
+    (doseq [nm ["beam"]]
       (is (not (str/includes? menu (str "- " nm " ")))
           (str nm " is offered as a workflow to switch to, and cannot run as one")))))
 
@@ -184,7 +184,7 @@
   ;; anywhere. Under workflow/run! `:run :loop "repl"` did not fail, it HUNG,
   ;; which is worse than the beam's throw.
   (let [conn (db/open! ":memory:")]
-    (doseq [nm ["repl" "beam"]]
+    (doseq [nm ["beam"]]
       (testing nm
         (let [e (try (wf/compile-turn-loop conn nm) nil (catch Throwable t t))]
           (is (some? e) (str nm " sliced"))
@@ -250,6 +250,21 @@
             ;; is actually about is the second assertion.
             (is (= :mechanics (:category r)))
             (is (nil? (us/load-latest conn :manifest "bad")) "nothing broken was stored")))))))
+
+(deftest the-manifest-history-can-be-read-with-its-rationales
+  ;; karamazov-na2k.5: cell, prompt and policy had `versions`; manifest did
+  ;; not, so the supervisor could not read why a manifest was changed.
+  (with-db
+    (fn [conn]
+      (let [good (slurp (io/resource "manifests/loop.edn"))]
+        (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                        :args {:action "save" :name "loop2" :edn good
+                               :rationale "a second loop to compare"}})
+        (let [r (base/run-tool {:branch {:id "B1"} :conn conn :tool-name "manifest"
+                                :args {:action "versions" :name "loop2"}})]
+          (is (= :neutral (:category r)) (:result r))
+          (is (str/includes? (:result r) "v1"))
+          (is (str/includes? (:result r) "a second loop to compare")))))))
 
 (deftest a-composed-manifest-registers-and-compiles-its-sub-loops
   (with-db

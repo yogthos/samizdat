@@ -282,10 +282,11 @@ intervene({kind, branch?, text?})
     Say the specific thing to do next, not that it seems stuck — a branch
     that could tell it was stuck would have stopped already. Watch what it
     does with one directive before sending another.
-experiment({name, change, hypothesis})
+experiment({name, change, hypothesis, kind?, target?, predicts?})
     Bind a change you are making to what you expect it to do, so the next
     round can tell you whether it worked. Start one whenever you edit a cell,
-    manifest, prompt or threshold. A change with no stated expectation cannot
+    manifest, prompt or threshold; name the edit with kind and target, and
+    the one signal you expect to move with predicts ("parse-error down"). A change with no stated expectation cannot
     be wrong, and a change that cannot be wrong teaches nothing.
 verdict({name})
     Read an experiment back: better / worse / unchanged / too early, with the

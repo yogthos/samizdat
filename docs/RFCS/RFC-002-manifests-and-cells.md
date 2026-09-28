@@ -63,11 +63,11 @@ glob-scoped interceptors match on.
 `:turn-sliceable?` declares that a manifest may **not** be a run's loop. The
 slice cuts every edge returning to `:start` into `:end`, which is the
 definition of a turn for an iterating loop and silent data loss for anything
-else; two shipped manifests have that back edge *structurally*, and both say
-so here. `beam.edn` is the scheduler — it advances the branches that make
-model calls rather than making one — and `repl.edn` is a shape whose four
-pure cells classify a branch, with the binding enforcement in `phases.edn`.
-Such a manifest stays in `catalog` (the inventory) but is off `render-catalog`
+else; one shipped manifest has that back edge *structurally*, and says so
+here: `beam.edn` is the scheduler — it advances the branches that make model
+calls rather than making one. (`repl.edn`, a shape whose enforcement lived in
+`phases.edn` and which no driver could run, was the second until it was
+removed, karamazov-na2k.9.) Such a manifest stays in `catalog` (the inventory) but is off `render-catalog`
 (the supervisor's switch menu) and off selection's candidates, and both
 drivers refuse it. Beam's exemption used to be an artifact of the fact that
 nothing called `turn-manifest` on it, which is an invariant held by absence —

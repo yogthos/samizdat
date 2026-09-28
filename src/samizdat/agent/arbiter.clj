@@ -54,6 +54,22 @@
                             (not (gates/budget-exceeded? g (:branch ctx))))))
        (sort-by :priority)))
 
+(defn measurements
+  "Every gate that declares a :measure, with the value it measured this check
+  and whether its precondition held — fired or not (karamazov-na2k.7).
+  gate_firings keeps only the checks that fired, which is one side of the
+  data a threshold is fitted from. A measure that throws is left out: a
+  counter must not cost a turn."
+  [ctx]
+  (into []
+        (keep (fn [g]
+                (when-let [m (:measure g)]
+                  (try {:gate (:gate g)
+                        :value (m ctx)
+                        :held (boolean ((:when g) ctx))}
+                       (catch Throwable _ nil)))))
+        (gates/gates)))
+
 (defn decide
   "Pick at most one steer for this boundary.
 
