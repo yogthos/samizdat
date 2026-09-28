@@ -618,7 +618,9 @@
   ;; as patterns prints nothing of the kind.
   (with-db
     (fn [conn]
-      (let [patterns (slurp (io/resource "manifests/loop.edn"))
+      ;; turn.edn: the chain, where the :parse table is written out (loop.edn
+      ;; extends it and carries only its tail).
+      (let [patterns (slurp (io/resource "manifests/turn.edn"))
             _ (is (str/includes? patterns "[:tool _]") "the fixture's target is present")
             forms (str/replace patterns "[:tool _]" "[:tool (fn [d] true)]")
             run (fn [args] (base/run-tool {:branch {:id "B1"} :conn conn
@@ -721,14 +723,16 @@
   (remove (set (str/split-lines before)) (str/split-lines after)))
 
 (deftest patch-rewires-the-loop-without-re-emitting-it
+  ;; On turn.edn, the chain every turn-shaped role extends and the file whose
+  ;; comments the render exists to keep.
   (with-db
     (fn [conn]
-      (wf/load-loop! conn)                                  ; seed "loop" v1
-      (let [r   (run-manifest conn {:action "patch" :name "loop"
+      (wf/load-loop! conn "turn")                           ; seed "turn" v1
+      (let [r   (run-manifest conn {:action "patch" :name "turn"
                                     :rationale "record says what the node does"
                                     :ops [{:op "rename-cell" :from "journal" :to "record"}]})
-            v1  (us/load-version conn :manifest "loop" 1)
-            row (us/load-latest conn :manifest "loop")]
+            v1  (us/load-version conn :manifest "turn" 1)
+            row (us/load-latest conn :manifest "turn")]
         (is (= :neutral (:category r)) (:result r))
         (is (:progress? r))
         (is (= 2 (:version row)))
@@ -740,7 +744,7 @@
             (is (every? #(str/includes? % ":record") changed))))
         (testing "the :invariants followed the rename, so the next compile holds"
           (is (str/includes? (:body row) ":if :dispatch :then :record"))
-          (is (= "loop" (:name (wf/load-loop! conn "loop")))))
+          (is (= "turn" (:name (wf/load-loop! conn "turn")))))
         (testing "the reply names the version and what changed"
           (is (str/includes? (:result r) "v2"))
           (is (re-find #"- :journal" (:result r)))

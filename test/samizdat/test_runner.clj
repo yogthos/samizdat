@@ -97,6 +97,7 @@
             [samizdat.prompt-test]
             [samizdat.workflow-test]
             [samizdat.manifest-test]
+            [samizdat.manifest-extends-test]
             [samizdat.judge-test]
             [samizdat.team-test]
             [samizdat.claims-test]
@@ -309,6 +310,7 @@
     samizdat.prompt-test
     samizdat.workflow-test
     samizdat.manifest-test
+    samizdat.manifest-extends-test
     samizdat.judge-test
     samizdat.team-test
     samizdat.claims-test

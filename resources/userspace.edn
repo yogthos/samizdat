@@ -28,7 +28,10 @@
    :board-bt "manifests/board-bt.edn"
    :feature "manifests/feature.edn"
    :decompose "manifests/decompose.edn"
-   :repair "manifests/repair.edn"}
+   :repair "manifests/repair.edn"
+   ;; Not a workflow: the turn chain loop, worker, reviewer and supervisor
+   ;; extend (:extends "turn").
+   :turn "manifests/turn.edn"}
 
  :policies
   {:gates "gates.edn"

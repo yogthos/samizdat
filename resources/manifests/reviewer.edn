@@ -1,108 +1,23 @@
-;; The REVIEWER role loop. Structurally the per-turn worker graph — assemble,
-;; infer, parse, dispatch, journal, arbiter, route — because a reviewer works
-;; the same way an implementor does: a turn at a time until a terminal verdict,
-;; then control returns to whatever composed it. What makes it the REVIEWER is
-;; its role prompt (prompts/roles/reviewer.md, injected by :feature/review) and
-;; its position in feature.edn (it runs on the implementors' finished work).
+;; The REVIEWER role loop. Structurally the per-turn worker graph — the turn
+;; chain (manifests/turn.edn, which it extends) with task reflection on every
+;; ending — because a reviewer works the same way an implementor does: a turn
+;; at a time until a terminal verdict, then control returns to whatever
+;; composed it. What makes it the REVIEWER is its role prompt
+;; (prompts/roles/reviewer.md, injected by :feature/review) and its position in
+;; feature.edn (it runs on the implementors' finished work).
 ;;
 ;; It is a SEPARATE, independently-versioned manifest from `worker` on purpose:
 ;; the reviewer role owns this loop and can tune it (manifest save "reviewer")
 ;; without touching how implementors work. Today it mirrors `worker`; it is free
 ;; to diverge.
 {:description "The reviewer role loop: reads the implementors' finished work and returns PASS or REVISE. A component of the feature loop, not usually run standalone."
- :input-schema
- ;; What a driver hands this manifest to start a run. mycelium checks it in
- ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
- ;; is told which key, instead of a nil surfacing several cells later.
- [:map [:branch :map] [:turn :int]]
+ :extends "turn"
 
- :cells {:start          :loop/assemble
-         ;; THE CONTEXT-BUDGET LADDER, as nodes. Compaction used to be a
-         ;; side effect of building the request — invisible to every
-         ;; manifest, unreachable by introspect, tunable only by moving a
-         ;; character count. It runs between assembling the turn and calling
-         ;; the model, which is the only place the cheap rungs can act, and
-         ;; each rung is its own node so a project can rewire or drop one.
-         :measure        :compaction/measure
-         :cap            :compaction/cap
-         :prune          :compaction/prune
-         :fold           :compaction/fold
-         :infer          :llm/infer
-         :parse          :llm/parse
-         :provider-error :loop/provider-error
-         :no-call        :loop/no-call
-         :dispatch       :tool/dispatch
-         :journal        :journal/record
-         :settle         :gate/settle
-         :arbiter        :gate/arbiter
-         :route          :loop/route
-         ;; Task reflection on every ending (blt.26).
-         :distil         :memory/distil}
+ ;; Task reflection on every ending (blt.26).
+ :cells {:distil :memory/distil}
 
- :edges {:start          :measure
-         ;; measure WRITES :compaction/route and the dispatch READS it —
-         ;; never the other way round. A predicate that computed the tier
-         ;; here would put the routing back inside code and leave the
-         ;; manifest showing an opaque box.
-         :measure        {:cap  :cap
-                          :none :infer}
-         :cap            {:prune :prune
-                          :none  :infer}
-         :prune          :fold
-         :fold           :infer
-         :infer          :parse
-         :parse          {:provider-error :provider-error
-                          :no-call        :no-call
-                          :tool           :dispatch}
-         :provider-error :route
-         :no-call        :route
-         :dispatch       :journal
-         :journal        :settle
-         :settle         :arbiter
-         :arbiter        :route
-         :route          {:continue  :start
-                          :done      :distil
-                          :abandoned :distil
-                          :exhausted :distil}
-         :distil         :end}
-
- :dispatches {:measure [[:cap  {:compaction/route :cap}]
-                        [:none _]]
-              :cap     [[:prune {:compaction/route :prune}]
-                        [:none  _]]
-              ;; ORDER MATTERS here, as in loop.edn: a provider failure passes
-              ;; the data through with :parsed ABSENT, and a map pattern needs
-              ;; its key present, so :provider-error is tried first.
-              :parse [[:provider-error {:call {:ok false}}]
-                      [:no-call {:parsed nil}]
-                      [:no-call {:parsed {:name "__parse_error__"}}]
-                      [:tool _]]
-              :route [[:continue  {:verdict :continue}]
-                      [:done      {:verdict :done}]
-                      [:abandoned {:verdict :abandoned}]
-                      [:exhausted {:verdict :exhausted}]]}
-
- ;; EVERY ordering rule this turn claims, and which of them the compiler
- ;; catches. `:constraints` is DERIVED from the `:enforced true` entries
- ;; (workflow/enforced-constraints), so the documented set and the checked set
- ;; cannot drift apart. The turn-shaped manifests all carry the same four —
- ;; they are the shape of a turn, not of this particular workflow.
- :invariants
- [{:type :must-follow :if :dispatch :then :journal :enforced true
-   :protects "A dispatched tool call is always recorded."}
-
-  {:type :must-follow :if :journal :then :arbiter :enforced true
-   :protects "A recorded turn always faces a gate."}
-
-  {:type :must-precede :cell :dispatch :before :arbiter :enforced true
-   :protects "The arbiter reads what the turn DID; a gate deciding before the
-              tool ran would steer on the previous turn's state."}
-
-  {:type :must-precede :cell :settle :before :arbiter :enforced true
-   :protects "A gate cannot be credited with an outcome that preceded it:
-              :gate/settle closes this turn's open predictions BEFORE the
-              arbiter chooses, so a resolution closes against the gate that
-              asked for it and not the one about to."}
-
-  {:type :must-precede :cell :parse :before :dispatch :enforced true
-   :protects "Nothing is dispatched that was not parsed out of a reply."}]}
+ :edges {:route  {:continue  :start
+                  :done      :distil
+                  :abandoned :distil
+                  :exhausted :distil}
+         :distil :end}}

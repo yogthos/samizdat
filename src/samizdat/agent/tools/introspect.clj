@@ -40,8 +40,7 @@
   A separate namespace requiring only base + the read seams, so the tool
   surface grows by a plug-in file rather than by editing the aggregator.
   Render fns are exposed (not private) so a test can call them directly."
-  (:require [clojure.edn :as edn]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [mycelium.cell :as cell]
             [samizdat.agent.tools.base :as base]
             [samizdat.cells :as cells]
@@ -73,10 +72,10 @@
       (select-keys tw [:name :version :definition])
       (let [nm (or (get-in ctx [:config :run :loop]) "loop")]
         {:name nm
-         :definition (edn/read-string (manifests/manifest-body! nm))}))
+         :definition (manifests/read-definition (manifests/manifest-body! nm))}))
     (let [nm (or (get-in ctx [:config :run :loop]) "loop")]
       {:name nm
-       :definition (edn/read-string (manifests/manifest-body! nm))})))
+       :definition (manifests/read-definition (manifests/manifest-body! nm))})))
 
 (defn loop-def
   "The active loop's workflow definition — :cells (node -> cell-id), :edges

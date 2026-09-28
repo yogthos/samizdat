@@ -152,10 +152,11 @@
 ;; ===== render on a samizdat manifest =====
 
 (deftest render-keeps-a-shipped-manifests-prose
-  ;; loop.edn is the reason render is worth vendoring: forty comment runs
-  ;; explaining why each edge is where it is. A rename that reprinted the
-  ;; file would erase every one of them from the stored body.
-  (let [text (slurp "resources/manifests/loop.edn")
+  ;; turn.edn (the chain loop.edn and the role loops extend) is the reason
+  ;; render is worth vendoring: comment runs explaining why each edge is
+  ;; where it is. A rename that reprinted the file would erase every one of
+  ;; them from the stored body.
+  (let [text (slurp "resources/manifests/turn.edn")
         old  (edn/read-string text)
         new  (patch/apply-ops old {:ops [{:op "rename-cell" :from :journal :to :record}]
                                    :validator identity})
