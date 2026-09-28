@@ -442,7 +442,8 @@
                                                (mapv (fn [r]
                                                        {:reason (clip (:reason r)
                                                                       (gates/threshold :oversight-note-chars))
-                                                        :targets (str/join ", " (map str (keys (:attempt r))))})
+                                                        :targets (or (:target r)
+                                                                     (str/join ", " (map str (keys (:attempt r)))))})
                                                      rs)}))
                                   ;; Gates that fire across runs and are never
                                   ;; met. The mirror of :candidates above —

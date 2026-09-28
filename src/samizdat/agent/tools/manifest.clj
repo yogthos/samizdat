@@ -195,6 +195,19 @@
         (or (us/load-latest conn :manifest name)
             {:body body :version nil}))))
 
+(defn- save!
+  "Store `text` as the newest version of manifest `name` and return the
+  version. Through the userspace seam, which in a project with files WRITES
+  the role's file — the file is what runs, the store is its history. Saving
+  to the store alone recorded an edit that never ran, and the next read
+  recorded the untouched file as a newer version on top of it
+  (karamazov-8nuu). A connection with no bound project (a test, a REPL) is
+  written to directly, as before."
+  [conn name text why]
+  (if (userspace/bound?)
+    (userspace/save! :manifest name text why)
+    (us/save! conn :manifest name text "project" why)))
+
 (defn- read-ops
   "The `ops` argument as op maps ready for patch/apply-ops: a JSON list of
   objects (keys keywordized on the way in, values strings) or one EDN string.
@@ -344,7 +357,7 @@
               (base/rejected branch
                              (str "`manifest save` refused: " complaint
                                   "\n\n" usage))
-              (let [v (us/save! conn :manifest name edn-text "project" why)]
+              (let [v (save! conn name edn-text why)]
                 (base/ok branch
                          (str (saved-line name v) (dispatch-report edn-text)
                               (cycle-report edn-text))
@@ -382,7 +395,7 @@
                                         "\n\n" (ops-help)))
                     (let [new (:new outcome)
                           text (patch/render body old new)
-                          v (us/save! conn :manifest name text "project" why)]
+                          v (save! conn name text why)]
                       (base/ok branch
                                (str (saved-line name v)
                                     "\n\n" (format-diff (patch/diff-manifests old new) old new)

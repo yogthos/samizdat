@@ -45,6 +45,7 @@
             [samizdat.agent.toolerr :as toolerr]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
+            [samizdat.store.journal :as journal]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.adopt]
             [samizdat.agent.tools.ask]
@@ -179,6 +180,22 @@
           (do (Thread/sleep (toolerr/backoff-ms attempt base-backoff-ms))
               (recur (inc attempt))))))))
 
+(defn- journal-refusal!
+  "Write down a self-edit the harness validated and declined, whatever its
+  kind, so the supervisor's brief and later runs can read it back as ruled
+  out. The cell path journals its own, richer note inside the mutation
+  protocol and says so with :journaled?; every other kind was returned to the
+  branch and never written down (karamazov-na2k.1)."
+  [{:keys [conn run-id tool-name] :as ctx} r]
+  (when (and (:edit-rejected? r) (not (:journaled? r)) conn run-id)
+    (try
+      (journal/note! conn run-id :mutation-rolled-back
+                     {:data {:target (str tool-name
+                                          (when-let [n (some-> (base/arg ctx :name) str not-empty)]
+                                            (str " " n)))
+                             :reason (str (:result r))}})
+      (catch Throwable e (log/warn "could not journal a refused edit:" (ex-message e))))))
+
 (defn run-tool
   "Dispatch one tool call and return a result the loop can always use.
 
@@ -221,7 +238,8 @@
                 (str "`" tool-name "` " fault
                      ". This is a harness fault, not yours — the call was fine."))
                known))
-          (redact-result r known))))))
+          (do (journal-refusal! ctx r)
+              (redact-result r known)))))))
 
 ;; Re-exports: loop.clj and the tests reach the tool surface through this
 ;; namespace and keep working unchanged.
