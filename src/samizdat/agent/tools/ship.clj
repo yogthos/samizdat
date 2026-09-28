@@ -362,7 +362,9 @@
                    ~'uncovered-numbers (get ~'ctx :uncovered-numbers)
                    ;; Whether the branch's role may write: what covers a
                    ;; figure, and so what a refusal should ask for, differs.
-                   ~'can-write?        (get ~'ctx :can-write? true)]
+                   ~'can-write?        (get ~'ctx :can-write? true)
+                   ;; A reviewer or supervisor, whose answer is a verdict.
+                   ~'advisory?         (get ~'ctx :advisory? false)]
                ~form)))))
 
 (def ship-gates
@@ -384,13 +386,18 @@
 
 (defn ship-gate-block
   "The first lexical ship rung that fires on this evidence, or nil. Pure —
-  `done` computes the evidence and calls this."
+  `done` computes the evidence and calls this.
+
+  On an ADVISORY branch (`:advisory?` in the evidence) only the rungs marked
+  `:advisory? true` apply: its answer is a verdict that quotes the run's own
+  figures, so the evidence rungs do not fit it, but some — that there is an
+  answer at all — do, and which is a gates.edn decision."
   [evidence]
   (some (fn [rung]
           (when ((:when rung) evidence)
             (let [m (:message rung)]
               (if (fn? m) (m evidence) m))))
-        (ship-gates)))
+        (cond->> (ship-gates) (:advisory? evidence) (filter :advisory?))))
 
 ;; --- the give_up rungs ------------------------------------------------------
 
@@ -489,12 +496,12 @@
         borrowed (when (seq elsewhere)
                    (seq (remove (set uncovered)
                                 (uncovered-tokens answer own [problem]))))
-         block (when-not advisory?
-                 (ship-gate-block
-                  {:answer answer :problem problem
-                   :evidence evidence
-                   :uncovered-numbers uncovered-numbers
-                   :can-write? (roles/may-use? (:role branch) "write_file")}))
+         block (ship-gate-block
+                {:answer answer :problem problem
+                 :evidence evidence
+                 :uncovered-numbers uncovered-numbers
+                 :can-write? (roles/may-use? (:role branch) "write_file")
+                 :advisory? advisory?})
         ;; The test rung — what makes the loop test-driven rather than one-shot.
         ;; `done` is not terminal until the unit's tests actually pass: run the
         ;; unit's tests, and a red / hollow / untested result is fed back so the

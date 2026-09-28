@@ -289,8 +289,14 @@
                                          :boundary? (if ch
                                                       (pos? (or (:turns-ended @state) 0))
                                                       true)})
-                       (swap! state assoc :last-at (now) :turns-ended 0)
-                       (pass! ctx state pass-fn)))
+                       (swap! state assoc :turns-ended 0)
+                       (pass! ctx state pass-fn)
+                       ;; Stamped at the END: the spacing is the gap between
+                       ;; passes. From the start, a pass longer than the
+                       ;; spacing — a GLM deliberation of 3-4 minutes against
+                       ;; 2 — was due again the moment it ended, and the passes
+                       ;; ran back to back through the budget (karamazov-qtj5).
+                       (swap! state assoc :last-at (now))))
                    (catch Throwable e
                      (when (cancel/control-signal? e) (throw e))
                      (log/warn "oversight loop:" (ex-message e)))))

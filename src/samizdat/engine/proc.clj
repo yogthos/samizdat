@@ -49,6 +49,29 @@
   [pid sig]
   (try (c-kill pid sig) (catch Throwable _ -1)))
 
+(def ^:private wait-slice-ms
+  "The longest single .waitFor inside `wait-for`: short enough that jolt's
+  overshoot on one slice is a few milliseconds, long enough not to spin."
+  50)
+
+(defn- wait-for
+  "Whether `p` exited within `ms`, against the wall clock.
+
+  Not one timed .waitFor: jolt's counts its 10 ms polls rather than reading a
+  clock, so each poll's overrun accumulates — 1000 ms came back at ~1170 and
+  5000 at ~5840 on 0.8.13 (karamazov-bkjm). Short slices against a deadline
+  keep jolt's own wait, which parks a fiber and sees an interrupt, and bound
+  the overshoot to one slice's."
+  [^java.lang.Process p ms]
+  (let [deadline (+ (System/currentTimeMillis) ms)]
+    (loop []
+      (let [left (- deadline (System/currentTimeMillis))]
+        (cond
+          (not (.isAlive p)) true
+          (<= left 0) false
+          (.waitFor p (min left wait-slice-ms) java.util.concurrent.TimeUnit/MILLISECONDS) true
+          :else (recur))))))
+
 (defn- reap!
   "Kill `proc`'s whole tree and do not return until the root is gone.
 
@@ -64,8 +87,7 @@
   (let [^java.lang.Process p (:proc proc)
         root (try (.pid p) (catch Throwable _ -1))]
     (doseq [pid (cons root (descendant-pids p))] (kill! pid 15))
-    (when-not (try (.waitFor p sigterm-grace-ms java.util.concurrent.TimeUnit/MILLISECONDS)
-                   (catch Throwable _ false))
+    (when-not (try (wait-for p sigterm-grace-ms) (catch Throwable _ false))
       ;; Still alive. SIGKILL the children BEFORE the root — enumerated now,
       ;; because once the root dies they reparent to init and vanish from
       ;; descendants(). Re-enumerated here, not reused: the tree may have
@@ -73,8 +95,7 @@
       (doseq [pid (descendant-pids p)] (kill! pid 9))
       (kill! root 9)
       (try (.destroyForcibly p) (catch Throwable _ nil))
-      (try (.waitFor p sigterm-grace-ms java.util.concurrent.TimeUnit/MILLISECONDS)
-           (catch Throwable _ nil)))))
+      (try (wait-for p sigterm-grace-ms) (catch Throwable _ nil)))))
 
 (defn run
   "Run `args` with `input` on stdin, capturing stdout and stderr.
@@ -84,8 +105,8 @@
   after `(get-model)` on an unsat formula even though the verdict itself was
   emitted cleanly, so the caller reads the output and decides.
 
-  The wait is `.waitFor` with an explicit timeout rather than a timed `deref`,
-  which does not work. jolt's `clojure.core/deref` forwards no opts to a record
+  The wait is `wait-for` — timed `.waitFor` slices against a deadline —
+  rather than a timed `deref`, which does not work. jolt's `clojure.core/deref` forwards no opts to a record
   implementing IBlockingDeref, so (deref proc ms ::timeout) silently calls the
   blocking one-arity and waits for however long the process takes. It fails
   quietly, in the direction of doing nothing: the timeout branch below was
@@ -109,7 +130,7 @@
         ^java.lang.Process p (:proc proc)
         ms (or timeout-ms 30000)
         finished? (try
-                    (.waitFor p ms java.util.concurrent.TimeUnit/MILLISECONDS)
+                    (wait-for p ms)
                     (catch Throwable _ false))]
     (try
       (if-not finished?

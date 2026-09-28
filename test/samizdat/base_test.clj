@@ -327,7 +327,10 @@
    {:threshold {30000 "Subprocess wall-clock bound. A capability's own safety
                        bound, not a decision about the work."
                 2000 "SIGTERM grace before SIGKILL. How long a dying process
-                      gets to die, which is a property of processes."}}
+                      gets to die, which is a property of processes."
+                50 "The slice wait-for polls in, which bounds how far past
+                    its deadline a wait can run. How precisely a timeout is
+                    kept, not how long it is."}}
 
    "src/samizdat/events.clj"
    {:threshold {256 "The event tap's sliding-buffer size. RFC-009 states it as

@@ -93,3 +93,18 @@
     (let [after (open-fds)]
       (is (<= after (+ before 4))
           (str "held " before " before and " after " after five timeouts")))))
+
+(deftest a-timeout-is-the-time-it-names
+  ;; karamazov-bkjm. jolt's timed .waitFor counts its 10 ms polls instead of
+  ;; reading a clock, so every poll's overrun accumulates: measured on 0.8.13,
+  ;; 1000 ms came back at ~1170 and 5000 at ~5840. proc/run is the bound on
+  ;; every subprocess the harness spawns, so a 10-minute verify bound was
+  ;; nearly 12. The reap after the timeout is not part of the bound.
+  (sweep!)
+  (try
+    (let [t0 (System/currentTimeMillis)
+          r (proc/run {:timeout-ms 2000} "sh" "-c" (str "exec " needle))
+          waited (- (System/currentTimeMillis) t0)]
+      (is (:timeout r))
+      (is (< waited 2150) (str "asked for 2000 ms, waited " waited)))
+    (finally (sweep!))))

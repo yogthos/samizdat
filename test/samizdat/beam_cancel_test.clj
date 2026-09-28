@@ -15,6 +15,7 @@
             [samizdat.api.control :as api-control]
             [samizdat.cancel :as cancel]
             [samizdat.store.db :as db]
+            [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]))
 
 (defn- now [] (System/currentTimeMillis))
@@ -35,6 +36,46 @@
 
 (defn- ctx [deadline-ms]
   {:iterating-loop? true :turn-deadline-ms deadline-ms :cancelling (atom {})})
+
+;; --- a job that goes quiet (karamazov-abzd) ---------------------------------
+;;
+;; A non-iterating manifest (feature, team, decompose) runs the whole job as
+;; one turn, so the turn deadline is skipped — and with it every bound: run
+;; sweep5/2 journalled its last event and then sat silent for twenty minutes
+;; until a rig outside the harness killed it. The bound is on SILENCE, not on
+;; length: a job may run for hours as long as the run keeps journalling.
+
+(defn- job-ctx [conn rid stall-ms]
+  {:iterating-loop? false :job-stall-ms stall-ms :cancelling (atom {})
+   :conn conn :run-id rid})
+
+(deftest a-job-that-goes-silent-is-cut-off-and-says-why
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (try
+      (with-redefs [beam/advance-branch (fn [_ b _] (ebb/? (ebb/sleep 60000)) b)]
+        (let [t0 (now)
+              [r] (beam/advance-all (job-ctx c rid 300) [b] 1)]
+          (is (< (- (now) t0) 3000) "cut off after the silence, not after the job")
+          (is (= :abandoned (:status r)))
+          (is (re-find #"(?i)silent|stall" (str (:inactive-reason r))) (str (:inactive-reason r)))))
+      (finally (db/close c)))))
+
+(deftest a-job-that-keeps-journalling-is-left-to-run
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})
+        b (state/new-branch {:id "B1" :problem "p"})]
+    (try
+      (with-redefs [beam/advance-branch (fn [_ b _]
+                                          (dotimes [i 8]
+                                            (ebb/? (ebb/sleep 100))
+                                            (journal/note! c rid :step {:data {:i i}}))
+                                          (assoc b :finished true))]
+        (let [[r] (beam/advance-all (job-ctx c rid 300) [b] 1)]
+          (is (:finished r) "eight hundred ms of work under a 300 ms silence bound")
+          (is (not= :abandoned (:status r)))))
+      (finally (db/close c)))))
 
 (deftest a-turn-past-the-deadline-is-cancelled-and-the-branch-forfeits-until-it-stops
   ;; The turn parks (a provider call would); the deadline cancels it; the park
