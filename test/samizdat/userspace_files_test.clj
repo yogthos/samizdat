@@ -303,3 +303,34 @@
       (is (= "edited in the file"
              (:description (:definition ((requiring-resolve 'samizdat.workflow/load-loop!)
                                          _c "loop"))))))))
+
+(defn- manifest-tool [conn args]
+  (require 'samizdat.agent.tools.manifest)
+  ((requiring-resolve 'samizdat.agent.tools.base/run-tool)
+   {:branch {:id "B1"} :conn conn :tool-name "manifest" :args args}))
+
+(deftest the-manifest-tool-writes-the-projects-file
+  ;; karamazov-8nuu. `manifest save` and `patch` appended a store row and never
+  ;; wrote .samizdat/manifests/, so in a project with files the edit was
+  ;; recorded and never ran — and the next read recorded the untouched file
+  ;; as a newer "file" version, ending the history on a silent revert.
+  (with-project [root c]
+    (us/seed-project!)
+    (let [f (file root "manifests/loop.edn")
+          load-loop! (requiring-resolve 'samizdat.workflow/load-loop!)]
+      (testing "save"
+        (let [edited (pr-str (assoc (edn/read-string (slurp f)) :description "saved by the tool"))
+              r (manifest-tool c {:action "save" :name "loop" :edn edited
+                                  :rationale "a tool save"})]
+          (is (= :neutral (:category r)) (:result r))
+          (is (= edited (slurp f)) "the file is what runs, so the save writes it")
+          (is (= "saved by the tool"
+                 (:description (:definition (load-loop! c "loop")))))
+          (is (= "project" (last (versions-of :manifest "loop")))
+              "the history ends on the tool's version, not a re-read of the old file")))
+      (testing "patch"
+        (let [r (manifest-tool c {:action "patch" :name "loop" :rationale "rename a node"
+                                  :ops [{:op "rename-cell" :from "journal" :to "record"}]})]
+          (is (= :neutral (:category r)) (:result r))
+          (is (str/includes? (slurp f) ":record"))
+          (is (= "project" (last (versions-of :manifest "loop")))))))))

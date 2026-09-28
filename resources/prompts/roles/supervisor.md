@@ -364,10 +364,12 @@ You have three. Use the smallest one that fits the evidence:
    could land under any adjustment you tried, not a task the defaults starved.
 
    **Land every harness fix through its tool.** When you author a new version
-   of a cell, manifest, or prompt, the natural way to write a large body is
-   `write_file` — and then you MUST finish with the matching save:
+   of a cell, manifest, or prompt, land it with the matching save:
    `cell save {name, file}` / `manifest save {name, file}` /
-   `prompt save {name, file}`, passing the path you just wrote. The save is
+   `prompt save {name, file}`. For a large body, write it with `shell` to a
+   scratch file under the run root outside the workflow directories and pass
+   that path as `file`; for a small change to a manifest, `manifest patch`
+   edits it in place. The save is
    what VALIDATES the change and records why you made it. This project's
    workflow lives in its `.samizdat/` directory (`cells/`, `manifests/`,
    `prompts/`, the policy tables): an edit written straight into one of those

@@ -214,11 +214,14 @@
                 ;; Rolled back: validate or the soak refused it, the registry
                 ;; is restored, and nothing was stored. A correctable edit,
                 ;; not a branch failure — see base/rejected.
-                (base/rejected branch
-                               (str "Cell '" name "' was NOT saved; the loop is"
-                                    " unchanged and nothing entered this project's"
-                                    " history.\n\n" (:reason r)
-                                    "\n\nFix it and save again."))))))
+                ;; :journaled? — propose-cell! already wrote the refusal,
+                ;; with the attempt, as :mutation-rolled-back.
+                (assoc (base/rejected branch
+                                      (str "Cell '" name "' was NOT saved; the loop is"
+                                           " unchanged and nothing entered this project's"
+                                           " history.\n\n" (:reason r)
+                                           "\n\nFix it and save again."))
+                       :journaled? true)))))
 
         "revert"
         (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)

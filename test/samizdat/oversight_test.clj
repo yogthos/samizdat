@@ -807,6 +807,27 @@
       (is (str/includes? (str prob) "soak did not terminate")
           "with the reason the protocol gave"))))
 
+(deftest a-refused-edit-of-any-kind-reaches-the-supervisor
+  ;; karamazov-na2k.1. Only the cell path journaled its refusals; a manifest
+  ;; that did not compile, a policy body that broke its table, a prompt that
+  ;; would not render went back to the branch as base/rejected and were never
+  ;; written down, so the brief after a compaction — and every later run —
+  ;; had no idea they had been tried.
+  (require 'samizdat.agent.tools)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        r ((requiring-resolve 'samizdat.agent.tools/run-tool)
+           {:branch {:id "SUP"} :conn conn :run-id rid :tool-name "manifest"
+            :args {:action "save" :name "broken" :edn "{:cells {:x :no-such-cell}}"
+                   :rationale "a bad save on purpose"}})]
+    (is (:edit-rejected? r) (:result r))
+    (let [notes (journal/notes conn rid :mutation-rolled-back)
+          {:keys [prob]} (reasoning-over conn rid)]
+      (is (= 1 (count notes)) "the refusal is journaled once")
+      (is (= "manifest broken" (:target (first notes))))
+      (is (str/includes? (str prob) "manifest broken")
+          "and the brief names what was refused"))))
+
 (deftest a-refused-mutation-is-worth-a-model-call
   ;; A refusal means the supervisor tried to change the harness and the
   ;; protocol said no. That is precisely a moment where the next pass will

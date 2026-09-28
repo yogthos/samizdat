@@ -11,7 +11,8 @@
   cannot reach it\"). A supervisor once spent 108 of a run's 211 turns hunting
   a source tree it was never going to be allowed to open. Roles were
   differentiated by ADDITION; they are constructed now."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.roles :as roles]
             ;; the registry must be LOADED for the surface check to mean anything
@@ -119,3 +120,27 @@
             t s]
       (is (contains? registered t)
           (str r " may use `" t "`, which is not a registered tool")))))
+
+(defn- tools-named-in
+  "Every registered tool a role prompt names in backticks, the way the prompts
+  tell a model to call one: `verdict {name, action, why}`, `write_file`."
+  [text]
+  (let [registered (set (roles/all-tool-names))]
+    (->> (re-seq #"`([a-z_]+)[ `({]" text)
+         (map second)
+         (filter registered)
+         set)))
+
+(deftest every-tool-a-role-prompt-names-is-on-its-surface
+  ;; karamazov-kcvb / na2k.2. roles/supervisor.md told the supervisor to settle
+  ;; experiments with `verdict` and author bodies with `write_file`; neither
+  ;; was on its surface, so it held the one experiment slot forever. Nothing
+  ;; compared what a role is told to call with what it may call.
+  (doseq [r (roles/names)
+          :let [surface (roles/surface r)
+                p (:prompt (roles/spec r))
+                text (some-> p (#(io/resource (str "prompts/" % ".md"))) slurp)]
+          :when (and text (set? surface))
+          t (tools-named-in text)]
+    (is (contains? surface t)
+        (str (name r) "'s prompt tells it to use `" t "`, which is not on its surface"))))
