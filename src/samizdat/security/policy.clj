@@ -375,6 +375,12 @@
    ["jolt -e **" :allow] ["jolt -A **" :allow] ["jolt -M **" :allow]
    ["jolt -A:test **" :allow] ["jolt -M:test **" :allow] ["jolt -A:dev **" :allow]
    ["jolt -A:test -e **" :allow] ["jolt -M:test -e **" :allow]
+   ;; ANY alias, not one row per alias (karamazov-9nsf): a project's own
+   ;; aliases run its own code, the same trust as its test alias, and a row per
+   ;; name meant every alias a project added was refused until somebody wrote
+   ;; one. A mid-pattern `*` matches the alias name; compound splitting, the
+   ;; wrapper promotion and the hard denies still apply per segment.
+   ["jolt -A:* **" :allow] ["jolt -M:* **" :allow]
    ;; The project's RUN alias, beside its test alias. `cargo run` and `go run`
    ;; were already here and this was not, purely because the colon-alias quirk
    ;; above needs one pattern per alias and nobody had needed this one. Live
@@ -469,6 +475,16 @@
   statement that made it."
   []
   {:structural structural-rules :table base-rules})
+
+(defn head-has-allow?
+  "Whether some allow rule starts with command head `h` — so a refusal can say
+  that THIS form of it is not allowed, rather than that the command is closed.
+  `jolt` refused on `-A:foo` while `jolt -M:test` runs read as \"jolt is not
+  on the allow list\" (karamazov-9nsf)."
+  [h]
+  (boolean (and h (some (fn [[pat eff]]
+                          (and (= :allow eff) (= h (first (str/split (str pat) #"\s+")))))
+                        base-rules))))
 
 (defn decide
   "The decision for a shell command: {:effect :allow|:ask|:deny :head :raw
@@ -684,6 +700,8 @@
                                ;; command whose other parts were never refused.
                                :blocked blocked-segment
                                :blockedhead (some-> blocked-segment command-head)
+                               :blockedform (head-has-allow? (some-> blocked-segment command-head))
+                               :headform (head-has-allow? head)
                                :markers (when complex?
                                           (str/join " or "
                                                     (map #(str "`" % "`")

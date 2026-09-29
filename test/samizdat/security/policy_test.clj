@@ -136,6 +136,17 @@
             allowed all along"
     (is (= :allow (:effect (policy/decide {} "jolt -M:run"))))
     (is (= :allow (:effect (policy/decide {} "jolt -M:run 2>&1")))))
+  (testing "and ANY project alias, not one pattern per alias (karamazov-9nsf):
+            a project's own aliases are the same trust as its test alias"
+    (is (= :allow (:effect (policy/decide {} "jolt -M:camera2d"))))
+    (is (= :allow (:effect (policy/decide {} "jolt -A:bench -e '(run)'"))))
+    (is (= :allow (:effect (policy/decide {} "jolt -M:dev:test"))))
+    (is (not= :allow (:effect (policy/decide {} "sudo jolt -M:camera2d")))
+        "a wrapper still does not ride the allow"))
+  (testing "a refused form of an allowed head says so, not that the tool is closed"
+    (let [r (policy/run-shell {:args {:command "jolt nrepl-server 7000"}})]
+      (is (:needs-approval r))
+      (is (str/includes? (:result r) "This form of `jolt`") (:result r))))
   (testing "a leading VAR=value assignment does not defeat an allow — it sets a
             variable for the very command the rule reads, unlike an exec
             wrapper which stands in front of a different one. Run a3566c73 was

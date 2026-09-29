@@ -8,7 +8,7 @@ this one is fine:
 
     {{blocked}}
 
-`{{blockedhead}}` is not on the allow list. Reissue the command without that
+{% if blockedform %}This form of `{{blockedhead}}` is not on the allow list — other forms of it are.{% else %}`{{blockedhead}}` is not on the allow list.{% endif %} Reissue the command without that
 part, or use a tool that does the same job: `read_file` and `grep` to look
 around, `eval` to run Clojure.
 {% else %}{% if promoted %}
@@ -25,7 +25,7 @@ This is a COMPOUND command — it contains {{markers}} — so it is judged as on
 whole claim rather than by its first word, and `{{head}}` is not allowed on its
 own either. Split it up and check the parts.
 {% else %}
-`{{head}}` is not on the allow list, so it needs a human to grant it — and if
+{% if headform %}This form of `{{head}}` is not on the allow list — other forms of it are — so it needs a human{% else %}`{{head}}` is not on the allow list, so it needs a human{% endif %} to grant it — and if
 this run has no human watching, it will not be granted. Prefer a tool that does
 the same job without the shell: `read_file` and `grep` to look around, `eval`
 to run Clojure, including this project's own tests once you have required the
