@@ -41,6 +41,7 @@
             [samizdat.agent.gates :as gates]
             [samizdat.agent.phases :as phases]
             [samizdat.agent.tools.base :as base]
+            [samizdat.heldout :as heldout]
             [samizdat.lexicon :as lexicon]
             [samizdat.manual :as manual]
             [samizdat.agent.roles :as roles]
@@ -238,11 +239,20 @@
             :else
             (let [parsed (try {:ok (edn/read-string (str body))}
                               (catch Throwable e {:error (ex-message e)}))]
-              (if (:error parsed)
+              (cond
+                (:error parsed)
                 ;; A body that does not read is a rejected edit, not a branch
                 ;; failure: nothing was stored and the complaint says where.
                 (base/rejected branch (msg {:bad-edn true :name name
                                             :complaint (:error parsed)}))
+
+                ;; The held-out battery, before anything is stored: a table
+                ;; under which a recorded case's target stops passing is not
+                ;; saved (karamazov-7mo.4).
+                :else
+                (if-let [refusal (heldout/check-edit (or (:conn ctx) (userspace/conn))
+                                                     {:kind :policy :name name :text (str body)})]
+                  (base/rejected branch refusal)
                 ;; Warm the cache so the seed exists and the version we might
                 ;; roll back to is real, then store and recompile.
                 (do (userspace/body :policy name)
@@ -279,7 +289,7 @@
                             ;; is where it started — a rejected edit.
                             (base/rejected branch
                                            (msg {:rolled-back true :name name
-                                                 :complaint (ex-message e)})))))))))))
+                                                 :complaint (ex-message e)}))))))))))))
 
         "revert"
         (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)

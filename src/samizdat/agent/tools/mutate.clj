@@ -30,6 +30,7 @@
             [samizdat.agent.state :as state]
             [samizdat.agent.tools.base :as base]
             [samizdat.cells :as cells]
+            [samizdat.heldout :as heldout]
             [samizdat.manifests :as manifests]
             [samizdat.mutation :as mutation]
             [samizdat.prompt :as prompt]
@@ -191,6 +192,7 @@
                       ;; just installed (karamazov-blt.2).
                       :compile-fn manifests/compile-definition
                       :soak-input (soak-input)
+                      :heldout-fn #(heldout/check-edit conn %)
                       :conn conn :run-id run-id})]
               (case (:status r)
                 :committed

@@ -59,6 +59,8 @@
   {:acceptance-failed "prompts/acceptance-failed.md"
    :acceptance-judge "prompts/acceptance-judge.md"
    :adopt-tool "prompts/adopt-tool.md"
+   :battery-tool "prompts/battery-tool.md"
+   :heldout-refused "prompts/heldout-refused.md"
    :adoption-offer "prompts/adoption-offer.md"
    :architect "prompts/architect.md"
    :ask-tool "prompts/ask-tool.md"

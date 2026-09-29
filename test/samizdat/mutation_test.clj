@@ -217,6 +217,31 @@
             "and durable in the project's store"))
       (finally (us/unbind!) (db/close c)))))
 
+(deftest a-proposal-the-held-out-battery-refuses-is-not-saved
+  ;; karamazov-7mo.4: validate and soak pass, the battery says a recorded case
+  ;; regresses, and the candidate is refused with the target named — the
+  ;; registry restored and nothing in the project's history.
+  (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
+  (cells/load-cells! (:dirs (opts)))
+  (let [c (db/open! ":memory:")]
+    (try
+      (us/bind! c)
+      (let [body (str "(ns cells.mini (:require [mycelium.cell :as cell]))\n"
+                      "(cell/defcell :mini/start {:doc \"s\" :pure true :requires []}\n"
+                      "  (fn [_ d] (update d :n + 100)))\n")
+            seen (atom nil)
+            r (mut/propose-cell! (assoc (opts) :name "mini" :body body
+                                        :heldout-fn (fn [cand]
+                                                      (reset! seen cand)
+                                                      "battery: c1 — calls done")))]
+        (is (= :rolled-back (:status r)))
+        (is (str/includes? (str (:reason r)) "c1 — calls done"))
+        (is (= {:kind :cell :name "mini" :text body} @seen) "the gate read the candidate's text")
+        (is (nil? (us/body :cell "mini")) "nothing entered the project's history")
+        (is (= 1 (:n ((:handler (cell/get-cell :mini/start)) {} {:n 0})))
+            "the registry is back on the running cell"))
+      (finally (us/unbind!) (db/close c)))))
+
 (deftest a-proposal-whose-requires-is-not-true-is-refused-with-the-fix
   ;; The `cell` tool commits through here, and here never ran the userspace
   ;; validator — so a cell reading ctx keys it does not declare was refused

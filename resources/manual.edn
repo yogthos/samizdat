@@ -85,6 +85,12 @@
     :summary "A checked manifest edit as data: ops (rename-cell, add-cell, remove-cell, set-edge, delete-edge, set-cell-field, set-dispatches) applied to the manifest as written, every reference to a renamed node rewritten (edges, dispatches, :invariants), the whole batch compiled once at the end so a node can be added and wired in one call. `manifest patch` is this over the stored text; `render` writes the result back over the original so comments survive; `cell-refs` and `diff-manifests` are behind `manifest refs` and `manifest diff`."}
    {:name samizdat.workflow/catalog
     :summary "Every workflow available to select or adapt, with its description."}
+   {:name samizdat.heldout/check-edit
+    :summary "The held-out gate, stage 1: replay the project's battery (.samizdat/battery, stored in battery_cases) with a candidate cell, manifest or policy edit in place and without it, each case in a child process on the tree its recorded run started from, and refuse the edit when a target that passed fails. Ties accepted; a case that does not run at baseline is set aside by name. Opt-in by having cases; gates.edn :heldout. Each target is recorded in heldout_checks with its fixture, harness revision, model and scorer."}
+   {:name samizdat.heldout/draft!
+    :summary "Freeze a finished run as a battery case: its replay, the expectations battery/draft-case writes, its git baseline (pinned under refs/samizdat/battery/) as the fixture, its loop and model. Behind `battery add`. Cases are written once and never rewritten."}
+   {:name samizdat.heldout/live-verdict
+    :summary "The held-out gate, stage 2, over arena rows: per task, floor (candidate median fitness >= S* - delta, delta from the baseline's own spread), cost (a gain pays for its tokens by :fitness :cost-rule; inside the band only a cost cut or a structural change is admissible), guards (no acceptance criterion the baseline always met is lost, no suite goes red). Refusals named per task."}
    {:name samizdat.manifests/read-definition
     :summary "A manifest's text as the whole graph that runs, its :extends resolved. manifests/turn.edn is the turn chain loop, worker, reviewer and supervisor extend; a child's :cells/:edges/:dispatches entries win key by key and a nil removes one, the base's :invariants hold and the child's are added, a key in :replaces is the child's alone. read-raw is the file's own part, which is what an edit rewrites."}
    {:name samizdat.manifests/validate-edit!

@@ -1,10 +1,10 @@
 # RFC-014 — Validation and procedure: measuring a change to the loop
 
 **Status:** partially implemented. The replay substrate, the battery's
-expectations, the gate inside the mutation protocol, and the procedural graph's
-mechanism are built and tested (karamazov-ylte). The battery's CASES and the
-graph itself are not; both are data, and where they come from is specified
-below.
+expectations, the held-out gate in production (stage 1 on every cell, manifest
+and policy save; stage 2 over the arena's arms — karamazov-7mo.4 / ylte.4) and
+the procedural graph's mechanism are built and tested. A project's CASES are
+its own data, added with the `battery` tool; the graph is not built.
 
 ## Purpose
 
@@ -182,6 +182,54 @@ at all* on ALFWorld — 54.48 against a 72.58 baseline, at 5.3× the tokens — 
 silently serving the whole graph is the measured-worse option and the caller
 decides.
 
+### The gate in production (karamazov-7mo.4 / ylte.4)
+
+`samizdat.heldout` is what runs the battery. Every `cell save`, `manifest
+save`/`patch` and `policy save` calls `heldout/check-edit` before it stores:
+the battery is replayed with the candidate in place and without it, and an
+edit under which a target that passed fails is refused with the targets named
+(`prompts/heldout-refused.md`). Nothing is saved; what runs is unchanged.
+
+**One child process per case.** A replay must read the candidate as the
+project's userspace from every branch fiber, and a dynamic binding does not
+cross a fiber while a global override would leak the candidate into the live
+run proposing it. So the candidate is materialized: the case's fixture — the
+recorded run's `:git-baseline`, unpacked with `git archive` — gets a copy of
+the project's `.samizdat/` with the candidate file written in, and
+`samizdat.heldout.child` starts the harness there on an in-memory database,
+replays the recording through `beam/run!`, and runs `battery/check`. Side
+calls a cell makes on its own (critic, judges) were never recorded and are
+refused identically on both sides.
+
+**The rule is non-compensatory, per target.** No target that passed at
+baseline may fail on the candidate, and both sides must cover the same
+targets. Ties are accepted. A case that does not run at baseline is set aside
+by name; one that ran and no longer runs is a regression.
+
+**One replay per edit, not two.** Measurements are cached by the project and
+the CONTENT of its userspace, so the candidate's measurement is the baseline
+of the state a commit of it produces.
+
+**The battery may grow and may not be weakened — now enforced.**
+`battery_cases` (v37) is the authority: a case is written once under its id.
+A case file edited under `.samizdat/battery/` runs as stored and the edit is
+named; a deleted one still runs. The `battery` tool adds a case from a
+finished run (`heldout/draft!`, which pins its baseline under
+`refs/samizdat/battery/`) and has no remove.
+
+**Recorded beside every number.** `heldout_checks` holds one row per target
+per edit: before, after, the verdict, and the fixture sha, harness revision,
+model and scorer it was measured on.
+
+**What stage 1 does not judge.** Prompt edits: the replies are fixed. That is
+stage 2 — `heldout/live-verdict` over the arena's baseline and candidate
+arms, per task, in RRSI's order: floor (median fitness no lower than the best
+kept score less the baseline's own noise band), cost (a gain pays for its
+tokens by `:fitness :cost-rule`; inside the band only a cost cut or a declared
+structural change is admissible), guards (no acceptance criterion the baseline
+always met is lost, no suite goes red). The arena prints it with
+`ARENA_ACCEPT=<baseline>,<candidate>`.
+
 ## API
 
 | fn | contract |
@@ -243,15 +291,19 @@ is a worse failure than the one the gate prevents.
 
 ## What this does not do
 
-**The battery has no cases yet**, and until it does the gate is inert wherever
-nobody wires `battery-fn`. Cases come from two subjects, and both are required:
-recorded `endless-flight` runs and recorded runs of samizdat working on its own
-repo. A battery of one subject would pass an edit that breaks the other, and
-self-modification is the project's reason for existing.
+**A project with no cases is not gated**: the tools consult the battery on
+every save, and with no cases it passes nothing and refuses nothing.
 
-**"May add, may not weaken or delete" is stated, not enforced.** The rule that
-a running agent may add a case from an observed failure and may never weaken
-one is policy with nothing behind it yet.
+**A battery is per project.** Userspace is per project, so the cases that
+gate an edit are that project's own runs: an edit tested on endless-flight's
+cases is tested on endless-flight, and samizdat working on its own repo keeps
+its own battery in its own `.samizdat/`. Promoting a project's edit into the
+shipped templates is where both subjects have to be replayed, and that is not
+automated.
+
+**"May add, may not weaken or delete" is enforced by the table, not the
+files** (`battery_cases`); a person with the database can still delete a row,
+and that is deliberate.
 
 **No graph ships.** Building one by hand is the 58.93 row. It should be grown
 by a refiner from `Start → End` against the gate — scratch-with-evolution beat

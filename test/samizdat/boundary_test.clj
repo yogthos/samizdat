@@ -232,13 +232,14 @@
    "ask_human"   {:reach :harness-only}
    "experiment"  {:reach :harness-only}
    "verdict"     {:reach :harness-only}
+   "battery"     {:reach :spawns-process :also "heldout/draft! git update-ref under secrets/scrubbed-process-env"}
    "fetch_turn"  {:reach :harness-only}
    "fetch_artifact" {:reach :harness-only}
    "cells"       {:reach :harness-only}
-   "cell"        {:reach :harness-only}
+   "cell"        {:reach :spawns-process :also "heldout/check-edit: git archive + a jolt child, both under secrets/scrubbed-process-env"}
    "reload_cells" {:reach :harness-only}
-   "manifest"    {:reach :harness-only}
-   "policy"      {:reach :harness-only}
+   "manifest"    {:reach :spawns-process :also "heldout/check-edit: git archive + a jolt child, both under secrets/scrubbed-process-env"}
+   "policy"      {:reach :spawns-process :also "heldout/check-edit: git archive + a jolt child, both under secrets/scrubbed-process-env"}
    ;; Writes only inside the project's .samizdat/, and only a text the
    ;; harness shipped or already stored — never one the model composed.
    "adopt"       {:reach :harness-only}

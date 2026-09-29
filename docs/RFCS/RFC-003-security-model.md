@@ -108,6 +108,12 @@ flowchart LR
     webfetch --> egress
     egress --> redact
 
+    heldout[held-out gate: battery tool, and cell/manifest/policy saves —
+            git archive a recorded fixture, replay it in a jolt child]
+    toolcall --> heldout
+    scrub --> heldout
+    heldout --> redact
+
     plan[plan tool: records declared paths on the branch]
     toolcall --> plan
     plan --> redact

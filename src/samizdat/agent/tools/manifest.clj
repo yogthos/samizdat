@@ -41,6 +41,7 @@
             [clojure.string :as str]
             [mycelium.patch :as patch]
             [samizdat.agent.tools.base :as base]
+            [samizdat.heldout :as heldout]
             [samizdat.manifests :as manifests]
             [samizdat.prompt :as prompt]
             [samizdat.store.userspace :as us]
@@ -365,8 +366,13 @@
             ;; loop this tool exists to invite — is not billed to the branch's
             ;; failure counter. The outer catch is left for what happens AFTER
             ;; this point, notably the store write.
-            (if-let [complaint (try (validate! name edn-text) nil
-                                    (catch Throwable e (refused e)))]
+            (if-let [complaint (or (try (validate! name edn-text) nil
+                                        (catch Throwable e (refused e)))
+                                   ;; The held-out battery, last: the dearest
+                                   ;; check, and only for an edit that compiles
+                                   ;; (karamazov-7mo.4).
+                                   (heldout/check-edit conn {:kind :manifest :name name
+                                                             :text edn-text}))]
               ;; The complaint plus `usage`, which already says a save
               ;; validates before it stores — no new sentence in src/.
               (base/rejected branch
@@ -413,7 +419,10 @@
                                                    :validator #(manifests/compile-loop %)})
                                          text (file-text new)]
                                      (validate! name text)
-                                     {:new new :text text})
+                                     (if-let [r (heldout/check-edit conn {:kind :manifest :name name
+                                                                          :text text})]
+                                       {:complaint r}
+                                       {:new new :text text}))
                                    (catch Throwable e {:complaint (refused e)}))]
                   (if-let [complaint (:complaint outcome)]
                     (base/rejected branch

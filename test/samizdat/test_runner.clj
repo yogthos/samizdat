@@ -188,6 +188,7 @@
             [samizdat.replroots-test]
             [samizdat.oversight-test]
             [samizdat.battery-test]
+            [samizdat.heldout-test]
             [samizdat.procedure-test]
             [samizdat.replay-test]
             [samizdat.mechanics-test]
@@ -261,6 +262,7 @@
     samizdat.replroots-test
     samizdat.oversight-test
     samizdat.battery-test
+    samizdat.heldout-test
     samizdat.procedure-test
     samizdat.replay-test
     samizdat.mechanics-test
