@@ -472,3 +472,14 @@
     (testing "a run with no budget pays for no query and runs on"
       (let [d (arbiter (dissoc ctx :token-budget) {:settled {} :branch b :turn 3})]
         (is (not (:over-budget? d)))))))
+
+(deftest an-abandoned-branch-always-says-why
+  ;; karamazov-n6ql: the provider-error arm ended a branch with no
+  ;; :inactive-reason, and an oversight pass recorded abandoned with ended null.
+  (cells/load-cells!)
+  (let [route (:handler (cell/get-cell! :loop/route))
+        b (assoc (samizdat.agent.state/new-branch {:id "S" :problem "p"})
+                 :consecutive-provider-errors 99)
+        d (route {:max-turns 50} {:branch b :turn 3})]
+    (is (= :abandoned (:verdict d)))
+    (is (re-find #"provider failed 99" (str (get-in d [:branch :inactive-reason]))))))

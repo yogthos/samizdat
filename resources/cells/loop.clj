@@ -13,7 +13,8 @@
 ;; Naming is load-bearing: :llm/*, :tool/*, :journal/*, :gate/* are what
 ;; glob-scoped interceptors match on.
 (ns cells.loop
-  (:require [mycelium.cell :as cell]
+  (:require [clojure.string :as str]
+            [mycelium.cell :as cell]
             [samizdat.agent.compaction :as cmp]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.instructions :as instr]
@@ -286,6 +287,17 @@
                     (>= turn max-turns) :exhausted
                     :else :continue)]
       (cond-> (assoc data :verdict verdict)
+        ;; An ending with NO reason is how an oversight pass came to record
+        ;; `abandoned` with `ended` and `notes` both null (karamazov-n6ql): the
+        ;; provider-error arm and an inactive branch with no answer set none.
+        ;; Named here, where the verdict is decided, when nothing else did.
+        (and (= verdict :abandoned) (nil? (:inactive-reason branch)))
+        (assoc-in [:branch :inactive-reason]
+                  (str/trim (prompt/render "abandoned-reason"
+                                           (if (state/active? branch)
+                                             {:provider-errors (:consecutive-provider-errors branch)}
+                                             {:status (some-> (:status branch) name)}))))
+
         (= verdict :continue)
         (-> (update :turn inc)
             (dissoc :before :call :parsed :signals :said :result :tool :settled :over-budget?)

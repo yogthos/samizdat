@@ -57,6 +57,7 @@
 
  :prompts
   {:acceptance-failed "prompts/acceptance-failed.md"
+   :abandoned-reason "prompts/abandoned-reason.md"
    :acceptance-judge "prompts/acceptance-judge.md"
    :adopt-tool "prompts/adopt-tool.md"
    :battery-tool "prompts/battery-tool.md"
