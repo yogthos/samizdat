@@ -693,10 +693,12 @@
           (reset! started pending)
           (reduce (fn [acc p] (conj acc (settle p))) [] pending)))
       (catch Throwable e
-        ;; The round itself was cancelled (an abort) with turns in flight:
-        ;; every turn goes down with it before the signal travels on.
-        (when (cancel/control-signal? e)
-          (doseq [[_ t] @started :when (map? t)] ((:cancel t))))
+        ;; The round failed with turns in flight — an abort, or anything else
+        ;; that broke the wait: every turn it started goes down with it
+        ;; before the throw travels on. Only a cancel signal used to, so any
+        ;; other failure left spawned turns running past the driver that
+        ;; owned them (karamazov-odyx).
+        (doseq [[_ t] @started :when (map? t)] ((:cancel t)))
         (throw e)))))
 
 (defn dispose-branch-engines!
