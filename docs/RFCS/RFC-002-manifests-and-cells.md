@@ -56,6 +56,8 @@ glob-scoped interceptors match on.
                                            ; [branch-kw pattern guard], or a (fn [data] pred) form
  :constraints  [{:type :must-follow :if node :then node}]
  :subworkflows {cell-id manifest-name}     ; optional: a nested manifest as one node
+                                           ;   (routing only: the child's :prompt is not
+                                           ;   read, and compile warns if it has one)
  :prompt       "name"                      ; optional: prompt appended to the base
  :turn-sliceable? false                    ; optional, default true — see below
  :extends      "manifest-name"             ; optional: carry only what differs from it
