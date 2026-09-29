@@ -708,6 +708,22 @@
         the tracked set narrows to the intersection so divergent touches
         break the streak on their own; a no-file call resets it."}
 
+ :refused-repeat-threshold
+ {:value 2 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-q1tt"]
+  :doc "How many refusals of one command head (by the shell policy: denied,
+        or needing an approval nobody gives) before the refused-again gate
+        says so. Two: the first refusal already explained itself; the second
+        is the branch trying the same thing another way. Run bcd61b39 retried
+        `rm`, `nohup jolt … &` and `true` ~15 times over ~50 turns."}
+
+ :max-refused-nudges
+ {:value 3 :kind :re-fire-guard :capability-tunable? true
+  :provenance ["karamazov-q1tt"]
+  :doc "How often the refused-again gate may fire on one branch. Each firing
+        names the head it is about, so a branch that moves on from `rm` to
+        `nohup` hears about the second too; past this it is the supervisor's."}
+
  :max-file-thrash-nudges
  {:value 1 :kind :re-fire-guard :capability-tunable? true
   :doc "How often the file-thrash gate may fire on one branch. One-shot per
@@ -3942,6 +3958,30 @@
                              " — do not retry these:\n"
                              (str/join "\n" (map (fn [x] (str "- " x)) earlier)))))
    :prediction "the branch retracts, decomposes, or changes technique"
+   :window 3}
+
+  {:gate :refused-again
+   :provenance ["karamazov-q1tt"]
+   :priority 9.4
+   :budget :max-refused-nudges
+   :doc "A command head the shell policy refused was just refused again. The
+         refusal text explains itself once; the second attempt — usually the
+         same head in a different command — means the branch has not taken
+         it in, and in an unattended run nobody will approve it. Names the
+         head and the count and asks for a different route. Above
+         file-thrash: a branch spending turns on refusals is not working at
+         all."
+   ;; the quantity the :when compares, recorded at every check (na2k.7)
+   :measure (get-in branch [:refused-heads (:last-refused branch)] 0)
+   :when (when-let [h (:last-refused branch)]
+           (>= (get-in branch [:refused-heads h] 0)
+               (threshold :refused-repeat-threshold)))
+   :message-form (sp/render-str (prompt "refused-again")
+                                {:head (:last-refused branch)
+                                 :count (get-in branch [:refused-heads (:last-refused branch)])
+                                 :total (:refusals branch)
+                                 :goal (state/stated-goal branch)})
+   :prediction "the branch stops issuing the refused head"
    :window 3}
 
   {:gate :file-thrash

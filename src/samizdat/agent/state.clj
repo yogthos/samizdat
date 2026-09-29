@@ -561,10 +561,23 @@
   emitting nothing but garbage would hold a beam slot to the turn budget. Any
   well-formed call clears the tally — the branch has demonstrated it can work
   the protocol, whatever the call then did."
-  [branch {:keys [category progress? claim tool policy-refusal? weight]}]
+  [branch {:keys [category progress? claim tool policy-refusal? weight] :as outcome}]
   (let [real-progress? (and progress?
-                            (or (nil? claim) (advances-thesis? branch claim)))]
+                            (or (nil? claim) (advances-thesis? branch claim)))
+        ;; What a policy refused, by command head — whatever the category. An
+        ;; approval refusal is :neutral (the call waits on a human), so the
+        ;; :mechanics counters below never saw one, and run bcd61b39 retried
+        ;; `rm`, `nohup jolt … &` and `true` ~15 times over ~50 turns with no
+        ;; counter moving (karamazov-q1tt). Counted for the run, never reset:
+        ;; a head refused twice is refused whatever came between.
+        refused (when policy-refusal? (get-in outcome [:policy :refused]))]
     (cond-> branch
+      policy-refusal? (update :refusals (fnil inc 0))
+      refused (update-in [:refused-heads refused] (fnil inc 0))
+      ;; The head THIS turn was refused on, so the gate fires on the repeat
+      ;; itself and not on every turn after it.
+      refused (assoc :last-refused refused)
+      (not refused) (dissoc :last-refused)
       ;; :weight is the failure's cost, default 1. A timeout carries
       ;; gates.edn :timeout-failure-weight (2): it burned a whole time budget,
       ;; and counting it like a millisecond failure made a branch stuck

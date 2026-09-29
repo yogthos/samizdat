@@ -307,6 +307,36 @@
                                      :branch-before hot
                                      :branch-after hot}))))))))
 
+;; --- a refused command tried again ------------------------------------------
+
+(deftest a-refused-command-that-is-tried-again-is-named-and-steered
+  ;; Run bcd61b39 (karamazov-q1tt): ~15 shell calls came back "needs approval"
+  ;; — `rm -f`, `nohup jolt ... &`, even `true` — over ~50 turns, the same
+  ;; heads in varied commands, with nobody there to approve. An approval
+  ;; refusal is :neutral, so no counter moved and no gate fired.
+  (let [g (gates/by-name :refused-again)
+        refuse (fn [b head]
+                 (state/record-outcome b {:category :neutral :progress? false
+                                          :policy-refusal? true
+                                          :policy {:effect :ask :refused head}}))
+        b0 (state/new-branch {:id "B1" :problem "p"})
+        once (refuse b0 "rm")
+        twice (refuse once "rm")
+        other (refuse once "jolt")
+        then-ok (state/record-outcome twice {:category :success :progress? true})]
+    (is (some? g) "the :refused-again gate entry exists in gates.edn")
+    (is (= 1 (get-in once [:refused-heads "rm"]))
+        "an approval refusal counts, though it is :neutral")
+    (is (= 2 (:refusals twice)))
+    (is (not ((:when g) {:branch once})) "one refusal is information, not a loop")
+    (is ((:when g) {:branch twice}) "the same head refused again is")
+    (is (not ((:when g) {:branch other})) "a different head is not a repeat")
+    (is (not ((:when g) {:branch then-ok})) "it fires on the repeat, not on every later turn")
+    (is (= 2 (get-in then-ok [:refused-heads "rm"])) "and the count lasts the run")
+    (let [msg ((:message g) {:branch twice})]
+      (is (str/includes? msg "`rm`") "the message names what was refused")
+      (is (str/includes? msg "2") "and how often"))))
+
 ;; --- retry carries the diagnosis --------------------------------------------
 
 (deftest a-different-failure-of-the-same-call-inherits-the-diagnosis

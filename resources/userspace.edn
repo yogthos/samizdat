@@ -61,6 +61,7 @@
    :adopt-tool "prompts/adopt-tool.md"
    :battery-tool "prompts/battery-tool.md"
    :heldout-refused "prompts/heldout-refused.md"
+   :refused-again "prompts/refused-again.md"
    :adoption-offer "prompts/adoption-offer.md"
    :architect "prompts/architect.md"
    :ask-tool "prompts/ask-tool.md"
