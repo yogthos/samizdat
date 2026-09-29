@@ -470,13 +470,28 @@
   (let [resume (do (cells/load-cells!) @(ns-resolve 'cells.oversight 'resume-branch))
         finished {:id "S0" :messages [{:role "user" :content "hello"}
                                       {:role "assistant" :content "a conclusion"}]
-                  :final-answer "done for now" :verdict :done :advisory? true}
-        next-pass (resume finished)]
-    (is (= 2 (count (:messages next-pass)))
+                  :final-answer "done for now" :verdict :done :advisory? true
+                  :status :abandoned :inactive-reason "no call three times"
+                  :consecutive-mechanics-failures 3 :consecutive-provider-errors 2}
+        next-pass (resume finished "the brief for this pass")]
+    (is (= "hello" (:content (first (:messages next-pass))))
         "the conversation so far is kept — that is the whole point of a stream")
     (is (nil? (:final-answer next-pass)) "not already answered")
     (is (nil? (:verdict next-pass)) "not already finished")
-    (is (:advisory? next-pass) "still an advisory branch, not shippable work")))
+    (is (:advisory? next-pass) "still an advisory branch, not shippable work")
+    ;; Run bcd61b39 (karamazov-3keg): the resumed branch was never handed the
+    ;; new pass's brief, and with :status dissoc'd it was not ACTIVE, so every
+    ;; pass after the first ran one turn and ended :abandoned.
+    (is (= {:role "user" :content "the brief for this pass"} (last (:messages next-pass)))
+        "this pass's brief is what the supervisor reads next")
+    (is (= 3 (count (:messages next-pass))))
+    (is (samizdat.agent.state/active? next-pass) "a resumed pass can take more than one turn")
+    (is (nil? (:inactive-reason next-pass)))
+    (is (nil? (:consecutive-mechanics-failures next-pass)) "not charged for the last pass's ending")
+    (is (nil? (:consecutive-provider-errors next-pass)))
+    (testing "and route lets it go on"
+      (let [route (:handler (cell/get-cell! :loop/route))]
+        (is (= :continue (:verdict (route {:max-turns 10} {:branch next-pass :turn 2}))))))))
 
 (defn- event-count [conn run-id kind]
   (:n (first (db/fetch conn ["SELECT count(*) AS n FROM events

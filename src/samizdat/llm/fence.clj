@@ -602,6 +602,31 @@
         {:name (:name value)
          :args (let [a (:args value)] (if (map? a) a {}))}))))
 
+(defn- unsmuggle
+  "`args` with the rest of the call recovered, when the model put every
+  argument after the first INSIDE the first one's string, escaped: GLM-5.3
+  sent {\"action\": \"decline\\\",\\\"kind\\\":\\\"policy\\\",…\"} in run bcd61b39
+  and the tool read the whole tail as the action (karamazov-q9v1). Decoded,
+  that string is the object's own continuation, so wrapping it back as
+  {\"<key>\":\"<value>\"} reads as the object that was meant. Taken only
+  when that reads as an object with MORE keys than one; anything else — a
+  string that merely contains quotes — is returned untouched. Returns
+  [args repaired?]."
+  [args]
+  (if-let [[k v] (and (map? args) (= 1 (count args)) (first args))]
+    (if (and (string? v) (str/includes? v "\":"))
+      ;; The smuggled tail usually carries the object's own closing brace
+      ;; (…edit.\"}), and sometimes stops at the last value; try both.
+      (let [head (str "{\"" (name k) "\":\"" v)
+            r (some (fn [t]
+                      (let [r (read-json t)]
+                        (when (and (:ok r) (map? (:value r)) (< 1 (count (:value r))))
+                          r)))
+                    [head (str head "\"}")])]
+        (if r [(:value r) true] [args false]))
+      [args false])
+    [args false]))
+
 (defn reattach
   "The complete assistant turn, given what the request was prefilled with.
 
@@ -792,9 +817,9 @@
               (parse-error "tool-call `name` must not be empty" base)
 
               :else
-              (merge base
-                     {:name (:name parsed)
-                      :args (let [a (:args parsed)] (if (map? a) a {}))})))
+              (let [[args smuggled?] (unsmuggle (let [a (:args parsed)] (if (map? a) a {})))]
+                (merge (cond-> base smuggled? (assoc :auto-repaired? true))
+                       {:name (:name parsed) :args args}))))
 
           ;; One repair pass. If the repair changed nothing there is no point
           ;; re-parsing, and the error message should name the causes the
@@ -839,9 +864,8 @@
                   (if (and (map? parsed)
                            (string? (:name parsed))
                            (not (str/blank? (:name parsed))))
-                    (merge base
-                           {:name (:name parsed)
-                            :args (let [a (:args parsed)] (if (map? a) a {}))})
+                    (let [[args _] (unsmuggle (let [a (:args parsed)] (if (map? a) a {})))]
+                      (merge base {:name (:name parsed) :args args}))
                     (parse-error "tool-call body must be a JSON object with a non-empty `name` string"
                                  base)))))))))))))
 
