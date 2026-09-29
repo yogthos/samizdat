@@ -25,6 +25,13 @@
    "clpfd" "prolog" "smt" "lean" "works" "available" "loaded" "basic"
    "supports" "simple" "test" "check" "verify" "verified" "example"}
 
+ :surviving-findings
+ ;; The heading a verify pass puts over the findings it kept (karamazov-kdoj).
+ ;; When a reply has one, only what is under it is read as findings: the
+ ;; reasoning above it quotes candidates' severity tags and used to be stored
+ ;; as the findings and handed to the retry.
+ #{"surviving findings" "findings that survive" "remaining findings"}
+
  :request-framing
  ;; Words that frame a REQUEST rather than name its subject — what to do and
  ;; where to say it. The problem-relevance rung drops them from the PROBLEM's

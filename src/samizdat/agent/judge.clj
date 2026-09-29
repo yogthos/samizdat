@@ -39,6 +39,7 @@
   judge is told to say has to touch both."
   (:require [clojure.string :as str]
             [samizdat.agent.gates :as gates]
+            [samizdat.lexicon :as lexicon]
             [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
             [samizdat.util :as util]))
@@ -444,13 +445,30 @@
         f))))
 
 (defn- severity-line?
-  "Whether `line` opens a finding: it carries one of gates.edn
-  :review-severities as a bracketed tag."
+  "Whether `line` opens a finding: it STARTS with one of gates.edn
+  :review-severities as a bracketed tag, after an optional bullet, number or
+  emphasis. Anywhere in the line was too loose: a reasoning paragraph quoting
+  a candidate's `[low]` became a finding and carried the prose after it
+  (karamazov-kdoj)."
   [line]
   (let [sevs (gates/threshold :review-severities)]
     (boolean (and (seq sevs)
-                  (re-find (re-pattern (str "(?i)\\[(" (str/join "|" sevs) ")\\]"))
+                  (re-find (re-pattern (str "(?i)^\\s*(?:[-*+]|\\d+[.)])?\\s*\\**\\[("
+                                            (str/join "|" sevs) ")\\]"))
                            (str line))))))
+
+(defn- surviving-section
+  "The part of a verify reply under its surviving-findings heading (wordlists
+  :surviving-findings), or the reply whole when it has none."
+  [reply]
+  (let [heads (lexicon/wordlist :surviving-findings)
+        lines (str/split-lines (str reply))
+        head? (fn [l] (let [t (str/lower-case (str/trim (str/replace (str l) #"[#*:]" "")))]
+                        (contains? (set heads) t)))
+        after (rest (drop-while (complement head?) lines))]
+    (if (and (seq heads) (some head? lines))
+      (str/trim (str/join "\n" after))
+      reply)))
 
 (defn finding-segments
   "A findings text split into one segment per finding.
@@ -569,8 +587,10 @@
       (clean-pass? reply) nil
       (str/blank? (str reply)) (dedupe-findings candidates)
       :else
-      (let [segs (finding-segments reply)
-            dropped (count (filterv false-positive? segs))
+      (let [;; Only what the judge listed as surviving, when it listed it:
+            ;; the deliberation above that heading is not findings.
+            segs (finding-segments (surviving-section reply))
+            dropped (count (filterv false-positive? (finding-segments reply)))
             ;; A SURVIVOR HAS TO BE A FINDING. Filtering only on
             ;; false-positive? let any prose the judge emitted through as the
             ;; findings text — "Hmm, hard to say." would have REPLACED two real
@@ -579,7 +599,9 @@
             ;; narration, and narration never fabricates a finding.
             kept (->> segs
                       (remove false-positive?)
-                      (filter #(severity-line? (first (str/split-lines %)))))
+                      ;; Its first NON-BLANK line: a segment that opens on a
+                      ;; blank line is still the finding under it.
+                      (filter #(severity-line? (first (remove str/blank? (str/split-lines %))))))
             survivors (not-empty (str/trim (str/join kept)))]
         (cond
           survivors (dedupe-findings survivors)
