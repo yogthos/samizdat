@@ -927,3 +927,13 @@
       (is (some? e))
       (is (re-find #":answerr" (str (ex-message e))))
       (is (re-find #":answerer" (str (ex-message e))) "and lists the roles there are"))))
+
+(deftest a-composed-child-with-a-prompt-is-warned-about
+  ;; karamazov-r6x1: composing a manifest that declares :prompt ran it under
+  ;; the parent's prompt with nothing saying the child's was dropped.
+  (let [parent (assoc (wf/read-definition (slurp (io/resource "manifests/orchestrator.edn")))
+                      :subworkflows {:loop/worker "worker" :test/reviewing "review"})
+        compiled (try (manifests/compile-loop parent) (catch Throwable _ nil))
+        warnings (get-in compiled [:compiled-fsm :mycelium/compile-warnings])]
+    (is (some #(and (= :composed-prompt-ignored (:type %)) (= "review" (:manifest %))) warnings)
+        (pr-str warnings))))

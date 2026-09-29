@@ -358,6 +358,16 @@
         Raise it on a slow filesystem or a very large repo; 0 disables the
         cache and reads on every request."}
 
+ :image-start
+ {:value {:attempts 2 :image-log-lines 20}
+  :provenance ["karamazov-69p0" "karamazov-tetz"]
+  :kind :policy :capability-tunable? false
+  :doc "How a project image is started. :attempts — tries, each on a fresh
+        port, before the eval fails: the free-port gap is a real race and a
+        load spike is not a reason to fail an eval. :image-log-lines — how
+        much of the child's own output a failed start logs, so a failure
+        says why rather than only where its profile is."}
+
  :image-connect-ms
  {:value 20000 :kind :threshold :capability-tunable? true
   :provenance ["karamazov-zrq"]

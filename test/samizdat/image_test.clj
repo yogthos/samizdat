@@ -196,3 +196,18 @@
       (is (= "42" (:value (route/eval-for ctx "(+ 40 2)" nil 25000)))
           "the image never recovered from a timed-out eval")
       (finally (route/release! root)))))
+
+(deftest a-child-that-dies-fails-fast-and-is-tried-again
+  ;; karamazov-69p0 / tetz: a start that failed waited out the whole connect
+  ;; deadline and logged only the profile path. A child that has exited will
+  ;; not come up, so the wait ends there, and the start is tried once more on
+  ;; a fresh port before the eval fails.
+  (let [spawned (atom 0)]
+    (with-redefs [image/spawn-argv (fn [_ _ _] (swap! spawned inc) ["sh" "-c" "echo boom; exit 7"])]
+      (let [t0 (System/currentTimeMillis)
+            img (image/start! {:root (System/getProperty "java.io.tmpdir") :backend :none
+                               :sandbox-spec {}})]
+        (is (nil? img) "no image")
+        (is (= 2 @spawned) "tried again on a fresh port")
+        (is (< (- (System/currentTimeMillis) t0) 10000)
+            "and did not wait out the connect deadline for a child that had died")))))

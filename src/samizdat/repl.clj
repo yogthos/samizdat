@@ -134,7 +134,10 @@
           missing (remove (set current) added)]
       (when (seq missing)
         (host/set-source-roots! (into current missing))
-        (log/info "eval can now reach" (str/join ", " missing)))
+        ;; The HARNESS image's search path: the supervisor evaluates here.
+        ;; Every other role evaluates in the project image, which route adds
+        ;; the same roots to when it starts one (karamazov-1b37).
+        (log/info "the harness image's eval can now reach" (str/join ", " missing)))
       (vec missing))))
 
 (def ^:private session-counter (atom 0))

@@ -37,6 +37,7 @@
             [samizdat.api.stream :as stream]
             [samizdat.approval :as approval]
             [samizdat.config :as config]
+            [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm-client]
             [samizdat.store.db :as db]
             [samizdat.system :as system]
@@ -96,12 +97,35 @@
 
 ;; --- handlers ---------------------------------------------------------------
 
+(defonce ^:private started-at (str (java.time.Instant/now)))
+
+(def harness-identity
+  "Which harness THIS process is: the checkout's commit and whether its tree
+  had uncommitted changes, read once, on the first /health — so a checkout
+  that moves on afterwards shows as a revision the process is not running —
+  and when the process started. A stale
+  `serve` answered /health like a current one, so a client could not tell it
+  was talking to old code until a run failed (karamazov-uk77). Nil fields
+  where there is no checkout to read, as from a built binary."
+  (let [identity* (delay
+                   (let [dir (System/getProperty "user.dir")
+                         git (fn [& args]
+                               (let [r (apply proc/run {:timeout-ms 5000} "git" "-C" dir args)]
+                                 (when (and (not (:timeout r)) (zero? (long (or (:exit r) 1))))
+                                   (str/trim (str (:out r))))))
+                         rev (not-empty (git "rev-parse" "HEAD"))]
+                     {:revision rev
+                      :dirty (when rev (boolean (seq (git "status" "--porcelain" "--untracked-files=no"))))}))]
+    (fn [] (assoc @identity* :started_at started-at))))
+
 (defn- health [_req]
   (let [cfg (system/config)]
     (json-response
      {:status "ok"
       :schema_version (db/schema-version (system/conn))
       :active_runs (count @control/active)
+      ;; Which code is answering (karamazov-uk77).
+      :harness (harness-identity)
       ;; DEFAULTS, said plainly. :run/share-artifacts? in particular is not
       ;; what a given run is doing — beam/run! forces it on for any seeded run
       ;; — and reporting it flat once said sharing was off during a run that

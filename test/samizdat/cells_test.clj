@@ -25,6 +25,10 @@
             [jolt.fs :as fs]
             [mycelium.cell :as cell]
             [samizdat.cells :as cells]
+            [samizdat.agent.state]
+            [samizdat.store.db]
+            [samizdat.store.journal]
+            [samizdat.store.runs]
             [samizdat.store.db :as db]
             [samizdat.userspace :as userspace]))
 
@@ -439,3 +443,43 @@
                "(ns cells.gen.ok (:require [mycelium.cell :as cell]))
                 (cell/defcell :gen/ok {:doc \"d\" :requires [:run-id]}
                   (fn [{:keys [run-id]} data] (assoc data :r run-id)))")))))
+
+(deftest a-run-over-its-token-budget-ends-inside-a-nested-loop
+  ;; karamazov-lq57: the budget was read only at the beam's round boundary, so
+  ;; a feature, team or decompose run — whose whole job is one "turn" — was
+  ;; unbounded. The turn cells every loop runs now read it: the arbiter sums
+  ;; what the run has billed, and route ends the branch :exhausted once the
+  ;; budget is reached.
+  (cells/load-cells!)
+  (let [c (samizdat.store.db/open! ":memory:")
+        rid (samizdat.store.runs/start-run! c {:problem "p"})
+        arbiter (:handler (cell/get-cell! :gate/arbiter))
+        route (:handler (cell/get-cell! :loop/route))
+        b (samizdat.agent.state/new-branch {:id "W1" :problem "p"})
+        ctx {:conn c :run-id rid :token-budget 1000 :max-turns 50}
+        spend! (fn [n] (samizdat.store.journal/record-turn!
+                        c rid {:branch-id "W1" :turn 1 :tool-name "shell" :category :neutral
+                               :result "" :usage {:prompt-tokens n :completion-tokens 0
+                                                  :total-tokens n}}))]
+    (spend! 400)
+    (let [d (arbiter ctx {:settled {} :branch b :turn 1})]
+      (is (not (:over-budget? d)) "under the budget")
+      (is (= :continue (:verdict (route ctx d)))))
+    (spend! 700)
+    (let [d (arbiter ctx {:settled {} :branch b :turn 2})]
+      (is (:over-budget? d) "1100 billed against 1000")
+      (is (= :exhausted (:verdict (route ctx d))) "the branch ends, whichever loop it is in"))
+    (testing "a run with no budget pays for no query and runs on"
+      (let [d (arbiter (dissoc ctx :token-budget) {:settled {} :branch b :turn 3})]
+        (is (not (:over-budget? d)))))))
+
+(deftest an-abandoned-branch-always-says-why
+  ;; karamazov-n6ql: the provider-error arm ended a branch with no
+  ;; :inactive-reason, and an oversight pass recorded abandoned with ended null.
+  (cells/load-cells!)
+  (let [route (:handler (cell/get-cell! :loop/route))
+        b (assoc (samizdat.agent.state/new-branch {:id "S" :problem "p"})
+                 :consecutive-provider-errors 99)
+        d (route {:max-turns 50} {:branch b :turn 3})]
+    (is (= :abandoned (:verdict d)))
+    (is (re-find #"provider failed 99" (str (get-in d [:branch :inactive-reason]))))))

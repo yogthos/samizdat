@@ -117,6 +117,17 @@
   (when-not (contains? kinds kind)
     (throw (ex-info (str "Unknown intervention kind: " kind)
                     {:kind kind :known (sort (keys kinds))})))
+  ;; A directive to a branch that has ENDED would sit pending forever: nothing
+  ;; drains a closed branch's boundary (karamazov-amem). Refused, saying how it
+  ;; ended, so the issuer can target a live one. `exhausted` is the one ending
+  ;; that is not final — `extend` reopens it — so it still takes directives.
+  (when-let [row (when branch-id
+                   (db/fetch-one conn ["SELECT status, inactive_reason FROM branches
+                                        WHERE run_id = ? AND id = ?" run-id branch-id]))]
+    (when-not (#{"active" "exhausted"} (str (:status row)))
+      (throw (ex-info (str "branch " branch-id " has already ended (" (:status row)
+                           (when-let [r (:inactive_reason row)] (str ": " r)) ")")
+                      {:branch-id branch-id :status (:status row)}))))
   (let [id (db/with-writer
              (db/execute! conn
                             ["INSERT INTO interventions (run_id, branch_id, kind, payload,

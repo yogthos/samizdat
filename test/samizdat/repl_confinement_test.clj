@@ -195,3 +195,18 @@
               "the refusal did not name the tool to reach for instead"))
       (is (:ok r)
           "WITHOUT a sandbox the shell is reachable from the REPL — zrq.8"))))
+
+(deftest the-project-image-can-require-what-the-project-declares
+  ;; karamazov-1b37: the harness put the project's declared roots (:paths and
+  ;; every alias's :extra-paths) on the HARNESS image and logged "eval can now
+  ;; reach …/test", but every role but the supervisor evaluates in the project
+  ;; image, which starts with no alias — so a namespace the branch just wrote
+  ;; under test/ could not be required.
+  (let [root (str (fs/create-temp-dir))]
+    (spit (str root "/deps.edn") (pr-str {:paths ["src"] :aliases {:test {:extra-paths ["test"]}}}))
+    (.mkdirs (java.io.File. (str root "/test/probe")))
+    (spit (str root "/test/probe/just_written_test.clj")
+          "(ns probe.just-written-test)\n(defn answer [] 42)\n")
+    (let [r (ev root "(require 'probe.just-written-test) (probe.just-written-test/answer)")]
+      (is (str/includes? (str (:result r) (:value r) (:output r)) "42") (pr-str r)))
+    (route/release! root)))

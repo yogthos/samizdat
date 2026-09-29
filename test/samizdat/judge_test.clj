@@ -667,3 +667,21 @@ Some trailing prose that is not a bullet.
         (is (<= (count cut) (+ 80 60)))
         (is (str/includes? cut "sources truncated at 80 chars"))))
     (is (nil? (judge/focus-sources {} "anything" 100)) "no sources, no section")))
+
+(deftest the-second-pass-keeps-only-what-survived-not-its-deliberation
+  ;; karamazov-kdoj, run 40c57a2a: the verify reply reasoned in long
+  ;; one-line paragraphs that quoted the candidates' tags, then listed what
+  ;; survived under its own heading; the whole deliberation was stored as the
+  ;; findings and handed to the retry.
+  (let [candidates "- [low] the constants are not in the diff\n- [low] two runner omissions reported\n"
+        reply (str "Looking at the first: the claim that [low] the constants are not in the diff is"
+                   " accurate, the diff shows calls but not definitions. But wait, is it blocking? No."
+                   " — VERIFIED\n\n"
+                   "The second, [low] two runner omissions reported, is out of scope. — VERIFIED\n\n"
+                   "---\n\nSurviving findings:\n\n"
+                   "- [low] the constants are not in the diff — VERIFIED\n"
+                   "- [low] two runner omissions reported — VERIFIED\n")
+        out (judge/verified-findings {:reply reply :candidates candidates})]
+    (is (str/includes? (str out) "the constants are not in the diff"))
+    (is (not (str/includes? (str out) "But wait")) "the deliberation is not a finding")
+    (is (not (str/includes? (str out) "Looking at the first")))))

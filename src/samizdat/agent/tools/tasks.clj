@@ -103,6 +103,23 @@
        " list, show {id}, update {id, ...fields}, claim {id},"
        " switch {id, reason}, close {id, status?}."))
 
+(defn- claim-refused
+  "Why `claim!` returned nil, from the task's own row: there is none, it is
+  closed (and by this branch), or someone else holds it. One sentence used to
+  cover all three, so a branch that had closed its own task read that another
+  run held it, and made a duplicate (karamazov-fjrq)."
+  [conn id run-id branch verb]
+  (let [row (tasks/get-task conn id)
+        closed? (and row (or (:closed_at row) (#{"done" "cancelled"} (str (:status row)))))]
+    (prompt/render "task-claim-refused"
+                   (cond
+                     (nil? row) {:verb verb :id id :missing true}
+                     closed? {:verb verb :id id :closed true :status (:status row)
+                              :yours (= (str (:branch_id row)) (str (:id branch)))}
+                     :else {:verb verb :id id :held true
+                            :other-run (not= (str (:run_id row)) (str run-id))
+                            :holder (:branch_id row)}))))
+
 (defmethod base/run-tool "task" [{:keys [branch conn run-id] :as ctx}]
   ;; Every action is `ok` (:neutral) on purpose: working the board is
   ;; bookkeeping, and bookkeeping is not progress — the same reasoning as
@@ -176,8 +193,7 @@
                 (base/ok (take-task branch t)
                          (str "Claimed " (task-line t))
                          :progress? true)
-                (base/malformed branch (str "Cannot claim " (base/arg ctx :id)
-                                       ": no such task, or another run holds it.")))))
+                (base/malformed branch (claim-refused conn (base/arg ctx :id) run-id branch "claim")))))
 
         "switch"
         (or (want :id) (want :reason)
@@ -215,8 +231,7 @@
                                 (task-line t)
                                 "\nRecorded why: " reason)
                            :progress? true))
-                (base/malformed branch (str "Cannot switch to " (base/arg ctx :id)
-                                       ": no such task, or another run holds it."))))))
+                (base/malformed branch (claim-refused conn (base/arg ctx :id) run-id branch "switch to"))))))
 
         "close"
         (or (want :id)

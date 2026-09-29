@@ -270,3 +270,19 @@
             "each turn ends before the next begins, in list order")
         (is (= ["B1" "B1.2" "B1.3"] (mapv :id out)) "results in the branches' order")
         (is (every? :ran out))))))
+
+(deftest a-round-that-throws-cancels-the-turns-it-started
+  ;; karamazov-odyx: advance-all cancelled its in-flight turns only when the
+  ;; throw was a cancel signal, so any other failure while waiting left the
+  ;; turns it had spawned running past the driver that owned them.
+  (let [finished (atom #{})
+        bs (mapv #(state/new-branch {:id % :problem "p"}) ["B1" "B2"])]
+    (with-redefs [beam/advance-branch (fn [_ b _]
+                                        (ebb/? (ebb/sleep 1500))
+                                        (swap! finished conj (:id b))
+                                        b)
+                  cancel/await-or-cancel (fn [& _] (throw (ex-info "the barrier broke" {})))]
+      (is (thrown-with-msg? Exception #"the barrier broke"
+                            (beam/advance-all (ctx 5000) bs 1)))
+      (Thread/sleep 2000)
+      (is (empty? @finished) "the turns it had started were cancelled, not left running"))))

@@ -56,6 +56,8 @@ glob-scoped interceptors match on.
                                            ; [branch-kw pattern guard], or a (fn [data] pred) form
  :constraints  [{:type :must-follow :if node :then node}]
  :subworkflows {cell-id manifest-name}     ; optional: a nested manifest as one node
+                                           ;   (routing only: the child's :prompt is not
+                                           ;   read, and compile warns if it has one)
  :prompt       "name"                      ; optional: prompt appended to the base
  :turn-sliceable? false                    ; optional, default true — see below
  :extends      "manifest-name"             ; optional: carry only what differs from it
@@ -280,6 +282,21 @@ workflow/compile-loop
 
 ## Known gaps
 
+- **A file edit is checked, not soaked or replayed.** The `cell`, `manifest`
+  and `policy` tools run the whole protocol: compile, soak (cells), and the
+  held-out battery (RFC-014) before an edit goes live. A project's workflow
+  is also FILES under `.samizdat/`, and an edit made to one directly — by a
+  person, or by the agent's own `write_file` — is recorded as a version and
+  goes live on its next read once it passes that kind's validator: it must
+  read and compile (and a cell must load), but it is not soaked and not
+  replayed against the battery. That is deliberate: a person editing their
+  project's workflow is not gated by the agent's own safety net, and the
+  file tools' refusal to write outside the project applies as ever. What it
+  means for the agent is that the tools are the gated route and a direct
+  write is not; RFC-001 says a direct edit is honoured. The shipped
+  `resources/cells` are templates only once a project has files: editing
+  one changes nothing that runs, and is offered to the supervisor for
+  adoption (karamazov-95u5 observed the opposite before files mode).
 - **Every declared invariant is enforced.** Every ordering rule a manifest
   claims is declared in its `:invariants`, each saying what it `:protects`
   and whether it is `:enforced`; the enforced ones are DERIVED into the

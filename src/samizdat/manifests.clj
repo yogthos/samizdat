@@ -692,10 +692,20 @@
      ;; see them where they already look for :undeclared-effects.
      (let [unguarded (for [c (unguarded-cycles definition)]
                        (assoc c :type :unguarded-cycle))
+           ;; COMPOSITION IS ROUTING-ONLY (karamazov-r6x1): a composed child
+           ;; runs as a node of its parent, under the parent's prompt, and its
+           ;; own :prompt is never read. Said, rather than silently dropped.
+           composed-prompts (for [[cell-id mname] (:subworkflows definition)
+                                  :let [child (try (read-definition (manifest-body! mname))
+                                                   (catch Throwable _ nil))]
+                                  :when (:prompt child)]
+                              {:type :composed-prompt-ignored :cell-id cell-id
+                               :manifest mname :prompt (:prompt child)})
+           warnings (concat unguarded composed-prompts)
            compiled (cond-> compiled
-                      (and (seq unguarded) (:compiled-fsm compiled))
+                      (and (seq warnings) (:compiled-fsm compiled))
                       (update-in [:compiled-fsm :mycelium/compile-warnings]
-                                 (fnil into []) unguarded))]
+                                 (fnil into []) warnings))]
        (when-let [warnings (:mycelium/compile-warnings (:compiled-fsm compiled))]
          (log/warn "loop definition compiled with warnings:" (pr-str warnings)))
        compiled))))
