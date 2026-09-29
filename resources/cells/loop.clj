@@ -223,7 +223,9 @@
   {:doc "The single boundary: at most one steer, chosen in priority, plus the
         context block of shared artifacts and similar failures."
    :effects [:db]
-   :requires []
+   ;; The run's billed spend, read here because this cell may reach the db and
+   ;; route may not (karamazov-lq57).
+   :requires [:conn :run-id :token-budget]
    ;; :settled is REQUIRED and is the invariant: only :gate/settle writes it,
    ;; so a manifest that reaches the arbiter without closing this turn's
    ;; predictions first — crediting a gate with an outcome that preceded it —
@@ -232,10 +234,19 @@
    :input  [:map [:settled :map] [:branch :map] [:turn :int]
             [:parsed {:optional true} :any]
             [:result {:optional true} :any]]
-   :output [:map [:branch :map]]}
-  (fn [ctx {:keys [branch turn parsed result] :as data}]
-    (assoc data :branch (turn/steer-step ctx branch turn
-                                         {:parsed parsed :result result}))))
+   :output [:map [:branch :map] [:over-budget? {:optional true} :boolean]]}
+  (fn [{:keys [conn run-id token-budget] :as ctx} {:keys [branch turn parsed result] :as data}]
+    (let [;; THE RUN'S TOKEN BUDGET, in every loop that runs a turn
+          ;; (karamazov-lq57). It was read only at the beam's round boundary,
+          ;; so a feature, team or decompose run — one "turn" to the beam —
+          ;; spent without bound inside its nested loops. The sum is the
+          ;; run's whole bill off the journal, the same number the beam
+          ;; holds; a run with no budget pays for no query.
+          spent (when (and token-budget conn run-id)
+                  (:total-tokens (journal/run-usage conn run-id)))]
+      (cond-> (assoc data :branch (turn/steer-step ctx branch turn
+                                                   {:parsed parsed :result result}))
+        (and spent (>= spent token-budget)) (assoc :over-budget? true)))))
 
 (cell/defcell :loop/route
   {:doc "Decide the turn's verdict: :continue (next turn), :done, :abandoned,
@@ -244,7 +255,7 @@
         branch and the configured cap — no side effects."
    :pure true
    :requires [:max-turns]
-   :input  [:map [:branch :map] [:turn :int]]
+   :input  [:map [:branch :map] [:turn :int] [:over-budget? {:optional true} :any]]
    ;; :turn as well as :verdict, because the :continue branch increments it.
    ;; The dissoc of the per-turn products is invisible to mycelium — it models
    ;; what a cell ADDS, never what it drops — and that is safe here only
@@ -268,12 +279,16 @@
                         (gates/threshold :provider-error-limit))
                     :abandoned
 
+                    ;; The run has spent its token budget (the arbiter read
+                    ;; it): every loop's branch ends, nested ones included.
+                    (:over-budget? data) :exhausted
+
                     (>= turn max-turns) :exhausted
                     :else :continue)]
       (cond-> (assoc data :verdict verdict)
         (= verdict :continue)
         (-> (update :turn inc)
-            (dissoc :before :call :parsed :signals :said :result :tool :settled)
+            (dissoc :before :call :parsed :signals :said :result :tool :settled :over-budget?)
             ;; Each mycelium trace entry snapshots the whole data map — branch
             ;; message history included — so an uncapped trace grows
             ;; quadratically over a run. The journal is the durable record; the
