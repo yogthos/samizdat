@@ -342,3 +342,12 @@
         (is (= "qwen" (:model r)))))
     (testing "a colon that names no provider is part of the model's name"
       (is (= "qwen3:32b" (:model (control/run-llm-config config base {:model "qwen3:32b"})))))))
+
+(deftest health-says-which-harness-is-answering
+  ;; karamazov-uk77: a stale serve process answered /health exactly like a
+  ;; current one.
+  (let [id (server/harness-identity)]
+    (is (re-matches #"[0-9a-f]{40}" (str (:revision id))) "the checkout's commit, run from one")
+    (is (boolean? (:dirty id)))
+    (is (string? (:started_at id)))
+    (is (= id (server/harness-identity)) "read once: the code the process loaded")))
