@@ -192,9 +192,17 @@
                       ;; just installed (karamazov-blt.2).
                       :compile-fn manifests/compile-definition
                       :soak-input (soak-input)
-                      :heldout-fn #(heldout/check-edit conn %)
+                      :defer-fn (fn [cand commit!]
+                                  (heldout/defer! conn cand
+                                                  {:commit! commit!
+                                                   :run-id run-id :branch-id (:id branch)}))
                       :conn conn :run-id run-id})]
               (case (:status r)
+                :pending
+                (base/ok branch (prompt/render "heldout-pending"
+                                               {:kind "cell" :name name :soaked true})
+                         :progress? true)
+
                 :committed
                 (base/ok branch
                          (str "Saved cell '" name "' as v" (:version r)

@@ -63,6 +63,7 @@
             [samizdat.prompt :as prompt]
             [samizdat.security.secrets :as secrets]
             [samizdat.store.db :as db]
+            [samizdat.store.interventions :as interventions]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
             [samizdat.userspace :as userspace]
@@ -509,6 +510,87 @@
                  "went unmeasured:" (pr-str (:unmeasured-why v))))
      (when (and v (not (:ok? v)))
        (refusal v)))))
+
+;;; ------------------------------------------------------------- off the turn
+
+;; ONE LANE. Edits are measured and committed in the order they were made, so
+;; each one's baseline is the userspace every earlier one left.
+(defonce ^:private lane (Object.))
+
+;; The verdicts not yet reached, so a caller that must not leave one behind —
+;; a test, a shutdown — can wait for them.
+(defonce ^:private outstanding (atom #{}))
+
+(defn await-pending!
+  "Wait for every deferred edit to reach its verdict."
+  []
+  (doseq [f @outstanding] (deref f)))
+
+(defn defer!
+  "Take `candidate` ({:kind :name :text}) off the turn: when the battery
+  applies, measure it on a background thread and then either run `commit!` or
+  refuse, and tell the branch that made the edit either way. Returns
+  {:pending true :done <future>}, or nil when the gate does not apply —
+  disabled, no project files, no cases — and the caller commits as before.
+
+  WHY NOT IN THE TURN. A replay costs minutes, a refusal is confirmed by a
+  second one, and the turn deadline is 900 s: proving this gate on
+  endless-flight, one case's refusal took 733 s (karamazov-nha1). An edit
+  checked inside the tool call would be cancelled mid-gate once a battery had
+  a few cases. The edit that is pending is not live; what runs is what ran
+  before, until the verdict.
+
+  `opts`: :commit! (no-arg fn, returns the saved version, throws to refuse),
+  :run-id and :branch-id (who is told, via a `message` for the branch's next
+  turn, and where the verdict is journalled), :run-case (a test's stand-in for
+  the child)."
+  [conn candidate {:keys [commit! run-id branch-id run-case]}]
+  (let [p (policy)]
+    (when (and (:enabled? p) (userspace/files?) conn
+               (seq (:cases (cases conn))))
+      (let [what {:kind (some-> (:kind candidate) name) :name (str (:name candidate))}
+            note! (fn [kind data]
+                    (when run-id
+                      (try (journal/note! conn run-id kind {:branch-id branch-id :data (merge what data)})
+                           (catch Throwable _ nil))))
+            tell! (fn [vars]
+                    (when (and run-id branch-id)
+                      (try (interventions/submit! conn run-id
+                                                  {:branch-id branch-id :kind "message"
+                                                   :issued-by "heldout"
+                                                   :payload (prompt/render "heldout-decided"
+                                                                           (merge what vars))})
+                           (catch Throwable e
+                             (log/warn "heldout: telling" branch-id "failed:" (ex-message e))))))]
+        (note! :heldout-pending {})
+        (let [done (promise)
+              fut
+         (future
+           (try
+           (locking lane
+             (try
+               (let [v (gate! conn candidate {:run-case run-case})]
+                 (if (or (nil? v) (:ok? v))
+                   (let [saved (try {:version (commit!)}
+                                    (catch Throwable e {:error (or (ex-message e) (str e))}))]
+                     (note! :heldout-verdict (merge {:accepted (nil? (:error saved))}
+                                                    saved
+                                                    (select-keys v [:passed-before :passed-after :total])))
+                     (tell! (if (:error saved)
+                              {:save-failed true :reason (:error saved)}
+                              {:accepted true :version (:version saved)
+                               :passed (:passed-after v) :total (:total v)})))
+                   (let [r (refusal v)]
+                     (note! :heldout-verdict {:accepted false :regressions (:regressions v)})
+                     (tell! {:refused true :refusal r}))))
+               (catch Throwable e
+                 (log/warn "heldout: measuring" (:name what) "failed:" (ex-message e))
+                 (note! :heldout-verdict {:accepted false :error (ex-message e)})
+                 (tell! {:save-failed true :reason (ex-message e)}))))
+             (finally (swap! outstanding disj @done))))]
+          (swap! outstanding conj fut)
+          (deliver done fut)
+          {:pending true :done fut})))))
 
 ;;; ------------------------------------------------------------- stage 2: live arms
 

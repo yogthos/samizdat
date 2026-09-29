@@ -97,7 +97,12 @@
                                  :problem (:problem rep)
                                  :max-turns (turns-cap case slack)
                                  :beam-width 1
-                                 :complete (replay/case-complete-fn rep)})
+                                 :complete (replay/case-complete-fn rep)
+                                 ;; The same computation every time: one turn
+                                 ;; at a time, no clock-driven supervisor
+                                 ;; (karamazov-x0dx).
+                                 :serial-turns? true
+                                 :oversight? false})
               run-id (:run-id result)]
           {:run-id run-id
            :status (:status result)

@@ -30,6 +30,8 @@
             [samizdat.engine.proc :as proc]
             [samizdat.heldout :as heldout]
             [samizdat.store.db :as db]
+            [samizdat.store.interventions :as interventions]
+            [samizdat.store.runs :as runs]
             [samizdat.store.userspace :as store]
             [samizdat.userspace :as us]
             [samizdat.manifests]
@@ -195,31 +197,64 @@
         (is (= {:error :no-fixture} (heldout/stage! {} (str dest "2") nil)))
         (finally (delete-recursively (.getParentFile (io/file dest))))))))
 
-(deftest a-refused-edit-is-not-saved
+(defn- messages-to [conn rid bid]
+  (mapv interventions/text-of (interventions/pending conn rid bid)))
+
+(deftest an-edit-is-measured-off-the-turn-and-its-author-is-told
+  ;; karamazov-nha1: the battery costs minutes, a refusal a second measurement,
+  ;; and a turn has 900 s. The tool call answers at once that the edit is
+  ;; pending; the verdict arrives as a message on the author's next turn.
   (with-project [root conn]
     (write-case! root "c1" a-case)
-    (with-redefs [heldout/run-case! replay-by-text]
-      (let [before (slurp (io/file root ".samizdat" "manifests" "worker.edn"))
-            ;; A manifest that compiles and that the replay says breaks a target.
-            text (str (slurp (io/resource "manifests/worker.edn")) "\n;; BREAK\n")
-            r (base/run-tool {:branch {:id "S1"} :conn conn :tool-name "manifest"
-                              :args {:action "save" :name "worker" :edn text
-                                     :rationale "try it"}})]
-        (is (= :mechanics (:category r)) (:result r))
-        (is (str/includes? (:result r) "c1 — calls done"))
-        (is (= before (slurp (io/file root ".samizdat" "manifests" "worker.edn")))
-            "the file that runs is unchanged")))
-    (testing "the same through policy save"
+    (let [rid (runs/start-run! conn {:problem "p"})
+          worker (io/file root ".samizdat" "manifests" "worker.edn")
+          before (slurp worker)
+          save (fn [text]
+                 (base/run-tool {:branch {:id "S1"} :conn conn :run-id rid :tool-name "manifest"
+                                 :args {:action "save" :name "worker" :edn text
+                                        :rationale "try it"}}))]
       (with-redefs [heldout/run-case! replay-by-text]
-        (let [gates (slurp (io/file root ".samizdat" "gates.edn"))
-              r (base/run-tool {:branch {:id "S1"} :conn conn :tool-name "policy"
+        (testing "a bad edit: pending now, refused later, never saved"
+          (let [r (save (str before "\n;; BREAK\n"))]
+            (is (= :neutral (:category r)) (:result r))
+            (is (str/includes? (:result r) "NOT live yet"))
+            (heldout/await-pending!)
+            (is (= before (slurp worker)) "the file that runs is unchanged")
+            (is (some #(str/includes? (str %) "c1 — calls done") (messages-to conn rid "S1"))
+                "the refusal reaches the author, naming what broke")))
+        (testing "a good edit: pending now, live once it passes"
+          (let [text (str before "\n;; fine\n")
+                r (save text)]
+            (is (str/includes? (:result r) "NOT live yet"))
+            (is (= before (slurp worker)) "not live before the verdict")
+            (heldout/await-pending!)
+            (is (= text (slurp worker)) "saved once the battery passed it")
+            (is (some #(str/includes? (str %) "is now live") (messages-to conn rid "S1")))))))))
+
+(deftest a-policy-edit-is-deferred-the-same-way
+  (with-project [root conn]
+    (write-case! root "c1" a-case)
+    (let [rid (runs/start-run! conn {:problem "p"})
+          gates (slurp (io/file root ".samizdat" "gates.edn"))]
+      (with-redefs [heldout/run-case! replay-by-text]
+        (let [r (base/run-tool {:branch {:id "S1"} :conn conn :run-id rid :tool-name "policy"
                                 :args {:action "save" :name "gates"
                                        :edn (str gates "\n;; BREAK\n") :rationale "try it"}})]
-          (is (= :mechanics (:category r)) (:result r))
-          ;; gates.edn's own prose says CRASH, which the stand-in reads as
-          ;; a case that no longer runs: refused either way, and by name.
-          (is (str/includes? (:result r) "c1 — ") (:result r))
-          (is (= gates (slurp (io/file root ".samizdat" "gates.edn")))))))))
+          (is (str/includes? (:result r) "NOT live yet") (:result r))
+          (heldout/await-pending!)
+          ;; gates.edn's own prose says CRASH, which the stand-in reads as a
+          ;; case that no longer runs: refused either way, and by name.
+          (is (= gates (slurp (io/file root ".samizdat" "gates.edn"))))
+          (is (some #(str/includes? (str %) "c1 — ") (messages-to conn rid "S1"))))))))
+
+(deftest a-policy-table-that-will-not-load-is-refused-in-the-turn
+  (with-project [root conn]
+    (write-case! root "c1" a-case)
+    (let [r (base/run-tool {:branch {:id "S1"} :conn conn :tool-name "policy"
+                            :args {:action "save" :name "gates" :edn "[:not :a-map]"
+                                   :rationale "break it"}})]
+      (is (= :mechanics (:category r)) (:result r))
+      (is (not (str/includes? (:result r) "NOT live yet")) "no replay for a table that cannot load"))))
 
 (deftest the-battery-tool-lists-and-cannot-remove
   (with-project [root conn]

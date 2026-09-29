@@ -217,10 +217,9 @@
             "and durable in the project's store"))
       (finally (us/unbind!) (db/close c)))))
 
-(deftest a-proposal-the-held-out-battery-refuses-is-not-saved
-  ;; karamazov-7mo.4: validate and soak pass, the battery says a recorded case
-  ;; regresses, and the candidate is refused with the target named — the
-  ;; registry restored and nothing in the project's history.
+(deftest a-proposal-the-held-out-battery-takes-is-not-live-until-it-passes
+  ;; karamazov-nha1: validate and soak pass in the turn; the battery runs
+  ;; off it, so the candidate is not live and not saved until it answers.
   (write-cells! (str @root "/cells") "(fn [_ d] (update d :n inc))")
   (cells/load-cells! (:dirs (opts)))
   (let [c (db/open! ":memory:")]
@@ -230,16 +229,20 @@
                       "(cell/defcell :mini/start {:doc \"s\" :pure true :requires []}\n"
                       "  (fn [_ d] (update d :n + 100)))\n")
             seen (atom nil)
+            commit (atom nil)
             r (mut/propose-cell! (assoc (opts) :name "mini" :body body
-                                        :heldout-fn (fn [cand]
-                                                      (reset! seen cand)
-                                                      "battery: c1 — calls done")))]
-        (is (= :rolled-back (:status r)))
-        (is (str/includes? (str (:reason r)) "c1 — calls done"))
-        (is (= {:kind :cell :name "mini" :text body} @seen) "the gate read the candidate's text")
-        (is (nil? (us/body :cell "mini")) "nothing entered the project's history")
+                                        :defer-fn (fn [cand commit!]
+                                                    (reset! seen cand)
+                                                    (reset! commit commit!)
+                                                    true)))]
+        (is (= :pending (:status r)) "validated and soaked, then handed to the battery")
+        (is (= {:kind :cell :name "mini" :text body} @seen) "the gate reads the candidate's text")
+        (is (nil? (us/body :cell "mini")) "nothing in the project's history yet")
         (is (= 1 (:n ((:handler (cell/get-cell :mini/start)) {} {:n 0})))
-            "the registry is back on the running cell"))
+            "and the registry is back on the running cell until the verdict")
+        (testing "the deferred commit saves the version"
+          (is (= 1 (@commit)))
+          (is (= body (us/body :cell "mini")))))
       (finally (us/unbind!) (db/close c)))))
 
 (deftest a-proposal-whose-requires-is-not-true-is-refused-with-the-fix

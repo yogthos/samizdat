@@ -1994,7 +1994,8 @@
           :trail-turns 12
           :trail-chars 300
           :skip "\\.sqlite3(-wal|-shm|-journal)?$"}
-  :provenance ["karamazov-7mo.4" "karamazov-ylte.4" "2609.24972v2" "2609.09153v1"]
+  :provenance ["karamazov-7mo.4" "karamazov-ylte.4" "karamazov-nha1" "karamazov-x0dx"
+               "2609.24972v2" "2609.09153v1"]
   :kind :policy :capability-tunable? false
   :doc "THE HELD-OUT GATE, STAGE 1 (samizdat.heldout). Every cell, manifest
         and policy edit a tool saves is first replayed against the project's
@@ -2002,7 +2003,13 @@
         battery_cases the first time it is read — with the edit in place and
         without it, each case in a child process on a copy of the tree the
         recorded run started from. An edit under which a target that passed
-        fails is refused and nothing is saved. Ties are accepted.
+        fails is refused and nothing is saved. Ties are accepted. The replay
+        runs OFF THE TURN (karamazov-nha1): the tool answers at once that
+        the edit is pending, and the verdict — live, or refused with the
+        targets named — reaches the branch that made it as a message on a
+        later turn. Replays run one turn at a time with no supervisor
+        stream, so two replays of one case are the same computation
+        (karamazov-x0dx).
 
         A project with no cases is not gated: it tunes itself on the compile
         and the soak, as before. :enabled? false turns the gate off where

@@ -60,6 +60,8 @@
    :acceptance-judge "prompts/acceptance-judge.md"
    :adopt-tool "prompts/adopt-tool.md"
    :battery-tool "prompts/battery-tool.md"
+   :heldout-decided "prompts/heldout-decided.md"
+   :heldout-pending "prompts/heldout-pending.md"
    :heldout-refused "prompts/heldout-refused.md"
    :refused-again "prompts/refused-again.md"
    :tests-not-run "prompts/tests-not-run.md"

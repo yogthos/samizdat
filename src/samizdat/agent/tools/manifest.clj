@@ -366,23 +366,28 @@
             ;; loop this tool exists to invite — is not billed to the branch's
             ;; failure counter. The outer catch is left for what happens AFTER
             ;; this point, notably the store write.
-            (if-let [complaint (or (try (validate! name edn-text) nil
-                                        (catch Throwable e (refused e)))
-                                   ;; The held-out battery, last: the dearest
-                                   ;; check, and only for an edit that compiles
-                                   ;; (karamazov-7mo.4).
-                                   (heldout/check-edit conn {:kind :manifest :name name
-                                                             :text edn-text}))]
+            (if-let [complaint (try (validate! name edn-text) nil
+                                    (catch Throwable e (refused e)))]
               ;; The complaint plus `usage`, which already says a save
               ;; validates before it stores — no new sentence in src/.
               (base/rejected branch
                              (str "`manifest save` refused: " complaint
                                   "\n\n" usage))
-              (let [v (save! conn name edn-text why)]
+              ;; The held-out battery, off the turn (karamazov-nha1): when the
+              ;; project has one, the edit is replayed in the background and
+              ;; saved only if it passes; the branch is told either way.
+              (if (heldout/defer! conn {:kind :manifest :name name :text edn-text}
+                                  {:commit! #(save! conn name edn-text why)
+                                   :run-id (:run-id ctx) :branch-id (:id branch)})
                 (base/ok branch
-                         (str (saved-line name v) (dispatch-report edn-text)
-                              (cycle-report edn-text))
-                         :progress? true)))))
+                         (str (prompt/render "heldout-pending" {:kind "manifest" :name name})
+                              (dispatch-report edn-text) (cycle-report edn-text))
+                         :progress? true)
+                (let [v (save! conn name edn-text why)]
+                  (base/ok branch
+                           (str (saved-line name v) (dispatch-report edn-text)
+                                (cycle-report edn-text))
+                           :progress? true))))))
 
         "patch"
         (let [name (base/arg ctx :name)
@@ -419,19 +424,21 @@
                                                    :validator #(manifests/compile-loop %)})
                                          text (file-text new)]
                                      (validate! name text)
-                                     (if-let [r (heldout/check-edit conn {:kind :manifest :name name
-                                                                          :text text})]
-                                       {:complaint r}
-                                       {:new new :text text}))
+                                     {:new new :text text})
                                    (catch Throwable e {:complaint (refused e)}))]
                   (if-let [complaint (:complaint outcome)]
                     (base/rejected branch
                                    (str "`manifest patch` refused: " (deflag complaint)
                                         "\n\n" (ops-help)))
                     (let [{:keys [new text]} outcome
-                          v (save! conn name text why)]
+                          deferred (heldout/defer! conn {:kind :manifest :name name :text text}
+                                                   {:commit! #(save! conn name text why)
+                                                    :run-id (:run-id ctx) :branch-id (:id branch)})
+                          v (when-not deferred (save! conn name text why))]
                       (base/ok branch
-                               (str (saved-line name v)
+                               (str (if deferred
+                                      (prompt/render "heldout-pending" {:kind "manifest" :name name})
+                                      (saved-line name v))
                                     "\n\n" (format-diff (patch/diff-manifests old new) old new)
                                     (dispatch-report text)
                                     (cycle-report text))

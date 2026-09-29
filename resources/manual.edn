@@ -85,6 +85,8 @@
     :summary "A checked manifest edit as data: ops (rename-cell, add-cell, remove-cell, set-edge, delete-edge, set-cell-field, set-dispatches) applied to the manifest as written, every reference to a renamed node rewritten (edges, dispatches, :invariants), the whole batch compiled once at the end so a node can be added and wired in one call. `manifest patch` is this over the stored text; `render` writes the result back over the original so comments survive; `cell-refs` and `diff-manifests` are behind `manifest refs` and `manifest diff`."}
    {:name samizdat.workflow/catalog
     :summary "Every workflow available to select or adapt, with its description."}
+   {:name samizdat.heldout/defer!
+    :summary "The held-out gate off the turn: after a save validates, the battery replays on a background lane and the edit is committed or refused there; the branch that made it is told by a message on a later turn. nil when the project has no battery, and the tool saves as before."}
    {:name samizdat.heldout/check-edit
     :summary "The held-out gate, stage 1: replay the project's battery (.samizdat/battery, stored in battery_cases) with a candidate cell, manifest or policy edit in place and without it, each case in a child process on the tree its recorded run started from, and refuse the edit when a target that passed fails. Ties accepted; a case that does not run at baseline is set aside by name. Opt-in by having cases; gates.edn :heldout. Each target is recorded in heldout_checks with its fixture, harness revision, model and scorer."}
    {:name samizdat.heldout/draft!

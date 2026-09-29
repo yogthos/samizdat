@@ -386,15 +386,17 @@
     :soak-input — the initial data map the soak dry-run starts from
     :compile-fn — how to compile+validate (default mycelium pre-compile)
     :rationale  — why, stored with the committed version (karamazov-c58)
-    :heldout-fn — (fn [candidate] -> refusal or nil), the held-out battery,
-                  consulted after the soak and before the commit
-                  (samizdat.heldout/check-edit; karamazov-7mo.4)
+    :defer-fn   — (fn [candidate commit!] -> truthy when it took the commit),
+                  the held-out battery off the turn (samizdat.heldout/defer!,
+                  karamazov-nha1): called after a clean soak; when it takes
+                  the edit, the registry is restored and the result is
+                  {:status :pending} — `commit!` saves and loads it later
     :conn :run-id — to journal the outcome (optional)
 
   Returns {:status :committed :version n} or
   {:status :rolled-back :reason ...} with the registry restored and nothing
   written to the store."
-  [{:keys [name body loop-def extra-defs soak-input compile-fn rationale conn run-id heldout-fn]}]
+  [{:keys [name body loop-def extra-defs soak-input compile-fn rationale conn run-id defer-fn]}]
   (let [compile-fn (or compile-fn myc/pre-compile)
         shadowing (shadowed-cells name body)
         unearned (unearned-marks body)
@@ -443,14 +445,25 @@
                                     (str "manifest '" nm "': " r)))
                                 extra-defs))]
         (fail reason)
-        (if-let [reason (or (soak compile-fn loop-def soak-input)
-                            ;; BATTERY — the dearest check, last: does the
-                            ;; candidate make a recorded case regress? It reads
-                            ;; the candidate from its text, in a child process,
-                            ;; so what is installed here does not matter to it.
-                            (when heldout-fn
-                              (heldout-fn {:kind :cell :name name :text body})))]
+        (if-let [reason (soak compile-fn loop-def soak-input)]
           (fail reason)
+          (if (and defer-fn
+                   ;; BATTERY, off the turn: the candidate is replayed from its
+                   ;; text in a child process, and goes live only if nothing
+                   ;; that passed before fails. Until then it is not live, so
+                   ;; the registry goes back to the running cells.
+                   (defer-fn {:kind :cell :name name :text body}
+                             (fn []
+                               (let [v (userspace/save! :cell name body rationale)]
+                                 (when (nil? v)
+                                   (throw (ex-info "no project store is bound" {})))
+                                 (reload-cells! nil)
+                                 (when (and conn run-id)
+                                   (journal/note! conn run-id :mutation-committed
+                                                  {:data {:cell name :version v :heldout true}}))
+                                 v))))
+            (do (cell/registry-restore! snapshot)
+                {:status :pending})
           ;; COMMIT. The candidate is already live; this is what makes it
           ;; survive a restart and what another run will load.
           ;;
@@ -471,6 +484,6 @@
                     (journal/note! conn run-id :mutation-committed
                                    {:data {:cell name :version v}}))
                   (log/info "cell" name "committed as version" v)
-                  {:status :committed :version v})))))
+                  {:status :committed :version v}))))))
       (catch Throwable e
         (fail (str "the candidate did not load — " (or (ex-message e) (str e)))))))))

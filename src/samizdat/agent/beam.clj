@@ -629,63 +629,74 @@
                               (handoff/forfeit! (:conn ctx) (:run-id ctx) b turn
                                                 (quot (or deadline 0) 1000)))
                       (update :timeouts (fnil inc 0))))
-        pending (reduce (fn [acc b]
-                          (let [prev (when cancelling (get @cancelling (:id b)))]
-                            (conj acc
-                                  (if (and prev (not (realized? prev)))
-                                    [b ::still-cancelling]
-                                    (do (when prev (swap! cancelling dissoc (:id b)))
-                                        ;; Each turn is a task the beam holds the
-                                        ;; canceller of. Started with a yield, so all
-                                        ;; five start now rather than each after the
-                                        ;; previous one's prefix.
-                                        [b (cancel/start! (cancel/spawn #(advance-branch ctx b turn)))])))))
-                        []
-                        branches)]
+        ;; Start one branch's turn, or mark it still winding down.
+        begin (fn [b]
+                (let [prev (when cancelling (get @cancelling (:id b)))]
+                  (if (and prev (not (realized? prev)))
+                    [b ::still-cancelling]
+                    (do (when prev (swap! cancelling dissoc (:id b)))
+                        ;; Each turn is a task the beam holds the canceller
+                        ;; of. Started with a yield, so all five start now
+                        ;; rather than each after the previous one's prefix.
+                        [b (cancel/start! (cancel/spawn #(advance-branch ctx b turn)))]))))
+        ;; Wait for one started turn and read how it ended.
+        settle (fn [[b t]]
+                 (if (= ::still-cancelling t)
+                   (do (log/warn "branch" (:id b) "is still winding down a cancelled turn;"
+                                 "skipping turn" turn "to keep its turns serial")
+                       (forfeit b))
+                   ;; Parks on the turn's SIGNAL, never on the turn task itself:
+                   ;; ebb's timeout would wait for the cancelled child, and the
+                   ;; barrier must not stall on a read the cancel cannot reach.
+                   (let [[tag r] (if stall-ms
+                                   (cancel/await-unless
+                                    t (max 1 (quot stall-ms 10))
+                                    #(runs/stalled? (:conn ctx) (:run-id ctx) stall-ms))
+                                   (cancel/await-or-cancel t deadline))]
+                     (case tag
+                       :ok r
+                       :stalled
+                       (do (log/warn "branch" (:id b) "has journalled nothing for"
+                                     stall-ms "ms on turn" turn "— cancelled")
+                           (when cancelling (swap! cancelling assoc (:id b) (:done t)))
+                           (assoc b :status :abandoned
+                                  :inactive-reason (str "stalled: silent "
+                                                        (quot stall-ms 1000) " s")))
+                       :timeout
+                       (do (log/warn "branch" (:id b) "exceeded the turn deadline on turn" turn
+                                     "— cancelled")
+                           ;; Not a verification failure: the branch did not get an
+                           ;; answer to be wrong about. It loses the turn and is told
+                           ;; so; the cancelled turn is REMEMBERED until it terminates
+                           ;; so the next round does not run beside it.
+                           (when cancelling (swap! cancelling assoc (:id b) (:done t)))
+                           (forfeit b))
+                       :err
+                       (do (log/warn "branch" (:id b) "died on turn" turn ":" (ex-message r))
+                           (assoc b :status :abandoned
+                                  :inactive-reason (str "branch error: " (ex-message r))))))))
+        ;; SERIAL, for a replay (karamazov-x0dx): each turn runs to its end
+        ;; before the next starts, in the order the branches are listed. A
+        ;; held-out replay of a run that forked read 11/14 and 13/14 on the
+        ;; same baseline minutes apart, because which concurrent turn landed
+        ;; first was timing; a verdict that compares two replays needs them to
+        ;; be the same computation. Live runs stay concurrent.
+        started (atom [])]
     (try
-      (reduce (fn [acc [b t]]
-                (conj acc
-                      (if (= ::still-cancelling t)
-                        (do (log/warn "branch" (:id b) "is still winding down a cancelled turn;"
-                                      "skipping turn" turn "to keep its turns serial")
-                            (forfeit b))
-                        ;; Parks on the turn's SIGNAL, never on the turn task itself:
-                        ;; ebb's timeout would wait for the cancelled child, and the
-                        ;; barrier must not stall on a read the cancel cannot reach.
-                        (let [[tag r] (if stall-ms
-                                        (cancel/await-unless
-                                         t (max 1 (quot stall-ms 10))
-                                         #(runs/stalled? (:conn ctx) (:run-id ctx) stall-ms))
-                                        (cancel/await-or-cancel t deadline))]
-                          (case tag
-                            :ok r
-                            :stalled
-                            (do (log/warn "branch" (:id b) "has journalled nothing for"
-                                          stall-ms "ms on turn" turn "— cancelled")
-                                (when cancelling (swap! cancelling assoc (:id b) (:done t)))
-                                (assoc b :status :abandoned
-                                       :inactive-reason (str "stalled: silent "
-                                                             (quot stall-ms 1000) " s")))
-                            :timeout
-                            (do (log/warn "branch" (:id b) "exceeded the turn deadline on turn" turn
-                                          "— cancelled")
-                                ;; Not a verification failure: the branch did not get an
-                                ;; answer to be wrong about. It loses the turn and is told
-                                ;; so; the cancelled turn is REMEMBERED until it terminates
-                                ;; so the next round does not run beside it.
-                                (when cancelling (swap! cancelling assoc (:id b) (:done t)))
-                                (forfeit b))
-                            :err
-                            (do (log/warn "branch" (:id b) "died on turn" turn ":" (ex-message r))
-                                (assoc b :status :abandoned
-                                       :inactive-reason (str "branch error: " (ex-message r)))))))))
-              []
-              pending)
+      (if (:serial-turns? ctx)
+        (reduce (fn [acc b]
+                  (let [p (begin b)]
+                    (swap! started conj p)
+                    (conj acc (settle p))))
+                [] branches)
+        (let [pending (reduce (fn [acc b] (conj acc (begin b))) [] branches)]
+          (reset! started pending)
+          (reduce (fn [acc p] (conj acc (settle p))) [] pending)))
       (catch Throwable e
         ;; The round itself was cancelled (an abort) with turns in flight:
         ;; every turn goes down with it before the signal travels on.
         (when (cancel/control-signal? e)
-          (doseq [[_ t] pending :when (map? t)] ((:cancel t))))
+          (doseq [[_ t] @started :when (map? t)] ((:cancel t))))
         (throw e)))))
 
 (defn dispose-branch-engines!
@@ -909,7 +920,12 @@
         ;; stage returned. Runs fps5 and fps6 both ended having never reached
         ;; it, because the implementer stalled and never returned — the
         ;; watchdog was downstream of the thing it watches for.
-        ctx (assoc ctx :stop-oversight (oversight-stream ctx))]
+        ;; A replay asks for none (:oversight? false): its passes fire on a
+        ;; clock, so where their turns land would be timing again, and the
+        ;; recording has nothing to answer them with (karamazov-x0dx).
+        ctx (assoc ctx :stop-oversight (if (false? (:oversight? ctx))
+                                         (constantly nil)
+                                         (oversight-stream ctx)))]
     (try
       (let [data (myc/run-compiled (beam-manifest conn config) ctx
                                    {:branches branches :turn start-turn})]
@@ -1031,7 +1047,8 @@
   land a `done` wins and the rest are abandoned, since paying for four more
   provider calls after the answer exists is pure waste."
   [{:keys [conn config llm-adapter llm-config problem max-turns beam-width
-           token-budget abort on-start seed-run quarantine complete] :as opts}]
+           token-budget abort on-start seed-run quarantine complete
+           serial-turns? oversight?] :as opts}]
   (let [;; What the CALLER asked for, kept apart from the config's numbers:
         ;; triage below may size a run below the config, never over an
         ;; explicit request (karamazov-1wv9).
@@ -1195,6 +1212,11 @@
              ;; real tokens on every branch of a real run. nil when absent, and
              ;; call-model falls back to infer/complete-fn exactly as before.
              :complete complete
+             ;; A replay's switches (samizdat.heldout.child, karamazov-x0dx):
+             ;; one turn at a time, and no supervisor stream. Both nil — the
+             ;; live behaviour — unless a caller names them.
+             :serial-turns? serial-turns?
+             :oversight? oversight?
              :max-turns max-turns :beam? (> width 1) :beam-width width
              :token-budget token-budget
              :root root
