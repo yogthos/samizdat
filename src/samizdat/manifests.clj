@@ -81,11 +81,124 @@
                            " at " (manifest-resource name) " and nothing stored")
                       {:manifest name}))))
 
-(defn read-definition
-  "Parse a workflow definition from EDN text. Dispatch predicates stay as
-  forms here; maestro evaluates them at compile time."
+(defn read-raw
+  "A manifest file's own map, `:extends` unresolved: what an edit rewrites.
+  Dispatch predicates stay as forms here; maestro evaluates them at compile
+  time."
   [edn-text]
   (edn/read-string edn-text))
+
+;; --- extension ---------------------------------------------------------------
+;;
+;; A manifest may say `:extends "turn"` and carry only what differs from that
+;; manifest (karamazov-xtd3): loop, worker, reviewer and supervisor used to
+;; carry four copies of one turn chain, and copies drift. The link is resolved
+;; HERE, at read, so every reader — the drivers, the compile checks, the
+;; catalogue, introspect — sees the whole graph and none of them knows the
+;; link exists. Only an EDIT needs the file's own part (`read-raw`).
+
+(def ^:private merged-sections
+  "The sections an extension merges key by key into its base's."
+  #{:cells :edges :dispatches})
+
+(defn- merge-section
+  "`child`'s entries over `base`'s, a nil value removing the base's entry."
+  [base child]
+  (reduce-kv (fn [m k v] (if (nil? v) (dissoc m k) (assoc m k v)))
+             (or base {}) child))
+
+(defn- extend-definition
+  "`child` (a raw map carrying :extends) laid over its resolved `base`.
+
+  :cells, :edges and :dispatches merge key by key and a nil removes; the
+  base's :invariants hold in the child and the child's are added; any other
+  key is the child's where it has one. A key the child lists in :replaces is
+  the child's alone — how a child that renames a node drops the base's
+  invariants naming the old one. :fragment? says what the BASE is and is not
+  inherited."
+  [base child]
+  (let [replaces (set (:replaces child))
+        own (dissoc child :extends :replaces)
+        d (merge (dissoc base :fragment?) own)
+        d (reduce (fn [d k]
+                    (if (and (contains? own k) (not (replaces k)))
+                      (assoc d k (merge-section (get base k) (get own k)))
+                      d))
+                  d merged-sections)
+        d (if (and (contains? own :invariants) (not (replaces :invariants)))
+            (let [bi (vec (:invariants base))]
+              (assoc d :invariants (into bi (remove (set bi)) (:invariants own))))
+            d)]
+    (reduce (fn [d k] (if (and (replaces k) (nil? (get own k))) (dissoc d k) d))
+            d replaces)))
+
+(defn- resolve-extends
+  "`raw` with its :extends chain resolved, refusing a base that resolves to
+  nothing and a chain that returns to itself — each by name, since the
+  author of the edit is the one reading the refusal."
+  [raw seen]
+  (if-let [base-name (some-> (:extends raw) name)]
+    (do
+      (when (some #{base-name} seen)
+        (throw (ex-info (str "manifest :extends chain returns to " base-name
+                             " (" (str/join " -> " (conj seen base-name)) ")."
+                             " A manifest cannot extend itself, directly or through another.")
+                        {:extends base-name :chain seen})))
+      (let [text (manifest-body base-name)]
+        (when-not text
+          (throw (ex-info (str "manifest extends \"" base-name "\", and there is no"
+                               " manifest named " base-name " — add that role to the"
+                               " project's userspace.edn or change :extends.")
+                          {:extends base-name})))
+        (extend-definition (resolve-extends (read-raw text) (conj seen base-name)) raw)))
+    raw))
+
+(defn read-definition
+  "Parse a workflow definition from EDN text, with any :extends resolved:
+  the whole graph that runs. Dispatch predicates stay as forms here; maestro
+  evaluates them at compile time."
+  [edn-text]
+  (let [raw (read-raw edn-text)]
+    (if (map? raw) (resolve-extends raw []) raw)))
+
+(defn extension-delta
+  "The file map an extending manifest should hold so that it resolves to
+  `new`: `raw-old` (the file as it stands, :extends and all) with each merged
+  section cut down to what differs from the base — a nil for an entry the
+  base has and `new` does not — and the invariants to the ones the base does
+  not already carry. When `new` has dropped one of the base's invariants the
+  child lists them all and names :invariants in :replaces. What `manifest
+  patch` writes back, so a patch applied to the resolved graph does not
+  inline the chain into the file."
+  [raw-old new]
+  (let [base (resolve-extends {:extends (:extends raw-old)} [])
+        base (dissoc base :extends)
+        section (fn [k]
+                  (let [b (get base k) n (get new k)]
+                    (into {}
+                          (concat (for [[kk v] n :when (not= v (get b kk))] [kk v])
+                                  (for [kk (keys b) :when (not (contains? n kk))] [kk nil])))))
+        bi (vec (:invariants base))
+        ni (vec (:invariants new))
+        replace-inv? (not (every? (set ni) bi))
+        own-inv (if replace-inv? ni (vec (remove (set bi) ni)))
+        others (remove (into merged-sections #{:invariants :extends :replaces})
+                       (distinct (concat (keys new) (keys raw-old))))
+        d (reduce (fn [d k]
+                    (cond
+                      (not (contains? new k)) (dissoc d k)
+                      (and (= (get new k) (get base k)) (not (contains? raw-old k))) d
+                      :else (assoc d k (get new k))))
+                  raw-old others)
+        kept (set (:replaces raw-old))
+        d (reduce (fn [d k]
+                    (let [s (if (kept k) (get new k) (section k))]
+                      (if (seq s) (assoc d k s) (dissoc d k))))
+                  d merged-sections)
+        replaces (cond-> (set (remove #{:invariants} kept))
+                   replace-inv? (conj :invariants))
+        d (if (seq own-inv) (assoc d :invariants own-inv) (dissoc d :invariants))]
+    (if (seq replaces) (assoc d :replaces (vec (sort replaces))) (dissoc d :replaces))))
 
 (defn- cell-ref-id
   "The cell id out of a manifest's `:cells` value.
@@ -606,6 +719,65 @@
    (cells/load-cells!)
    (compile-definition definition opts)))
 
+;; --- an edit to a base -------------------------------------------------------
+
+(defn- manifest-names
+  "Every manifest the project has: its map's roles and whatever the store
+  holds that the map does not name."
+  []
+  (distinct (concat (userspace/roles :manifest)
+                    (map :name (userspace/names :manifest)))))
+
+(defn dependents
+  "The manifests that extend `base-name`, directly or through another, read
+  from their text as it stands (not through the validator, which is the
+  thing an edit to the base is about to change under them)."
+  [base-name]
+  (let [links (into {}
+                    (keep (fn [nm]
+                            (when-let [ext (some-> (userspace/unchecked-body :manifest nm)
+                                                   (as-> t (try (read-raw t) (catch Throwable _ nil)))
+                                                   (as-> m (when (map? m) (:extends m))))]
+                              [nm (name ext)])))
+                    (manifest-names))]
+    (loop [found [] frontier #{(str base-name)}]
+      (let [next (sort (for [[nm ext] links
+                             :when (and (frontier ext) (not (some #{nm} found)))]
+                         nm))]
+        (if (seq next)
+          (recur (into found next) (set next))
+          found)))))
+
+(def ^:dynamic ^:private *sweeping*
+  "True while an edit to a base is compiling what extends it, so a dependent
+  that is itself a base does not sweep again from inside the sweep."
+  false)
+
+(defn validate-edit!
+  "Check `text` as the manifest `name` with `compile-fn` (compile-loop, or
+  compile-definition where the registry must not be reloaded), throwing on
+  the first failure. When other manifests extend `name`, each is compiled
+  against `text` too, and a change that breaks one is refused naming it — a
+  base that compiles alone and breaks every role built on it is the edit
+  this exists to stop. A dependent the project already has refused on its
+  own is skipped: that is not this edit's doing."
+  [name text compile-fn]
+  (compile-fn (read-definition text))
+  (when-not *sweeping*
+    (binding [*sweeping* true
+              userspace/*candidate* (assoc userspace/*candidate* [:manifest (str name)] text)]
+      (doseq [dep (dependents name)
+              :when (not (userspace/rejection :manifest dep))
+              :let [dep-text (userspace/unchecked-body :manifest dep)]
+              :when dep-text]
+        (try (compile-fn (read-definition dep-text))
+             (catch Throwable e
+               (throw (ex-info (str "this change to " name " breaks manifest " dep
+                                    ", which extends it: " (or (ex-message e) (str e)))
+                               {:manifest (str name) :dependent dep}
+                               e)))))))
+  true)
+
 ;; --- the per-turn slice ------------------------------------------------------
 
 (def start-node
@@ -790,6 +962,9 @@
                    (when edn
                      (let [d (try (read-definition edn) (catch Throwable _ nil))]
                        {:name nm :description (str (:description d))
+                        ;; A base others extend (turn.edn), not a workflow
+                        ;; to run: off the switch menu and selection.
+                        :fragment? (boolean (:fragment? (try (read-raw edn) (catch Throwable _ nil))))
                         ;; Carried, not filtered here: the catalogue is the
                         ;; full inventory (the mutation tools and the
                         ;; selectability test read it), and it is the SWITCH
@@ -806,10 +981,12 @@
 ;; last.
 (userspace/register-validator!
  :manifest
- (fn [_ text]
-   (let [{:keys [value problem]} (userspace/read-edn text)]
+ (fn [nm text]
+   (let [{:keys [problem]} (userspace/read-edn text)]
      (or problem
          (try (cells/load-cells!)
-              (compile-definition value)
+              ;; Through validate-edit!, so an edit to a base is checked
+              ;; against every manifest that extends it (karamazov-xtd3).
+              (validate-edit! nm text compile-definition)
               nil
               (catch Throwable e (userspace/problem :compile e)))))))

@@ -2110,3 +2110,22 @@
                                                            {:function {:name "read_file" :arguments "{\"path\":\"b\"}"}}]}))
             parsed (fence/parse-tool-call (:content p) {})]
         (is (= 2 (:fences parsed)))))))
+
+(deftest arguments-smuggled-into-the-first-string-are-recovered
+  ;; Run bcd61b39 (karamazov-q9v1): GLM-5.3 put every argument after the first
+  ;; INSIDE the first one's string, escaped, and the tool read the whole tail
+  ;; as the action — refused twice on a decision that was right.
+  (let [raw (str "```tool-call\n"
+                 "{\"name\":\"adopt\",\"args\":{\"action\":\"decline\\\",\\\"kind\\\":\\\"policy\\\","
+                 "\\\"name\\\":\\\"gates\\\",\\\"rationale\\\":\\\"keep the local edit\\\"}\"}}\n"
+                 "```")
+        p (fence/parse-tool-call raw)]
+    (is (= "adopt" (:name p)))
+    (is (= {:action "decline" :kind "policy" :name "gates" :rationale "keep the local edit"}
+           (:args p)))
+    (is (:auto-repaired? p) "recorded as a repair, not silently normalised"))
+  (testing "a string argument that merely contains quotes is left alone"
+    (let [p (fence/parse-tool-call
+             "```tool-call\n{\"name\":\"shell\",\"args\":{\"command\":\"echo \\\"a\\\",\\\"b\\\"\"}}\n```")]
+      (is (= {:command "echo \"a\",\"b\""} (:args p)))
+      (is (not (:auto-repaired? p))))))

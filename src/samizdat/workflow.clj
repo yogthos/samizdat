@@ -209,12 +209,12 @@
   "The workflow catalog as a text menu — one `- name — description` line each —
   for injecting into the supervisor's context."
   [conn]
-  (str/join "\n" (for [{:keys [name description turn-sliceable?]} (catalog conn)
+  (str/join "\n" (for [{:keys [name description turn-sliceable? fragment?]} (catalog conn)
                        ;; A workflow a run cannot be pointed at is not an
                        ;; option, and offering it is worse than omitting it:
                        ;; the supervisor is told it may switch, and the switch
                        ;; fails at run start (karamazov-4sx).
-                       :when turn-sliceable?]
+                       :when (and turn-sliceable? (not fragment?))]
                    (str "- " name (when (seq description) (str " — " description))))))
 
 (defn workflow-prompt

@@ -1,106 +1,16 @@
 ;; The SUPERVISOR role loop — the harness's introspection agent. Structurally
-;; the per-turn worker graph (assemble -> infer -> parse -> dispatch -> journal
-;; -> arbiter -> route), because the supervisor works the same way every role
-;; does: a turn at a time until it decides. What makes it the SUPERVISOR is its
-;; role prompt (prompts/roles/supervisor.md, injected by :oversight/reason) and
-;; that it is handed a run-health digest to introspect on rather than a part to
-;; build. It has the FULL tool surface on purpose — it must be able to read the
-;; journal and transcripts to diagnose, and edit manifests / cells / prompts
-;; (the mutation protocol, which validates every change) to tune the harness.
+;; the turn chain itself (manifests/turn.edn, which it extends with nothing),
+;; because the supervisor works the same way every role does: a turn at a time
+;; until it decides, then every terminal verdict returns to the oversight cell.
+;; What makes it the SUPERVISOR is its role prompt (prompts/roles/supervisor.md,
+;; injected by :oversight/reason) and that it is handed a run-health digest to
+;; introspect on rather than a part to build. It has the FULL tool surface on
+;; purpose — it must be able to read the journal and transcripts to diagnose,
+;; and edit manifests / cells / prompts (the mutation protocol, which validates
+;; every change) to tune the harness.
 ;;
 ;; A separate, independently-versioned manifest so the supervisor role owns and
-;; can tune its own loop (manifest save "supervisor").
+;; can tune its own loop (manifest save "supervisor") without changing the turn
+;; every other role runs.
 {:description "The supervisor role loop: the harness's introspection agent, handed a run-health digest to diagnose and steer from. A component of the feature loop, not usually run standalone."
- :input-schema
- ;; What a driver hands this manifest to start a run. mycelium checks it in
- ;; run-compiled BEFORE any cell runs, so a caller that builds the map wrongly
- ;; is told which key, instead of a nil surfacing several cells later.
- [:map [:branch :map] [:turn :int]]
-
- :cells {:start          :loop/assemble
-         ;; THE CONTEXT-BUDGET LADDER, as nodes. Compaction used to be a
-         ;; side effect of building the request — invisible to every
-         ;; manifest, unreachable by introspect, tunable only by moving a
-         ;; character count. It runs between assembling the turn and calling
-         ;; the model, which is the only place the cheap rungs can act, and
-         ;; each rung is its own node so a project can rewire or drop one.
-         :measure        :compaction/measure
-         :cap            :compaction/cap
-         :prune          :compaction/prune
-         :fold           :compaction/fold
-         :infer          :llm/infer
-         :parse          :llm/parse
-         :provider-error :loop/provider-error
-         :no-call        :loop/no-call
-         :dispatch       :tool/dispatch
-         :journal        :journal/record
-         :settle         :gate/settle
-         :arbiter        :gate/arbiter
-         :route          :loop/route}
-
- :edges {:start          :measure
-         ;; measure WRITES :compaction/route and the dispatch READS it —
-         ;; never the other way round. A predicate that computed the tier
-         ;; here would put the routing back inside code and leave the
-         ;; manifest showing an opaque box.
-         :measure        {:cap  :cap
-                          :none :infer}
-         :cap            {:prune :prune
-                          :none  :infer}
-         :prune          :fold
-         :fold           :infer
-         :infer          :parse
-         :parse          {:provider-error :provider-error
-                          :no-call        :no-call
-                          :tool           :dispatch}
-         :provider-error :route
-         :no-call        :route
-         :dispatch       :journal
-         :journal        :settle
-         :settle         :arbiter
-         :arbiter        :route
-         :route          {:continue  :start
-                          :done      :end
-                          :abandoned :end
-                          :exhausted :end}}
-
- :dispatches {:measure [[:cap  {:compaction/route :cap}]
-                        [:none _]]
-              :cap     [[:prune {:compaction/route :prune}]
-                        [:none  _]]
-              ;; ORDER MATTERS here, as in loop.edn: a provider failure passes
-              ;; the data through with :parsed ABSENT, and a map pattern needs
-              ;; its key present, so :provider-error is tried first.
-              :parse [[:provider-error {:call {:ok false}}]
-                      [:no-call {:parsed nil}]
-                      [:no-call {:parsed {:name "__parse_error__"}}]
-                      [:tool _]]
-              :route [[:continue  {:verdict :continue}]
-                      [:done      {:verdict :done}]
-                      [:abandoned {:verdict :abandoned}]
-                      [:exhausted {:verdict :exhausted}]]}
-
- ;; EVERY ordering rule this turn claims, and which of them the compiler
- ;; catches. `:constraints` is DERIVED from the `:enforced true` entries
- ;; (workflow/enforced-constraints), so the documented set and the checked set
- ;; cannot drift apart. The turn-shaped manifests all carry the same four —
- ;; they are the shape of a turn, not of this particular workflow.
- :invariants
- [{:type :must-follow :if :dispatch :then :journal :enforced true
-   :protects "A dispatched tool call is always recorded."}
-
-  {:type :must-follow :if :journal :then :arbiter :enforced true
-   :protects "A recorded turn always faces a gate."}
-
-  {:type :must-precede :cell :dispatch :before :arbiter :enforced true
-   :protects "The arbiter reads what the turn DID; a gate deciding before the
-              tool ran would steer on the previous turn's state."}
-
-  {:type :must-precede :cell :settle :before :arbiter :enforced true
-   :protects "A gate cannot be credited with an outcome that preceded it:
-              :gate/settle closes this turn's open predictions BEFORE the
-              arbiter chooses, so a resolution closes against the gate that
-              asked for it and not the one about to."}
-
-  {:type :must-precede :cell :parse :before :dispatch :enforced true
-   :protects "Nothing is dispatched that was not parsed out of a reply."}]}
+ :extends "turn"}

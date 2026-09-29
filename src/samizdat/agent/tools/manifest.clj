@@ -41,6 +41,7 @@
             [clojure.string :as str]
             [mycelium.patch :as patch]
             [samizdat.agent.tools.base :as base]
+            [samizdat.heldout :as heldout]
             [samizdat.manifests :as manifests]
             [samizdat.prompt :as prompt]
             [samizdat.store.userspace :as us]
@@ -54,9 +55,10 @@
   on any error. The tool used to run a bare pre-compile that skipped the
   last two, so a manifest that could not run could still be saved — and then
   threw out of load-loop! at the next run start (karamazov-blt.6)."
-  [edn-text]
-  (manifests/compile-loop (manifests/read-definition edn-text))
-  true)
+  [name edn-text]
+  ;; Through validate-edit!: an edit to a manifest others extend is compiled
+  ;; against each of them too (karamazov-xtd3).
+  (manifests/validate-edit! name edn-text manifests/compile-loop))
 
 (defn- refused
   "The complaint for a throwable out of validate!.
@@ -364,8 +366,13 @@
             ;; loop this tool exists to invite — is not billed to the branch's
             ;; failure counter. The outer catch is left for what happens AFTER
             ;; this point, notably the store write.
-            (if-let [complaint (try (validate! edn-text) nil
-                                    (catch Throwable e (refused e)))]
+            (if-let [complaint (or (try (validate! name edn-text) nil
+                                        (catch Throwable e (refused e)))
+                                   ;; The held-out battery, last: the dearest
+                                   ;; check, and only for an edit that compiles
+                                   ;; (karamazov-7mo.4).
+                                   (heldout/check-edit conn {:kind :manifest :name name
+                                                             :text edn-text}))]
               ;; The complaint plus `usage`, which already says a save
               ;; validates before it stores — no new sentence in src/.
               (base/rejected branch
@@ -396,19 +403,32 @@
                 ;; not applied to whatever is there now.
                 (base/rejected branch (say :stale :name name :version version :expect expect))
                 (let [old (manifests/read-definition body)
+                      raw (manifests/read-raw body)
+                      ;; The ops apply to the whole graph; an extending
+                      ;; manifest's file then keeps only what differs from its
+                      ;; base, :extends and all (karamazov-xtd3).
+                      file-text (fn [new]
+                                  (if (:extends raw)
+                                    (patch/render body raw (manifests/extension-delta raw new))
+                                    (patch/render body old new)))
                       ;; Caught HERE for the reason save's is: a refused op or
                       ;; a result that does not compile is a correctable
                       ;; edit, not evidence about the branch (karamazov-gn64).
-                      outcome (try {:new (patch/apply-ops
-                                          old {:ops ops
-                                               :validator #(manifests/compile-loop %)})}
+                      outcome (try (let [new (patch/apply-ops
+                                              old {:ops ops
+                                                   :validator #(manifests/compile-loop %)})
+                                         text (file-text new)]
+                                     (validate! name text)
+                                     (if-let [r (heldout/check-edit conn {:kind :manifest :name name
+                                                                          :text text})]
+                                       {:complaint r}
+                                       {:new new :text text}))
                                    (catch Throwable e {:complaint (refused e)}))]
                   (if-let [complaint (:complaint outcome)]
                     (base/rejected branch
                                    (str "`manifest patch` refused: " (deflag complaint)
                                         "\n\n" (ops-help)))
-                    (let [new (:new outcome)
-                          text (patch/render body old new)
+                    (let [{:keys [new text]} outcome
                           v (save! conn name text why)]
                       (base/ok branch
                                (str (saved-line name v)

@@ -347,9 +347,24 @@
   instantly, so it spoke once and went quiet for the rest of the run.
 
   Concluding is not the same as having nothing left to say. A pass ends; the
-  stream does not."
-  [b]
-  (-> b (dissoc :final-answer :verdict :done? :status) (assoc :advisory? true)))
+  stream does not.
+
+  And THIS PASS'S BRIEF is appended (karamazov-3keg). Without it the resumed
+  branch woke to a conversation ending in its own accepted `done` and nothing
+  new: run bcd61b39's second pass, woken by three unmet gates, answered \"the
+  pass is complete\", and no later pass could see a round sent back, a
+  failing criterion or anything else the brief exists to carry."
+  [b brief]
+  ;; ACTIVE, not merely unfinished: state/active? is (= :active status), and
+  ;; dissoc'ing :status left a branch route read as inactive, so every
+  ;; resumed pass ran one turn and ended :abandoned (run bcd61b39, passes 2
+  ;; and 3). The last pass's ending reason and failure streaks go with it —
+  ;; a pass is not charged for how the one before it ended.
+  (cond-> (-> b
+              (dissoc :final-answer :verdict :done? :inactive-reason
+                      :consecutive-mechanics-failures :consecutive-provider-errors)
+              (assoc :status :active :advisory? true))
+    brief (update :messages (fnil conj []) {:role "user" :content brief})))
 
 (cell/defcell :oversight/reason
   {:doc "One turn of the supervisor ROLE, in the stream's OWN branch.
@@ -554,7 +569,7 @@
              ;; run-scoped resources every driver provides, and the carry is
              ;; this pass's value. Putting it in ctx would have meant claiming
              ;; the beam driver provides it, which it does not.
-             b (or (some-> (:oversight/carry data) resume-branch)
+             b (or (some-> (:oversight/carry data) (resume-branch prob))
                    (assoc (state/new-branch
                            {:id bid :problem prob
                             :messages (turn/initial-messages prob suffix :supervisor)})

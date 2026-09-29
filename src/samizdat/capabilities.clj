@@ -61,6 +61,7 @@
             [samizdat.export]
             [samizdat.hashline]
             [samizdat.leakage]
+            [samizdat.heldout]
             [samizdat.layers]
             [samizdat.lisp]
             [samizdat.llm.client]

@@ -49,7 +49,7 @@
             [samizdat.store.userspace :as us]))
 
 (defn- loop-def []
-  (edn/read-string (slurp (io/resource "manifests/loop.edn"))))
+  (manifests/read-definition (slurp (io/resource "manifests/loop.edn"))))
 
 (deftest every-cell-a-shipped-manifest-reaches-declares-its-shape
   ;; The general form. This began as a list of one manifest and grew a
@@ -62,7 +62,7 @@
   ;; same defcell, so the rule holds for cells this suite never sees.
   (cells/load-cells!)
   (doseq [nm (manifests/shipped-manifests)]
-    (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))
+    (let [d (manifests/read-definition (slurp (io/resource (manifests/manifest-resource nm))))
           ;; What a compile does. A composed sub-workflow cell (orchestrator's
           ;; :loop/worker) exists only once its child has been registered, so
           ;; without this it is absent from the registry rather than
@@ -290,7 +290,7 @@
 (deftest every-shipped-manifest-declares-what-it-starts-from
   (doseq [nm (manifests/shipped-manifests)]
     (testing nm
-      (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))]
+      (let [d (manifests/read-definition (slurp (io/resource (manifests/manifest-resource nm))))]
         (is (some? (:input-schema d))
             (str nm " declares no :input-schema, so the map a run starts from"
                  " is never checked — myc/pre-compile compiles nil and"
@@ -303,7 +303,7 @@
   ;; notice. Same reasoning manifests/ctx-keys is checked from both ends.
   (doseq [nm (manifests/shipped-manifests)]
     (testing nm
-      (let [d (edn/read-string (slurp (io/resource (manifests/manifest-resource nm))))]
+      (let [d (manifests/read-definition (slurp (io/resource (manifests/manifest-resource nm))))]
         (is (m/validate (:input-schema d) (entry-for nm))
             (str nm " refuses the map its own driver hands it: "
                  (pr-str (m/explain (:input-schema d) (entry-for nm)))))))))
@@ -330,7 +330,7 @@
   ;; transition. Both halves are what make it safe to require :verdict at
   ;; :loop/finish rather than merely plausible.
   (cells/load-cells!)
-  (let [d (edn/read-string (slurp (io/resource "manifests/orchestrator.edn")))]
+  (let [d (manifests/read-definition (slurp (io/resource "manifests/orchestrator.edn")))]
     (manifests/register-subworkflows! d)
     (let [out (get-in (cell/get-cell :loop/worker) [:schema :output])
           ;; mycelium wraps a composed cell's output as
@@ -404,7 +404,7 @@
 ;; --- Tier 1 satisfiability: one precondition pass (karamazov-41a.6) ---------
 
 (defn- shipped-definition [n]
-  (edn/read-string (slurp (io/resource (manifests/manifest-resource n)))))
+  (manifests/read-definition (slurp (io/resource (manifests/manifest-resource n)))))
 
 (deftest preconditions-are-one-report-over-ctx-and-data
   ;; check-requires! answers for ctx keys and the schema chain for data keys,

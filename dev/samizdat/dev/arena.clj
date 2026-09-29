@@ -53,6 +53,7 @@
             [samizdat.agent.acceptance :as acceptance]
             [samizdat.agent.beam :as beam]
             [samizdat.agent.gates :as gates]
+            [samizdat.heldout :as heldout]
             [samizdat.agent.verify :as verify]
             [samizdat.config :as config]
             [samizdat.leakage :as leakage]
@@ -1438,6 +1439,19 @@
                             :verify-timeout-ms 600000})]
     (println "\n=== SUMMARY ===")
     (clojure.pprint/pprint (summarize rows))
+    ;; THE HELD-OUT GATE, STAGE 2 (karamazov-7mo.4): the candidate arm read
+    ;; against the baseline arm, per task, floor -> cost -> guards.
+    ;; ARENA_ACCEPT=<baseline>,<candidate>; ARENA_STRUCTURAL=1 when the
+    ;; candidate adds a component, which is admissible inside the band.
+    (when-let [spec (System/getenv "ARENA_ACCEPT")]
+      (let [[b c] (map keyword (str/split spec #","))
+            fitness (gates/threshold :fitness)]
+        (println "\n=== HELD-OUT STAGE 2 ===")
+        (clojure.pprint/pprint
+         (heldout/live-verdict rows {:baseline b :candidate c
+                                     :structural? (= "1" (System/getenv "ARENA_STRUCTURAL"))
+                                     :cost-rule (:cost-rule fitness)
+                                     :noise (:noise fitness)}))))
     (println "\n=== RECURRING EDITS ===")
     (clojure.pprint/pprint (recurring-edits rows))
     ;; Opt-in, because it spends a model call per task that has both a

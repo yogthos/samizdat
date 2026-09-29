@@ -79,7 +79,7 @@
   :tools #{"intervene" "read_file" "read_digest" "grep" "lsp" "skill" "doc" "complete" "manual"
            "introspect" "cells" "cell" "manifest" "prompt" "policy" "adopt"
            "fetch_turn" "fetch_artifact" "recall" "remember" "forget" "retire" "outcome"
-           "experiment" "verdict" "message" "eval" "shell" "websearch" "done" "give_up"}
+           "experiment" "verdict" "battery" "message" "eval" "shell" "websearch" "done" "give_up"}
   :prompt "roles/supervisor"
   :sees #{:run-health :gate-health :failures}}
 

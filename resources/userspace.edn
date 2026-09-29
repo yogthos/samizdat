@@ -28,7 +28,10 @@
    :board-bt "manifests/board-bt.edn"
    :feature "manifests/feature.edn"
    :decompose "manifests/decompose.edn"
-   :repair "manifests/repair.edn"}
+   :repair "manifests/repair.edn"
+   ;; Not a workflow: the turn chain loop, worker, reviewer and supervisor
+   ;; extend (:extends "turn").
+   :turn "manifests/turn.edn"}
 
  :policies
   {:gates "gates.edn"
@@ -56,6 +59,8 @@
   {:acceptance-failed "prompts/acceptance-failed.md"
    :acceptance-judge "prompts/acceptance-judge.md"
    :adopt-tool "prompts/adopt-tool.md"
+   :battery-tool "prompts/battery-tool.md"
+   :heldout-refused "prompts/heldout-refused.md"
    :adoption-offer "prompts/adoption-offer.md"
    :architect "prompts/architect.md"
    :ask-tool "prompts/ask-tool.md"

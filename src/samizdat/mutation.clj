@@ -386,12 +386,15 @@
     :soak-input — the initial data map the soak dry-run starts from
     :compile-fn — how to compile+validate (default mycelium pre-compile)
     :rationale  — why, stored with the committed version (karamazov-c58)
+    :heldout-fn — (fn [candidate] -> refusal or nil), the held-out battery,
+                  consulted after the soak and before the commit
+                  (samizdat.heldout/check-edit; karamazov-7mo.4)
     :conn :run-id — to journal the outcome (optional)
 
   Returns {:status :committed :version n} or
   {:status :rolled-back :reason ...} with the registry restored and nothing
   written to the store."
-  [{:keys [name body loop-def extra-defs soak-input compile-fn rationale conn run-id]}]
+  [{:keys [name body loop-def extra-defs soak-input compile-fn rationale conn run-id heldout-fn]}]
   (let [compile-fn (or compile-fn myc/pre-compile)
         shadowing (shadowed-cells name body)
         unearned (unearned-marks body)
@@ -440,7 +443,13 @@
                                     (str "manifest '" nm "': " r)))
                                 extra-defs))]
         (fail reason)
-        (if-let [reason (soak compile-fn loop-def soak-input)]
+        (if-let [reason (or (soak compile-fn loop-def soak-input)
+                            ;; BATTERY — the dearest check, last: does the
+                            ;; candidate make a recorded case regress? It reads
+                            ;; the candidate from its text, in a child process,
+                            ;; so what is installed here does not matter to it.
+                            (when heldout-fn
+                              (heldout-fn {:kind :cell :name name :text body})))]
           (fail reason)
           ;; COMMIT. The candidate is already live; this is what makes it
           ;; survive a restart and what another run will load.

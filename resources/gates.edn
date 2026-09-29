@@ -1966,6 +1966,46 @@
         judgement — it hands over the episodes that have earned the
         question."}
 
+ :heldout
+ {:value {:enabled? true
+          :dir "battery"
+          :max-cases 5
+          :case-timeout-ms 600000
+          :stage-timeout-ms 120000
+          :turns-slack 5
+          :harness-dir nil
+          :command "jolt"
+          :trail-turns 12
+          :trail-chars 300
+          :skip "\\.sqlite3(-wal|-shm|-journal)?$"}
+  :provenance ["karamazov-7mo.4" "karamazov-ylte.4" "2609.24972v2" "2609.09153v1"]
+  :kind :policy :capability-tunable? false
+  :doc "THE HELD-OUT GATE, STAGE 1 (samizdat.heldout). Every cell, manifest
+        and policy edit a tool saves is first replayed against the project's
+        frozen battery — .samizdat/<:dir>/<subject>/<case>.edn, stored in
+        battery_cases the first time it is read — with the edit in place and
+        without it, each case in a child process on a copy of the tree the
+        recorded run started from. An edit under which a target that passed
+        fails is refused and nothing is saved. Ties are accepted.
+
+        A project with no cases is not gated: it tunes itself on the compile
+        and the soak, as before. :enabled? false turns the gate off where
+        cases exist. At most :max-cases run per edit; each has
+        :case-timeout-ms, and unpacking its fixture :stage-timeout-ms. A
+        replay runs the recording's longest branch plus :turns-slack turns,
+        so a candidate that takes more turns exhausts the recording (a named
+        result) rather than being cut off. :harness-dir is the samizdat
+        checkout a child is started from; nil means the server's working
+        directory, and :command the jolt it is started with. A .samizdat file
+        whose path matches :skip (the databases) is not copied into a replay.
+        A replay hands back the last :trail-turns turns of its run, each
+        result cut at :trail-chars, since its database dies with it.
+
+        Prompt edits are not replayed: the replies are fixed, so a prompt
+        cannot change what the model says under replay. That is stage 2's —
+        the arena's live arms (heldout/live-verdict), read with :fitness
+        :noise and :cost-rule."}
+
  :pruning
  {:value {:min-runs 3 :limit 5}
   :provenance ["karamazov-na2k.10" "2609.24972v2"]

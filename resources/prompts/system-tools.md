@@ -294,6 +294,17 @@ verdict({name})
     fitness per turn before and after. `worse` and `unchanged` both mean
     revert — a change nobody can justify is debt, and "it did not hurt" is not
     a reason to carry one.
+battery({action, run_id?})
+    The held-out cases every cell, manifest and policy save is replayed
+    against first: an edit under which a case target that passes today
+    fails is refused, naming the target, and nothing is saved. Actions:
+      list                 The cases, with their targets and fixtures.
+      add {run_id}         Freeze a finished run of this project as a case:
+                           its conversation, the tree it started from, and
+                           what it did. Add one when a run shows behaviour a
+                           later edit must not break. There is no remove,
+                           and editing a case's file changes nothing that
+                           runs.
 policy({action, ...})
     The numbers and tables behind every decision — gates.edn (every
     threshold, budget and steer gate), the phase machine, the wordlists, the

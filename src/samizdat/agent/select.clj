@@ -51,7 +51,7 @@
     ;; about which workflow suits which task; this is a claim about which
     ;; ones can drive a run at all, and it must not depend on a policy value
     ;; the agent may widen (karamazov-4sx).
-    (filterv #(and (contains? allowed (:name %)) (:turn-sliceable? %))
+    (filterv #(and (contains? allowed (:name %)) (:turn-sliceable? %) (not (:fragment? %)))
              (workflow/catalog conn))))
 
 (defn history-lines

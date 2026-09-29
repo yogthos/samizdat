@@ -884,7 +884,41 @@
      created_at TEXT NOT NULL)"
    "CREATE INDEX IF NOT EXISTS idx_gate_checks_run ON gate_checks(run_id, gate)"])
 
+(def v37
+  "THE HELD-OUT BATTERY and what it measured (karamazov-7mo.4 / ylte.4).
+
+  battery_cases is the battery's authority: a case is written once under its
+  id and never rewritten, so the running agent may add a case and may not
+  weaken or delete one — a case file edited or removed under .samizdat/battery
+  changes nothing that runs (samizdat.heldout/cases). body is the case as EDN:
+  its replay, its expectations, its fixture sha, its loop and model.
+
+  heldout_checks is one row per target per edit measured, with what the
+  number was measured ON beside it — the case's fixture, the harness
+  revision, the recorded model, the scorer — because a score without those
+  is only a number. accepted is the verdict on the whole edit."
+  ["CREATE TABLE IF NOT EXISTS battery_cases (
+     id TEXT PRIMARY KEY,
+     subject TEXT NOT NULL,
+     body TEXT NOT NULL,
+     added_at TEXT NOT NULL)"
+   "CREATE TABLE IF NOT EXISTS heldout_checks (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     edit_kind TEXT,
+     edit_name TEXT,
+     case_id TEXT NOT NULL,
+     target TEXT NOT NULL,
+     ok_before INTEGER NOT NULL,
+     ok_after INTEGER NOT NULL,
+     accepted INTEGER NOT NULL,
+     fixture TEXT,
+     revision TEXT,
+     model TEXT,
+     scorer TEXT,
+     created_at TEXT NOT NULL)"
+   "CREATE INDEX IF NOT EXISTS idx_heldout_checks_edit ON heldout_checks(edit_kind, edit_name)"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36])
+   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36 v37])

@@ -1028,6 +1028,19 @@
         v)
       hit)))
 
+(defn unchecked-body
+  "The text of `kind`/`name` as it stands, NOT passed through its validator:
+  the project's file in file mode (a candidate in `*candidate*` first), `body`
+  otherwise. For a check that must read a role while another role's edit is
+  being judged — an edit to a manifest base compiles what extends it — where
+  reading through the validator would cache a verdict made against a text
+  that may yet be refused."
+  [kind name]
+  (or (get *candidate* [kind (str name)])
+      (if (files?)
+        (some-> (project-path kind name) file-text)
+        (body kind name))))
+
 (defn body!
   "`body`, failing loud when it is absent. For a caller whose whole operation
   is meaningless without it — a manifest node's cell, the system prompt."

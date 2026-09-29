@@ -222,7 +222,7 @@
   ;; load-bearing is :parse: a provider failure leaves :parsed unset, so the
   ;; provider-error branch has to be tried first. That is intentional, and
   ;; this pins it as the whole of the manifest's order-dependence.
-  (let [def (edn/read-string (slurp (io/resource "manifests/loop.edn")))
+  (let [def (manifests/read-definition (slurp (io/resource "manifests/loop.edn")))
         tables (:dispatches def)]
     (is (= #{:measure :cap :parse :route} (set (keys tables))))
     (doseq [[cell table] tables

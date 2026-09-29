@@ -97,6 +97,7 @@
             [samizdat.prompt-test]
             [samizdat.workflow-test]
             [samizdat.manifest-test]
+            [samizdat.manifest-extends-test]
             [samizdat.judge-test]
             [samizdat.team-test]
             [samizdat.claims-test]
@@ -187,6 +188,7 @@
             [samizdat.replroots-test]
             [samizdat.oversight-test]
             [samizdat.battery-test]
+            [samizdat.heldout-test]
             [samizdat.procedure-test]
             [samizdat.replay-test]
             [samizdat.mechanics-test]
@@ -260,6 +262,7 @@
     samizdat.replroots-test
     samizdat.oversight-test
     samizdat.battery-test
+    samizdat.heldout-test
     samizdat.procedure-test
     samizdat.replay-test
     samizdat.mechanics-test
@@ -309,6 +312,7 @@
     samizdat.prompt-test
     samizdat.workflow-test
     samizdat.manifest-test
+    samizdat.manifest-extends-test
     samizdat.judge-test
     samizdat.team-test
     samizdat.claims-test

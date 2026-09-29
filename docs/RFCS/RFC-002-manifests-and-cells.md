@@ -57,8 +57,33 @@ glob-scoped interceptors match on.
  :constraints  [{:type :must-follow :if node :then node}]
  :subworkflows {cell-id manifest-name}     ; optional: a nested manifest as one node
  :prompt       "name"                      ; optional: prompt appended to the base
- :turn-sliceable? false}                   ; optional, default true — see below
+ :turn-sliceable? false                    ; optional, default true — see below
+ :extends      "manifest-name"             ; optional: carry only what differs from it
+ :replaces     [:invariants]               ; optional: keys that are this file's alone
+ :fragment?    true}                       ; optional: a base, not a workflow to run
 ```
+
+`:extends` names another manifest this one is built on, and the file carries
+only what differs (karamazov-xtd3). `manifests/turn.edn` holds the turn chain
+— assemble, the context-budget ladder, infer, parse, dispatch, journal,
+settle, arbiter, route — and `loop`, `worker`, `reviewer` and `supervisor`
+extend it and add their tail: the supervisor nothing, worker and reviewer a
+`:distil` on every ending, loop a `:distil` then `:finish`. They were four
+copies of one graph until then, and copies drift. `read-definition` resolves
+the link, so every reader sees the whole graph: `:cells`, `:edges` and
+`:dispatches` merge key by key with the child winning and a `nil` removing the
+base's entry; the base's `:invariants` hold and the child's are added; any
+other key is the child's where it has one; a key listed in `:replaces` is the
+child's alone, which is how a child that renames a node drops the base's
+invariants naming the old one. A base that resolves to nothing, and a chain
+that returns to itself, are refused by name. The base is a manifest role like
+any other — editable, versioned, validated — and saving it compiles every
+manifest that extends it against the candidate first, refusing, by name, a
+change that breaks one (`manifests/validate-edit!`). `manifest patch` applies
+its ops to the resolved graph and writes back only the delta
+(`manifests/extension-delta`), so the file keeps its `:extends`. `:fragment?`
+marks a base that is not itself a workflow: it stays in `catalog`, is off the
+switch menu and selection, and is not inherited.
 
 `:turn-sliceable?` declares that a manifest may **not** be a run's loop. The
 slice cuts every edge returning to `:start` into `:end`, which is the
@@ -95,7 +120,8 @@ checked (karamazov-viht.2; the same disclosure rides `policy show gates` and
 manifests/beam.edn         the ROUND    advance · score · cull · settle ·
                                         repopulate · spawn · tick · back edge
   └─ manifests/loop.edn    the TURN     assemble · infer · parse · dispatch ·
-     (per-turn slice)                   journal · settle · arbiter · route
+     (per-turn slice,                   journal · settle · arbiter · route
+      extends turn.edn)
 ```
 
 `turn-manifest` **derives** the per-turn slice from a whole-run manifest by

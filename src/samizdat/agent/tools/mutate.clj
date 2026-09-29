@@ -25,12 +25,12 @@
 
   A separate namespace requiring only base, so it plugs into the tool surface
   without dragging the mutation machinery into the aggregator."
-  (:require [clojure.edn :as edn]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [mycelium.cell :as cell]
             [samizdat.agent.state :as state]
             [samizdat.agent.tools.base :as base]
             [samizdat.cells :as cells]
+            [samizdat.heldout :as heldout]
             [samizdat.manifests :as manifests]
             [samizdat.mutation :as mutation]
             [samizdat.prompt :as prompt]
@@ -64,7 +64,7 @@
   run was not driving: a bad edit to the evolved loop could commit, and a
   valid one could be refused (karamazov-blt.2)."
   [ctx]
-  (edn/read-string (userspace/body! :manifest (active-name ctx))))
+  (manifests/read-definition (userspace/body! :manifest (active-name ctx))))
 
 (defn- extra-defs
   "Every OTHER manifest this project can run — shipped and stored — as
@@ -79,7 +79,7 @@
               :when (not= nm active)
               :let [body (manifests/manifest-body nm)]
               :when body
-              :let [d (try (edn/read-string body) (catch Throwable _ nil))]
+              :let [d (try (manifests/read-definition body) (catch Throwable _ nil))]
               :when (seq (:cells d))]
           [nm d])))
 
@@ -192,6 +192,7 @@
                       ;; just installed (karamazov-blt.2).
                       :compile-fn manifests/compile-definition
                       :soak-input (soak-input)
+                      :heldout-fn #(heldout/check-edit conn %)
                       :conn conn :run-id run-id})]
               (case (:status r)
                 :committed
