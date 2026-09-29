@@ -1046,3 +1046,22 @@
             (let [r (api-control/start-run! {:conn c :config cfg} {:problem "p"})]
               (is (= 503 (:status r)))
               (is (str/includes? (get-in r [:body :error :message]) "connection refused: 127.0.0.1:8080")))))))))
+
+(deftest a-directive-to-a-branch-that-has-ended-is-refused
+  ;; karamazov-amem: the supervisor queued directives to branches that had
+  ;; already ended; nothing would ever drain them.
+  (let [c (samizdat.store.db/open! ":memory:")
+        rid (samizdat.store.runs/start-run! c {:problem "p"})
+        submit! (fn [m] (samizdat.store.interventions/submit! c rid m))]
+    (doseq [b ["B1" "B2" "B3"]] (samizdat.store.runs/open-branch! c rid {:branch-id b}))
+    (samizdat.store.runs/close-branch! c rid "B1" :abandoned "gave up")
+    (samizdat.store.runs/close-branch! c rid "B2" :exhausted "turn cap")
+    (let [e (try (submit! {:branch-id "B1" :kind "message" :payload "hello"}) nil
+                 (catch Throwable e e))]
+      (is (some? e) "an abandoned branch will never drain it")
+      (is (re-find #"B1" (str (ex-message e))))
+      (is (re-find #"gave up" (str (ex-message e))) "and the refusal says how it ended"))
+    (is (number? (submit! {:branch-id "B2" :kind "extend" :payload {:turns 5}}))
+        "an exhausted branch can still be extended — the one ending that is not final")
+    (is (number? (submit! {:branch-id "B3" :kind "message" :payload "hi"})) "a live one")
+    (is (number? (submit! {:branch-id nil :kind "pause" :payload {}})) "run-wide is unaffected")))
