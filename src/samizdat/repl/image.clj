@@ -98,17 +98,35 @@
   (sandbox/wrap backend confinement ["jolt" "-Sdeps" nrepl-sdeps "nrepl-server" (str port)]))
 
 (defn- await-port!
-  "Block until `port` accepts a connection, or `deadline-ms` passes. True when
-  it came up."
-  [port deadline-ms]
+  "Block until `port` accepts a connection, `deadline-ms` passes, or `proc`
+  has exited — a child that died will not come up, and waiting out the whole
+  deadline for it only hides why. True when it came up."
+  [port deadline-ms proc]
   (let [end (+ (System/currentTimeMillis) deadline-ms)]
     (loop []
-      (if (try (with-open [_ (java.net.Socket. "127.0.0.1" (int port))] true)
-               (catch Exception _ false))
+      (cond
+        (try (with-open [_ (java.net.Socket. "127.0.0.1" (int port))] true)
+             (catch Exception _ false))
         true
-        (when (< (System/currentTimeMillis) end)
-          (Thread/sleep 100)
-          (recur))))))
+
+        (and proc (not (process/alive? proc)))
+        false
+
+        (< (System/currentTimeMillis) end)
+        (do (Thread/sleep 100) (recur))))))
+
+(defn- logged-argv
+  "`argv` with the child's stdout and stderr sent to `log`. They were pipes
+  nobody read (jolt.process's default), so a child that printed enough while
+  starting — a cold cache's warnings — could fill one and stall before it
+  bound its port (karamazov-69p0). The redirect is made by a shell OUTSIDE the
+  sandbox wrapper, so the confinement profile is not touched."
+  [argv log]
+  (into ["sh" "-c" "exec \"$@\" >>\"$0\" 2>&1" (str log)] argv))
+
+(defn- tail-of [f n]
+  (try (->> (slurp f) str/split-lines (take-last n) (str/join "\n"))
+       (catch Exception _ "")))
 
 (defn start!
   "Start a project image at `root` and return it, or nil when it could not be
@@ -131,7 +149,9 @@
                     {:project-root root :scratch-paths [scratch]}
                     (sandbox/deny-read-kinds (:deny-read sandbox-spec)))]
     (sandbox/write-profile! backend profile spec)
-    (let [argv (spawn-argv backend {:profile profile :spec spec} port)
+    (loop [attempt 1 port port]
+    (let [argv (logged-argv (spawn-argv backend {:profile profile :spec spec} port)
+                            (io/file scratch "image.log"))
           ;; THE CHILD SEES ONLY A SCRUBBED ENVIRONMENT, the same one the shell
           ;; tool's subprocess gets. boundary-test's security map records the
           ;; rule this is obeying: a tool whose reach is :spawns-process "must
@@ -144,7 +164,7 @@
           proc (process/process argv {:dir (str root)
                                       :env (secrets/scrub-env
                                             (into {} (System/getenv)))})]
-      (if (await-port! port (connect-timeout-ms))
+      (if (await-port! port (connect-timeout-ms) proc)
         (do (log/info "project image up on" port "rooted at" root
                       (if (= :none backend) "(unsandboxed)" (str "under " (name backend))))
             {:proc proc :port port :root (str root) :backend backend
@@ -154,10 +174,22 @@
              ;; shared one crossed concurrent branches' replies and let a
              ;; timed-out eval poison every later one.
              :sessions (atom #{})})
-        (do (log/error "project image did not come up on" port
-                       "— profile at" profile)
-            (try (process/destroy-tree proc) (catch Exception _ nil))
-            nil)))))
+        (let [exit (when-not (process/alive? proc)
+                     (try (.exitValue ^java.lang.Process (:proc proc)) (catch Exception _ nil)))]
+          (try (process/destroy-tree proc) (catch Exception _ nil))
+          ;; WHY, where it used to say only where the profile was: the
+          ;; deadline in force, whether the child had exited and how, and
+          ;; what it printed. A start that failed under full-suite load left
+          ;; nothing to go on (karamazov-69p0, karamazov-tetz).
+          (log/error "project image did not come up on" port
+                     (str "(attempt " attempt ", waited up to " (connect-timeout-ms) " ms"
+                          (if exit (str ", child exited " exit) ", child still running") ")")
+                     "— profile at" profile "\n" (tail-of (io/file scratch "image.log")
+                                                         (:image-log-lines (gates/threshold :image-start))))
+          ;; Once more on a fresh port: the free-port gap is a real race, and
+          ;; a load spike is not a reason to fail the eval.
+          (when (< attempt (:attempts (gates/threshold :image-start)))
+            (recur (inc attempt) (free-port)))))))))
 
 (defn- reap-timeout-ms
   "How long to wait for a killed image to actually be gone. gates.edn
