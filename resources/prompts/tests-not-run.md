@@ -1,0 +1,1 @@
+tests passed, but the suite never ran {{nses}} — test code this run added or changed that the project's test runner does not include. A green suite says nothing about tests it did not run. Register them where the runner lists its test namespaces, then run the suite again and check they appear in its output.

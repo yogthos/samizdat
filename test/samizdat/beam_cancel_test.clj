@@ -245,3 +245,28 @@
             (is (str/includes? (:content (first msgs)) "deadline"))
             (is (nil? (:tool (samizdat.store.journal/last-note c rid :forfeit)))))))
       (finally (db/close c)))))
+
+;; --- serial turns, for a replay (karamazov-x0dx) -----------------------------
+;;
+;; A held-out replay of a run that forked read 11/14 and 13/14 on the same
+;; baseline minutes apart: every branch's turn starts at once, and which lands
+;; first is timing. Under :serial-turns? each turn runs to its end before the
+;; next starts, in the order the branches are listed.
+
+(deftest serial-turns-run-one-at-a-time-in-list-order
+  (let [log (atom [])
+        bs (mapv #(state/new-branch {:id % :problem "p"}) ["B1" "B1.2" "B1.3"])]
+    (with-redefs [beam/advance-branch (fn [_ b _]
+                                        (swap! log conj [:start (:id b)])
+                                        ;; the first listed is the slowest, so
+                                        ;; a concurrent round would finish it last
+                                        (ebb/? (ebb/sleep (if (= "B1" (:id b)) 150 10)))
+                                        (swap! log conj [:end (:id b)])
+                                        (assoc b :ran true))]
+      (let [out (beam/advance-all (assoc (ctx 5000) :serial-turns? true) bs 1)]
+        (is (= [[:start "B1"] [:end "B1"] [:start "B1.2"] [:end "B1.2"]
+                [:start "B1.3"] [:end "B1.3"]]
+               @log)
+            "each turn ends before the next begins, in list order")
+        (is (= ["B1" "B1.2" "B1.3"] (mapv :id out)) "results in the branches' order")
+        (is (every? :ran out))))))

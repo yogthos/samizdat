@@ -322,7 +322,9 @@
     (is (str/includes? (:result r) "python3 evil.py")
         "the refusal quotes the statement that was not allowed")
     (is (not (str/includes? (:result r) "Split it up"))
-        "and does not tell it to split a command that already decomposed"))
+        "and does not tell it to split a command that already decomposed")
+    (is (= "python3" (get-in r [:policy :refused]))
+        "and names the head it refused, so a branch can count it (karamazov-q1tt)"))
   (testing "a genuinely opaque command still gets the compound lesson"
     (let [r (policy/run-shell {:args {:command "echo $(rm -rf ~)"}})]
       (is (:needs-approval r))

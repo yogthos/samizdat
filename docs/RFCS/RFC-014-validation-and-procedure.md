@@ -185,10 +185,17 @@ decides.
 ### The gate in production (karamazov-7mo.4 / ylte.4)
 
 `samizdat.heldout` is what runs the battery. Every `cell save`, `manifest
-save`/`patch` and `policy save` calls `heldout/check-edit` before it stores:
-the battery is replayed with the candidate in place and without it, and an
-edit under which a target that passed fails is refused with the targets named
-(`prompts/heldout-refused.md`). Nothing is saved; what runs is unchanged.
+save`/`patch` and `policy save` validates in the turn as before, then hands
+the edit to `heldout/defer!`: the battery is replayed with the candidate in
+place and without it on a background lane, and an edit under which a target
+that passed fails is refused with the targets named
+(`prompts/heldout-refused.md`). **Off the turn** (karamazov-nha1): a refusal is
+confirmed by a second replay, so one case's refusal took 733 s against a
+900 s turn deadline while the gate ran inside the tool call. The tool now
+answers at once that the edit is pending and not live; the verdict reaches
+the branch that made it as a `message` directive on a later turn
+(`prompts/heldout-decided.md`) and is journalled as `:heldout-verdict`. Edits
+are measured and committed one at a time, in the order they were made.
 
 **One child process per case.** A replay must read the candidate as the
 project's userspace from every branch fiber, and a dynamic binding does not
@@ -200,6 +207,13 @@ the project's `.samizdat/` with the candidate file written in, and
 replays the recording through `beam/run!`, and runs `battery/check`. Side
 calls a cell makes on its own (critic, judges) were never recorded and are
 refused identically on both sides.
+
+**The same computation every time** (karamazov-x0dx). A recording that forked
+replayed its branches concurrently, and which turn landed first was timing:
+one baseline read 11/14 and 13/14 minutes apart. The child runs
+`beam/run!` with `:serial-turns? true` — each round's turns run one after
+another in branch order — and `:oversight? false`, since the supervisor's
+passes fire on a clock and the recording cannot answer them.
 
 **The rule is non-compensatory, per target.** No target that passed at
 baseline may fail on the candidate, and both sides must cover the same

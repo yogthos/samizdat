@@ -238,7 +238,20 @@
                                          :names (str/join ", " (policy-names))}))
             :else
             (let [parsed (try {:ok (edn/read-string (str body))}
-                              (catch Throwable e {:error (ex-message e)}))]
+                              (catch Throwable e {:error (ex-message e)}))
+                  ;; SELF-GRADING IS NAMED, on both paths below (M10).
+                  self-graded! (fn []
+                                 (when (= "gates" name)
+                                   ;; Against the STORED current body rather than
+                                   ;; gates/config: the cache is a process global and can
+                                   ;; lag what this project has in force, which would name
+                                   ;; an edit that did not happen (or miss one that did).
+                                   (let [changed (gates/self-graded-changes
+                                                  (try (userspace/edn-body :policy "gates")
+                                                       (catch Throwable _ nil))
+                                                  (:ok parsed))]
+                                     (when (seq changed)
+                                       (safely-note ctx changed why)))))]
               (cond
                 (:error parsed)
                 ;; A body that does not read is a rejected edit, not a branch
@@ -246,13 +259,32 @@
                 (base/rejected branch (msg {:bad-edn true :name name
                                             :complaint (:error parsed)}))
 
-                ;; The held-out battery, before anything is stored: a table
-                ;; under which a recorded case's target stops passing is not
-                ;; saved (karamazov-7mo.4).
+                ;; A table that will not load is refused here, in the turn —
+                ;; the held-out battery below is only for one that would.
+                (some-> (userspace/validator :policy) (as-> f (f name (str body))))
+                (base/rejected branch (msg {:rolled-back true :name name
+                                            :complaint (:message ((userspace/validator :policy)
+                                                                  name (str body)))}))
+
+                ;; The held-out battery, off the turn (karamazov-nha1): when
+                ;; the project has one the table is replayed in the background
+                ;; and saved only if it passes, and the branch is told.
+                (heldout/defer! (or (:conn ctx) (userspace/conn))
+                                {:kind :policy :name name :text (str body)}
+                                {:commit! (fn []
+                                            (self-graded!)
+                                            (let [v (userspace/save! :policy name (str body) why)]
+                                              (when (nil? v)
+                                                (throw (ex-info (msg {:unbound true :name name}) {})))
+                                              (try (reload-and-verify! name) v
+                                                   (catch Throwable e
+                                                     (rollback! name v)
+                                                     (throw e)))))
+                                 :run-id (:run-id ctx) :branch-id (:id branch)})
+                (base/ok branch (prompt/render "heldout-pending" {:kind "policy" :name name})
+                         :progress? true)
+
                 :else
-                (if-let [refusal (heldout/check-edit (or (:conn ctx) (userspace/conn))
-                                                     {:kind :policy :name name :text (str body)})]
-                  (base/rejected branch refusal)
                 ;; Warm the cache so the seed exists and the version we might
                 ;; roll back to is real, then store and recompile.
                 (do (userspace/body :policy name)
@@ -264,17 +296,7 @@
                     ;; record where a reader of the run can see it. Journalled
                     ;; before the save so a rollback still leaves the attempt
                     ;; visible.
-                    (when (= "gates" name)
-                      ;; Against the STORED current body rather than
-                      ;; gates/config: the cache is a process global and can
-                      ;; lag what this project has in force, which would name
-                      ;; an edit that did not happen (or miss one that did).
-                      (let [changed (gates/self-graded-changes
-                                     (try (userspace/edn-body :policy "gates")
-                                          (catch Throwable _ nil))
-                                     (:ok parsed))]
-                        (when (seq changed)
-                          (safely-note ctx changed why))))
+                    (self-graded!)
                     (let [v (userspace/save! :policy name (str body) why)]
                       (if (nil? v)
                         (base/fail branch (msg {:unbound true :name name}))
@@ -289,7 +311,7 @@
                             ;; is where it started — a rejected edit.
                             (base/rejected branch
                                            (msg {:rolled-back true :name name
-                                                 :complaint (ex-message e)}))))))))))))
+                                                 :complaint (ex-message e)})))))))))))
 
         "revert"
         (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)

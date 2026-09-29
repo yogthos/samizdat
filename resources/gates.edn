@@ -708,6 +708,22 @@
         the tracked set narrows to the intersection so divergent touches
         break the streak on their own; a no-file call resets it."}
 
+ :refused-repeat-threshold
+ {:value 2 :kind :threshold :capability-tunable? true
+  :provenance ["karamazov-q1tt"]
+  :doc "How many refusals of one command head (by the shell policy: denied,
+        or needing an approval nobody gives) before the refused-again gate
+        says so. Two: the first refusal already explained itself; the second
+        is the branch trying the same thing another way. Run bcd61b39 retried
+        `rm`, `nohup jolt … &` and `true` ~15 times over ~50 turns."}
+
+ :max-refused-nudges
+ {:value 3 :kind :re-fire-guard :capability-tunable? true
+  :provenance ["karamazov-q1tt"]
+  :doc "How often the refused-again gate may fire on one branch. Each firing
+        names the head it is about, so a branch that moves on from `rm` to
+        `nohup` hears about the second too; past this it is the supervisor's."}
+
  :max-file-thrash-nudges
  {:value 1 :kind :re-fire-guard :capability-tunable? true
   :doc "How often the file-thrash gate may fire on one branch. One-shot per
@@ -1978,7 +1994,8 @@
           :trail-turns 12
           :trail-chars 300
           :skip "\\.sqlite3(-wal|-shm|-journal)?$"}
-  :provenance ["karamazov-7mo.4" "karamazov-ylte.4" "2609.24972v2" "2609.09153v1"]
+  :provenance ["karamazov-7mo.4" "karamazov-ylte.4" "karamazov-nha1" "karamazov-x0dx"
+               "2609.24972v2" "2609.09153v1"]
   :kind :policy :capability-tunable? false
   :doc "THE HELD-OUT GATE, STAGE 1 (samizdat.heldout). Every cell, manifest
         and policy edit a tool saves is first replayed against the project's
@@ -1986,7 +2003,13 @@
         battery_cases the first time it is read — with the edit in place and
         without it, each case in a child process on a copy of the tree the
         recorded run started from. An edit under which a target that passed
-        fails is refused and nothing is saved. Ties are accepted.
+        fails is refused and nothing is saved. Ties are accepted. The replay
+        runs OFF THE TURN (karamazov-nha1): the tool answers at once that
+        the edit is pending, and the verdict — live, or refused with the
+        targets named — reaches the branch that made it as a message on a
+        later turn. Replays run one turn at a time with no supervisor
+        stream, so two replays of one case are the same computation
+        (karamazov-x0dx).
 
         A project with no cases is not gated: it tunes itself on the compile
         and the soak, as before. :enabled? false turns the gate off where
@@ -3221,7 +3244,12 @@
     :root-strip-regex "^(test|gui|src)/"
     :ext-strip-regex "\\.cljc?$"
     :ns-whitelist-regex "[a-zA-Z0-9.*-]+"
-    :cmd-prefix "jolt -A:test -e '"}
+    :cmd-prefix "jolt -A:test -e '"
+    ;; What the suite prints for each namespace it ran, {{ns}} standing for
+    ;; the namespace (clojure.test's run-tests). A changed test namespace
+    ;; the full suite's output does not show is a test the suite never ran
+    ;; (karamazov-khzy); an output with no marker at all is not judged.
+    :ran-marker "Testing {{ns}}"}
    :kind :threshold :capability-tunable? false
    :doc "The focused-verify conventions as data (see the comment above)."}
 
@@ -3942,6 +3970,30 @@
                              " — do not retry these:\n"
                              (str/join "\n" (map (fn [x] (str "- " x)) earlier)))))
    :prediction "the branch retracts, decomposes, or changes technique"
+   :window 3}
+
+  {:gate :refused-again
+   :provenance ["karamazov-q1tt"]
+   :priority 9.4
+   :budget :max-refused-nudges
+   :doc "A command head the shell policy refused was just refused again. The
+         refusal text explains itself once; the second attempt — usually the
+         same head in a different command — means the branch has not taken
+         it in, and in an unattended run nobody will approve it. Names the
+         head and the count and asks for a different route. Above
+         file-thrash: a branch spending turns on refusals is not working at
+         all."
+   ;; the quantity the :when compares, recorded at every check (na2k.7)
+   :measure (get-in branch [:refused-heads (:last-refused branch)] 0)
+   :when (when-let [h (:last-refused branch)]
+           (>= (get-in branch [:refused-heads h] 0)
+               (threshold :refused-repeat-threshold)))
+   :message-form (sp/render-str (prompt "refused-again")
+                                {:head (:last-refused branch)
+                                 :count (get-in branch [:refused-heads (:last-refused branch)])
+                                 :total (:refusals branch)
+                                 :goal (state/stated-goal branch)})
+   :prediction "the branch stops issuing the refused head"
    :window 3}
 
   {:gate :file-thrash

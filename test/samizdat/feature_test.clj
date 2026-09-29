@@ -472,6 +472,29 @@
       (let [{:keys [result]} (run "YES")]
         (is (= :completed (:status result)))))))
 
+(deftest a-green-suite-that-never-ran-the-new-tests-is-not-green
+  ;; karamazov-khzy, run bcd61b39: the suite reported the baseline's 94 tests
+  ;; green while the run's new horizon test was not in the project's runner,
+  ;; and two supervisor passes judged it verified green from that.
+  (with-redefs [judge/deterministic-block (constantly nil)
+                judge/parse-verdict (constantly :complete)
+                judge/blocking-findings (constantly nil)
+                gitdiff/changed-files (constantly ["src/x.clj" "test/x_test.clj"])
+                proc/run (constantly {:exit 0 :out "Testing old-test\nRan 94 tests"})
+                verify/unrun-tests (fn [_ _ out]
+                                     (when (str/includes? (str out) "Ran 94") ["x-test"]))
+                llm/chat (roles-answering-acceptance {:review :pass} "YES")]
+    (let [conn (db/open! ":memory:")
+          r (run-feature conn {:config {:run {:loop "feature" :subtasks ["alpha"]
+                                             :verify-cmd "run-tests"
+                                             :max-revisions 1 :max-revisions-hard 1}}})
+          route (journal/notes conn (:run-id r) :route)
+          verify (journal/notes conn (:run-id r) :verify)]
+      (is (not= :completed (:status r)) "a suite that skipped the new tests does not ship")
+      (is (some #(false? (:tests-passed %)) route) "the tests half reads not passed")
+      (is (some #(str/includes? (str (:note %)) "x-test") verify)
+          "and the note names the namespace the suite never ran"))))
+
 (deftest a-switch-directive-changes-the-implement-approach-mid-run
   ;; self-healing: the supervisor decides the board isn't working and switches
   ;; this run's implement stage to the decompose loop with a `switch`

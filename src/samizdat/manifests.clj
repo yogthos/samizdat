@@ -373,7 +373,9 @@
     :token-budget
     ;; What the beam driver adds
     :problem :beam? :beam-width :turn-workflow :iterating-loop? :git-baseline
-    :repl-session :live-branches :cancelling})
+    :repl-session :live-branches :cancelling
+    ;; A replay's switches (samizdat.heldout.child, karamazov-x0dx)
+    :serial-turns? :oversight?})
 
 (defn cell-requires
   "The ctx keys `cell-id` declares it reads. `:requires` is mycelium's own

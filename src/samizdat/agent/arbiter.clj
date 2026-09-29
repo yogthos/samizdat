@@ -190,7 +190,7 @@
   :settle-called vocabulary. Kept beside the `case` below and asserted
   against it by the coherence test, so a gate that falls out of both is
   caught at test time rather than by settling :unmet forever."
-  #{:stuck :prologue-cap :progress-stalled :file-thrash :human-directive})
+  #{:stuck :prologue-cap :progress-stalled :file-thrash :human-directive :refused-again})
 
 (defn settle
   "Decide whether an open prediction came true, given what the branch did.
@@ -271,6 +271,11 @@
         ;; counter measures (karamazov-g86).
         :file-thrash (< (get-in branch-after [:file-touch :streak] 0)
                         (gates/threshold :file-thrash-threshold))
+        ;; Met when a turn after it was NOT refused: the branch took another
+        ;; route. Read off the refusal record rather than a tool name, since
+        ;; the refused call and the one that replaces it are both `shell`
+        ;; (karamazov-q1tt).
+        :refused-again (nil? (:last-refused branch-after))
         :human-directive true
         (tools-met? gate))
       (if late? :met-late :met)

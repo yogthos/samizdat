@@ -662,7 +662,9 @@
                               (if protected-path
                                 {:protected true :path protected-path :rule rule-text}
                                 {:denied true :head head :rule rule-text}))
-       :policy {:effect :deny}}
+       ;; :refused names what was refused, so a branch can count a head it
+       ;; keeps being refused across varied commands (karamazov-q1tt).
+       :policy {:effect :deny :refused (or (some-> blocked-segment command-head) head)}}
 
       :ask
       ;; The refusal has to teach the fix, or it is just a wall. Observed live
@@ -694,6 +696,7 @@
                                :note note
                                :unanswered timed-out})
        :policy {:effect :ask
+                :refused (or (some-> blocked-segment command-head) head)
                 ;; No grant unlocks a COMPLEX command (invariant 5 downgrades
                 ;; it to :ask even over a grant), so suggesting `head *` for
                 ;; one taught a fix that could not work — the observed
