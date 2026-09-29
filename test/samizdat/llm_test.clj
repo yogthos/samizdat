@@ -2129,3 +2129,10 @@
              "```tool-call\n{\"name\":\"shell\",\"args\":{\"command\":\"echo \\\"a\\\",\\\"b\\\"\"}}\n```")]
       (is (= {:command "echo \"a\",\"b\""} (:args p)))
       (is (not (:auto-repaired? p))))))
+
+(deftest a-reply-cut-short-by-the-provider-reads-as-truncated
+  ;; karamazov-6uyv: DeepSeek's insufficient_system_resource ends a reply
+  ;; mid-generation, like length; it read as a model that made no call.
+  (is (:truncated (fence/signals {:finish-reason "insufficient_system_resource"} nil)))
+  (is (:truncated (fence/signals {:finish-reason "length"} nil)))
+  (is (not (:truncated (fence/signals {:finish-reason "stop"} nil)))))

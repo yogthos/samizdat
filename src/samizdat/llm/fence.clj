@@ -878,7 +878,12 @@
   fix is more tokens, not more steering. It was the first thing a live
   deepseek-v4-flash call did here, so it is not a hypothetical."
   [{:keys [finish-reason content]} parsed]
-  (let [truncated (= "length" finish-reason)
+  (let [;; Every finish reason that means the reply was CUT SHORT rather than
+        ;; finished (wordlists :truncated-finish-reasons): `length` everywhere,
+        ;; and DeepSeek's `insufficient_system_resource`, which ended a reply
+        ;; mid-generation and read as a no-call (karamazov-6uyv).
+        truncated (contains? (or (lexicon/wordlist :truncated-finish-reasons) #{"length"})
+                             (str finish-reason))
         ;; A reply repeating itself, checked only where it matters — a
         ;; truncated reply, or one that made no call — so a long healthy
         ;; reply that reached its fence is not scanned (karamazov-o4wm.5).
