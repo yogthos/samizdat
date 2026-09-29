@@ -120,6 +120,15 @@
                            {:root root :backend backend
                             :sandbox-spec (sandbox-spec (System/getenv "HOME")
                                                         (str (fs/cwd)))})]
+              ;; THE PROJECT'S OWN ROOTS, in the image that evaluates for it.
+              ;; The image starts as a bare `jolt nrepl-server` — no alias —
+              ;; so a test tree declared only under an alias's :extra-paths was
+              ;; not on its search path, and a namespace a branch had just
+              ;; written there could not be required (karamazov-1b37). Added,
+              ;; never replacing, like the harness image's.
+              (let [roots (repl/declared-roots root)]
+                (image/eval-in im (str "(jolt.host/set-source-roots! (into (vec (jolt.host/source-roots)) "
+                                       "(remove (set (jolt.host/source-roots)) " (pr-str roots) ")))")))
               (swap! images assoc root im)
               im)))))
 
