@@ -756,10 +756,6 @@
    #{
     "Skills — load one with `skill load {name}` when it is"
     }
-   "src/samizdat/agent/tools/tasks.clj"
-   #{
-    ": no such task, or another run holds it."
-    }
    "src/samizdat/agent/verify.clj"
    #{
     "(java.lang.System/exit (if (clojure.core/pos? (+ (:fail s) (:error s))) 1 0)))"

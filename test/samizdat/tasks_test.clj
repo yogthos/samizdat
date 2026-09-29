@@ -363,3 +363,24 @@
       (is (= 1 (tasks/attempted! c id)))
       (is (= 2 (tasks/attempted! c id)))
       (is (= 2 (:attempts (tasks/get-task c id))) "and it is on the row, not in a process"))))
+
+(deftest a-refused-claim-says-which-case-it-is
+  ;; karamazov-fjrq: one sentence — "no such task, or another run holds it" —
+  ;; covered a missing task, a closed one and a held one, so a branch that
+  ;; had closed its own task read that another run held it and made a
+  ;; duplicate.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          claim (fn [bid id] (tools/run-tool {:tool-name "task" :args {:action "claim" :id id}
+                                              :conn c :run-id rid
+                                              :branch (state/new-branch {:id bid :problem "p"})}))
+          mine (tasks/create! c {:title "mine"})
+          theirs (tasks/create! c {:title "theirs"})]
+      (is (str/includes? (:result (claim "B1" "sz-nope")) "no task with that id"))
+      (tasks/claim! c mine rid "B1")
+      (tasks/close! c mine "done")
+      (let [r (:result (claim "B1" mine))]
+        (is (str/includes? r "already done") r)
+        (is (str/includes? r "you closed it yourself") r))
+      (tasks/claim! c theirs rid "B2")
+      (is (str/includes? (:result (claim "B1" theirs)) "branch B2 holds it")))))
