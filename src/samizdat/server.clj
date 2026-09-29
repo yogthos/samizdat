@@ -101,8 +101,9 @@
 
 (def harness-identity
   "Which harness THIS process is: the checkout's commit and whether its tree
-  had uncommitted changes, read once — so they describe the code the process
-  loaded, not whatever the checkout holds now — and when it started. A stale
+  had uncommitted changes, read once, on the first /health — so a checkout
+  that moves on afterwards shows as a revision the process is not running —
+  and when the process started. A stale
   `serve` answered /health like a current one, so a client could not tell it
   was talking to old code until a run failed (karamazov-uk77). Nil fields
   where there is no checkout to read, as from a built binary."
