@@ -201,3 +201,23 @@
     ;; fire-time read: the command prefix is data, swapped without touching src
     (with-redefs [gates/threshold (fn [_] (assoc cfg :cmd-prefix "pytest {{expr}}"))]
       (is (str/starts-with? (verify/focused-cmd ["test/x_test.clj"]) "pytest ")))))
+
+(deftest a-changed-test-the-suite-did-not-run-is-named
+  ;; karamazov-khzy: the run added test/flight/horizon_test.clj and the
+  ;; project's runner never required it, so the suite's green said nothing
+  ;; about the new tests.
+  (let [root (str (java.nio.file.Files/createTempDirectory
+                   "samizdat-unrun" (make-array java.nio.file.attribute.FileAttribute 0)))
+        write (fn [rel] (let [f (clojure.java.io/file root rel)]
+                          (.mkdirs (.getParentFile f)) (spit f "(ns x)") f))]
+    (write "test/flight/horizon_test.clj")
+    (write "test/flight/game_test.clj")
+    (let [changed ["src/flight/horizon.clj" "test/flight/horizon_test.clj"
+                   "test/flight/game_test.clj" "test/flight/deleted_test.clj"]]
+      (is (= ["flight.horizon-test"]
+             (verify/unrun-tests root changed "Testing flight.game-test\nRan 94 tests")))
+      (is (empty? (verify/unrun-tests root changed
+                                      "Testing flight.game-test\nTesting flight.horizon-test\n"))
+          "both ran")
+      (is (empty? (verify/unrun-tests root changed "94 passed"))
+          "a runner that names no namespace cannot be judged, so it is not"))))

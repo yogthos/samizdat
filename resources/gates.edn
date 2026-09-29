@@ -3237,7 +3237,12 @@
     :root-strip-regex "^(test|gui|src)/"
     :ext-strip-regex "\\.cljc?$"
     :ns-whitelist-regex "[a-zA-Z0-9.*-]+"
-    :cmd-prefix "jolt -A:test -e '"}
+    :cmd-prefix "jolt -A:test -e '"
+    ;; What the suite prints for each namespace it ran, {{ns}} standing for
+    ;; the namespace (clojure.test's run-tests). A changed test namespace
+    ;; the full suite's output does not show is a test the suite never ran
+    ;; (karamazov-khzy); an output with no marker at all is not judged.
+    :ran-marker "Testing {{ns}}"}
    :kind :threshold :capability-tunable? false
    :doc "The focused-verify conventions as data (see the comment above)."}
 

@@ -537,9 +537,16 @@
         (let [r (when-not (str/blank? (str cmd))
                   (proc/run {:timeout-ms (or (get-in config [:run :verify-timeout-ms]) 600000)}
                             "sh" "-c" (str "cd " root " && " cmd)))
-              tests-passed? (if r
-                              (and (not (:timeout r)) (zero? (or (:exit r) 1)))
-                              true)
+              green? (if r
+                       (and (not (:timeout r)) (zero? (or (:exit r) 1)))
+                       true)
+              ;; Green on a suite that never ran the tests this run added or
+              ;; changed is not green about them (karamazov-khzy).
+              unrun (when (and r green?)
+                      (verify/unrun-tests root
+                                          (gitdiff/changed-files root (:git-baseline ctx))
+                                          (str (:out r) "\n" (:err r))))
+              tests-passed? (and green? (empty? unrun))
               ;; The criteria are checked whether or not the suite is green:
               ;; a run whose suite is red AND whose criteria fail should hear
               ;; about both at once rather than one per round. Fail-open on a
@@ -556,6 +563,8 @@
                              (remove str/blank?
                                      [(cond (nil? r) "no :verify-cmd configured"
                                             (:timeout r) "tests TIMED OUT"
+                                            (seq unrun) (prompt/render "tests-not-run"
+                                                                       {:nses (str/join ", " unrun)})
                                             tests-passed? "tests passed"
                                             :else (str "tests FAILED (exit " (:exit r) ")\n"
                                                        (tail (str (:out r) "\n" (:err r)) 25)))

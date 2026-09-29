@@ -16,7 +16,8 @@
   The runner is a thin effect; the DECISION (`verify-block`) and the command
   derivation (`focused-cmd`) are pure, so the gate is testable without spawning a
   process. Same split as planner.clj vs cells/team.clj."
-  (:require [samizdat.prompt :as prompt]
+  (:require [clojure.java.io :as io]
+            [samizdat.prompt :as prompt]
             [clojure.string :as str]
             [samizdat.agent.gates :as gates]
             [samizdat.engine.proc :as proc]
@@ -60,6 +61,36 @@
                    not-empty)]
         (when (and ns (re-matches (re-pattern (:ns-whitelist-regex c)) ns))
           ns)))))
+
+(defn unrun-tests
+  "The test namespaces among `changed` (paths relative to `root`, as
+  gitdiff/changed-files gives them) that the suite's `output` shows no sign of
+  having run, or nil.
+
+  A GREEN SUITE THAT NEVER RAN THE NEW TESTS IS NOT EVIDENCE ABOUT THEM. Run
+  bcd61b39 added test/flight/horizon_test.clj and never registered it in the
+  project's runner; the suite reported the baseline's 94 tests green, and two
+  supervisor passes called the work verified from that (karamazov-khzy). The
+  focused ship check could not see it — it requires the changed namespaces
+  directly, which is exactly what the runner did not.
+
+  What counts as having run is the runner's own marker, project data
+  (:ran-marker, `Testing {{ns}}` for clojure.test). An output that carries no
+  marker at all is a runner this cannot read, and is not judged: nil. Paths
+  no longer on disk (a deleted test) are not asked about."
+  [root changed output]
+  (let [marker (:ran-marker (conventions))
+        out (str output)
+        mark (fn [ns] (str/replace (str marker) "{{ns}}" ns))]
+    (when (and (seq marker) (str/includes? out (mark "")))
+      (->> changed
+           (filter test-file?)
+           (filter #(.isFile (io/file (str root) (str %))))
+           (keep ns-from-test-path)
+           distinct
+           (remove #(str/includes? out (mark %)))
+           vec
+           not-empty))))
 
 (defn focused-cmd
   "A test command that runs ONLY the test namespaces among `changed`, with an
