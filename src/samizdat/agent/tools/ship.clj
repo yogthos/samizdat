@@ -7,6 +7,8 @@
   uncovered-tokens, engages-problem? and friends)."
   (:require [clojure.string :as str]
             [samizdat.agent.acceptance :as acceptance]
+            [samizdat.agent.checklist :as checklist]
+            [samizdat.agent.exam :as exam]
             [samizdat.agent.files :as files]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.gates :as gates]
@@ -364,7 +366,13 @@
                    ;; figure, and so what a refusal should ask for, differs.
                    ~'can-write?        (get ~'ctx :can-write? true)
                    ;; A reviewer or supervisor, whose answer is a verdict.
-                   ~'advisory?         (get ~'ctx :advisory? false)]
+                   ~'advisory?         (get ~'ctx :advisory? false)
+                   ;; The checklist items the answer has not accounted for
+                   ;; (karamazov-dsfx); empty when nothing is owed.
+                   ~'unaccounted-checklist (get ~'ctx :unaccounted-checklist)
+                   ;; Pre-existing tests changed or deleted with no reason
+                   ;; given (karamazov-fgsb); empty when none.
+                   ~'unexplained-tests (get ~'ctx :unexplained-tests)]
                ~form)))))
 
 (def ship-gates
@@ -459,6 +467,10 @@
   ;; — now data-defined (gates.edn :ship-gates, drg-4026 #44). The coding
   ;; loop's ship gate (tests pass, review passed) rebuilds on this seam.
   (let [answer (base/arg ctx :answer)
+        ;; The answer's checklist entries (karamazov-dsfx). Their evidence is
+        ;; part of what the answer claims, so the figure rung reads it too.
+        accounted (checklist/entries (base/arg ctx :checklist))
+        claimed (str/join "\n" (cons (str answer) (keep :evidence (vals accounted))))
         ;; An ADVISORY branch (a reviewer or supervisor role loop) delivers a
         ;; VERDICT through done, not shippable work: it quotes the run's own
         ;; figures ("19 tests, 7 failed") and, on a red tree, describes the
@@ -491,17 +503,62 @@
                      (:conn ctx) (:run-id ctx) (:id branch)))
         evidence (concat own elsewhere)
         problem (:problem branch)
-        uncovered (uncovered-tokens answer evidence [problem])
+        uncovered (uncovered-tokens claimed evidence [problem])
         uncovered-numbers (filter number-token? uncovered)
         borrowed (when (seq elsewhere)
                    (seq (remove (set uncovered)
-                                (uncovered-tokens answer own [problem]))))
-         block (ship-gate-block
+                                (uncovered-tokens claimed own [problem]))))
+        held (when (and (:conn ctx) (:run-id ctx) (:id branch))
+               (tasks/held-by (:conn ctx) (:run-id ctx) (:id branch)))
+        criteria (when-not advisory?
+                   (acceptance/normalize (get-in ctx [:config :run :acceptance])))
+        ;; THE CHECKLIST (karamazov-dsfx): what this answer must account
+        ;; for, item by item. The list items of what the branch was asked —
+        ;; the run's problem, or for a board piece its task's contract — its
+        ;; task's tests, what it declared with plan, and for a branch holding
+        ;; no task the run's acceptance criteria. An advisory branch's
+        ;; verdict owes none.
+        ;; A board REVISION branch carries its task on the branch while the
+        ;; claim stays with the original branch id (board.clj), so held-by
+        ;; misses it; it still works a task and is not the run's answer (run
+        ;; 582980ef's T1r1 was asked for another piece's HUD).
+        works-task? (or (some? held) (some? (:task branch)))
+        run-level? (not works-task?)
+        binds? (fn [source] (or (not (contains? (:run-level (checklist/policy)) source)) run-level?))
+        items (when-not advisory?
+                (checklist/items {:acceptance (when (binds? :acceptance) criteria)
+                                  :task-tests (:tests held)
+                                  :declared (state/checklist branch)
+                                  :problem (if held (:contract held) problem)
+                                  :whole-problem? works-task?}))
+        ;; THE EXAM RATCHET (karamazov-fgsb): every test that was there when
+        ;; the run started and is not in the tree unchanged, and the reasons
+        ;; the answer gives. An explanation journalled earlier in the run for
+        ;; the same state of the test counts, so a sibling shipping over a
+        ;; change it did not make is not asked about it.
+        explained (exam/explanations (base/arg ctx :changed_tests))
+        touched-tests (when (and (not advisory?) (:root ctx) (:git-baseline ctx)
+                                 (= :explain (:at-done (exam/policy))))
+                        (let [root (:root ctx) base (:git-baseline ctx)
+                              now (fn [p] (when-let [abs (files/resolve-under-root root p)]
+                                            (let [f (java.io.File. ^String abs)]
+                                              (when (.isFile f) (slurp f)))))]
+                          (exam/touched
+                           (for [p (gitdiff/changed-files root base)
+                                 :when (exam/test-path? p)]
+                             {:path p :before (gitdiff/file-at root base p) :after (now p)}))))
+        prior-explained (when (and (seq touched-tests) (:conn ctx) (:run-id ctx))
+                          (into #{} (comp (mapcat :entries)
+                                          (map (juxt :path :test :after-hash)))
+                                (journal/notes (:conn ctx) (:run-id ctx) :tests-explained)))
+        block (ship-gate-block
                 {:answer answer :problem problem
                  :evidence evidence
                  :uncovered-numbers uncovered-numbers
                  :can-write? (roles/may-use? (:role branch) "write_file")
-                 :advisory? advisory?})
+                 :advisory? advisory?
+                 :unaccounted-checklist (checklist/unaccounted items accounted)
+                 :unexplained-tests (exam/unexplained touched-tests explained (or prior-explained #{}))})
         ;; The test rung — what makes the loop test-driven rather than one-shot.
         ;; `done` is not terminal until the unit's tests actually pass: run the
         ;; unit's tests, and a red / hollow / untested result is fed back so the
@@ -518,8 +575,6 @@
         ;; siblings' unimplemented work and conclude it had broken something.
         ;; Its contract names the tests that define ITS delivery, and those are
         ;; the ones it is judged on (karamazov-ioo.15).
-        held (when (and (:conn ctx) (:run-id ctx) (:id branch))
-               (tasks/held-by (:conn ctx) (:run-id ctx) (:id branch)))
         ;; THE HELD TASK AND ANY PIECES UNDER IT. A branch assembling a split
         ;; is judged on its own contract AND on every child's, which is what
         ;; makes the parent's freedom to adjust the pieces safe: it may reshape
@@ -605,8 +660,6 @@
         ;; refused, on ship-verify's economy — the answer is going back
         ;; anyway. system/start! validated the spec, so normalize cannot
         ;; throw here on a spec that let the system come up.
-        criteria (when-not advisory?
-                   (acceptance/normalize (get-in ctx [:config :run :acceptance])))
         acceptance (when (and (seq criteria) (nil? block))
                      (acceptance/check
                       criteria
@@ -614,7 +667,20 @@
                        :run-check #(verify/run-verify
                                     (:root ctx) %
                                     (get-in ctx [:config :run :verify-timeout-ms]))}))
-        block (or block (some-> acceptance acceptance/refusal))]
+        block (or block (some-> acceptance acceptance/refusal))
+        ;; The accounted checklist rides on the shipped answer: the critic
+        ;; and the operator read the claims, and a `met` with nothing behind
+        ;; it is visible where the answer is judged.
+        answer (if (seq items) (str answer (checklist/render items accounted)) answer)
+        reasons (exam/explained-record touched-tests explained prior-explained)
+        answer (if (seq reasons) (str answer (exam/render touched-tests explained prior-explained)) answer)]
+    (when (and (nil? block) (seq reasons) (:conn ctx) (:run-id ctx))
+      (journal/note! (:conn ctx) (:run-id ctx) :tests-explained
+                     {:branch-id (:id branch) :turn (:turn ctx) :data {:entries reasons}}))
+    (when (and (seq items) (:conn ctx) (:run-id ctx))
+      (journal/note! (:conn ctx) (:run-id ctx) :checklist
+                     {:branch-id (:id branch) :turn (:turn ctx)
+                      :data (assoc (checklist/record items accounted) :shipped? (nil? block))}))
     ;; Journalled whether the tests RAN or not. A rung that was configured on
     ;; and then did nothing used to leave no trace at all — the note fired only
     ;; when there was a result — so a run that shipped unverified looked

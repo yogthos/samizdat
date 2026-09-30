@@ -24,6 +24,7 @@
   reverse-order precondition table is exactly the policy its docstring
   states."
   (:require [clojure.string :as str]
+            [samizdat.fake-done :as fake-done]
             [clojure.test :refer [deftest testing is]]
             [mycelium.cell :as cell]
             [mycelium.core :as myc]
@@ -40,7 +41,7 @@
   (let [content (str/join " " (map :content messages))
         prob (str/trim (or (second (re-find #"## Problem\s+(.+)" content)) "task"))]
     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                   prob "\"}}\n```")
+                   prob "\",\"checklist\":" fake-done/checklist-json "}}\n```")
      :finish-reason "stop"}))
 
 (defn- run-board-bt

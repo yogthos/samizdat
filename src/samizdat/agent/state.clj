@@ -694,6 +694,36 @@
   [branch]
   (:repl-plan branch))
 
+(defn declare-checklist
+  "Add `items` — requirement sentences the branch commits to — to its ship
+  checklist (karamazov-dsfx). A UNION kept in declaration order: a re-plan
+  replaces the file hypothesis, but a requirement once named stays owed, so
+  dropping it is not a way past `done`; saying it is not met is.
+
+  An item that opens with a `cN:` label naming an item already declared is
+  a RESTATEMENT of it and adds nothing; the label is dropped from any item
+  that is kept. Run 582980ef's model labelled its items c1..c4 and reworded
+  them on every re-plan: as a plain union the list grew to c8 while it kept
+  answering c1..c4, and done was refused three times over items it believed
+  it had answered."
+  [branch items]
+  (let [have (vec (:checklist branch))]
+    (assoc branch :checklist
+           (reduce (fn [acc item]
+                     (let [s (str/trim (str item))
+                           [_ n text] (re-find #"^[cC](\d+)\s*[:.)\-]\s*(.*)$" s)
+                           text (str/trim (or text s))]
+                       (cond (str/blank? text) acc
+                             (and n (<= 1 (parse-long n) (count have))) acc
+                             (some #{text} acc) acc
+                             :else (conj acc text))))
+                   have items))))
+
+(defn checklist
+  "What the branch has declared it owes, in order."
+  [branch]
+  (vec (:checklist branch)))
+
 (defn note-write
   "Record that `path` was actually written, discharging it from the plan."
   [branch path]

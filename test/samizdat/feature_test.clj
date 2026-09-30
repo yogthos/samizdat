@@ -9,6 +9,7 @@
   ship, the reviewer's revise bounce, and the supervisor's directives landing
   at the stage that applies them (RFC-012)."
   (:require [clojure.string :as str]
+            [samizdat.fake-done :as fake-done]
             [clojure.test :refer [deftest testing is use-fixtures]]
             [samizdat.agent.files :as files]
             [samizdat.agent.gitdiff :as gitdiff]
@@ -55,7 +56,7 @@
 
 (defn- done-call [answer]
   {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\""
-                 answer "\"}}\n```")
+                 answer "\",\"checklist\":" fake-done/checklist-json "}}\n```")
    :finish-reason "stop"})
 
 (defn- review-answer

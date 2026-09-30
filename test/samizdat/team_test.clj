@@ -5,6 +5,7 @@
   "Multi-agent fan-out: the team manifest runs a worker per sub-task in
   parallel and joins their answers."
   (:require [clojure.string :as str]
+            [samizdat.fake-done :as fake-done]
             [clojure.test :refer [deftest testing is]]
             [samizdat.llm.client :as llm]
             [samizdat.store.db :as db]
@@ -17,7 +18,7 @@
   (let [content (str/join " " (map :content messages))
         prob (or (second (re-find #"## Problem\s+(\w+)" content)) "task")]
     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                   prob "\"}}\n```")
+                   prob "\",\"checklist\":" fake-done/checklist-json "}}\n```")
      :finish-reason "stop"}))
 
 (deftest team-fans-out-a-worker-per-subtask-and-joins
@@ -78,7 +79,7 @@
       {:content "- part one\n- part two" :finish-reason "stop"}
       (let [prob (str/trim (or (second (re-find #"## Problem\s+(.+)" content)) "task"))]
         {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                       prob "\"}}\n```")
+                       prob "\",\"checklist\":" fake-done/checklist-json "}}\n```")
          :finish-reason "stop"}))))
 
 (deftest team-plans-its-own-split-when-no-subtasks-are-given
@@ -125,7 +126,7 @@
                   (if (contains? @seen prob)
                     ;; second sighting — the retry — succeeds
                     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                                   prob "\"}}\n```")
+                                   prob "\",\"checklist\":" fake-done/checklist-json "}}\n```")
                      :finish-reason "stop"}
                     ;; first sighting: give up, so the supervisor must re-task it.
                     ;;

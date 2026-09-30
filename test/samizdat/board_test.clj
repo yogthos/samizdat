@@ -13,6 +13,7 @@
   owned tasks, an owner splits its task when it is really several, and nothing
   closes until a critic has read what it changed."
   (:require [clojure.string :as str]
+            [samizdat.fake-done :as fake-done]
             [clojure.test :refer [deftest is testing]]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
@@ -34,7 +35,7 @@
   (let [content (str/join " " (map :content messages))
         prob (str/trim (or (second (re-find #"## Problem\s+(.+)" content)) "task"))]
     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                   prob "\"}}\n```")
+                   prob "\",\"checklist\":" fake-done/checklist-json "}}\n```")
      :finish-reason "stop"}))
 
 (defn- judge-call?

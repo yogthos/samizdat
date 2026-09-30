@@ -187,7 +187,14 @@
                                 :tool-name "done" :turn 3 :conn c :run-id rid
                                 :root "/tmp" :git-baseline "HEAD"
                                 :config {:run cfg}
-                                :args {:answer "faded the horizon so the ground dissolves into sky"}}))
+                                :args {:answer "faded the horizon so the ground dissolves into sky"
+                                       ;; The criteria are checklist items too
+                                       ;; (karamazov-dsfx); this test is about
+                                       ;; the checks, so the answer owns up to
+                                       ;; each.
+                                       :checklist {"a1" {"status" "met" "evidence" "the suite"}
+                                                   "a2" {"status" "met" "evidence" "the draw test"}
+                                                   "a3" {"status" "met" "evidence" "the fade shows"}}}}))
         spec [{:name "suite green" :check "jolt -M:test"}
               {:name "far trees stand on ground" :check "jolt -M:test :only flight.draw-test"}
               {:name "says what it saw" :judge "Does the answer say what the screenshot showed?"}]]
