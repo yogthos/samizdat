@@ -23,8 +23,8 @@
         ;; (RFC-013, karamazov-3cll.10).
         jolt-lang/http-client
         {:git/url "https://github.com/jolt-lang/http-client"
-         :git/tag "v0.0.8"
-         :git/sha "ccce992d6e3d0035a5ffd1d4364cdb39df4af2f0"}
+         :git/tag "v0.0.16"
+         :git/sha "183c38c06d60af6a21550b344f09155f07545354"}
 
         ;; the HTTP server: HTTP/1.1 over BSD sockets through jolt.ffi, with a
         ;; worker pool (a long request no longer holds /health) and channel
@@ -35,8 +35,8 @@
         ;; and :port 0 picks a free port.
         jolt-lang/ring-chez-adapter
         {:git/url "https://github.com/jolt-lang/ring-chez-adapter"
-         :git/tag "v0.7.8"
-         :git/sha "124a7399641e409a52a73d2eaa072f031ebbbe38"}
+         :git/tag "v0.7.10"
+         :git/sha "8c93fa6fadad917f488358392d496752759a53e6"}
 
         ;; the HTTP server's routing: a table of route maps, best-match (a
         ;; literal segment beats a parameter), no dependencies of its own.
@@ -66,7 +66,8 @@
         ;; reconciles the duplicate libssl/libcrypto natives to a single load.
         jolt-lang/jolt-crypto
         {:git/url "https://github.com/jolt-lang/jolt-crypto"
-         :git/sha "584a4d32094f0a72613d028deb944de00cd9fc11"}
+         :git/tag "v0.0.9"
+         :git/sha "bd19a06c81c92911dbc637b865772c15e1204b05"}
 
          org.clojure/data.json
          {:git/url "https://github.com/clojure/data.json"
