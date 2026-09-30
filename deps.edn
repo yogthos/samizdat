@@ -23,8 +23,8 @@
         ;; (RFC-013, karamazov-3cll.10).
         jolt-lang/http-client
         {:git/url "https://github.com/jolt-lang/http-client"
-         :git/tag "v0.0.16"
-         :git/sha "183c38c06d60af6a21550b344f09155f07545354"}
+         :git/tag "v0.0.17"
+         :git/sha "77d7e310a1aab2c7d5ecc9f6cc10f77b7a7f23ba"}
 
         ;; the HTTP server: HTTP/1.1 over BSD sockets through jolt.ffi, with a
         ;; worker pool (a long request no longer holds /health) and channel
