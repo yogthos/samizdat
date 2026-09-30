@@ -205,6 +205,23 @@
 
 (defn- key-of [{:keys [path test]}] (or test path))
 
+(defn- bare
+  "An explanation's key as a test name: a trailing `(file)` and a leading
+  `ns/` dropped, lower-cased. Run 582980ef's model named the same test as
+  `flight.game-test/...` and as `... (game_test.clj)`."
+  [k]
+  (-> (str k) (str/replace #"\s*\(.*\)\s*$" "") (str/replace #"^.*/(?=[^/]+$)" "")
+      str/trim str/lower-case))
+
+(defn- reason-for
+  "The reason `explained` gives for touched test `t`: its exact key, else an
+  entry whose bare name is the test's."
+  [explained t]
+  (or (not-empty (get explained (key-of t)))
+      (when-let [nm (:test t)]
+        (some (fn [[k r]] (when (and (= (str/lower-case nm) (bare k)) (not (str/blank? r))) r))
+              explained))))
+
 (defn unexplained
   "The `touched` tests with no non-blank reason in `explained` and not in
   `prior` — the `[path test after-hash]` triples explained earlier in the run
@@ -212,7 +229,7 @@
   ([touched explained] (unexplained touched explained #{}))
   ([touched explained prior]
    (filterv (fn [t]
-              (and (str/blank? (get explained (key-of t)))
+              (and (str/blank? (reason-for explained t))
                    (not (contains? prior [(:path t) (:test t) (:after-hash t)]))))
             touched)))
 
@@ -221,7 +238,7 @@
   test with its reason."
   [touched explained prior]
   (vec (keep (fn [t]
-               (when-let [r (not-empty (get explained (key-of t)))]
+               (when-let [r (not-empty (reason-for explained t))]
                  (assoc (select-keys t [:path :test :kind :after-hash]) :reason r)))
              touched)))
 
@@ -231,7 +248,7 @@
 
 (defn render [touched explained prior]
   (prompt/render "tests-explained"
-                 {:rows (vec (keep (fn [t] (when-let [r (not-empty (get explained (key-of t)))]
+                 {:rows (vec (keep (fn [t] (when-let [r (not-empty (reason-for explained t))]
                                              (assoc t :key (key-of t) :kind (name (:kind t)) :reason r)))
                                    touched))}))
 

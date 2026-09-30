@@ -13,6 +13,7 @@
   owned tasks, an owner splits its task when it is really several, and nothing
   closes until a critic has read what it changed."
   (:require [clojure.string :as str]
+            [samizdat.fake-done :as fake-done]
             [clojure.test :refer [deftest is testing]]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
@@ -24,15 +25,7 @@
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
             [samizdat.store.tasks :as tasks]
-            [samizdat.workflow :as workflow]
-            [clojure.data.json :as json]))
-
-;; An entry for every id a board test's task can owe (karamazov-dsfx): its
-;; tests (t1) and its contract's list items (p1..). An entry for an item
-;; that is not owed is ignored.
-(def ^:private checklist-all
-  (json/write-str (into {} (map (fn [id] [id {"status" "met" "evidence" "handled"}]))
-                        (cons "t1" (map #(str "p" %) (range 1 10))))))
+            [samizdat.workflow :as workflow]))
 
 (defn- ships-its-task
   "An owner that ships immediately, with an answer that engages its own task —
@@ -42,7 +35,7 @@
   (let [content (str/join " " (map :content messages))
         prob (str/trim (or (second (re-find #"## Problem\s+(.+)" content)) "task"))]
     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                   prob "\",\"checklist\":" checklist-all "}}\n```")
+                   prob "\",\"checklist\":" fake-done/checklist-json "}}\n```")
      :finish-reason "stop"}))
 
 (defn- judge-call?

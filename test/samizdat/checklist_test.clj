@@ -102,6 +102,15 @@
     (is (str/includes? out "no display here"))
     (is (re-find #"(?i)not met" out))))
 
+;; A board piece's contract is usually one line: the RFC's work item. With
+;; no list items in it, the contract itself is the requirement (run
+;; 582980ef: three pieces shipped owing nothing).
+(deftest a-contract-without-list-items-is-one-item
+  (is (= ["Combo state machine: add ring-value. Tests: chain, cap, reset."]
+         (mapv :text (checklist/items {:problem "Combo state machine: add ring-value. Tests: chain, cap, reset.\n\nNotes after."
+                                       :whole-problem? true}))))
+  (is (= [] (checklist/items {:problem "Fix the pager."})) "a run's prose problem is not"))
+
 ;; --- done -----------------------------------------------------------------------
 
 (defn- ship
@@ -172,6 +181,25 @@
         (is (not (str/includes? (:result r) "a1")) "nor are the run's criteria"))
       (finally (db/close c)))))
 
+(deftest a-revision-branch-answers-for-its-task-not-the-run
+  ;; Run 582980ef: a board revision branch (T1r1) carries its task on the
+  ;; branch while the claim stays with the original branch id, so it was
+  ;; read as the run's answer and owed all six acceptance criteria,
+  ;; including another piece's HUD.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem problem})]
+    (try
+      (let [t (tasks/create! c {:title "visual check" :run-id rid :contract "Run the game and describe the screenshot."})
+            _ (tasks/claim! c t rid "T1")
+            b (assoc (state/new-branch {:id "T1r1" :problem "Address the review:\n- [medium] the claim about visual_test is not in the diff"})
+                     :task {:id t :title "visual check"})
+            r (ship {:answer "addressed the review of the visual check"}
+                    {:branch b :conn c :run-id rid :cfg {:acceptance [{:name "suite green" :check "jolt -M:test"}]}})]
+        (is (not (:done? r)))
+        (is (str/includes? (:result r) "the claim about visual_test is not in the diff") "its findings are its list")
+        (is (not (str/includes? (:result r) "suite green")) "the run's criteria are not its to answer"))
+      (finally (db/close c)))))
+
 (deftest what-plan-declared-is-owed-and-a-re-plan-cannot-drop-it
   (let [b (-> (state/new-branch {:id "B1" :problem "fix the pager"})
               (state/declare-checklist ["pages are 1-based" "the last page is not empty"])
@@ -181,6 +209,19 @@
     (let [r (ship {:answer "fixed the pager"} {:branch b})]
       (is (not (:done? r)))
       (is (str/includes? (:result r) "the last page is not empty")))))
+
+(deftest a-re-plan-that-labels-its-items-restates-them
+  ;; Run 582980ef's T1r1 wrote "c1: ...".."c4: ..." and reworded them on
+  ;; each re-plan; the union grew to c8 while the model kept answering
+  ;; c1..c4, and done was refused three times for items it believed were
+  ;; the ones it had answered.
+  (let [b (-> (state/new-branch {:id "B1" :problem "p"})
+              (state/declare-checklist ["c1: the fresh shot test passes" "c2: decode-rgb under cc 10"])
+              (state/declare-checklist ["c1: shot test present and passing" "c2: decode-rgb split"
+                                        "c3: fixture relationship documented"]))]
+    (is (= ["the fresh shot test passes" "decode-rgb under cc 10" "fixture relationship documented"]
+           (state/checklist b))
+        "a labelled item restates the one it names; a new label adds")))
 
 (deftest the-plan-tool-takes-a-checklist
   (let [r (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "fix the pager"})

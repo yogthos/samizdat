@@ -3450,8 +3450,10 @@
          task's :tests when it is prose, not a path (t1), what the branch
          declared with plan's `checklist` (c1.., a re-plan adds and never
          drops), and the list items of what the branch was asked (p1..: the
-         run's problem, or a board piece's task contract). Acceptance items
-         bind only a branch that holds no task (:run-level). An
+         run's problem, or a board piece's task contract — a contract with no
+         list items is itself p1). Acceptance items bind only a branch that
+         works no task (:run-level); a board revision branch works the task
+         it carries. An
          advisory branch owes none. Each entry is met / not met / n/a with a
          reason; the accounted list is appended to the shipped answer so the
          critic reads the claims."}

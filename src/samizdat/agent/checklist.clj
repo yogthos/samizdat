@@ -65,6 +65,19 @@
                        (conj out (str/trim item))
                        out))))))
 
+(defn- first-paragraph [s] (str/trim (first (str/split (str s) #"\n\s*\n"))))
+
+(defn- problem-list
+  "`problem`'s list items; with `whole?` and none, its first paragraph as the
+  one item. A board piece's contract is usually a single line — the RFC's
+  work item — and then the contract itself is what the piece owes (run
+  582980ef: three pieces shipped owing nothing)."
+  [problem whole?]
+  (let [its (when problem (problem-items problem))]
+    (cond (seq its) its
+          (and whole? (not (str/blank? (str problem)))) [(first-paragraph problem)]
+          :else [])))
+
 (defn items
   "Every item owed, as `[{:id :text :source}]`, ids by source — a1.. the
   acceptance criteria, t1 the held task's tests, c1.. what `plan` declared,
@@ -72,9 +85,12 @@
   board piece's task contract). Every argument is optional; the caller
   passes only the sources that apply to the branch.
 
+  `whole-problem?` makes a problem with no list items one item, its first
+  paragraph: set for a branch that works a task, whose problem is a contract.
+
   A task's :tests that is a test PATH is not an item: it is judged by running
   it (the verify rung), not by the answer saying so."
-  [{:keys [acceptance task-tests declared problem]}]
+  [{:keys [acceptance task-tests declared problem whole-problem?]}]
   (let [tag (fn [prefix source texts]
               (map-indexed (fn [i t] {:id (str prefix (inc i)) :text t :source source}) texts))
         ;; Its first paragraph: the board writes a standing paragraph of
@@ -82,11 +98,11 @@
         ;; not the essay after it.
         task (when-let [t (some-> task-tests str str/trim not-empty)]
                (when-not (verify/test-file? t)
-                 [(str/trim (first (str/split t #"\n\s*\n")))]))]
+                 [(first-paragraph t)]))]
     (vec (concat (tag "a" :acceptance (map #(if (= :judge (:kind %)) (:text %) (:name %)) acceptance))
                  (tag "t" :task task)
                  (tag "c" :declared (remove str/blank? (map str declared)))
-                 (tag "p" :problem (when problem (problem-items problem)))))))
+                 (tag "p" :problem (problem-list problem whole-problem?))))))
 
 ;; --- the answer's entries -----------------------------------------------------
 

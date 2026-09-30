@@ -114,7 +114,14 @@
            (exam/unexplained ts (exam/explanations {"test_calc.py" "the contract changed: mul is gone"})))
         "a file stands for the assertions of a file that does not read")
     (is (= ts (exam/unexplained ts (exam/explanations [{"test" "blank-titles" "reason" " "}])))
-        "a blank reason explains nothing")))
+        "a blank reason explains nothing")
+    ;; Run 582980ef: the model named the test as ns/name and as name (file).
+    (is (= [(second ts)]
+           (exam/unexplained ts (exam/explanations [{"test" "app.db-test/blank-titles" "reason" "moved"}]))))
+    (is (= [(second ts)]
+           (exam/unexplained ts (exam/explanations [{"test" "Blank-Titles (test/app/db_test.clj)" "reason" "moved"}]))))
+    (is (= ts (exam/unexplained ts (exam/explanations [{"test" "blank-titles-2" "reason" "moved"}])))
+        "a different name is not the test")))
 
 ;; --- done -----------------------------------------------------------------------
 

@@ -518,13 +518,19 @@
         ;; task's tests, what it declared with plan, and for a branch holding
         ;; no task the run's acceptance criteria. An advisory branch's
         ;; verdict owes none.
-        run-level? (nil? held)
+        ;; A board REVISION branch carries its task on the branch while the
+        ;; claim stays with the original branch id (board.clj), so held-by
+        ;; misses it; it still works a task and is not the run's answer (run
+        ;; 582980ef's T1r1 was asked for another piece's HUD).
+        works-task? (or (some? held) (some? (:task branch)))
+        run-level? (not works-task?)
         binds? (fn [source] (or (not (contains? (:run-level (checklist/policy)) source)) run-level?))
         items (when-not advisory?
                 (checklist/items {:acceptance (when (binds? :acceptance) criteria)
                                   :task-tests (:tests held)
                                   :declared (state/checklist branch)
-                                  :problem (if held (:contract held) problem)}))
+                                  :problem (if held (:contract held) problem)
+                                  :whole-problem? works-task?}))
         ;; THE EXAM RATCHET (karamazov-fgsb): every test that was there when
         ;; the run started and is not in the tree unchanged, and the reasons
         ;; the answer gives. An explanation journalled earlier in the run for
