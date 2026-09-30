@@ -36,7 +36,15 @@
         ;; Requirement sentences, not paths: what `done` will have to account
         ;; for item by item (karamazov-dsfx). Kept apart from :files so the
         ;; path check below does not refuse a sentence it was given here.
-        checklist (coerce :checklist)
+        checklist (mapv (fn [x]
+                          ;; Run 6e3eda8a sent [{"c1": "..."}]: a one-entry map
+                          ;; is a labelled item, a map with :text its text.
+                          (if (map? x)
+                            (or (some #(get x %) [:text "text" :item "item"])
+                                (let [[[k v]] (seq x)] (str (name k) ": " v)))
+                            x))
+                        (base/listed (or (base/arg ctx :checklist) (get (:args ctx) "checklist"))))
+        checklist (vec (remove empty? (map str (if (sequential? checklist) checklist [checklist]))))
         goal (some-> (base/arg ctx :goal) str not-empty)
         ;; An RFC is free prose (Purpose/Model/Work items/Acceptance, with a
         ;; mermaid call-graph), not a path — the design-rfc step asks for it,

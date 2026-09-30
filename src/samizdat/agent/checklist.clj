@@ -137,19 +137,29 @@
                               raw)
       :else {})))
 
+(defn- plain [s] (-> (str s) str/trim str/lower-case (str/replace #"[.\s]+$" "")))
+
+(defn- entry-for
+  "`item`'s entry: by its id, else by its exact text — case and a closing
+  full stop aside. Run 6e3eda8a's model named items by sentence; a
+  paraphrase is still not the item."
+  [entries {:keys [id text]}]
+  (or (get entries (str/lower-case id))
+      (some (fn [[k e]] (when (= (plain k) (plain text)) e)) entries)))
+
 (defn unaccounted
   "The items with no entry that has a known status and a non-blank reason."
   [items entries]
-  (filterv (fn [{:keys [id]}]
-             (let [{:keys [status evidence]} (get entries (str/lower-case id))]
+  (filterv (fn [item]
+             (let [{:keys [status evidence]} (entry-for entries item)]
                (or (nil? status) (str/blank? evidence))))
            items))
 
 ;; --- rendering ----------------------------------------------------------------
 
 (defn- rows [items entries]
-  (mapv (fn [{:keys [id text]}]
-          (let [{:keys [status evidence]} (get entries (str/lower-case id))]
+  (mapv (fn [{:keys [id text] :as item}]
+          (let [{:keys [status evidence]} (entry-for entries item)]
             {:id id :text text :status (some-> status name) :evidence evidence
              :label (get (:labels (policy)) status "?")}))
         items))

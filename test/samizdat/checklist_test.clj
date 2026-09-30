@@ -227,7 +227,20 @@
   (let [r (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "fix the pager"})
                            :tool-name "plan" :turn 1
                            :args {:files ["src/pager.clj"] :checklist ["pages are 1-based"]}})]
-    (is (= ["pages are 1-based"] (state/checklist (:branch r))))))
+    (is (= ["pages are 1-based"] (state/checklist (:branch r)))))
+  (testing "items given as {label text} maps (run 6e3eda8a) read as labelled items"
+    (let [r (tools/run-tool {:branch (state/new-branch {:id "B1" :problem "fix the pager"})
+                             :tool-name "plan" :turn 1
+                             :args {:files ["src/pager.clj"]
+                                    :checklist [{"c1" "pages are 1-based"} {:text "a page size of 0 is refused"}]}})]
+      (is (= ["pages are 1-based" "a page size of 0 is refused"] (state/checklist (:branch r)))))))
+
+(deftest an-entry-may-name-its-item-by-its-exact-text
+  (let [its (checklist/items {:declared ["pages are 1-based" "a page size of 0 is refused"]})
+        es (checklist/entries [{"item" "Pages are 1-based." "status" "met" "evidence" "pager-test"}
+                               {"item" "a page size of zero is refused" "status" "met" "evidence" "x"}])]
+    (is (= ["c2"] (mapv :id (checklist/unaccounted its es)))
+        "the exact text (case and a closing full stop aside) is the item; a paraphrase is not")))
 
 (deftest an-advisory-branch-owes-no-checklist
   (let [r (ship {:answer "PASS: the round implements the feature"}
