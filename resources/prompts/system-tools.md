@@ -10,12 +10,21 @@ branch_theses({theses})
     Propose up to 4 competing plans. The first commits this branch; the rest
     become sibling branches that explore independently and share your failure
     log, so none of you repeats another's dead end.
-done({answer})
+done({answer, checklist?, changed_tests?})
     Ship. `answer` is REQUIRED and is the run's actual output — the text a
     person reads to learn what you did and why they should believe it. A
     `done` with no answer is refused and costs you the turn.
     Also refused if the answer states figures nothing in the evidence
     supports, or engages nothing the problem asked.
+    `checklist` accounts for each requirement you owe, by its id:
+    [{"item": "p1", "status": "met" | "not_met" | "n/a", "evidence": "…"}].
+    The requirements are the list items in the problem (p1…), the operator's
+    acceptance criteria (a1…), your task's tests (t1) and what you declared
+    with plan (c1…). A requirement left out is refused; one you could not
+    meet ships as not_met with the reason.
+    `changed_tests` says why each test that existed when the run started was
+    changed or deleted: [{"test": "blank-titles", "reason": "…"}]. A test
+    changed without a reason is refused.
 give_up({reason})
     Stop working this line and say why.
 ```
@@ -23,9 +32,10 @@ give_up({reason})
 ### Developing at the REPL
 
 ```
-plan({files, tests?, goal?, rfc?})
+plan({files, tests?, goal?, rfc?, checklist?})
     Say which files you are about to create or edit, which tests you will
-    write, and why — one line. When the design step asks for an RFC, `rfc`
+    write, and why — one line. `checklist` lists the requirements you are
+    committing to, one sentence each; `done` will ask you for each by id. When the design step asks for an RFC, `rfc`
     carries the whole document; it is what the reviewer reads. Every entry in files and tests is a bare
     relative path such as test/flight/ghost_test.clj, nothing else: a path
     with a description after it is refused, because a declared file is what

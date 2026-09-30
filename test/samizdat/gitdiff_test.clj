@@ -133,3 +133,24 @@
           (is (nil? (:branch s)) "no branch to name")
           (is (= "one" (:last-commit s))))
         (finally (sh dir (str "rm -rf " dir)))))))
+
+(deftest a-project-nested-in-a-larger-repository-sees-its-own-paths
+  ;; `git diff --name-only` prints paths from the REPOSITORY top, while the
+  ;; untracked listing and every reader of these paths work from the project
+  ;; root. A project in a subdirectory of a repo read its tracked edits as
+  ;; paths that did not exist under it.
+  (when (proc/available? "git")
+    (let [dir (str (System/getProperty "java.io.tmpdir") "/gd-nested-" (System/currentTimeMillis))
+          proj (str dir "/games/flight")]
+      (try
+        (proc/run {:timeout-ms 15000} "sh" "-c" (str "mkdir -p " proj "/test"))
+        (sh dir "git init -q && git config user.email t@t.co && git config user.name t")
+        (sh proj "echo '(deftest a (is true))' > test/a_test.clj && echo x > ../../other.txt && git add -A && git commit -qm init")
+        (let [base (gd/baseline proj)]
+          (sh proj "echo '(deftest a (is false))' > test/a_test.clj && echo y > ../../other.txt")
+          (is (= ["test/a_test.clj"] (gd/changed-files proj base))
+              "paths from the project root, and nothing outside it")
+          (is (= "(deftest a (is true))\n" (gd/file-at proj base "test/a_test.clj"))
+              "and file-at reads the same path as the run found it")
+          (is (nil? (gd/file-at proj base "test/missing_test.clj"))))
+        (finally (sh dir (str "rm -rf " dir)))))))

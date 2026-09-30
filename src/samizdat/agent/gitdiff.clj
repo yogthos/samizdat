@@ -123,6 +123,16 @@
                                  str/trim not-empty)}
            (porcelain-counts (git root "status" "--porcelain")))))
 
+(defn file-at
+  "`path`'s content in the `baseline` commit, or nil when it was not there
+  (or there is no git). The baseline commit holds untracked files too, so
+  this is the file as the run found it — what the exam ratchet compares a
+  test file against (karamazov-fgsb)."
+  [root baseline path]
+  (when (and root baseline path)
+    ;; `./` makes the path the project root's, as git -C runs from there.
+    (git root "show" (str baseline ":./" path))))
+
 (defn changed-files
   "The paths the run changed since `baseline`: tracked edits (git diff
   --name-only) UNION new files (git ls-files --others). The union matters —
@@ -134,7 +144,10 @@
   anything."
   [root baseline]
   (when (and root baseline)
-    (let [tracked (lines (git root "diff" "--name-only" baseline))
+    ;; --relative: paths from the project root, and only the files under
+    ;; it. Without it git names paths from the REPOSITORY top, so a project
+    ;; in a subdirectory of a repo read its edits as paths it did not have.
+    (let [tracked (lines (git root "diff" "--name-only" "--relative" baseline))
           {:keys [stale created]} (untracked-split root baseline)]
       ;; nil only when git could not answer (cannot tell); otherwise the
       ;; union, which may be empty (genuinely nothing changed). An untracked
@@ -165,7 +178,7 @@
   (when (and root baseline)
     (let [num (fn [s] (or (parse-long (str s)) 0))
           {:keys [stale created]} (untracked-split root baseline)
-          tracked (some->> (git root "diff" "--numstat" baseline)
+          tracked (some->> (git root "diff" "--numstat" "--relative" baseline)
                            str/split-lines
                            (remove str/blank?)
                            (map #(str/split % #"\t"))
@@ -194,7 +207,7 @@
    (or (when (and root baseline)
          ;; Without the untracked files the baseline holds unchanged, which
          ;; `git diff` would show as deleted — the run did not delete them.
-         (some-> (apply git root "diff" baseline "--" "."
+         (some-> (apply git root "diff" "--relative" baseline "--" "."
                         (map #(str ":(exclude)" %)
                              (:stale (untracked-split root baseline))))
                  (as-> d (if (> (count d) (long cap))

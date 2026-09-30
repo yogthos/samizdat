@@ -33,6 +33,10 @@
             [samizdat.store.tasks :as tasks]
             [samizdat.workflow :as workflow]))
 
+;; An entry for every id a task can owe at `done` (karamazov-dsfx); one
+;; for an item that is not owed is ignored.
+(def ^:private checklist-all "{\"t1\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p1\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p2\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p3\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p4\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p5\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p6\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p7\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p8\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p9\":{\"status\":\"met\",\"evidence\":\"handled\"}}")
+
 (defn- ships-its-task
   "An owner that ships immediately, engaging its own task's words so the
   done-gate accepts the answer (same stub as board-test)."
@@ -40,7 +44,7 @@
   (let [content (str/join " " (map :content messages))
         prob (str/trim (or (second (re-find #"## Problem\s+(.+)" content)) "task"))]
     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                   prob "\"}}\n```")
+                   prob "\",\"checklist\":" checklist-all "}}\n```")
      :finish-reason "stop"}))
 
 (defn- run-board-bt

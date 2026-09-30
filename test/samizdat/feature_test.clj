@@ -53,9 +53,13 @@
                                                     "test/example_test.clj"])]
       (t))))
 
+;; An entry for every id a task can owe at `done` (karamazov-dsfx); one
+;; for an item that is not owed is ignored.
+(def ^:private checklist-all "{\"t1\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p1\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p2\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p3\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p4\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p5\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p6\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p7\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p8\":{\"status\":\"met\",\"evidence\":\"handled\"},\"p9\":{\"status\":\"met\",\"evidence\":\"handled\"}}")
+
 (defn- done-call [answer]
   {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\""
-                 answer "\"}}\n```")
+                 answer "\",\"checklist\":" checklist-all "}}\n```")
    :finish-reason "stop"})
 
 (defn- review-answer

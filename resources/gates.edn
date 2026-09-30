@@ -1166,7 +1166,18 @@
         deliberate choice rather than a mistake."}
 
  :exam-ratchet
- {:value {:mode :detect :min-drop 2}
+ {:value {:mode :detect :min-drop 2
+          ;; THE RATCHET AT DONE (karamazov-fgsb, owner's decision
+          ;; 2026-09-29): every test that existed when the run started and
+          ;; is not in the tree unchanged must be explained in done's
+          ;; `changed_tests`, or done is refused. :explain or :off.
+          :at-done :explain
+          ;; The top-level forms that are tests, compared whole: deftest, and
+          ;; def for the tables tests read (a deleted row is a weaker test).
+          :test-def-heads ["deftest" "defspec" "def"]
+          ;; Files read as forms; any other test file is compared by its
+          ;; assertion lines (wordlists :exam :assertion-forms).
+          :clojure-exts [".clj" ".cljc" ".cljs"]}
   :kind :policy :capability-tunable? false
   :provenance ["karamazov-fgsb"]
   :doc "WHAT HAPPENS WHEN A WRITE TAKES ASSERTIONS OUT OF A TEST FILE.
@@ -3310,6 +3321,23 @@
                           "{\"name\": \"done\", \"args\": {\"answer\":"
                           " \"<what you built, and the evidence for it>\"}}\n"
                           "```"))}
+    {:name :checklist
+     ;; karamazov-dsfx: an answer silent on a requirement shipped, because
+     ;; no rung knew what the requirements WERE. The checklist is data that
+     ;; exists before the work (acceptance criteria, the held task's tests,
+     ;; what plan declared, the problem's list items — ship.clj decides
+     ;; which apply, :ship-checklist says how), and every item needs an
+     ;; entry by id: met, not met or n/a, with a reason. A not-met ships —
+     ;; an honest limit is a result (karamazov-ylte.1); silence does not.
+     :when (seq unaccounted-checklist)
+     :message-form (checklist/refusal unaccounted-checklist)
+     :provenance ["karamazov-dsfx"]}
+    {:name :exam-ratchet
+     ;; karamazov-fgsb: a run may change or delete a test that was there
+     ;; when it started, and must say why (:exam-ratchet :at-done).
+     :when (seq unexplained-tests)
+     :message-form (exam/refusal unexplained-tests)
+     :provenance ["karamazov-fgsb"]}
     {:name :figure-coverage
      :when (and (seq evidence) (seq uncovered-numbers))
      ;; Says what COVERS a figure, not only that these are uncovered. Run
@@ -3397,6 +3425,36 @@
   :provenance ["drg-4026 #44"]
    :doc "The lexical ship rungs (drg-4026 #44) — adding a rung is a data
          edit; the evidence computation stays in ship.clj."}
+
+  :ship-checklist
+  {:value
+   {;; A list item: "- x", "* x", "+ x", "1. x", "2) x". The first group is
+    ;; the item's text. Lines inside a ``` fence are skipped.
+    :list-item-regex "^\\s{0,3}(?:[-*+]|\\d{1,2}[.)])\\s+(\\S.*)$"
+    ;; The words an entry's status may be, lower-cased, runs of space and _
+    ;; folded to one space.
+    :statuses {:met ["met" "done" "yes"]
+               :not-met ["not met" "not-met" "unmet" "no" "partial" "partly met" "blocked"]
+               :n-a ["n/a" "na" "n-a" "not applicable" "out of scope"]}
+    ;; How each status reads on the shipped answer's checklist.
+    :labels {:met "met" :not-met "NOT MET" :n-a "n/a"}
+    ;; The sources only a branch holding NO task answers for: the run's own
+    ;; criteria. A board piece answers for its task (its contract's list
+    ;; items, its tests) and its plan.
+    :run-level #{:acceptance}}
+   :kind :policy :capability-tunable? false
+   :provenance ["karamazov-dsfx"]
+   :doc "THE SHIP CHECKLIST (samizdat.agent.checklist). `done` refuses an
+         answer that does not account for every checklist item by id. The
+         items: the operator's :run :acceptance criteria (a1..), the held
+         task's :tests when it is prose, not a path (t1), what the branch
+         declared with plan's `checklist` (c1.., a re-plan adds and never
+         drops), and the list items of what the branch was asked (p1..: the
+         run's problem, or a board piece's task contract). Acceptance items
+         bind only a branch that holds no task (:run-level). An
+         advisory branch owes none. Each entry is met / not met / n/a with a
+         reason; the accounted list is appended to the shipped answer so the
+         critic reads the claims."}
 
   :give-up-reason-floor
   {:value 60 :kind :threshold :capability-tunable? false
@@ -4279,13 +4337,28 @@
                                     :goal {:type "string"
                                            :description "One or two sentences: what the change does and how it meets the whole ask."}
                                     :rfc {:type "string"
-                                          :description "The RFC document in markdown, when this step asked for one."}}
+                                          :description "The RFC document in markdown, when this step asked for one."}
+                                    :checklist {:type "array" :items {:type "string"}
+                                                :description "The requirements this change commits to, one sentence each; done accounts for each by id (c1, c2, ...)."}}
                        :required ["files" "goal"]}}
   "done" {:name "done"
           :description "Finish the task and return the final answer."
           :parameters {:type "object"
                        :properties {:answer {:type "string"
-                                             :description "The final answer, or the best partial result so far."}}
+                                             :description "The final answer, or the best partial result so far."}
+                                    :checklist {:type "array"
+                                                :items {:type "object"
+                                                        :properties {:item {:type "string" :description "The requirement's id: p1, a1, t1, c1, ..."}
+                                                                     :status {:type "string" :enum ["met" "not_met" "n/a"]}
+                                                                     :evidence {:type "string" :description "What shows it, or why it is not met."}}
+                                                        :required ["item" "status" "evidence"]}
+                                                :description "One entry per requirement owed, by id."}
+                                    :changed_tests {:type "array"
+                                                    :items {:type "object"
+                                                            :properties {:test {:type "string" :description "The test's name, or the file's path for a file that is not Clojure."}
+                                                                         :reason {:type "string" :description "Why it changed or went, and what pins the behaviour now."}}
+                                                            :required ["test" "reason"]}
+                                                    :description "One entry per pre-existing test this change altered or deleted."}}
                        :required ["answer"]}}
   "give_up" {:name "give_up"
              :description "Abandon the task, stating why it cannot be finished."

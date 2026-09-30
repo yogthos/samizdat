@@ -33,6 +33,10 @@
                          :else [(str v)])))
         files (coerce :files)
         tests (coerce :tests)
+        ;; Requirement sentences, not paths: what `done` will have to account
+        ;; for item by item (karamazov-dsfx). Kept apart from :files so the
+        ;; path check below does not refuse a sentence it was given here.
+        checklist (coerce :checklist)
         goal (some-> (base/arg ctx :goal) str not-empty)
         ;; An RFC is free prose (Purpose/Model/Work items/Acceptance, with a
         ;; mermaid call-graph), not a path — the design-rfc step asks for it,
@@ -59,7 +63,8 @@
       (base/malformed branch (msg {:needs-files true}))
 
       :else
-      (let [b (state/declare-plan branch {:files files :tests tests :goal goal :rfc rfc})
+      (let [b (-> (state/declare-plan branch {:files files :tests tests :goal goal :rfc rfc})
+                  (state/declare-checklist checklist))
             ;; On a PLANNING branch the declaration is the deliverable, so it
             ;; ends the branch — the board's design step reads the plan off the
             ;; finished branch. Nothing else ended it: the step ran to its cap
@@ -72,5 +77,6 @@
                                      :files (clojure.string/join ", "
                                                                  (:files (state/plan b)))
                                      :goal goal :rfc (boolean rfc)
+                                     :checklist (count (state/checklist b))
                                      :planning planning?}))
                :branch b)))))

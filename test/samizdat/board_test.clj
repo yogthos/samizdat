@@ -24,7 +24,15 @@
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
             [samizdat.store.tasks :as tasks]
-            [samizdat.workflow :as workflow]))
+            [samizdat.workflow :as workflow]
+            [clojure.data.json :as json]))
+
+;; An entry for every id a board test's task can owe (karamazov-dsfx): its
+;; tests (t1) and its contract's list items (p1..). An entry for an item
+;; that is not owed is ignored.
+(def ^:private checklist-all
+  (json/write-str (into {} (map (fn [id] [id {"status" "met" "evidence" "handled"}]))
+                        (cons "t1" (map #(str "p" %) (range 1 10))))))
 
 (defn- ships-its-task
   "An owner that ships immediately, with an answer that engages its own task —
@@ -34,7 +42,7 @@
   (let [content (str/join " " (map :content messages))
         prob (str/trim (or (second (re-find #"## Problem\s+(.+)" content)) "task"))]
     {:content (str "```tool-call\n{\"name\":\"done\",\"args\":{\"answer\":\"handled "
-                   prob "\"}}\n```")
+                   prob "\",\"checklist\":" checklist-all "}}\n```")
      :finish-reason "stop"}))
 
 (defn- judge-call?
