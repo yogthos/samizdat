@@ -74,12 +74,23 @@
 (defn- steer!
   "Send the compose box as an intervention. Not a chat message: samizdat runs
   autonomously and a person steers at a turn boundary, so this is the same
-  seam the supervisor uses."
+  seam the supervisor uses. On a run stopped with Esc it is what to do
+  instead: the run resumes with it as its first directive."
   [text]
   (let [{:keys [base run-id branch-id]} @state]
     (when-let [payload (st/steer-payload text)]
-      (if-not run-id
+      (cond
+        (not run-id)
         (swap! state st/note-error "no run selected")
+
+        (st/interrupted? @state)
+        (do (swap! state #(-> % st/clear-input (st/note-notice "resuming…")))
+            (future
+              (let [r (client/resume! base run-id {:message payload})]
+                (swap! state st/note-error (when-not (:ok r) (:error r)))
+                (poll-once!))))
+
+        :else
         (let [r (client/intervene! base run-id {:branch-id branch-id
                                                 :kind "message"
                                                 :payload payload})]
@@ -618,6 +629,18 @@
           :notice (swap! state st/note-notice a))
         true)
 
+      ;; Esc with nothing else to close: stop what the agent is doing (dirge's
+      ;; interrupt). The run is left resumable — Enter on what to do instead
+      ;; carries it on (steer!), and the resume button picks it up as it was.
+      (and (= :key type) (= :escape key)
+           (= "running" (str (get-in s [:detail :run :status]))))
+      (let [{:keys [base run-id]} s]
+        (swap! state st/note-notice "stopping — type what to do instead and press Enter to carry on")
+        (future (let [r (client/interrupt! base run-id)]
+                  (swap! state st/note-error (when-not (:ok r) (:error r)))
+                  (poll-once!)))
+        true)
+
       ;; The conversation: page through it, and back to following the bottom.
       ;; The wheel is not handled here: each pane scrolls under the mouse.
       (and (= :key type) (= :page-up key)) (page! -1)
@@ -658,6 +681,8 @@
   "Draw the TUI against the server at `base` until the user quits. Blocks."
   [base]
   (swap! state assoc :base base)
+  ;; A first run leaves ~/.config/samizdat/tui.edn behind to edit.
+  (try (layout/seed-global!) (catch Throwable _ nil))
   (start-polling!)
   (try
     ;; Mouse on: the folds in the conversation are ftxui collapsibles and

@@ -144,7 +144,7 @@
 (defn- live-entries
   "The reply the branch is writing right now, as it streams in: after
   everything else, marked :live?, and gone when its turn row lands."
-  [{:keys [text reasoning text-gap]}]
+  [{:keys [text reasoning text-gap]} working?]
   (let [{:keys [say thinking]} (words text reasoning)
         ;; Missing its start, the text may be a tool call's tail: say only
         ;; that something is being written, until the turn row lands.
@@ -153,8 +153,12 @@
         ;; a call being opened, not something said.
         say (str/replace (str say) #"(?:^|\n)`{1,3}[A-Za-z-]*\s*$" "")]
     (cond-> []
-      (not (str/blank? thinking))
-      (conj {:key "live/thinking" :role :agent :kind :thinking :text thinking :live? true})
+      ;; While the branch works the thinking line is always there — the one
+      ;; sign it is not stuck — and opens on whatever has streamed so far.
+      (or working? (not (str/blank? thinking)))
+      (conj (cond-> {:key "live/thinking" :role :agent :kind :thinking
+                     :text (str thinking) :live? true}
+              working? (assoc :working? true)))
       (not (str/blank? say))
       (conj {:key "live/say" :role :agent :kind :say :text say :live? true}))))
 
@@ -215,7 +219,14 @@
   changed; the reply being streamed is laid on top of it, which is cheap."
   [state settings]
   (let [es (history-of state settings)
-        live (live-entries (get-in state [:live (:branch-id state)]))]
+        ;; Working: the run runs, the branch on screen is active, and nobody
+        ;; is being asked — then the log says it is thinking, even before a
+        ;; word has streamed.
+        working? (and (= "running" (str (get-in state [:detail :run :status])))
+                      (= "active" (str (:status (first (filter #(= (:branch-id state) (:id %))
+                                                                (get-in state [:detail :branches]))))))
+                      (empty? (:approvals state)))
+        live (live-entries (get-in state [:live (:branch-id state)]) working?)]
     (if (seq live) (into es live) es)))
 
 (defn fold-id

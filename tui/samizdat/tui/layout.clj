@@ -52,7 +52,9 @@
   3. what the HARNESS SERVES, `GET /v1/harness/layout` — the server's own
      project file, which is how the agent rearranges its UI for a front end
      running somewhere else;
-  4. `~/.config/samizdat/tui.edn`, a person's own across every project;
+  4. `~/.config/samizdat/tui.edn`, a person's own across every project —
+     written from the shipped file on the TUI's first run (`seed-global!`),
+     so there is a file to edit;
   5. the SHIPPED file off the classpath, which is what draws offline and on
      the first frame.
 
@@ -249,6 +251,40 @@
 ;; The shipped template's text: in the jar, fixed for the life of the process.
 (defonce ^:private shipped (delay (some-> (io/resource "tui.edn") slurp)))
 
+
+(defn seed-global!
+  "Write the shipped tui.edn to the person's config home, and return the path
+  written; nil when nothing was written.
+
+  Written when there is none — without it there was nothing to edit: the UI
+  drew from the jar, and neither ~/.config/samizdat nor the project held a
+  tui.edn. And REWRITTEN when the shipped file has changed while the copy is
+  still exactly what was last written (its hash is kept beside it, in
+  .tui.edn.shipped): a copy nobody touched would otherwise pin the layout of
+  the release that wrote it, since a :layout replaces the shipped one whole.
+  A copy a person edited is theirs and is never touched. A project that
+  wants its own arrangement keeps one in .samizdat/tui.edn, which ranks above
+  this one. `opts` may carry :shipped-text for a test."
+  ([] (seed-global! nil))
+  ([opts]
+   (let [{:keys [global-dir shipped-text]} (merge (default-opts) opts)
+         text (or shipped-text @shipped)]
+     (when (and global-dir text)
+       (let [f (io/file (str global-dir) "tui.edn")
+             mark (io/file (str global-dir) ".tui.edn.shipped")
+             digest #(str (hash (str %)))
+             write! (fn []
+                      (some-> (.getParentFile f) .mkdirs)
+                      (spit f text)
+                      (spit mark (digest text))
+                      (str f))]
+         (cond
+           (not (.exists f)) (write!)
+           (and (.exists mark)
+                (= (str/trim (slurp mark)) (digest (slurp f)))
+                (not= (slurp f) text))
+           (write!)
+           :else nil))))))
 
 (declare resolve-current)
 

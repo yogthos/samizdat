@@ -671,3 +671,42 @@
     (testing "no files, nothing to pick"
       (is (not (st/mention-active? (st/apply-mention-files (st/mention-open s "zz") "zz"
                                                            {:ok true :body {:files []}})))))))
+
+(deftest the-picked-branch-is-the-one-doing-the-work
+  ;; On the board loop B1 coordinates and a task branch takes the turns; the
+  ;; TUI opened on B1 and showed only the problem while the work went on
+  ;; out of sight.
+  (let [detail (fn [& bs] {:ok true :body {:run {:status "running"} :branches (vec bs)}})
+        s (st/apply-detail (st/initial "b")
+                           (detail {:id "B1" :status "active"}
+                                   {:id "T0-explain" :status "active" :context {:turn 3}}))]
+    (is (= "T0-explain" (:branch-id s)) "the one with measured turns")
+    (testing "a branch picked for you follows the work when it starts elsewhere"
+      (let [s (-> (st/initial "b")
+                  (st/apply-detail (detail {:id "B1" :status "active"}))
+                  (st/apply-detail (detail {:id "B1" :status "active"}
+                                           {:id "T0-x" :status "active" :context {:turn 1}})))]
+        (is (= "T0-x" (:branch-id s)))))
+    (testing "a branch you chose stays chosen"
+      (let [s (-> (st/initial "b")
+                  (st/apply-detail (detail {:id "B1" :status "active"}))
+                  (st/select-branch "B1")
+                  (st/apply-detail (detail {:id "B1" :status "active"}
+                                           {:id "T0-x" :status "active" :context {:turn 1}})))]
+        (is (= "B1" (:branch-id s)))))
+    (testing "and a working branch is not traded for another working one"
+      (let [s (-> (st/initial "b")
+                  (st/apply-detail (detail {:id "A" :status "active" :context {:turn 2}}))
+                  (st/apply-detail (detail {:id "A" :status "active" :context {:turn 2}}
+                                           {:id "B" :status "active" :context {:turn 9}})))]
+        (is (= "A" (:branch-id s)))))))
+
+(deftest an-interrupted-run-takes-a-directive-to-carry-on
+  ;; After Esc the run is interrupted, not over: what is typed next is what
+  ;; it should do instead, and Enter resumes it with that.
+  (let [s (assoc (st/initial "b") :run-id "r1" :detail {:run {:status "interrupted"}})]
+    (is (= :submit (st/enter-action s)))
+    (is (st/interrupted? s)))
+  (is (= :start (st/enter-action (assoc (st/initial "b") :run-id "r1"
+                                        :detail {:run {:status "aborted"}})))
+      "an ended run still starts a new one"))

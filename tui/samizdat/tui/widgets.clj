@@ -236,10 +236,19 @@
       [:vbox [:text {:class :panel-title} "── the run's answer ──"] said]
       said)))
 
-(defn- thinking-entry [state e]
-  (fold state (tl/fold-id e)
-        (str "◇ thinking (" (count (:text e)) " chars)")
-        #(vector :wrapped {:class :thinking} (:text e))))
+(defn- thinking-entry
+  "A thinking, folded. While the branch is still working it reads
+  `thinking…` and opens on what has streamed so far."
+  [state e]
+  (let [n (count (:text e))]
+    (fold state (tl/fold-id e)
+          (if (:working? e)
+            (str "◇ thinking…" (when (pos? n) (str " (" n " chars)")))
+            (str "◇ thinking (" n " chars)"))
+          #(vector :wrapped {:class :thinking}
+                   (if (pos? n)
+                     (:text e)
+                     "nothing streamed yet — some models send their reasoning only with the finished turn")))))
 
 (defn- tool-entry
   "A tool call as a CHAMBER, dirge's word: a box headed by the tool and the
@@ -552,7 +561,7 @@
   "dirge's permission prompt: what wants to run, why it was stopped, and the
   answers — y allow once, a allow always (this session), n deny, d deny and
   say what to do instead, Esc abort."
-  [state {:keys [id kind input reason details always gaps]}]
+  [state {:keys [id kind input reason details always always-exact gaps]}]
   (let [decide (fn [d] (fn [] (when-let [f (get-in state [:on :decide])] (f id d))))
         reply (fn [] (when-let [f (get-in state [:on :reply])] (f :deny-note id)))
         noting? (= {:kind :deny-note :id id} (:reply state))]
@@ -576,7 +585,11 @@
                 (str " needs " (name gap) " " (name required) ", is " (name actual)
                      (when-let [t (:tool because)]
                        (str " since " t (when-let [n (:turn because)] (str " at turn " n)))))])))
-     (when always [:text {:class :dim} (str " always would allow: " always ", for this session")])
+     (when always
+       [:wrapped {:class :dim}
+        (if always-exact
+          " always would allow this exact command again, for this session"
+          (str " always would allow: " always ", for this session"))])
      [:separator]
      (if noting?
        [:text {:class :perm}
@@ -782,9 +795,13 @@
                       :placeholder (case (st/reply-kind state)
                                      :deny-note "what the agent should do instead — Enter sends"
                                      :custom-answer "your answer — Enter sends"
-                                     (if starting?
+                                     (cond
+                                       starting?
                                        "the problem to work on — Enter starts a run, /help for commands"
-                                       "a directive for the run — Enter sends, /help for commands"))
+                                       (st/interrupted? state)
+                                       "stopped — what to do instead; Enter carries the run on with it"
+                                       :else
+                                       "a directive for the run — Enter sends, Esc stops the agent, /help for commands"))
                       :on-change (fn [s] (when-let [f (get-in state [:on :input])] (f s)))
                       :on-enter on-enter
                       ;; Up past the top row, Down past the bottom one: the

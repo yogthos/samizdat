@@ -243,6 +243,7 @@
         "Tab completes a command · @ names a project file (Tab/↑↓ pick, Enter puts it in, Esc drops it) · PgUp/PgDn scroll · End or Down follows the bottom · Ctrl+O opens the newest fold"
         "permission: y allow · a allow always · n deny · d deny with a note · Esc deny"
         "question: ↑↓ or j/k move · Space ticks or picks · Enter picks or confirms · 1-9 jump · Esc rejects (or sends what is answered)"
+        "Esc stops the agent; what you type next and Enter carry the run on with it"
         "Ctrl+C clears the line, then quits (twice while a run is going) · Ctrl+Q quits · F5 refreshes"]
 
  ;; The @-picker: how many matching files it asks the server for and shows.
@@ -279,9 +280,10 @@
  :layout
  [:vbox {:flex true}
 
-  ;; THE CHAT COLUMN IS CAPPED, as dirge's is: 120 columns, which it gives up
-  ;; on a narrow terminal (:flex :shrink), while the side columns — at least
-  ;; 32 and 34 wide, :grow — share whatever room is left on a wide one. Each
+  ;; THE CONVERSATION IS THE WIDEST COLUMN. The side columns are fixed
+  ;; widths — 32 and 42 — and the middle takes everything left over (:flex
+  ;; :grow). It used to be capped at 120 while the sides grew to share the
+  ;; rest, so on a wide terminal the file list outgrew the agent log. Each
   ;; column carries its own title in the top frame, so the titles stay over
   ;; their columns at any width.
   ;;
@@ -295,15 +297,16 @@
 
    ;; Left: what the run is spending and doing, the beam — which branch the
    ;; conversation beside it is — and the avatar.
-   [:vbox {:width [:>= 32] :flex :grow}
-    [:widget/rule {:title "RUN STATUS"}]
-    [:text {:class :panel-title :align :hcenter} "S A M I Z D A T"]
+   [:vbox {:width 32}
+    ;; The name rides in the heading: a line of its own under it pushed
+    ;; every pane in this column a row below the panes beside it.
+    [:widget/rule {:title "SAMIZDAT · RUN STATUS"}]
     [:widget/context {:title "CONTEXT" :height 11}]
     [:widget/activity {:title "ACTIVITY" :flex :grow}]
     [:widget/branches {:title "BEAM" :height 7}]
     [:widget/avatar {}]]
 
-   [:vbox {:width [:>= 154] :flex :grow}
+   [:vbox {:flex :grow}
     [:hbox {:flex true}
 
      ;; The middle: the conversation; while a /command is typed, what it
@@ -311,7 +314,7 @@
      ;; own account of itself — its claims, and the gates it was advised by
      ;; and has not answered — in a wide short row. `:turns` is how far back
      ;; the conversation draws.
-     [:vbox {:width 120 :flex :shrink}
+     [:vbox {:width [:>= 60] :flex :grow}
       [:widget/rule {:title "AGENT LOG"}]
       [:widget/conversation {:flex true :turns 60}]
       [:widget/command-hints {}]
@@ -322,7 +325,7 @@
 
      ;; Right: which run, the board, what has changed, and the tree it is
      ;; changing. GIT needs three rows inside its chrome, hence 7.
-     [:vbox {:width [:>= 34] :flex :grow}
+     [:vbox {:width 42}
       [:widget/rule {:title "HARNESS"}]
       [:widget/runs {:title "RUNS" :height 6}]
       [:widget/tasks {:title "TASKS" :height 8}]

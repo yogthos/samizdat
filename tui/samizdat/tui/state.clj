@@ -155,6 +155,11 @@
   on it showed its passes where the answer should have been (karamazov-ttrn)."
   [branches]
   (or (winner branches)
+      ;; An active one that has taken a turn: on the board loop B1
+      ;; coordinates and a task branch does the work.
+      (:id (first (filter #(and (= "active" (str (:status %))) (not (supervisor? %))
+                                (:context %))
+                          branches)))
       (:id (first (filter #(and (= "active" (str (:status %))) (not (supervisor? %)))
                           branches)))
       (:id (first (remove supervisor? branches)))
@@ -178,8 +183,20 @@
         ;; the user off whichever branch they were reading the moment another
         ;; one became active.
         (nil? (:branch-id s))
-        (cond-> (assoc s :branch-id (active-branch (:branches body)))
+        (cond-> (assoc s :branch-id (active-branch (:branches body)) :branch-auto? true)
           (finished? body) (assoc :winner-shown (:run-id s)))
+
+        ;; Picked for you and idle — no turn measured on it — while another
+        ;; branch has started working: follow the work. A branch a person
+        ;; chose (select-branch) is theirs, and a working branch is never
+        ;; traded for another working one.
+        (and (:branch-auto? s) (not (finished? body))
+             (not (:context (first (filter #(= (:branch-id s) (:id %)) (:branches body)))))
+             (let [b (active-branch (:branches body))]
+               (and b (not= b (:branch-id s))
+                    (:context (first (filter #(= b (:id %)) (:branches body)))))))
+        (assoc s :branch-id (active-branch (:branches body)) :branch nil :turn-text {}
+               :branch-auto? true)
 
         ;; Except ONCE, when the run being watched finishes: the branch that
         ;; won is where its answer is. Run 74ddebb8 finished on B4 while the
@@ -323,8 +340,10 @@
          ;; would caption the new run's turn 3 with the old run's words.
          :turn-text {}))
 
-(defn select-branch [s branch-id]
-  (assoc s :branch-id branch-id :branch nil :turn-text {}))
+(defn select-branch
+  "A person's choice of branch: the auto-follow in apply-detail leaves it."
+  [s branch-id]
+  (assoc s :branch-id branch-id :branch nil :turn-text {} :branch-auto? false))
 
 (defn current-question
   "The question on screen: the head questionnaire's, at the cursor. nil with
@@ -679,7 +698,13 @@
   detail; until that has loaded, a selected run is taken as live."
   [s]
   (let [status (some-> (get-in s [:detail :run :status]) str)]
-    (if (and (:run-id s) (or (nil? status) (= "running" status))) :submit :start)))
+    (if (and (:run-id s) (or (nil? status) (#{"running" "interrupted"} status))) :submit :start)))
+
+(defn interrupted?
+  "Whether the run on screen was stopped with Esc (or by a dead process) and
+  can be carried on: Enter resumes it with what was typed."
+  [s]
+  (= "interrupted" (str (get-in s [:detail :run :status]))))
 
 (declare note-local)
 

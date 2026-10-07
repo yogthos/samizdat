@@ -31,6 +31,7 @@
   that still shows the run and still says what is wrong, or the one tool the
   operator would use to see the damage is the tool the damage took out."
   (:require [clojure.string :as str]
+            [clojure.java.io :as io]
             [clojure.test :refer [deftest testing is]]
             [samizdat.tui.layout :as layout]
             ;; Registers every :widget/* into layout/widgets as a side effect
@@ -291,3 +292,58 @@
         (testing "a new served version is a new answer"
           (layout/serve! (pr-str {:prose-turns 6 :layout [:vbox [:widget/status {}]]}))
           (is (= 6 (:prose-turns (layout/current nowhere)))))))))
+
+(deftest the-first-run-writes-the-shipped-file-to-the-config-home
+  ;; A person had nothing to edit: the UI drew from the jar, and neither
+  ;; ~/.config/samizdat nor the project held a tui.edn to change.
+  (with-clean-layout
+    (fn []
+      (let [global (temp-dir)
+            o (assoc nowhere :global-dir global)
+            f (io/file global "tui.edn")]
+        (is (= (str f) (layout/seed-global! o)) "written, and the path said")
+        (is (= (slurp (io/resource "tui.edn")) (slurp f)) "the shipped file, comments and all")
+        (testing "a file a person already has is never touched"
+          (spit f (pr-str {:prose-turns 3}))
+          (is (nil? (layout/seed-global! o)))
+          (is (= (pr-str {:prose-turns 3}) (slurp f))))
+        (is (nil? (layout/seed-global! nowhere)) "no config home, nothing written")))))
+
+(deftest the-conversation-is-the-widest-column
+  ;; It was capped at 120 columns while the side columns grew to share the
+  ;; rest, so on a wide terminal the file list was wider than the agent log.
+  (let [top (nth (:layout (layout/template)) 2)
+        left (nth top 2)
+        inner (nth (nth top 3) 2)
+        [mid right] [(nth inner 2) (nth inner 3)]]
+    (is (number? (:width (second left))) "the left column is a fixed width")
+    (is (number? (:width (second right))) "and so is the right")
+    (is (= :grow (:flex (second mid))) "the conversation takes the rest")
+    (is (some #{[:widget/conversation {:flex true :turns 60}]} mid))))
+
+(deftest every-column-starts-its-panes-on-the-same-row
+  ;; Each column is its heading and then its panes. A line between the two in
+  ;; one column put its panes a row lower than their neighbours'.
+  (let [top (nth (:layout (layout/template)) 2)
+        inner (nth (nth top 3) 2)
+        columns [(nth top 2) (nth inner 2) (nth inner 3)]]
+    (doseq [c columns]
+      (is (= :widget/rule (first (nth c 2))) "the heading first")
+      (is (= "widget" (namespace (first (nth c 3)))) "and a pane straight after it"))))
+
+(deftest an-unedited-config-copy-follows-the-shipped-file
+  ;; A copy written on a first run would otherwise pin that release's layout
+  ;; for good. One a person never touched is replaced when the shipped file
+  ;; changes; one they edited is theirs and stays.
+  (with-clean-layout
+    (fn []
+      (let [global (temp-dir)
+            f (io/file global "tui.edn")]
+        (layout/seed-global! {:global-dir global :shipped-text "{:v 1}"})
+        (is (= "{:v 1}" (slurp f)))
+        (is (= (str f) (layout/seed-global! {:global-dir global :shipped-text "{:v 2}"}))
+            "unedited: brought up to the new release")
+        (is (= "{:v 2}" (slurp f)))
+        (spit f "{:v 2 :mine true}")
+        (is (nil? (layout/seed-global! {:global-dir global :shipped-text "{:v 3}"})))
+        (is (= "{:v 2 :mine true}" (slurp f)) "edited: left alone")))))

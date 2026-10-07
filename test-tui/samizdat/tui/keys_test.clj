@@ -159,3 +159,24 @@
     (settle #(st/mention-active? @core/state))
     (key! :escape)
     (is (= "fix " (:input @core/state)) "Esc drops the @word")))
+
+(deftest esc-stops-the-agent-and-enter-carries-on-with-what-was-typed
+  (let [calls (atom [])]
+    (with-redefs [client/interrupt! (fn [_ rid] (swap! calls conj [:interrupt rid]) {:ok true})
+                  client/resume! (fn [_ rid & [opts]] (swap! calls conj [:resume rid opts]) {:ok true})]
+      (swap! core/state assoc :detail {:run {:status "running"}})
+      (key! :escape)
+      (settle #(seq @calls))
+      (is (= [[:interrupt "r1"]] @calls) "Esc with a run going stops it")
+      (testing "nothing to stop, Esc does nothing"
+        (reset! calls [])
+        (swap! core/state assoc :detail {:run {:status "completed"}})
+        (key! :escape)
+        (Thread/sleep 100)
+        (is (empty? @calls)))
+      (testing "Enter on the interrupted run resumes it with the words"
+        (reset! calls [])
+        (swap! core/state assoc :detail {:run {:status "interrupted"}} :input "use the vendored copy")
+        ((:submit @#'core/handlers) "use the vendored copy")
+        (settle #(seq @calls))
+        (is (= [[:resume "r1" {:message "use the vendored copy"}]] @calls))))))

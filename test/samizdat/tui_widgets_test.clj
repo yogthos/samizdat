@@ -902,3 +902,10 @@
                  (texts (render :widget/command-hints
                                 (-> s (st/mention-open "zz")
                                     (st/apply-mention-files "zz" {:ok true :body {:files []}})) {}))))))
+
+(deftest allow-always-for-an-exact-command-says-so
+  (let [a {:id "a1" :kind "shell" :input "jolt -M:test 2>&1 | head -40"
+           :always "jolt -M:test 2>&1 | head -40" :always-exact true}
+        out (render :widget/approvals {:approvals [a]} {})]
+    (is (some #(re-find #"allow always \(a\)" (str (:label (props-of %)))) (nodes-of :button out)))
+    (is (re-find #"this exact command" (texts out)))))

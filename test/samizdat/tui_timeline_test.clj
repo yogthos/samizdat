@@ -229,3 +229,25 @@
     (is (= {:role :agent :kind :say :text "The project is a parser." :final? true}
            (select-keys (last es) [:role :kind :text :final?])))
     (is (not-any? :final? (tl/entries state settings)) "no answer, no entry")))
+
+(deftest a-working-branch-says-it-is-thinking
+  ;; Between turns the model is working and nothing has streamed yet; the log
+  ;; showed nothing at all, which reads as stuck. The line is a fold, like
+  ;; every thinking: open, it shows what has streamed of the reasoning.
+  (let [s {:branch-id "B1"
+           :branch {:turns [{:turn 1 :tool_name "shell" :created_at "t1"}]}
+           :detail {:run {:status "running"} :branches [{:id "B1" :status "active"}]}}
+        last-e (last (tl/entries s {}))]
+    (is (= [:thinking true "live/thinking"] ((juxt :kind :working? :key) last-e)))
+    (is (= "" (:text last-e)) "nothing streamed yet")
+    (testing "the reasoning as it streams is what the fold holds"
+      (let [es (tl/entries (assoc s :live {"B1" {:reasoning "hm, the tests"}}) {})]
+        (is (= ["hm, the tests" true] ((juxt :text :working?) (last es))))))
+    (testing "and the reply streaming after it does not take the line away"
+      (let [es (tl/entries (assoc s :live {"B1" {:reasoning "hm" :text "Running it"}}) {})]
+        (is (= [[:thinking "hm"] [:say "Running it"]] (mapv (juxt :kind :text) (take-last 2 es))))))
+    (testing "not when the run or the branch is not working"
+      (is (not= :thinking (:kind (last (tl/entries (assoc-in s [:detail :run :status] "completed") {})))))
+      (is (not= :thinking (:kind (last (tl/entries (assoc-in s [:detail :branches 0 :status] "done") {}))))))
+    (testing "not while a person is being asked"
+      (is (not= :thinking (:kind (last (tl/entries (assoc s :approvals [{:id "a"}]) {}))))))))

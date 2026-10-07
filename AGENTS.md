@@ -140,8 +140,9 @@ The TUI's own arrangement is EDN in `tui.edn`, a layered settings file (see
 "Where a project's configuration lives" below): `$SAMIZDAT_TUI_FILE` /
 `$SAMIZDAT_TUI_LAYOUT`, then `.samizdat/tui.edn`, then what `GET
 /v1/harness/layout` serves (the server's own project file — how the AGENT
-rearranges a front end's UI), then `~/.config/samizdat/tui.edn`, then
-`resources/tui.edn` — each merged over the ones below and re-read whenever it
+rearranges a front end's UI), then `~/.config/samizdat/tui.edn` (written
+from the shipped file on the TUI's first run), then `resources/tui.edn` —
+each merged over the ones below and re-read whenever it
 changes, so an edit lands on the next frame. Adding a widget means registering
 a `:widget/*` tag in `tui/samizdat/tui/widgets.clj` and naming it in a layout
 — the core owns what a widget IS, the layout owns where it goes.
