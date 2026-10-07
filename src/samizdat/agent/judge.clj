@@ -134,21 +134,47 @@
       (let [head (read (word (first lines)))]
         (if (some? head) head (read (word (peek lines))))))))
 
+(defn- nonce []
+  (let [b (byte-array 6)]
+    (.nextBytes (java.security.SecureRandom.) b)
+    (apply str (map #(format "%02x" (bit-and % 0xff)) b))))
+
+(defn- seal
+  "`text` as run material inside a `nonce` tag (karamazov-0e2c.4, after
+  iFixAi's analytic_judge): a closing tag written into the text is escaped
+  and a line dressed as a chat role is quoted, so what the run produced
+  cannot end the material early or pose as the conversation. nil stays nil."
+  [nonce text]
+  (when (seq (str text))
+    (str "<material-" nonce ">\n"
+         (-> (str text)
+             (str/replace #"(?i)</material" (fn [m] (str "<\\" (subs m 1))))
+             (str/replace #"(?im)^(\s*)(system|user|assistant|developer|tool)(\s*):" "$1> $2$3:"))
+         "\n</material-" nonce ">")))
+
+(defn- sealing
+  "A fresh nonce and the prompt line that names it, for one judge prompt."
+  []
+  (let [n (nonce)]
+    {:seal (partial seal n) :sealed (prompt/render "judge-sealed" {:nonce n})}))
+
 (defn yesno-prompt
   "The user message for one acceptance question — prompts/acceptance-judge.md
   over the question, the answer the branch wants to ship, the run's evidence
   block and its diff. Asks for YES or NO first, which is the shape
   `parse-yesno` reads; change both together."
   [{:keys [question answer evidence diff sources]}]
-  (prompt/render "acceptance-judge"
-                 {:question (str question)
-                  :answer (str answer)
-                  :evidence (not-empty (str evidence))
-                  :diff (not-empty (str diff))
-                  ;; The tree as it stands, for a question the diff cannot
-                  ;; answer (karamazov-0way). Optional: the ship gate and
-                  ;; the plan critic have none to give.
-                  :sources (not-empty (str sources))}))
+  (let [{:keys [seal sealed]} (sealing)]
+    (prompt/render "acceptance-judge"
+                   {:sealed sealed
+                    :question (str question)
+                    :answer (or (seal answer) "")
+                    :evidence (seal evidence)
+                    :diff (seal diff)
+                    ;; The tree as it stands, for a question the diff cannot
+                    ;; answer (karamazov-0way). Optional: the ship gate and
+                    ;; the plan critic have none to give.
+                    :sources (seal sources)})))
 
 (defn findings
   "The FINDINGS section of a judge reply, verbatim, trimmed — or nil when it
@@ -394,18 +420,20 @@
   requirement and the diff forms its own. The transcript is still reachable —
   the journal has every turn — but it is no longer poured in by default."
   [{:keys [requirement transcript evidence answer diff]}]
-  (let [budget (gates/threshold :context-budget)]
+  (let [budget (gates/threshold :context-budget)
+        {:keys [seal sealed]} (sealing)]
     (prompt/render
      "judge-user"
-     {:requirement (one-line requirement (:judge-rules-chars budget))
-      :evidence evidence
-      :diff (when (seq (str diff)) (str diff))
+     {:sealed sealed
+      :requirement (one-line requirement (:judge-rules-chars budget))
+      :evidence (seal evidence)
+      :diff (seal diff)
       ;; Absent by default. Kept as a seam because a caller that has a
       ;; specific reason to show it can, and removing the parameter would hide
       ;; that this was ever a choice.
       :transcript (when (seq (str transcript))
-                    (one-line transcript (:judge-transcript-chars budget)))
-      :answer (str answer)
+                    (seal (one-line transcript (:judge-transcript-chars budget))))
+      :answer (or (seal answer) "")
       :preamble (preamble)})))
 
 (defn plan-prompt
@@ -421,11 +449,13 @@
   yet to be deterministic about, and handing it an empty one would invite it
   to invent findings from nothing."
   [{:keys [requirement plan]}]
-  (let [budget (gates/threshold :context-budget)]
+  (let [budget (gates/threshold :context-budget)
+        {:keys [seal sealed]} (sealing)]
     (prompt/render
      "judge-plan"
-     {:requirement (one-line requirement (:judge-rules-chars budget))
-      :plan (str plan)})))
+     {:sealed sealed
+      :requirement (one-line requirement (:judge-rules-chars budget))
+      :plan (or (seal plan) "")})))
 
 (declare blocking-findings)
 

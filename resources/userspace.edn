@@ -199,6 +199,7 @@
    :task-not-yours "prompts/task-not-yours.md"
    :cell-usage "prompts/cell-usage.md"
    :cell-diff-miss "prompts/cell-diff-miss.md"
+   :judge-sealed "prompts/judge-sealed.md"
    :split-decision "prompts/split-decision.md"
    :split-tool "prompts/split-tool.md"
    :stale-write "prompts/stale-write.md"

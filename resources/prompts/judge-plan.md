@@ -1,3 +1,5 @@
+{{sealed}}
+
 ## What was asked
 
 {{requirement}}

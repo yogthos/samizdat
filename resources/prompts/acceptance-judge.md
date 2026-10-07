@@ -1,3 +1,5 @@
+{{sealed}}
+
 You are answering ONE narrow question about an agent's work, from the evidence below. Answer from what is shown, not from what the answer claims: the answer is what the agent wants to ship, the diff and the evidence are what it did.
 
 ## Question
