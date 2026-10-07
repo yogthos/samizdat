@@ -662,9 +662,17 @@
   operator's config names for the run (acceptance/configured-commands)."
   ([label command] (shell-gaps label command #{}))
   ([label command configured]
-   (flow/gaps flow/table "shell" {:read-only? (read-only? command)
-                                  :configured? (contains? (set configured) (str/trim (str command)))}
-              label)))
+   ;; LAZY (karamazov-0e2c.23, after xi's needs-*? checks): a clean label
+   ;; has no gap, so the command is not parsed; and `configured` (a set, or
+   ;; a delay of one) is read only when a trust gap could be cleared by it.
+   (if (= (select-keys label [:trust :audience]) flow/top)
+     []
+     (let [ro (read-only? command)
+           gaps (flow/gaps flow/table "shell" {:read-only? ro} label)]
+       (if (and (some #(= :trust (:gap %)) gaps)
+                (contains? (set (force configured)) (str/trim (str command))))
+         (flow/gaps flow/table "shell" {:read-only? ro :configured? true} label)
+         gaps)))))
 
 (defn- flow-reason
   "A gap as the short rule text a person's dialog shows beside the call."
@@ -738,7 +746,7 @@
                   refused-refs (assoc :effect :deny :env-refs refused-refs
                                       :rule {:name :env-ref})
                   label (with-flow label command
-                                   (acceptance/configured-commands (config/file-config root))))
+                                   (delay (acceptance/configured-commands (config/file-config root)))))
         rule (:rule decided)
         rule-text (str/join " " (remove nil? [(name (:name rule)) (:pattern rule)
                                               (:path rule) (:segment rule)
@@ -873,8 +881,11 @@
         ;; What ran read outside the project: the branch holds it now.
         (when outside-all
           (flow/observe! ctx (:outside-read flow/table) "shell"))
-        ;; And a project file it printed carries what its writer had read.
-        (try (flow/read! ctx (read-paths command) "shell") (catch Throwable _ nil))
+        ;; And a project file it printed carries what its writer had read —
+        ;; looked for only when some file carries a label.
+        (try (when (flow/any-labelled-file? (:conn ctx))
+               (flow/read! ctx (read-paths command) "shell"))
+             (catch Throwable _ nil))
         ;; A missing exit code is a spawn that did not report one, which is
         ;; not evidence the command succeeded. `(or (:exit r) 0)` read it as
         ;; success, the opposite of what run-verify does with the same shape;

@@ -259,3 +259,27 @@
         (is (= :allow (get-in (shell ctx "touch verified") [:policy :effect])))
         (is (= :ask (get-in (shell ctx "touch other") [:policy :effect]))))
       (finally (db/close c)))))
+
+;; --- costly facts only when a rule needs them (karamazov-0e2c.23) ------------------
+
+(deftest a-clean-branch-pays-for-no-flow-facts
+  ;; After xi's needs-*? checks: the read-only parse, the config read and the
+  ;; printed-file lookup happen only when they can change the decision.
+  (let [c (db/open! ":memory:")
+        ctx {:conn c :run-id (samizdat.store.runs/start-run! c {:problem "p"}) :branch {:id "B1"} :turn 1}
+        calls (atom {:read-only 0 :config 0 :read-paths 0})
+        count! (fn [k f] (fn [& args] (swap! calls update k inc) (apply f args)))]
+    (try
+      (with-redefs [policy/read-only? (count! :read-only policy/read-only?)
+                    samizdat.agent.acceptance/configured-commands
+                    (count! :config samizdat.agent.acceptance/configured-commands)
+                    policy/read-paths (count! :read-paths policy/read-paths)
+                    samizdat.security.confine/backend (constantly :none)]
+        (shell ctx "touch made")
+        (is (= {:read-only 0 :config 0 :read-paths 0}
+               (select-keys @calls [:read-only :config :read-paths]))
+            "a clean label, no labelled file: nothing to look up")
+        (flow/observe! ctx (flow/delta flow/table "webfetch" {:url "u"}) "webfetch")
+        (shell ctx "touch made")
+        (is (pos? (:read-only @calls)) "with a gap possible, the command is read"))
+      (finally (db/close c)))))

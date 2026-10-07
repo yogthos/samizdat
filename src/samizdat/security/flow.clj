@@ -358,6 +358,12 @@
                                                   ps)))
                   via)))))
 
+(defn any-labelled-file?
+  "Whether any file carries a label: the cheap question before the costly
+  one of which files a command printed."
+  [conn]
+  (boolean (when conn (seq (db/fetch conn ["SELECT 1 FROM file_flow LIMIT 1"])))))
+
 (defn labelled-paths
   "Every labelled file's canonical path."
   [conn]
