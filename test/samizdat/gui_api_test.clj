@@ -61,8 +61,10 @@
                                 (ok {:status "resuming"}))]
         (api/resume! "http://x:1" "r1")
         (is (not (str/includes? (second (last @calls)) "max_turns")))
-        (api/resume! "http://x:1" "r1" 400)
-        (is (str/includes? (second (last @calls)) "400"))))
+        (api/resume! "http://x:1" "r1" {:max-turns 400})
+        (is (str/includes? (second (last @calls)) "400"))
+        (api/resume! "http://x:1" "r1" {:message "do this instead"})
+        (is (str/includes? (second (last @calls)) "do this instead"))))
     (testing "starting a run POSTs the body and hands back the new id"
       (with-redefs [http/post (fn [url opts]
                                 (swap! calls conj [url (:body opts)])

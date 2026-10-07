@@ -154,10 +154,10 @@
                ;; machine-wide reference tree is a real thing to declare
                ;; once — and they are the operator's rather than the
                ;; agent's.
-               :reference-paths (seq (files/reference-roots
-                                      (get-in (config/file-config root)
-                                              [:run :reference-paths])
-                                      root))
+               ;; With the trees the committed deps.edn declares, which the
+               ;; tools read as freely (files/ctx-reference-roots).
+               :reference-paths (seq (files/ctx-reference-roots
+                                      {:config (config/file-config root) :root root}))
                ;; The split decision is its own prompt so a provider/model
                ;; file can replace the 8 lines that were measured to matter
                ;; without forking the other 490 (karamazov-1g6b.3) — the

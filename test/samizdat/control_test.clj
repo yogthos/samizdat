@@ -1065,3 +1065,39 @@
         "an exhausted branch can still be extended — the one ending that is not final")
     (is (number? (submit! {:branch-id "B3" :kind "message" :payload "hi"})) "a live one")
     (is (number? (submit! {:branch-id nil :kind "pause" :payload {}})) "run-wide is unaffected")))
+
+;; --- interrupt: Esc in the TUI -------------------------------------------------
+
+(deftest an-interrupt-stops-the-run-and-leaves-it-resumable
+  ;; Esc stops what the agent is doing — dirge's interrupt. Abort is the
+  ;; wrong tool: an aborted run stays aborted. An interrupted one is what a
+  ;; dead process leaves, and a resume picks it up from its journal; the
+  ;; turn that was cut off runs again.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          cancelled (atom 0)]
+      (swap! api-control/active assoc rid {:abort (atom false) :cancel #(swap! cancelled inc)})
+      (try
+        (let [r (api-control/interrupt! c rid)]
+          (is (= "interrupting" (get-in r [:body :status])))
+          (is (= 1 @cancelled) "the run's task was cancelled")
+          (is (= "interrupted" (:status (runs/get-run c rid))))
+          (is (resume/resumable? c rid)))
+        (finally (swap! api-control/active dissoc rid))))
+    (testing "a run this process is not driving cannot be interrupted"
+      (is (= 409 (:status (api-control/interrupt! c "nope")))))))
+
+(deftest a-resume-can-carry-what-to-do-next
+  ;; After Esc a person types what they want instead and presses Enter: the
+  ;; run resumes with that as a directive, applied at its first boundary.
+  (with-db [c]
+    (let [config {:llm {:provider :local :model "local-model"}
+                  :providers {:flash {:type :deepseek :model "deepseek-v4-flash"}}}
+          rid (runs/start-run! c {:problem "p" :provider :flash :model "deepseek-v4-flash"})]
+      (runs/finish-run! c rid :interrupted nil)
+      (with-redefs [resume/resume! (fn [_] {:status :completed})]
+        (let [r (api-control/resume! {:conn c :config config} rid
+                                     {:message "use the vendored copy"})]
+          (is (not= 409 (:status r)) (pr-str r))
+          (is (= ["use the vendored copy"]
+                 (mapv :payload (interventions/pending c rid)))))))))

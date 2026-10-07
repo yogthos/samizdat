@@ -635,3 +635,33 @@
         (testing "an edit that would apply is still a person's call"
           (samizdat.agent.tools/run-tool (ctx root "edit_file" {:path "roles.edn" :old_text "read_file" :new_text "grep"}))
           (is (= 1 @asked)))))))
+
+(deftest the-roots-a-committed-deps-edn-declares-are-readable
+  ;; endless-flight puts sibling libraries on its classpath by absolute path.
+  ;; A branch reading them tainted itself as having read outside the project
+  ;; and was asked about every shell command after — ls included. What the
+  ;; COMMITTED deps.edn declares is the project's own reading; a path the
+  ;; agent adds to the working copy is not, or editing deps.edn would open
+  ;; any directory.
+  (let [sh (fn [dir cmd] (samizdat.engine.proc/run {:timeout-ms 15000} "sh" "-c" (str "cd " dir " && " cmd)))
+        base (str (fs/create-temp-dir))
+        root (str base "/proj") lib (str base "/lib/src") other (str base "/other")]
+    (try
+      (sh base (str "mkdir -p proj/src lib/src other locallib"))
+      (spit (str root "/deps.edn")
+            (pr-str {:paths ["src" lib]
+                     :deps {'x/y {:local/root (str base "/locallib")}}
+                     :aliases {:test {:extra-paths ["test"]}}}))
+      (sh root "git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -qm init")
+      (spit (str root "/deps.edn") (pr-str {:paths ["src" lib other]}))
+      (let [roots (set (files/declared-roots root))]
+        (is (contains? roots (str (fs/canonicalize lib))) "a sibling's src on the committed classpath")
+        (is (contains? roots (str (fs/canonicalize (str base "/locallib")))) "a :local/root dependency")
+        (is (not (contains? roots (str (fs/canonicalize other)))) "not what only the working copy added")
+        (is (not-any? #(str/starts-with? % (str (fs/canonicalize root))) roots) "only what lies outside"))
+      (testing "they join the reference roots unless the operator turned them off"
+        (is (contains? (set (files/ctx-reference-roots {:root root :config {:run {:read-declared-roots? true}}}))
+                       (str (fs/canonicalize lib))))
+        (is (empty? (files/ctx-reference-roots {:root root :config {:run {:read-declared-roots? false}}}))))
+      (is (= [] (files/declared-roots (str base "/other"))) "no git, no declared roots")
+      (finally (sh "/" (str "rm -rf " base))))))

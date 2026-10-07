@@ -42,6 +42,8 @@
     :summary "Where a task's work sits in the tape: from its statement to, not including, the call that closed it."}
    {:name samizdat.agent.compaction/fold-task
     :summary "Replace a span with one line, carrying its pinned messages through. The :tool/dispatch cell folds a closed task this way when its span passes gates.edn :task-fold :min-messages; turns.task_id keeps every folded turn findable."}
+   {:name samizdat.agent.files/declared-roots
+    :summary "The trees outside the project that its COMMITTED deps.edn puts on the classpath (:paths, aliases' :extra-paths, :local/root deps). read_file and the shell read them like :run :reference-paths, without marking the branch as having read outside the project; config.edn :run :read-declared-roots? false turns that off. The working copy's additions do not count."}
    {:name samizdat.agent.compaction/results-of
     :summary "The framed bodies of some tools' results inside a span. The task fold puts gates.edn :task-fold :carry (ask_human) on its line, so a person's answers outlive the task that asked them."}]}
 
@@ -144,7 +146,7 @@
    {:name samizdat.approval/policy
     :summary "The approval policy in force and where each part comes from: gates.edn may choose :attended (the shipped default: :block while a front end follows the run's event stream, samizdat.events/watched?, :refuse otherwise; approval/policy given a run-id resolves it), :refuse or :block and the wait; :yolo and :on-timeout :allow only from the operator's config.edn :approval or a person's session mode. A loosening value in gates.edn is ignored."}
    {:name samizdat.approval/session-grants
-    :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
+    :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project. Where no pattern can stand for the command — a flow gap, a compound that hides what it runs — `a` allows that exact text again for the run instead (the request carries :always-exact)."}
    {:name samizdat.security.token/issue!
     :summary "The HTTP API's bearer token: issued when the server starts, written owner-only to ~/.config/samizdat/http/<port>.token (a place no shell command or eval image can read), required on every request but /health, dropped on stop. samizdat.api.client and the event stream send it for a loopback base URL."}
    {:name samizdat.sdiff.group/by-calls

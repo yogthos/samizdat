@@ -283,3 +283,20 @@
         (shell ctx "touch made")
         (is (pos? (:read-only @calls)) "with a gap possible, the command is read"))
       (finally (db/close c)))))
+
+(deftest reading-the-project-the-usual-way-has-no-gap
+  ;; Reads inside the project are always allowed. A branch that had read
+  ;; outside was asked about `find src test -name '*.clj' | sort; echo ---`
+  ;; because sort and echo were not read-only heads, and about anything with
+  ;; `2>&1` or `2>/dev/null`, which counted as a redirect.
+  (doseq [c ["find src test -name '*.clj' | sort; echo ---"
+             "grep -rn foo src 2>/dev/null | head -20"
+             "ls src 2>&1 | head"
+             "printf 'x\\n'; git status --short 2>&1"
+             "cat a.txt | tr a-z A-Z | sort | head"
+             "ls >/dev/null 2>&1 && echo ok"]]
+    (is (empty? (policy/shell-gaps untrusted c)) c)
+    (is (empty? (policy/shell-gaps private c)) c))
+  (doseq [c ["sort -o out.txt a.txt" "sort --output=out.txt a.txt" "echo hi > f"
+             "echo hi 2>&1 > f" "jolt -M:test 2>&1 | tail" "cat a 2> err.log"]]
+    (is (seq (policy/shell-gaps untrusted c)) c)))

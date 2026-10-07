@@ -645,12 +645,15 @@
   or deletes. Anything else — a VAR= prefix, a wrapper — is not."
   [command]
   (let [{:keys [segments complex? decomposable? malformed]} (classify command)
-        {:keys [read-only-heads read-only-git read-only-refused-args]} flow/table
+        {:keys [read-only-heads read-only-git read-only-refused-args
+                read-only-refused-by-head]} flow/table
         statement? (fn [seg]
-                     (let [[head sub :as ws] (str/split (str/trim seg) #"\s+")]
+                     (let [[head sub :as ws] (str/split (str/trim seg) #"\s+")
+                           refused (into read-only-refused-args (get read-only-refused-by-head head))]
                        (and (contains? read-only-heads head)
                             (or (not= "git" head) (contains? read-only-git sub))
-                            (not-any? read-only-refused-args ws))))]
+                            (not-any? (fn [w] (some #(or (= w %) (str/starts-with? w (str % "="))) refused))
+                                      ws))))]
     (boolean (and (not malformed)
                   (or (not complex?) decomposable?)
                   (seq segments)

@@ -235,12 +235,20 @@
 (defn abort! [base run-id]
   (POST base (str "/v1/runs/" run-id "/abort") {}))
 
+(defn interrupt!
+  "Stop what a run is doing and leave it resumable (Esc in the TUI)."
+  [base run-id]
+  (POST base (str "/v1/runs/" run-id "/interrupt") {}))
+
 (defn resume!
-  "Resume a crashed run; with `max-turns`, extend an exhausted one's budget."
+  "Resume a crashed or interrupted run. `opts`: :max-turns extends an
+  exhausted one's budget; :message is a directive for its first boundary."
   ([base run-id] (resume! base run-id nil))
-  ([base run-id max-turns]
+  ([base run-id {:keys [max-turns message]}]
    (POST base (str "/v1/runs/" run-id "/resume")
-         (if max-turns {:max_turns max-turns} {}))))
+         (cond-> {}
+           max-turns (assoc :max_turns max-turns)
+           message (assoc :message message)))))
 
 ;; --- the poll loop -----------------------------------------------------------
 

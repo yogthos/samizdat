@@ -407,6 +407,10 @@
     (fn [req] (let [r (control/abort! (system/conn)
                                       (get-in req [:params :id]))]
                 (json-response (or (:status r) 200) (:body r))))}
+   ;; Stop what the run is doing and leave it resumable (Esc in the TUI).
+   {:method :post :path "/v1/runs/:id/interrupt" :response
+    (fn [req] (let [r (control/interrupt! (system/conn) (get-in req [:params :id]))]
+                (json-response (or (:status r) 200) (:body r))))}
    {:method :post :path "/v1/runs/:id/resume" :response
     (fn [req] (let [r (control/resume! {:conn (system/conn)
                                         :config (system/config)}

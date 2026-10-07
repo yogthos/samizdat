@@ -426,3 +426,35 @@
       (let [r (:result (deref result 8000 {:result "hung"}))]
         (is (str/includes? r "one? → yes"))
         (is (str/includes? r "two? → (no answer)"))))))
+
+(deftest allow-always-covers-the-exact-command-when-no-pattern-can
+  ;; A flow gap or a compound command offered no "allow always": a person
+  ;; allowing `jolt -M:test 2>&1 | head -40` was asked again on every run of
+  ;; the suite. With no pattern to widen to, always means this exact text,
+  ;; for this session.
+  (with-redefs [approval/policy (constantly {:mode :block :wait-ms 5000 :on-timeout :deny})]
+    (let [ask {:effect :ask :head "jolt" :flow? true :input "jolt -M:test 2>&1 | head -40"}
+          first-ask (future (approval/resolve-ask {:run-id "r1"} ask))]
+      (loop [n 0]
+        (if-let [p (first (approval/pending "r1"))]
+          (do (is (= "jolt -M:test 2>&1 | head -40" (:always p)))
+              (is (true? (:always-exact p)) "and says it is the exact text, not a pattern")
+              (approval/decide! (:id p) {:decision :allow :always true}))
+          (when (< n 1000) (Thread/sleep 5) (recur (inc n)))))
+      (is (= :allow (:effect (deref first-ask 5000 {:effect :hung}))))
+      (is (= :allow (:effect (deref (future (approval/resolve-ask {:run-id "r1"} ask)) 2000 {:effect :hung})))
+          "the same text again is not asked")
+      (is (empty? (approval/pending "r1")))
+      (let [other (future (approval/resolve-ask {:run-id "r1"} (assoc ask :input "jolt -M:test")))]
+        (Thread/sleep 100)
+        (is (seq (approval/pending "r1")) "a different command still asks")
+        (approval/reset!)
+        (deref other 2000 nil))
+      (is (= :ask (:effect (approval/resolve-ask {:run-id "r2"} (assoc ask :input "x"))))
+          "nor does it reach another run")
+      (approval/abandon! "r1")
+      (let [again (future (approval/resolve-ask {:run-id "r1"} ask))]
+        (Thread/sleep 100)
+        (is (seq (approval/pending "r1")) "a run that ends forgets it")
+        (approval/reset!)
+        (deref again 2000 nil)))))

@@ -251,6 +251,25 @@
      :body {:error {:message (str "no active run " run-id)}
             :run_id run-id}}))
 
+(defn interrupt!
+  "Stop what a run is doing NOW and leave it resumable — Esc in the TUI,
+  dirge's interrupt. The run's task is cancelled exactly as abort! cancels it,
+  but the row says `interrupted`, the ending a dead process leaves, which a
+  resume picks up from the journal; the turn that was cut off runs again.
+  An aborted run stays aborted, which is why abort! is not this."
+  [conn run-id]
+  (if-let [{:keys [abort cancel]} (get @active run-id)]
+    (if (pos? (runs/finish-run! conn run-id :interrupted nil))
+      (do (reset! abort true)
+          (when cancel (cancel))
+          {:body {:run_id run-id :status "interrupting"}})
+      {:status 409
+       :body {:error {:message (str "run " run-id " already finished")}
+              :run_id run-id}})
+    {:status 409
+     :body {:error {:message (str "no active run " run-id)}
+            :run_id run-id}}))
+
 (defn resume!
   "Resume a crashed run from its journal, in the background like start-run!.
 
@@ -260,7 +279,8 @@
   abort flag, so abort! can stop it like any other.
 
   `body` may carry max_turns: an explicit budget extension that reopens
-  branches closed as exhausted. Omitted, the original budget stands."
+  branches closed as exhausted. Omitted, the original budget stands. And
+  `message`: a directive queued for the resumed run's first boundary."
   [{:keys [conn config]} run-id body]
   (let [refuse (fn [why] {:status 409 :body {:error {:message (str "run " run-id " " why)
                                                      :run_id run-id}}})
@@ -295,6 +315,12 @@
       (if (contains? before run-id)
         (refuse "is still running")
       (do
+      ;; What a person typed after interrupting it (Esc in the TUI): queued
+      ;; as a directive before the resume starts, so the first boundary of
+      ;; the resumed run applies it. intervene! refuses a run that has ended,
+      ;; and an interrupted one has, until this resume.
+      (when-let [m (not-empty (str/trim (str (or (:message body) (get body "message")))))]
+        (interventions/submit! conn run-id {:kind "message" :payload m :issued-by "human"}))
       (let [cancel* (atom nil)
             started (cancel/start!
                      (cancel/spawn

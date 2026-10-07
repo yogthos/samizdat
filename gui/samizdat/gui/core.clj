@@ -262,7 +262,7 @@
   (when-let [run (:run @state)]
     (future
       (let [budget (parse-long (str (:budget @state)))
-            r (api/resume! (:base-url @state) run budget)]
+            r (api/resume! (:base-url @state) run {:max-turns budget})]
         (notice! (if (:ok r)
                    (str "resuming" (when budget (str " with budget " budget)))
                    (str "resume failed: " (:error r))))))))

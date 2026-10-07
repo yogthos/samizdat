@@ -32,7 +32,9 @@
   root exactly as they were; reads may also resolve under the READ-ONLY
   reference roots a project declares. See `reference-roots`."
   (:require [samizdat.agent.gates :as gates]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [samizdat.agent.gitdiff :as gitdiff]
             [clojure.string :as str]
             [jolt.fs :as fs]
             [samizdat.agent.source :as source]
@@ -184,15 +186,41 @@
               (coll? declared) declared
               :else [declared])))
 
+(defn declared-roots
+  "The trees outside `root` that the project's COMMITTED deps.edn puts on
+  its classpath: `:paths`, every alias's `:extra-paths`, and each
+  `:local/root` dependency — canonical, existing, and not under `root`.
+
+  The committed file (git HEAD), not the working copy: the agent can edit
+  deps.edn, and a path it adds is not the project's own reading. No git, or
+  nothing committed, declares nothing."
+  [root]
+  (let [d (try (some-> (gitdiff/file-at root "HEAD" "deps.edn") edn/read-string)
+               (catch Throwable _ nil))
+        local-roots (fn [deps] (keep (comp :local/root val) deps))
+        declared (concat (:paths d)
+                         (mapcat :extra-paths (vals (:aliases d)))
+                         (local-roots (:deps d))
+                         (mapcat (comp local-roots :extra-deps) (vals (:aliases d))))
+        inside (when root (str (fs/canonicalize root)))]
+    (if (map? d)
+      (vec (remove #(or (= % inside) (str/starts-with? % (str inside "/")))
+                   (reference-roots declared root)))
+      [])))
+
 (defn ctx-reference-roots
-  "The reference roots for a tool call, from the run config's
-  `:run :reference-paths`.
+  "The reference roots for a tool call: the run config's `:run
+  :reference-paths`, and — unless `:run :read-declared-roots?` is false —
+  the trees the project's committed deps.edn puts on its classpath
+  (`declared-roots`), which are the project's own reading.
 
   The project's own `.samizdat/config.edn` rather than gates.edn: that file is
   the operator's and the agent may not rewrite it (`run-config?`), which is the
   right owner for a decision about what the run may read outside its tree."
   [{:keys [config root]}]
-  (reference-roots (get-in config [:run :reference-paths]) root))
+  (vec (distinct (concat (reference-roots (get-in config [:run :reference-paths]) root)
+                         (when (get-in config [:run :read-declared-roots?] true)
+                           (declared-roots root))))))
 
 (defn resolve-for-read
   "Resolve `path` for READING — under the project root, or under any of `refs`.

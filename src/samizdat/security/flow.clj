@@ -117,10 +117,12 @@
    ;; command): each can write or run something.
    :read-only-heads #{"ls" "cat" "head" "tail" "wc" "grep" "find" "pwd" "file"
                       "stat" "diff" "nl" "cut" "du" "which" "basename" "dirname"
-                      "realpath" "git"}
+                      "realpath" "git" "echo" "printf" "sort" "tr" "true"}
    ;; `find` runs commands with these, and deletes with the last.
    :read-only-refused-args #{"-exec" "-execdir" "-ok" "-okdir" "-delete" "-fprint"
                              "-fprintf" "-fls"}
+   ;; Per head: sort writes a file with these.
+   :read-only-refused-by-head {"sort" #{"-o" "--output"}}
    ;; Not branch, tag or remote: each also creates and deletes.
    :read-only-git #{"status" "log" "diff" "show" "blame" "ls-files" "rev-parse"}})
 

@@ -737,6 +737,12 @@
                   ;; configured, always outranks it. Per project or per run;
                   ;; no env form. samizdat.agent.tools.ask.
                   :user-context nil
+                  ;; Whether the trees the project's committed deps.edn puts on
+                  ;; its classpath — a sibling library by absolute path, a
+                  ;; :local/root — are readable like :reference-paths, without
+                  ;; marking the branch as having read outside the project.
+                  ;; samizdat.agent.files/declared-roots.
+                  :read-declared-roots? true
                   ;; Cross-branch sharing of engine-confirmed artifacts. Off by
                   ;; default: shared lemmas may cost the beam its diversity, and
                   ;; whether they earn it is exactly what sweep-widths measures.

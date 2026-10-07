@@ -128,6 +128,11 @@
 ;; gave it would be a standing permission nobody chose to leave on.
 (defonce ^:private allowed (atom {}))
 
+(defonce ^:private exact-allowed
+  ;; {run-id #{command}}: commands a person allowed always where no pattern
+  ;; could stand for them — a flow gap, a compound that hides what it runs.
+  (atom {}))
+
 (defn session-grants
   "The patterns a person allowed always for `run-id` in this session."
   [run-id]
@@ -138,6 +143,7 @@
   []
   (let [old @requests]
     (clojure.core/reset! requests {})
+    (clojure.core/reset! exact-allowed {})
     (doseq [[_ {:keys [promise]}] old]
       (when promise (deliver promise {:decision :deny :note "harness shutting down"}))))
   nil)
@@ -156,7 +162,7 @@
 (defn request!
   "Register a question and return its id. Does not wait — `await!` does that,
   so a caller can register, publish, and then park."
-  [{:keys [run-id branch-id kind input details reason questions always gaps]}]
+  [{:keys [run-id branch-id kind input details reason questions always always-exact gaps]}]
   (let [id (new-id)]
     (swap! requests assoc id
            {:id id :run-id run-id :branch-id branch-id
@@ -169,6 +175,9 @@
             ;; The pattern "allow always" would allow, when there is one, so
             ;; the person sees what they would be agreeing to.
             :always always
+            ;; True when `always` is the exact command rather than a
+            ;; pattern: allowing it always allows that text and no other.
+            :always-exact (boolean always-exact)
             :status "pending"
             :asked-at (System/currentTimeMillis)
             :promise (promise)})
@@ -246,6 +255,7 @@
   nobody will ever answer, and the process never gets them back."
   [run-id]
   (swap! allowed dissoc run-id)
+  (swap! exact-allowed dissoc run-id)
   (swap! approved-content (fn [s] (into #{} (remove #(= run-id (first %))) s)))
   (let [gone (filter #(= run-id (:run-id %)) (vals @requests))]
     (swap! requests #(apply dissoc % (map :id gone)))
@@ -296,6 +306,9 @@
       ;; the content, so only a change asks again (karamazov-0e2c.19).
       (and content-key (content-approved? run-id content-key))
       (assoc decision :effect :allow :approved-before true)
+      ;; Exactly this text, allowed always earlier on this run.
+      (and input (contains? (get @exact-allowed run-id) (str input)))
+      (assoc decision :effect :allow :approved-before true)
       ;; Nobody is asked and everything that would have been is allowed.
       ;; Flagged, so the journal tells a yolo allow from a person's.
       (= :yolo mode) (assoc decision :effect :allow :yolo true)
@@ -306,20 +319,27 @@
               ;; it to :ask over any grant), so there is no pattern to offer.
               ;; Nor for a flow gap: a grant clears a command, not what the
               ;; branch has read.
-              always (when (and (:head decision) (not (:complex? decision))
-                                (not (:flow? decision)))
-                       (grant-pattern (:head decision) input))
+              pattern (when (and (:head decision) (not (:complex? decision))
+                                 (not (:flow? decision)))
+                        (grant-pattern (:head decision) input))
+              ;; With no pattern to widen to, always is this exact text.
+              exact (when (and (nil? pattern) (not (str/blank? (str input))))
+                      (str input))
               id (request! {:run-id run-id :branch-id branch-id :kind :shell
                             :input input :details details :reason reason
-                            :gaps gaps :always always})
+                            :gaps gaps :always (or pattern exact)
+                            :always-exact (some? exact)})
               answer (await! id wait-ms {:decision (or on-timeout :deny)})]
           (cond
             (= :allow (:decision answer))
             (do (when content-key
                   (swap! approved-content conj [run-id content-key]))
-                (when (and (:always answer) always)
-                  (swap! allowed update run-id (fn [ps] (vec (distinct (conj (vec ps) always)))))
-                  (log/info "approval: allowed" always "always, for this session, on run" run-id))
+                (when (and (:always answer) pattern)
+                  (swap! allowed update run-id (fn [ps] (vec (distinct (conj (vec ps) pattern)))))
+                  (log/info "approval: allowed" pattern "always, for this session, on run" run-id))
+                (when (and (:always answer) exact)
+                  (swap! exact-allowed update run-id (fnil conj #{}) exact)
+                  (log/info "approval: allowed exactly" (pr-str exact) "always, for this session, on run" run-id))
                 (assoc decision :effect :allow :note (:note answer)))
 
             ;; An expired wait leaves the ask as the refusal it always was,
