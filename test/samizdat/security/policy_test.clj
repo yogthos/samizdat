@@ -588,10 +588,22 @@
 ;; the project and its declared reference roots are readable without asking;
 ;; anything else needs a person (a grant, an approval) or yolo mode.
 
+(defn- outside-dir
+  "A directory outside the project that is not under /tmp. On Linux a temp
+  dir IS /tmp/…, which outside-reads leaves alone as the shell's own scratch,
+  so the outside of these tests has to be somewhere else."
+  []
+  (let [d (str (System/getProperty "user.home") "/.samizdat-test-outside-" (random-uuid))]
+    (jolt.fs/create-dirs d)
+    (str (jolt.fs/canonicalize d))))
+
+(defn- remove-dir! [d]
+  (doseq [f (reverse (file-seq (java.io.File. ^String d)))] (.delete ^java.io.File f)))
+
 (deftest outside-reads-names-existing-paths-outside-the-roots
   (let [root (str (jolt.fs/canonicalize (str (jolt.fs/create-temp-dir))))
         ref (str (jolt.fs/canonicalize (str (jolt.fs/create-temp-dir))))
-        other (str (jolt.fs/canonicalize (str (jolt.fs/create-temp-dir))))
+        other (outside-dir)
         home (System/getenv "HOME")
         roots [root ref]
         out (fn [cmd] (policy/outside-reads cmd root roots))]
@@ -611,12 +623,14 @@
       (is (empty? (out "sed -n '/pattern/p' in")) "a sed address is not a path that exists")
       (is (empty? (out "grep foo in 2>/dev/null")))
       (is (empty? (out "ls /tmp")) "the scratch trees the shell may write anyway")
-      (is (empty? (out (str "echo " other))) "echo prints its argument, it does not read it"))))
+      (is (empty? (out (str "echo " other))) "echo prints its argument, it does not read it"))
+    (remove-dir! other)))
 
 (deftest a-read-outside-the-project-is-asked-about
   (let [root (str (jolt.fs/create-temp-dir))
-        other (str (jolt.fs/create-temp-dir))
+        other (outside-dir)
         env {"PATH" (System/getenv "PATH")}]
+   (try
     (spit (str other "/f") "OUTSIDE-CONTENT")
     (let [r (policy/run-shell {:root root :env env :read-roots [root]
                                :args {:command (str "cat " other "/f")}})]
@@ -648,4 +662,5 @@
             (policy/run-shell {:root root :env env :shell-backend :none
                                :args {:command (str "touch " escape)}})
             (is (not (.exists (java.io.File. escape))))
-            (finally (.delete (java.io.File. escape)))))))))
+            (finally (.delete (java.io.File. escape)))))))
+   (finally (remove-dir! other)))))
