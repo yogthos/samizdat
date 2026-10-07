@@ -611,3 +611,27 @@
         r (samizdat.agent.tools/run-tool (ctx root "read_digest" {:paths ["a.clj" "b.clj"] :question "q"}))]
     (is (str/includes? (:result r) "a.clj") (:result r))
     (is (str/includes? (:result r) "b.clj") "both, not the first")))
+
+;; --- nobody is asked to approve an edit that can only fail (karamazov-0e2c.22) ----
+
+(deftest a-doomed-edit-is-refused-before-a-person-is-asked
+  ;; After xi's doomed-edit: the edit is checked first, the person second.
+  (let [root (str (fs/create-temp-dir))
+        abs (str (fs/canonicalize root) "/roles.edn")
+        asked (atom 0)]
+    (spit abs "{:worker {:tools [\"read_file\"]}}\n")
+    (with-redefs-fn {#'samizdat.agent.files/confining-files (fn [_] [abs])
+                     #'samizdat.approval/policy (constantly {:mode :block :wait-ms 1 :on-timeout :deny})
+                     #'samizdat.approval/request! (fn [_] (swap! asked inc) "id")
+                     #'samizdat.approval/await! (fn [_ _ _] {:decision :allow})}
+      (fn []
+        (testing "text that is not in the file"
+          (let [r (samizdat.agent.tools/run-tool (ctx root "edit_file" {:path "roles.edn" :old_text "nowhere" :new_text "x"}))]
+            (is (= :mechanics (:category r)))
+            (is (zero? @asked))))
+        (testing "an anchor that does not resolve"
+          (samizdat.agent.tools/run-tool (ctx root "patch" {:path "roles.edn" :edits [{:from "9:zz" :replace "x"}]}))
+          (is (zero? @asked)))
+        (testing "an edit that would apply is still a person's call"
+          (samizdat.agent.tools/run-tool (ctx root "edit_file" {:path "roles.edn" :old_text "read_file" :new_text "grep"}))
+          (is (= 1 @asked)))))))

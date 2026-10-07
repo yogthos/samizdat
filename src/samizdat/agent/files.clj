@@ -446,7 +446,6 @@
       (if-let [abs (resolve-under-root (or root ".") path)]
         (cond
           (run-config? root abs) (miss branch (msg {:protected true :path path}))
-          (workflow-refused? ctx root abs) (miss branch (msg {:workflow true :path path}))
           (not (fs/exists? abs)) (miss branch (msg {:no-file true :path path}))
           :else
           (let [content (str/replace (slurp abs) "\r\n" "\n")
@@ -465,8 +464,14 @@
                                        :path path
                                        (name (:reason err)) true)))
               (let [{:keys [problem note]} (vet-source path result false)]
-                (if problem
+                (cond
+                  problem
                   (miss branch (msg {:refused true :path path :syntax note}))
+                  ;; Asked only once the patch is known to apply
+                  ;; (karamazov-0e2c.22, after xi's doomed-edit).
+                  (workflow-refused? ctx root abs)
+                  (miss branch (msg {:workflow true :path path}))
+                  :else
                   (let [exam-msg (exam-note! ctx path (slurp abs) result)]
                     (spit abs result)
                     {:result (str (msg {:patched true :path path :edits (count edits)
@@ -726,9 +731,6 @@
           (run-config? root abs)
           (miss branch (msg {:protected true :path path}))
 
-          (workflow-refused? ctx root abs)
-          (miss branch (msg {:workflow true :path path}))
-
           (not (fs/exists? abs))
           (miss branch (msg {:no-file true :path path}))
 
@@ -753,6 +755,12 @@
                                              (str "  Line " (line-of starts s))))
                           :more (when (> (count ranges) (grep-ranges))
                                   (- (count ranges) (grep-ranges)))}))
+
+              ;; Asked only once the edit is known to apply
+              ;; (karamazov-0e2c.22, after xi's doomed-edit): nobody approves
+              ;; an edit that can only fail.
+              (workflow-refused? ctx root abs)
+              (miss branch (msg {:workflow true :path path}))
 
               :else
               ;; Splice in reverse so earlier offsets stay valid.
