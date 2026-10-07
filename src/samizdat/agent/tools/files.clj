@@ -26,6 +26,7 @@
             [samizdat.agent.files :as files]
             [samizdat.agent.tools.base :as base]
             [samizdat.sdiff.address :as address]
+            [samizdat.sdiff.core :as sdiff]
             [samizdat.prompt :as prompt]
             [samizdat.security.exposure :as exposure]
             [samizdat.userspace :as userspace]))
@@ -78,7 +79,26 @@
   ;; {form, at?}: the lines of one form, or one place in it, by its name
   ;; (samizdat.sdiff.address) rather than by line numbers.
   (if (str/blank? (str (:form args)))
-    (files/read-file ctx)
+    (let [r (files/read-file ctx)]
+      ;; A WHOLE read of a Clojure file says which forms changed since this
+      ;; branch last read it (karamazov-0e2c.15, sdiff's fingerprint): after
+      ;; compaction a re-read is how a branch catches up, and most of the
+      ;; file is usually what it already knew.
+      (or (when (and (not= :mechanics (:category r)) (:run-id ctx) (:id branch)
+                     (nil? (:offset args)) (nil? (:limit args))
+                     (sdiff/clj? (str (:path args))))
+            (try
+              (let [abs (files/resolve-read! ctx (files/ctx-reference-roots ctx) (str (:path args)))
+                    d (address/since-read! (:run-id ctx) (:id branch) (str abs) (slurp abs))]
+                (when (and d (or (seq (:changed d)) (seq (:added d)) (seq (:removed d))))
+                  (update r :result str "\n\n"
+                          (prompt/render "forms-since-read"
+                                         {:changed (str/join ", " (:changed d))
+                                          :added (str/join ", " (:added d))
+                                          :removed (str/join ", " (:removed d))
+                                          :same (when (pos? (:same d)) (str (:same d) " forms"))}))))
+              (catch Throwable _ nil)))
+          r))
     (let [{:keys [miss offset limit] :as found} (form-lines ctx)]
       (cond
         miss (base/malformed branch miss)

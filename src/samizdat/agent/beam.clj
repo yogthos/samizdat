@@ -69,7 +69,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.verify :as verify]
             [samizdat.security.flow :as flow]
-            [samizdat.llm.client :as llm]
+            [samizdat.agent.run-state :as run-state]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
@@ -1339,9 +1339,7 @@
                              (catch Throwable _ nil))
                         (throw e))
                       ;; The run's sealed commands end with it (verify).
-                      (finally (verify/unseal-run! run-id)
-                               (flow/forget-run! run-id)
-                               (llm/forget-retired! run-id)))]
+                      (finally (run-state/run-ended! run-id)))]
       ;; HOW THIS WORKFLOW WENT, for the next run's choice. A run only ever
       ;; sees its own attempt, so `direct attempts on this project keep getting
       ;; stuck` is not something any single run can notice — it has to be

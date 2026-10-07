@@ -55,7 +55,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.verify :as verify]
             [samizdat.security.flow :as flow]
-            [samizdat.llm.client :as llm]
+            [samizdat.agent.run-state :as run-state]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
@@ -474,12 +474,8 @@
             (assoc :run-id run-id)))
       (finally
         (stop-watch)
-        ;; The run's sealed commands end with it (verify/unseal-run!).
-        (verify/unseal-run! run-id)
-        ;; And its branches' flow labels (samizdat.security.flow).
-        (flow/forget-run! run-id)
-        ;; And the models it retired (llm.client/chat).
-        (llm/forget-retired! run-id)
+        ;; Its seal, flow labels, retired models and reads end with it.
+        (run-state/run-ended! run-id)
         ;; NOTHING IS LEFT PENDING ON A RUN NOBODY WILL DRAIN AGAIN. The
         ;; drains leave workflow kinds (switch/budget/stop) for a workflow's
         ;; own directives stage and only feature.edn has one, so on any other

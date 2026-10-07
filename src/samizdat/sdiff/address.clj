@@ -26,7 +26,7 @@
   labels them: by role where children-ids has one, else by position."
   [node]
   (let [ids (core/children-ids node)]
-    (if (#{::core/lcs ::core/seq} ids)
+    (if (#{:samizdat.sdiff.core/lcs :samizdat.sdiff.core/seq} ids)
       (let [hd (core/head node)
             xs (if hd (vec (rest (core/kids node))) (core/kids node))]
         (map-indexed (fn [i k]
@@ -90,3 +90,39 @@
        (str/blank? (str at)) {:rows (rows node) :id id}
        :else (let [{pnode :node :keys [path] :as p} (find-place node at)]
                (if (:error p) (assoc p :id id) {:rows (rows pnode) :id id :path path}))))))
+
+;; --- form fingerprints (karamazov-0e2c.15) ------------------------------------
+;;
+;; sdiff's serve.clj `fingerprint`: the hash of a form's source with its
+;; whitespace collapsed, so it changes when the code does and not when lines
+;; move around it. Kept per run and branch for the files each has read whole.
+
+(defn fingerprints
+  "{form-id hash} for every top-level form of `src`."
+  [src]
+  (into {} (for [f (core/forms src)]
+             [(id-str (core/top-id f)) (hash (str/replace (n/string f) #"\s+" " "))])))
+
+(defonce ^:private reads
+  ;; [run-id branch-id path] -> fingerprints at that branch's last read
+  (atom {}))
+
+(defn since-read!
+  "What changed in `src` since the branch last read `path` whole, as
+  {:changed :added :removed :same} (form ids), or nil on a first read; and
+  remember `src` as this read."
+  [run-id branch-id path src]
+  (let [k [run-id branch-id path]
+        now (fingerprints src)
+        was (get @reads k)]
+    (swap! reads assoc k now)
+    (when was
+      {:changed (vec (sort (filter #(and (contains? was %) (not= (was %) (now %))) (keys now))))
+       :added (vec (sort (remove #(contains? was %) (keys now))))
+       :removed (vec (sort (remove #(contains? now %) (keys was))))
+       :same (count (filter #(= (was %) (now %)) (keys now)))})))
+
+(defn forget-reads!
+  "Drop a run's remembered reads: the run is over."
+  [run-id]
+  (swap! reads (fn [m] (into {} (remove (fn [[[r] _]] (= r run-id))) m))))

@@ -84,6 +84,7 @@
             [samizdat.security.token]
             [samizdat.sdiff.core]
             [samizdat.sdiff.address]
+            [samizdat.agent.run-state]
             [samizdat.basis]
             [samizdat.perturb]
             [samizdat.security.exposure]

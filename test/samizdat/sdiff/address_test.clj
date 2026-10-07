@@ -69,3 +69,28 @@
                       {:tool-name "read_file" :branch {:id "B1"} :root root
                        :args {:path "src/demo/core.clj" :form "nope"}}))]
       (is (str/includes? r "defn route") "a miss names the forms there are"))))
+
+;; --- what changed since a branch last read the file (karamazov-0e2c.15) ----------
+
+(deftest a-re-read-says-which-forms-changed-since-the-last-one
+  (let [root (str (fs/create-temp-dir))
+        read (fn [bid] (:result (samizdat.agent.tools/run-tool
+                                 {:tool-name "read_file" :branch {:id bid} :root root :run-id "R"
+                                  :args {:path "src/demo/core.clj"}})))]
+    (fs/create-dirs (str root "/src/demo"))
+    (spit (str root "/src/demo/core.clj") src)
+    (try
+      (is (not (str/includes? (read "B1") "since you last read")) "a first read has nothing to compare")
+      (spit (str root "/src/demo/core.clj")
+            (-> src
+                (str/replace "(if (> n cap) :stop :go)" "(if (>= n cap) :stop :go)")
+                (str/replace "\n\n(defn helper" "\n\n\n;; moved down\n(defn helper")
+                (str "\n(defn added [] 1)\n")))
+      (let [r (read "B1")]
+        (is (str/includes? r "since you last read") r)
+        (is (re-find #"changed:.*defn route" r) r)
+        (is (re-find #"new:.*defn added" r) r)
+        (is (not (re-find #"changed:.*defn helper" r)) "moving a form or adding a comment is not a change"))
+      (testing "per branch: a sibling's first read has nothing to compare"
+        (is (not (str/includes? (read "B2") "since you last read"))))
+      (finally (samizdat.sdiff.address/forget-reads! "R")))))
