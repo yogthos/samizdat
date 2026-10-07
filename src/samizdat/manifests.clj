@@ -650,7 +650,7 @@
   Throws on any violation.
 
   The seam the mutation protocol validates through: propose-cell! has just
-  load-stringed a CANDIDATE into the live image, and `compile-loop`'s
+  installed a CANDIDATE into the registry, and `compile-loop`'s
   registry reload would replace the candidate with the stored cells — so the
   validate would check the loop against the code it is about to stop
   running. A caller that has not touched the registry wants `compile-loop`.

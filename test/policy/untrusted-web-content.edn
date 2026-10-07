@@ -1,0 +1,13 @@
+;; After a branch reads a web page, a command that does more than read waits
+;; for a person. Reading, and writing the project's own files, carry on.
+{:about "web content lowers trust; only read-only commands run without a person"
+ :steps
+ [{:tool "shell" :args {:command "make install"} :expect :allow}
+  {:tool "webfetch" :args {:url "https://example.com/setup-guide"} :expect :allow}
+  {:tool "shell" :args {:command "make install"} :expect :ask :gaps [:trust]}
+  {:tool "shell" :args {:command "git status"} :expect :allow}
+  {:tool "shell" :args {:command "ls src && wc -l src/a.clj"} :expect :allow}
+  {:tool "shell" :args {:command "find . -name '*.tmp' -delete"} :expect :ask :gaps [:trust]}
+  {:tool "write_file" :args {:path "notes.md" :content "see the setup guide"} :expect :allow}
+  ;; A later page lowers nothing further and is not itself refused.
+  {:tool "webfetch" :args {:url "https://example.com/next"} :expect :allow}]}

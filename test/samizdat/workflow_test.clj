@@ -327,7 +327,7 @@
         (is (= "glm-5.3" (get-in c [:llm-config :model])))
         (is (not= :base-adapter (:llm-adapter c)) "the adapter is swapped too")))
     (testing "a role assigned a built-in takes that provider's default model"
-      (is (= "deepseek-v4-flash" (get-in (workflow/role-ctx base :implementor)
+      (is (= "deepseek-flash" (get-in (workflow/role-ctx base :implementor)
                                          [:llm-config :model]))))
     (testing "an unconfigured role keeps the run's default model and adapter"
       (let [c (workflow/role-ctx base :reviewer)]

@@ -1,0 +1,1 @@
+Refused: `{{cmd}}` is not a command this run was configured with. A cell can run only the run's own `:run :verify-cmd` or one of its `:acceptance` `:check` commands, which come from the run config the run itself cannot write.

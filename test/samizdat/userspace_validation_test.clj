@@ -223,3 +223,34 @@
       (is (str/includes? (:result r) ".samizdat/manifests/loop.edn"))
       (is (str/includes? (:result r) "no-such/cell"))
       (is (str/includes? (:result r) "the previous version is still what runs")))))
+
+;; --- a validator that got stricter (karamazov-3vu1.9) -------------------------
+
+(deftest a-stored-version-the-current-check-refuses-is-not-the-fallback
+  ;; "The last version that passed" was the store's newest version, on the
+  ;; argument that only a passing text is ever recorded. That holds until a
+  ;; check gets stricter. The cell sandbox did exactly that: this repository's
+  ;; own board.clj, stored when raw store.db access was allowed, came back as
+  ;; the fallback for its own refused file — and the harness failed to start.
+  ;; The fallback is the newest stored version that passes the check in force.
+  (with-project [root]
+    (with-validator :cell broken-if-marked
+      (us/save! :cell "board" "(ns cells.board) ;; v-good" "test")
+      (us/save! :cell "board" "(ns cells.board) ;; v-old BROKEN now" "test")
+      (spit (file root "cells/board.clj") "(ns cells.board) ;; on disk, BROKEN")
+      (is (= "(ns cells.board) ;; v-good" (us/body :cell "board"))
+          "the newest version that still passes, not the newest version")
+      (us/save! :cell "board" "(ns cells.board) ;; v-newer BROKEN too" "test")
+      (us/invalidate!)
+      (is (= "(ns cells.board) ;; v-good" (us/body :cell "board"))))))
+
+(deftest every-shipped-policy-passes-its-own-check
+  ;; The policy check required a MAP, and manual.edn has always been a vector
+  ;; of groups — so a project's manual was refused on every read, and what ran
+  ;; was the store's newest version, unchecked. Once that fallback re-checked
+  ;; what it handed back, the manual had nothing left and a live supervisor
+  ;; was told the manual could not be compiled.
+  (with-project [root]
+    (doseq [p ["gates" "manual" "phases" "prompt-chain" "roles" "rules" "wordlists"]]
+      (is (nil? ((us/validator :policy) p (slurp (io/resource (str p ".edn")))))
+          p))))

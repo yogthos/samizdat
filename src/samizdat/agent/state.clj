@@ -33,6 +33,7 @@
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
+            [samizdat.sandbox.sci :as sandbox]
             [samizdat.tape :as tape]
             [samizdat.util :as util]))
 
@@ -268,12 +269,12 @@
   ;; rubric while working for every plain lookup beside it.
   (util/generation-cache
    phases/gen
-   ;; `*ns*` bound for the same reason as gates/compile-form: compiled on
-   ;; first use now, and `confirmed-artifacts` resolves here and nowhere the
-   ;; first caller might be.
-   #(binding [*ns* (the-ns 'samizdat.agent.state)]
-      (mapv (fn [form] (eval `(fn [~'branch] ~form)))
-            (phases/finished-key-forms)))))
+   ;; In SCI, in the :state home (samizdat.sandbox.sci), where
+   ;; `confirmed-artifacts` resolves as it did when these were `eval`ed in
+   ;; this namespace — and nothing outside the allowlist does: phases.edn
+   ;; is agent-editable (karamazov-3vu1.9).
+   #(mapv (fn [form] (sandbox/form-fn :state '[branch] form))
+          (phases/finished-key-forms))))
 
 (defn finished-key
   "The ranking tuple for a done-eligible branch, best-first component order.
@@ -730,6 +731,24 @@
   (-> branch
       (update :repl-written (fnil conj #{}) (norm-path path))
       (assoc :repl-fresh? false)))
+
+(defn withdraw-unwritten
+  "Drop from the plan every declared file this branch has not written. What
+  was written stays declared, and the goal is replaced by `goal` when given.
+
+  The way to say \"nothing more to change\": done refuses a plan with files
+  still owed, and a plan naming no files is refused, so a branch that planned
+  an edit and then found none was needed had no honest way to finish (run
+  52eba2b2 spent eleven turns at that wall)."
+  [branch goal]
+  (if-let [p (plan branch)]
+    (let [written (or (:repl-written branch) #{})]
+      (assoc branch :repl-plan
+             (cond-> (-> p
+                         (update :files #(vec (filter written %)))
+                         (update :tests #(vec (filter written %))))
+               goal (assoc :goal goal))))
+    branch))
 
 (defn unwritten
   "Declared files this branch has not written yet, in declaration order — the

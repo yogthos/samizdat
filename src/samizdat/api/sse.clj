@@ -29,7 +29,8 @@
   multibyte character can be cut across two chunks; a line ends at a newline
   byte, which never occurs inside a UTF-8 sequence, so a line is decoded once
   and whole."
-  (:require ;; the java.time.* host shim, before data.json — see samizdat.store.journal
+  (:require [samizdat.security.token :as token]
+            ;; the java.time.* host shim, before data.json — see samizdat.store.journal
             [jolt.time]
             [clojure.data.json :as json]
             [clojure.string :as str]
@@ -196,6 +197,10 @@
 (defn- request-text [{:keys [host port path]} last-id]
   (str "GET " path " HTTP/1.1\r\n"
        "Host: " host ":" port "\r\n"
+       ;; The harness's token, read again on each connection so a restarted
+       ;; server's new one is picked up (samizdat.security.token).
+       (when-let [t (and (#{"127.0.0.1" "localhost"} host) (token/read-for port))]
+         (str "Authorization: Bearer " t "\r\n"))
        "Accept: text/event-stream\r\n"
        "Cache-Control: no-cache\r\n"
        (when last-id (str "Last-Event-ID: " last-id "\r\n"))

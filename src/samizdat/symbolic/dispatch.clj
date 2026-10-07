@@ -23,7 +23,8 @@
 
   AN ENTRY is [label spec] or [label pattern guard]. `spec` is either a
   pattern — a map, the hole `_`, or a bare ?var — or what it always was: a
-  `(fn [d] ...)` form maestro evals at compile time, or a function. Both are
+  `(fn [d] ...)` form, compiled in SCI's :dispatch home (clojure.core over
+  the data map, nothing else — samizdat.sandbox.sci), or a function. Both are
   accepted so a manifest migrates one table at a time. The data a dispatch
   sees is always a map, so a pattern that is not one — a keyword, a vector,
   `true` — is refused rather than compiled into a branch that never fires.
@@ -68,16 +69,24 @@
            e))
 
 (defn compile-entry
-  "[label spec] or [label pattern guard] -> [label pred]. A form or a
-  function passes through untouched; a pattern compiles to a predicate over
-  the data map. Throws, naming the branch, on anything the engine refuses."
+  "[label spec] or [label pattern guard] -> [label pred]. A function passes
+  through untouched; a form compiles in the sandbox (a manifest is agent-
+  editable, and this used to be maestro's `eval` of it in the harness
+  compiler — karamazov-3vu1.9); a pattern compiles to a predicate over the
+  data map. Throws, naming the branch, on anything the engine refuses."
   [[label spec guard :as entry]]
   (let [guarded? (> (count entry) 2)]
     (if-not (pattern-entry? spec)
       (if guarded?
         (throw (ex-info (str "branch " label ": a guard needs a pattern, not a form")
                         {:error :guard-without-pattern :label label :entry entry}))
-        [label spec])
+        [label (if (seq? spec)
+                 ;; Resolved at call: the sandbox's require graph reaches
+                 ;; this namespace (mycelium.cell -> validation -> here).
+                 (try ((requiring-resolve 'samizdat.sandbox.sci/form-fn) :dispatch nil spec)
+                      (catch clojure.lang.ExceptionInfo e
+                        (throw (relabel e label))))
+                 spec)])
       (do
         (when-not (or (map? spec) (sym/wildcard? spec) (sym/pvar? spec))
           (throw (ex-info (str "branch " label ": pattern " (pr-str spec)

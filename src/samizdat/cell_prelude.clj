@@ -2,23 +2,24 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (ns samizdat.cell-prelude
-  "AOT preload for the namespaces the shipped cells depend on but nothing else
-  in src requires.
+  "Preload for the namespaces the shipped cells depend on but nothing else in
+  src requires.
 
-  Cells are load-stringed, not AOT-compiled (see samizdat.cells). A namespace a
-  cell needs — samizdat.agent.planner, telemetry, judge — is therefore first
-  compiled on that nested load-string path, and on a `-dirty` jolt build that
-  path intermittently fails to intern the namespace's vars, poisoning the AOT
-  cache: the cell then can't resolve `planner/parse-plan` and the run dies, until
-  `~/.jolt/aot-cache` is cleared by hand (karamazov-fv6, and the earlier
-  prompt-digest crash it echoes).
+  Cells run in SCI (samizdat.sandbox.sci), and the allowlist there is DATA —
+  it requires each namespace it exposes when it first builds a context, not
+  at compile time, because several of those namespaces require the sandbox.
+  A namespace only a cell reaches — samizdat.agent.planner, telemetry, judge —
+  would therefore be absent from a `jolt build` image, which embeds the
+  entry's require closure and nothing else, and the first cell load there
+  would fail to find it. It used to be worse: cells were load-stringed, and on
+  a `-dirty` jolt build that nested compile path poisoned the AOT cache
+  (karamazov-fv6).
 
   Requiring those namespaces HERE, from a normal src namespace on the compile
-  graph (core -> workflow -> cells -> this), forces them to compile the normal
-  way first, so the cache entry is good and the later load-string reference
-  reuses it. A preload, not a dependency — nothing here is called; the `require`
-  is the whole point. Add a namespace here whenever a new shipped cell reaches
-  for one that nothing in src already pulls in."
+  graph (core -> workflow -> cells -> this), puts them in the image. A
+  preload, not a dependency — nothing here is called; the `require` is the
+  whole point. Add a namespace here whenever a new shipped cell reaches for
+  one that nothing in src already pulls in."
   (:require [samizdat.agent.compaction]
             [samizdat.agent.decompose]
             ;; cells/oversight.clj reads the run's own health to decide
@@ -29,7 +30,6 @@
             [samizdat.agent.planner]
             [samizdat.agent.reflect]
             [samizdat.agent.telemetry]
-            [samizdat.engine.proc]
             ;; cells/board.clj and cells/feature.clj read the run's metrics;
             ;; nothing in src required the namespace, so a built binary would
             ;; have lacked it (cells-test caught it, 2026-09-16).

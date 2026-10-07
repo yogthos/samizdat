@@ -351,3 +351,56 @@
     (is (boolean? (:dirty id)))
     (is (string? (:started_at id)))
     (is (= id (server/harness-identity)) "read once: the code the process loaded")))
+
+;; --- who may drive the API (karamazov-3vu1.1) ----------------------------------
+;;
+;; The server binds loopback and has no credentials, so the one thing standing
+;; between a web page the operator has open and POST /v1/runs was nothing:
+;; body-json parsed any body under any Content-Type, and a browser sends a
+;; text/plain form POST cross-origin without asking first. These pin the three
+;; checks a loopback API needs when it cannot authenticate: the Host a request
+;; names (DNS rebinding), the Origin it came from, and a JSON body type a page
+;; cannot send without a preflight nobody answers.
+
+(defn- call-with
+  [method uri headers & [body]]
+  (let [r (server/handler (cond-> {:request-method method :uri uri :headers headers}
+                            body (assoc :body body)))]
+    (assoc r :json (some-> (:body r) (json/read-str :key-fn keyword)))))
+
+(deftest a-foreign-host-is-refused
+  ;; DNS rebinding: evil.example resolves to 127.0.0.1 after the page loads,
+  ;; and the browser then reads our answers as same-origin.
+  (with-redefs [system/conn (constantly nil) system/config (constantly {})]
+    (is (= 403 (:status (call-with :get "/v1/interventions/kinds" {"host" "evil.example:3985"}))))
+    (doseq [h ["localhost:3985" "127.0.0.1:3985" "[::1]:3985" "localhost" "127.0.0.1"]]
+      (is (= 200 (:status (call-with :get "/v1/interventions/kinds" {"host" h}))) h))))
+
+(deftest a-cross-origin-request-is-refused
+  (with-redefs [system/conn (constantly nil) system/config (constantly {})]
+    (is (= 403 (:status (call-with :post "/v1/harness/approval-mode"
+                                   {"host" "127.0.0.1:3985" "origin" "https://evil.example"
+                                    "content-type" "application/json"}
+                                   "{\"mode\":\"block\"}"))))
+    (is (= 403 (:status (call-with :get "/v1/interventions/kinds"
+                                   {"host" "127.0.0.1:3985" "origin" "https://evil.example"}))))
+    (is (= 200 (:status (call-with :get "/v1/interventions/kinds"
+                                   {"host" "127.0.0.1:3985" "origin" "http://localhost:3985"})))
+        "a page the harness itself served is its own origin")))
+
+(deftest a-write-must-say-it-is-json
+  ;; text/plain and form bodies are the ones a browser sends cross-origin
+  ;; without a preflight; application/json is not.
+  (with-redefs [system/conn (constantly nil) system/config (constantly {})]
+    (doseq [ct [nil "text/plain" "application/x-www-form-urlencoded" "multipart/form-data; boundary=x"]]
+      (is (= 415 (:status (call-with :post "/v1/harness/approval-mode"
+                                     (cond-> {"host" "127.0.0.1:3985"} ct (assoc "content-type" ct))
+                                     "{\"mode\":\"block\"}")))
+          (str ct)))
+    (try
+      (is (not= 415 (:status (call-with :post "/v1/harness/approval-mode"
+                                        {"host" "127.0.0.1:3985"
+                                         "content-type" "application/json; charset=utf-8"}
+                                        "{\"mode\":\"refuse\"}"))))
+      ;; The endpoint sets the process's session mode; leave none behind.
+      (finally (approval/set-mode! nil)))))

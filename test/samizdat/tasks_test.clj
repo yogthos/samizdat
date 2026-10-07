@@ -384,3 +384,61 @@
         (is (str/includes? r "you closed it yourself") r))
       (tasks/claim! c theirs rid "B2")
       (is (str/includes? (:result (claim "B1" theirs)) "branch B2 holds it")))))
+
+;; --- who may change a task (karamazov-9vqk) ----------------------------------
+
+(defn- run-tool-as [c rid bid tool-name args]
+  (tools/run-tool {:tool-name tool-name :args args
+                   :branch (state/new-branch {:id bid :problem "p"})
+                   :conn c :run-id rid :turn 1}))
+
+(deftest only-the-holder-updates-a-held-task
+  ;; update rewrote any task's text whoever held it, and setting a held
+  ;; task's status to open handed it to the next claimer.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          id (tasks/create! c {:title "mine" :body "the plan" :run-id rid})]
+      (tasks/claim! c id rid "B1")
+      (let [r (run-tool-as c rid "B2" "task" {:action "update" :id id :body "do something else"})]
+        (is (= :mechanics (:category r)))
+        (is (str/includes? (:result r) "B1")))
+      (is (= "the plan" (:body (tasks/get-task c id))))
+      (run-tool-as c rid "B2" "task" {:action "update" :id id :status "open"})
+      (is (= "B1" (:branch_id (tasks/get-task c id))) "nor taken off its holder")
+      (testing "the holder still can"
+        (run-tool-as c rid "B1" "task" {:action "update" :id id :body "the revised plan"})
+        (is (= "the revised plan" (:body (tasks/get-task c id)))))
+      (testing "an unheld task stays editable: that is planning, not theft"
+        (let [free (tasks/create! c {:title "free" :run-id rid})]
+          (run-tool-as c rid "B2" "task" {:action "update" :id free :body "notes"})
+          (is (= "notes" (:body (tasks/get-task c free)))))))))
+
+(deftest update-does-not-close-a-task
+  ;; close is where the holder check and the board's review check live;
+  ;; update with a terminal status walked around both.
+  (with-db [c]
+    (let [rid (runs/start-run! c {:problem "p"})
+          id (tasks/create! c {:title "board work" :run-id rid})]
+      (tasks/claim! c id rid "B1")
+      (doseq [s ["done" "cancelled"]]
+        (let [r (run-tool-as c rid "B1" "task" {:action "update" :id id :status s})]
+          (is (= :mechanics (:category r)) s)
+          (is (str/includes? (:result r) "close") s)))
+      (is (= "in_progress" (:status (tasks/get-task c id)))))))
+
+(deftest another-runs-claimed-task-is-its-own-business
+  (with-db [c]
+    (let [r1 (runs/start-run! c {:problem "p"})
+          r2 (runs/start-run! c {:problem "q"})
+          id (tasks/create! c {:title "theirs" :body "their plan" :run-id r1})]
+      (tasks/claim! c id r1 "B1")
+      (is (= :mechanics (:category (run-tool-as c r2 "B9" "task" {:action "show" :id id}))))
+      (is (= :mechanics (:category (run-tool-as c r2 "B9" "task" {:action "update" :id id :body "x"}))))
+      (is (= "their plan" (:body (tasks/get-task c id))))
+      (let [unheld (tasks/create! c {:title "their next" :run-id r1})]
+        (run-tool-as c r2 "B9" "task" {:action "close" :id unheld :status "cancelled"})
+        (is (= "open" (:status (tasks/get-task c unheld))) "nor closes what it has not claimed"))
+      (testing "backlog is everyone's: carried-over work any run may pick up"
+        (let [b (tasks/create! c {:title "later"})]
+          (is (str/includes? (:result (run-tool-as c r2 "B9" "task" {:action "show" :id b})) "later"))
+          (is (str/includes? (:result (run-tool-as c r2 "B9" "task" {:action "list"})) "later")))))))

@@ -31,6 +31,8 @@
   the handles to a server that is still listening."
   (:require [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [samizdat.security.listen :as listen]
+            [samizdat.approval :as approval]
             ;; installs the java.time.* host shim tools.logging's timestamp
             ;; formatter resolves against; must load before the first log call
             [jolt.time]
@@ -42,6 +44,7 @@
             [samizdat.agent.phases :as phases]
             [samizdat.lexicon :as lexicon]
             [samizdat.config :as config]
+            [samizdat.security.token :as token]
             [samizdat.llm.client :as llm-client]
             [samizdat.llm.fence :as fence]
             [samizdat.llm.registry :as registry]
@@ -82,17 +85,29 @@
   Reloading after the bind is what makes the caches hold the project's own
   policy; the reload-on-every-start half (rather than trusting an atom that
   survives stop!/start!) is what lets a long-lived interpreted session pick
-  up edits without a process restart."
-  [conn]
-  (userspace/bind! conn)
-  ;; A project's first run copies the shipped role map and its files into
-  ;; .samizdat/ — before the reloads below, which must read the project's
-  ;; files. A no-op without a root bound, and after the first run.
-  (userspace/seed-project!)
-  (gates/reload-config!)
-  (lexicon/reload!)
-  (phases/reload!)
-  conn)
+  up edits without a process restart.
+
+  `settings` is `config/userspace-settings`: under `:adopt :unedited` the
+  updates a project never edited are taken before the reloads, so they are
+  what the caches hold (karamazov-3vu1.12)."
+  ([conn] (bind-project! conn (config/userspace-settings {})))
+  ([conn settings]
+   (userspace/bind! conn)
+   ;; A project's first run copies the shipped role map and its files into
+   ;; .samizdat/ — before the reloads below, which must read the project's
+   ;; files. A no-op without a root bound, and after the first run.
+   (userspace/seed-project!)
+   (when (= :unedited (:adopt settings))
+     (let [{:keys [adopted refused]} (userspace/adopt-unedited!)]
+       (when (seq adopted)
+         (log/info "userspace: took" (count adopted) "update(s) the project never edited"))
+       (doseq [{:keys [offer problem]} refused]
+         (log/warn "userspace: an unedited update does not pass, left on offer:"
+                   (name (:kind offer)) (:name offer) (pr-str problem)))))
+   (gates/reload-config!)
+   (lexicon/reload!)
+   (phases/reload!)
+   conn))
 
 (declare start-system! abandon-start!)
 
@@ -203,7 +218,7 @@
          ;; wrong codebase on any other project (karamazov-8zk). The same
          ;; value the drivers take :root from.
          _ (userspace/bind-root! (get-in cfg [:run :root]))
-         _ (bind-project! c)
+         _ (bind-project! c (config/userspace-settings cfg))
          ;; And which MODEL, for the prompt file layer
          ;; (.samizdat/prompts/<provider>/<model>/). The configured :model is
          ;; the identity for a hosted provider; for a local endpoint it is the
@@ -241,8 +256,16 @@
          ;; it. Started before the server, so a client that connects on the
          ;; first request is not polling a ring nothing is filling yet.
          _ (steps/start-pump!)
+         ;; The API's bearer token, BEFORE the server listens, so there is
+         ;; no moment it serves without one (security.token, karamazov-3vu1.11).
+         _ (token/issue! (get-in cfg [:http :port]))
          server (adapter/run-server handler (select-keys (:http cfg) [:port :worker-threads]))]
      (reset! system {:config cfg :conn c :server server})
+     ;; What the agent's processes are kept off (security.listen).
+     (listen/register! :http (get-in cfg [:http :port]))
+     ;; The approval keys that loosen anything are the operator's alone
+     ;; (approval/configure!); the project's gates.edn cannot set them.
+     (approval/configure! (:approval cfg))
      (log/info "samizdat up on port" (get-in cfg [:http :port])
                "provider" (get-in cfg [:llm :provider])
                "model" (get-in cfg [:llm :model])
@@ -261,7 +284,8 @@
   failed start left the process bound to that project — every userspace read
   after it, in a REPL or the next test, went to a project nobody had started."
   [conn]
-  (doseq [f [#(do (steps/stop-pump!) (steps/reset!))
+  (doseq [f [#(token/revoke-all!)
+             #(do (steps/stop-pump!) (steps/reset!))
              #(fence/install-repair! nil)
              #(do (userspace/unbind!) (userspace/bind-root! nil))
              #(when conn (db/close conn))]]
@@ -292,6 +316,7 @@
                                  (log/warn "run" rid "did not stop within 15s;"
                                            "closing the system under it")))))]
                        ["http server" #(adapter/stop-server (:server s))]
+                       ["api token" #(token/revoke-all!)]
                        ;; After the server, so a request in flight can still
                        ;; read the trace it was serving; the rings go with it.
                        ["step pump" #(do (steps/stop-pump!) (steps/reset!))]

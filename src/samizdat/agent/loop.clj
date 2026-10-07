@@ -55,6 +55,7 @@
             [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
             [samizdat.session :as session]
+            [samizdat.security.flow :as flow]
             [samizdat.store.artifacts :as artifacts]
             [samizdat.store.failures :as failures]
             [samizdat.store.interventions :as interventions]
@@ -315,6 +316,20 @@
                                     (str/join "\n" (map #(str "- " (:content %)) rows)))
                         :errors (vec errors)})))))
 
+(defn ledger-block
+  "The run's ledger as a branch reads it: a claim made by a branch that had
+  read web content or private files is WITHHELD — the line stays, with
+  `withheld` for its text, since a ledger is read for what is absent; the
+  claim is for a branch that fetches it and takes its label
+  (samizdat.security.flow, karamazov-3vu1.14)."
+  [conn run-id withheld]
+  (let [hide (fn [rows] (mapv #(if (not-empty (str (:flow %))) (assoc % :claim withheld) %) rows))]
+    (artifacts/render-ledger (-> (journal/ledger conn run-id)
+                                 (update :established hide)
+                                 (update :ruled-out hide)
+                                 (update :sketches hide)
+                                 (update :inherited hide)))))
+
 (defn- context-block
   "What the harness adds to the branch's view before its next turn: the
   failures most like what it just tried, and — when sharing is on — the
@@ -330,7 +345,9 @@
   the journal can answer, now directly. Returns {:block :branch}; the branch
   carries the :shared-served ids the dedup reads."
   [conn run-id branch last-claim share?]
-  (let [others #(remove (fn [e] (= (:branch_id e) (:id branch))) %)
+  (let [;; Other branches' entries, less the labelled ones: these are
+        ;; samples put in front of the branch unasked (samizdat.security.flow).
+        others #(flow/unlabelled (remove (fn [e] (= (:branch_id e) (:id branch))) %))
         fhits (others (if (str/blank? last-claim)
                         (failures/recent conn run-id 5)
                         (failures/similar conn run-id last-claim 5)))
@@ -382,7 +399,7 @@
                    ;; the blocks below it is not FTS-sampled, because the value
                    ;; of a ledger is that a branch can trust the absence of a
                    ;; line.
-                   [:ledger (artifacts/render-ledger (journal/ledger conn run-id))]
+                   [:ledger (ledger-block conn run-id (prompt/prompt "ledger-withheld"))]
                    ;; Breadcrumb index: kept memories surfaced as ids +
                    ;; previews only, relevance-ranked by the branch's
                    ;; last-claim, recent when blank. nil on an empty store, so
@@ -408,7 +425,10 @@
                    ;; consume — the message tool's inbox action marks read.
                    [:inbox (messages/render-inbox
                             conn run-id (:id branch)
-                            (:inbox-lines (gates/threshold :context-budget)))]
+                            (:inbox-lines (gates/threshold :context-budget))
+                            ;; A labelled message's body is not previewed
+                            ;; (samizdat.security.flow).
+                            (prompt/prompt "inbox-withheld"))]
                    ;; And what the siblings DID, which the mailbox cannot say:
                    ;; it carries what a branch chose to announce, and a worker
                    ;; sharing a tree needs the ground truth. nil for a solo run,
@@ -1138,6 +1158,10 @@
            (if (and beam? (not scoped-here?))
              b ;; run-wide: the beam broadcasts it to every branch at the round top
              (do (interventions/resolve! conn run-id (:id d) :applied nil turn)
+                 ;; The words carry what their issuer had read: a supervisor's
+                 ;; directive its label, a person's none (v39).
+                 (flow/receive! (assoc ctx :branch {:id (:id b)} :turn turn)
+                                [(:flow d)] "intervene")
                  ;; :payload-text = the parsed human words; the raw column is
                  ;; a JSON blob the gate would render verbatim (blt.38).
                  (assoc b :pending-directive

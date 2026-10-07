@@ -1,0 +1,10 @@
+;; A flow gap never softens a deny, and a person's grant clears a command,
+;; not what the branch has read.
+{:about "denies stay denies; grants do not clear a flow gap"
+ :grants ["python3 *"]
+ :steps
+ [{:tool "shell" :args {:command "python3 build.py"} :expect :allow}
+  {:tool "websearch" :args {:query "how to build"} :expect :allow}
+  {:tool "shell" :args {:command "python3 build.py"} :expect :ask :gaps [:trust]}
+  {:tool "shell" :args {:command "rm -rf /"} :expect :deny}
+  {:tool "shell" :args {:command "ls -la"} :expect :allow}]}

@@ -367,8 +367,8 @@
 (deftest triage-is-three-way-by-size
   ;; karamazov-dq1r: trivial skips, a multi-part task gets an RFC, an ordinary
   ;; single-change task gets the lightweight plan in between.
-  (let [multipart? @(ns-resolve 'cells.board 'multipart?)
-        looks-trivial? @(ns-resolve 'cells.board 'looks-trivial?)]
+  (let [multipart? @(cells/cell-var 'cells.board 'multipart?)
+        looks-trivial? @(cells/cell-var 'cells.board 'looks-trivial?)]
     (is (looks-trivial? {:title "fix the typo in the readme"})
         "short and no list — skip")
     (is (not (multipart? {:body "rename cfg to config across the ns"}))
@@ -383,7 +383,7 @@
   ;; recurse into another RFC — it gets a lightweight plan or skip.
   (cells/load-cells!)
   (let [conn (db/open! ":memory:")
-        rfc-child? @(ns-resolve 'cells.board 'rfc-child?)
+        rfc-child? @(cells/cell-var 'cells.board 'rfc-child?)
         epic (tasks/create! conn {:title "the feature" :type "feature"})
         child (tasks/create! conn {:title "storage and the handlers and templates"
                                    :parent-id epic})]
@@ -521,7 +521,7 @@
             (is (= "done" (:status (tasks/get-task conn (:id epic)))))))))))
 
 (deftest rfc-work-items-parses-the-breakdown-section
-  (let [work-items @(ns-resolve 'cells.board 'rfc-work-items)]
+  (let [work-items @(cells/cell-var 'cells.board 'rfc-work-items)]
     (is (= ["build storage" "build handlers" "wire templates"]
            (work-items (str "# RFC\n## Purpose\np\n## Work items\n"
                             "- build storage\n- build handlers\n* wire templates\n"
@@ -530,7 +530,7 @@
 
 (deftest an-rfc-epic-hands-its-children-the-rfc-for-context
   (cells/load-cells!)
-  (let [epic-rfc @(ns-resolve 'cells.board 'epic-rfc)
+  (let [epic-rfc @(cells/cell-var 'cells.board 'epic-rfc)
         conn (db/open! ":memory:")
         epic (tasks/create! conn {:title "feature" :type "feature"})
         child (tasks/create! conn {:title "a part" :parent-id epic})
@@ -553,7 +553,7 @@
         child (tasks/create! conn {:title "a part" :parent-id root :run-id rid})
         _meta (tasks/create! conn {:title "Diagnose harness bug" :run-id rid})
         backlog (tasks/create! conn {:title "human-added work"})]
-    (let [workable @(ns-resolve 'cells.board 'workable)
+    (let [workable @(cells/cell-var 'cells.board 'workable)
           ids (set (map :id (workable conn rid)))]
       (is (contains? ids child) "a leaf of the board's own tree is workable")
       (is (contains? ids backlog) "the unclaimed backlog is workable")
@@ -575,8 +575,8 @@
     (runs/open-branch! conn rid {:branch-id "T9"})
     (tasks/claim! conn child rid "T9")
     (runs/close-branch! conn rid "T9" :exhausted "cap")
-    (let [release-stale! @(ns-resolve 'cells.board 'release-stale-claims!)
-          workable @(ns-resolve 'cells.board 'workable)]
+    (let [release-stale! @(cells/cell-var 'cells.board 'release-stale-claims!)
+          workable @(cells/cell-var 'cells.board 'workable)]
       (release-stale! conn rid)
       (is (= "open" (:status (tasks/get-task conn child)))
           "the dead branch's claim was released")
@@ -596,7 +596,7 @@
         free (tasks/create! conn {:title "unclaimed feature work" :type "feature" :run-id rid})
         held (tasks/create! conn {:title "claimed feature work" :type "feature" :run-id rid})]
     (tasks/claim! conn held rid "S0")
-    (let [workable @(ns-resolve 'cells.board 'workable)
+    (let [workable @(cells/cell-var 'cells.board 'workable)
           ids (set (map :id (workable conn rid)))]
       (is (contains? ids free))
       (is (not (contains? ids held))
@@ -760,9 +760,9 @@
                                    :stubs ["parse-line"]})
         epic (tasks/create! conn {:title "a grouping" :parent-id root :run-id rid})
         grouped (tasks/create! conn {:title "a part" :parent-id epic :run-id rid})
-        closable! @(ns-resolve 'cells.board 'closable-parents!)
-        unblock! @(ns-resolve 'cells.board 'unblock-assembled!)
-        workable @(ns-resolve 'cells.board 'workable)]
+        closable! @(cells/cell-var 'cells.board 'closable-parents!)
+        unblock! @(cells/cell-var 'cells.board 'unblock-assembled!)
+        workable @(cells/cell-var 'cells.board 'workable)]
     ;; where split left it: parked branch, blocked row, one piece to build
     (tasks/claim! conn split-parent rid "T1")
     (tasks/update! conn split-parent {:status "blocked"})

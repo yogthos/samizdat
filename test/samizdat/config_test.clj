@@ -177,7 +177,7 @@
       (let [{:keys [provider base-url model]} (:llm (config/load-config {:run {:root root}}))]
         (is (= :deepseek provider))
         (is (str/includes? base-url "deepseek"))
-        (is (= "deepseek-v4-flash" model)))))
+        (is (= "deepseek-flash" model)))))
   (testing "a declaration may pin one key and keep the rest of the preset"
     (with-files [root "{:providers {:glm {:model \"glm-4.6\"}} :roles {:default :glm}}" nil]
       (let [{:keys [base-url model]} (:llm (config/load-config {:run {:root root}}))]

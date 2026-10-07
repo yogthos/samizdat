@@ -667,6 +667,14 @@
                                            (nodes-of :button out))))))
       (is (= ["a1" {:decision :allow :always true}] @decided)))))
 
+(deftest a-flow-gap-is-shown-beside-the-call
+  ;; karamazov-3vu1.8: the person sees the exact call and what it lacks, as
+  ;; the server sent it — not the model's account of why it wants to run.
+  (let [a (assoc perm :gaps [{:gap "trust" :required "trusted" :actual "untrusted"
+                              :because {:tool "webfetch" :turn 4}}])
+        t (texts (render :widget/approvals {:approvals [a]} {}))]
+    (is (re-find #"needs trust trusted, is untrusted since webfetch at turn 4" t) t)))
+
 (deftest deny-with-a-note-hands-the-compose-box-to-the-dialog
   (let [replied (atom nil)
         out (render :widget/approvals {:approvals [perm] :on {:reply #(reset! replied %&)}} {})]

@@ -260,3 +260,19 @@
         (is (= ["p1" "p2" "p3"] (mapv :id (:items note))))
         (is (= "n-a" (:status (some #(when (= "p3" (:id %)) %) (:entries note))))))
       (finally (db/close c)))))
+
+(deftest a-project-whose-gates-predate-the-checklist-has-none
+  ;; This repository's own .samizdat/gates.edn predates :ship-checklist. The
+  ;; policy read nil, problem-items made a regex of nil, and `done` threw
+  ;; `string-hash: nil is not a string` on every answer — no run on that
+  ;; project could finish. A project that has not adopted the checklist runs
+  ;; without one, as it did before the key existed.
+  (with-redefs [samizdat.agent.gates/threshold
+                (let [real samizdat.agent.gates/threshold]
+                  (fn [k] (when-not (= k :ship-checklist) (real k))))]
+    (is (= [] (checklist/items {:problem "Do these:\n1. one\n2. two"
+                                :declared ["c-item"]})))
+    (is (empty? (checklist/unaccounted (checklist/items {:problem "1. a"}) {})))
+    (let [b (assoc (state/new-branch {:id "B1" :problem "Do these:\n1. one\n2. two"}) :status :active)
+          r (tools/run-tool {:tool-name "done" :branch b :args {:answer "both done"}})]
+      (is (not (str/includes? (str (:result r)) "failed")) (:result r)))))

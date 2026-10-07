@@ -550,7 +550,7 @@
   "dirge's permission prompt: what wants to run, why it was stopped, and the
   answers — y allow once, a allow always (this session), n deny, d deny and
   say what to do instead, Esc abort."
-  [state {:keys [id kind input reason details always]}]
+  [state {:keys [id kind input reason details always gaps]}]
   (let [decide (fn [d] (fn [] (when-let [f (get-in state [:on :decide])] (f id d))))
         reply (fn [] (when-let [f (get-in state [:on :reply])] (f :deny-note id)))
         noting? (= {:kind :deny-note :id id} (:reply state))]
@@ -565,6 +565,14 @@
      (lines-of input)
      (when (not-empty (str reason)) [:text {:class :dim} (str " why: " reason)])
      (when (not-empty (str details)) [:text {:class :dim} (str " " details)])
+     ;; What the call lacks (samizdat.security.flow), one line a gap.
+     (when (seq gaps)
+       (into [:vbox]
+             (for [{:keys [gap required actual because]} gaps]
+               [:text {:class :dim}
+                (str " needs " (name gap) " " (name required) ", is " (name actual)
+                     (when-let [t (:tool because)]
+                       (str " since " t (when-let [n (:turn because)] (str " at turn " n)))))])))
      (when always [:text {:class :dim} (str " always would allow: " always ", for this session")])
      [:separator]
      (if noting?
@@ -838,7 +846,7 @@
                    ;; person (dirge shows its permission mode the same way).
                    (when (:approval_mode p) sep)
                    (when-let [m (:approval_mode p)]
-                     [:text {:class (if (= "block" (str m)) :perm :dim)} (str "mode:" m)])
+                     [:text {:class (if (#{"block" "yolo"} (str m)) :perm :dim)} (str "mode:" m)])
                    ;; Pushed or polled: whether the run on screen is live.
                    (when (:run-id state) sep)
                    (when (:run-id state)

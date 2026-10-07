@@ -23,7 +23,9 @@
   the scrubbed environment, and output redaction. See
   samizdat.agent.tools.base for the shared result helpers and the run-tool
   multimethod."
-  (:require [samizdat.agent.tools.base :as base]
+  (:require [samizdat.agent.files :as files]
+            [samizdat.agent.tools.base :as base]
+            [samizdat.security.confine :as confine]
             [samizdat.security.policy :as policy]))
 
 (defmethod base/run-tool "shell" [{:keys [branch] :as ctx}]
@@ -37,7 +39,14 @@
   ;; a real command failure is :failure.
   (if-let [m (base/missing ctx :command)]
     (base/malformed branch m)
-    (let [r (policy/run-shell ctx)]
+    ;; What the shell may read without asking: the project, the reference
+    ;; roots the operator declared — read_file's boundary — and the build
+    ;; caches, where a dependency's source is and which the shell can write
+    ;; anyway (karamazov-3vu1.3).
+    (let [r (policy/run-shell (assoc ctx :read-roots
+                                     (concat [(or (:root ctx) ".")]
+                                             (files/ctx-reference-roots ctx)
+                                             (confine/build-caches (System/getenv "HOME")))))]
       (assoc r :branch branch
              ;; A policy refusal is journalled as declined, like a phase
              ;; refusal, so the record can tell it from a command that ran

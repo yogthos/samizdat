@@ -124,7 +124,7 @@
   allow the shell — it stops the image starting, with `execvp() … Operation
   not permitted`. Failing closed is the right direction here and the message
   says what happened, but a spawner has to pass them."
-  [{:keys [project-root scratch-paths deny-read exec-roots]}]
+  [{:keys [project-root scratch-paths deny-read exec-roots protect]}]
   (->>
    [";; samizdat.security.sandbox — generated"
     "(version 1)"
@@ -140,6 +140,10 @@
          (subpaths (clean (cons project-root scratch-paths)))
          " (literal \"/dev/null\") (literal \"/dev/stdout\")"
          " (literal \"/dev/stderr\") (literal \"/dev/tty\"))")
+    ;; Read-only trees INSIDE the writable ones (karamazov-3vu1.2) — the
+    ;; project's .samizdat, which holds the workflow the harness runs. After
+    ;; the allow, because the last match wins.
+    (rule "deny file-write*" protect)
     ""
     ";; read denies"
     (rule "deny file-read*" deny-read)
@@ -157,9 +161,74 @@
     ""
     ";; network"
     "(deny network*)"
+    ;; INBOUND ONLY. The image accepts the harness's connection and never
+    ;; needs to make one. It used to be allowed outbound loopback too, and
+    ;; loopback is where the harness listens — its HTTP API and its own
+    ;; nREPL (karamazov-3vu1.1). A per-port carve-out out of an outbound
+    ;; allow is not something seatbelt honours (see the shell profile), so
+    ;; there is no outbound allow at all.
     "(allow network-bind network-inbound (local ip \"localhost:*\"))"
-    "(allow network-outbound (remote ip \"localhost:*\"))"
     ""]
+   (remove nil?)
+   (str/join "\n")))
+
+;; --- the shell tool's profile (karamazov-3vu1.5) -----------------------------
+;;
+;; The shell ran unconfined, and its allow table includes heads that execute
+;; code the agent wrote — `make`, `just`, `jolt -e`, `cargo run` — so every
+;; confinement the eval image has was one Makefile away. The shell cannot get
+;; the image's profile: it has to exec arbitrary binaries and reach the network
+;; (git fetch, a dependency download). What it gets is the part that does not
+;; stop it being a shell: writes only under the project, the scratch trees and
+;; the caches a build writes; the secret regions unreadable; and the harness's
+;; own ports unreachable.
+;;
+;; THE PORT RULE IS THE ONE SHAPE THAT WORKS, measured on macOS 26.3 with a
+;; listener on each side: `(allow default)` plus
+;; `(deny network-outbound (remote ip "localhost:P"))` refuses P over
+;; 127.0.0.1, [::1] and the name localhost, and leaves every other port and
+;; the internet alone. The same deny after an `(allow network-outbound
+;; (remote ip "localhost:*"))` is IGNORED, and so is a `require-not` inside
+;; that allow — which is why the image profile has no outbound allow at all.
+
+(defn- port?
+  [p]
+  (and (int? p) (< 0 p 65536)))
+
+(defn seatbelt-shell-profile
+  "A seatbelt profile confining the shell tool's `bash -c`.
+
+  `:project-root`   writable and readable
+  `:scratch-paths`  writable (the temp dirs a build uses)
+  `:writable`       writable (the caches a build writes: ~/.jolt, ~/.cargo …)
+  `:deny-read`      unreadable, with the project re-allowed after
+  `:deny-ports`     loopback ports the shell may not connect to — the harness's
+
+  Exec and the network are otherwise open; see the section comment."
+  [{:keys [project-root scratch-paths writable deny-read deny-ports protect]}]
+  (->>
+   (concat
+    [";; samizdat.security.sandbox — shell, generated"
+     "(version 1)"
+     "(allow default)"
+     ""
+     ";; writes"
+     "(deny file-write*)"
+     (str "(allow file-write* "
+          (subpaths (clean (concat [project-root] scratch-paths writable)))
+          " (literal \"/dev/null\") (literal \"/dev/stdout\")"
+          " (literal \"/dev/stderr\") (literal \"/dev/tty\")"
+          " (regex #\"^/dev/fd/\") (regex #\"^/dev/ttys\"))")
+     (rule "deny file-write*" protect)
+     ""
+     ";; read denies; project re-allowed"
+     (rule "deny file-read*" deny-read)
+     (rule "allow file-read*" (cons project-root scratch-paths))
+     ""
+     ";; the harness's own ports"]
+    (for [p (distinct (filter port? deny-ports))]
+      (str "(deny network-outbound (remote ip \"localhost:" p "\"))"))
+    [""])
    (remove nil?)
    (str/join "\n")))
 
@@ -263,12 +332,17 @@
   A deny that CONTAINS a writable tree is not mounted: it would hide the
   project. The seatbelt profile re-allows the project after its denies for
   the same reason, and it is what lets a self-hosting run read itself. Pure."
-  [{:keys [project-root scratch-paths deny-dirs deny-files seccomp-fd]}]
+  [{:keys [project-root scratch-paths deny-dirs deny-files seccomp-fd protect]}]
   (let [writable (clean (cons project-root scratch-paths))
         hides-writable? (fn [d] (some #(under? d %) writable))]
     (-> ["bwrap" "--ro-bind" "/" "/" "--dev" "/dev" "--proc" "/proc"
          "--unshare-pid" "--die-with-parent" "--new-session"]
         (into (mapcat (fn [p] ["--bind" p p]) writable))
+        ;; Read-only over the writable bind that contains it — mounted after,
+        ;; so it lands on top. Only what exists: bwrap cannot mount over a
+        ;; path that is not there, and a failed mount stops the process.
+        (into (mapcat (fn [p] ["--ro-bind" p p])
+                      (filter #(.exists (io/file %)) (clean protect))))
         (into (mapcat (fn [p] ["--tmpfs" p])
                       (remove hides-writable? (clean deny-dirs))))
         (into (mapcat (fn [p] ["--ro-bind" "/dev/null" p])
@@ -329,4 +403,26 @@
     :bwrap (-> ["sh" "-c" "exec bwrap \"$@\" 3<\"$0\"" (str profile)]
                (into (rest (bwrap-argv (assoc spec :seccomp-fd 3))))
                (into cmd))
+    (vec cmd)))
+
+(defn bwrap-shell-argv
+  "The bwrap argv confining the shell tool, ending in `--`: the image's mounts
+  — root read-only, the project, scratch and `:writable` trees bound
+  writable, secrets hidden — WITHOUT the seccomp filter, because a shell makes
+  child processes. The network is not confined on Linux (see the bwrap
+  section): the harness ports stay reachable there, and RFC-003 says so."
+  [{:keys [writable] :as spec}]
+  (let [argv (bwrap-argv (-> spec
+                             (dissoc :seccomp-fd)
+                             (update :scratch-paths #(concat % writable))))]
+    ;; bwrap-argv ends in --chdir <root> --; the shell's command cds itself.
+    (into (subvec argv 0 (- (count argv) 3)) ["--"])))
+
+(defn wrap-shell
+  "`cmd` (an argv vector) wrapped so the shell runs under `backend`, given
+  `{:profile path :spec spec}`. Pure: the caller wrote the profile."
+  [backend {:keys [profile spec]} cmd]
+  (case backend
+    :seatbelt (into ["sandbox-exec" "-f" (str profile)] cmd)
+    :bwrap (into (bwrap-shell-argv spec) cmd)
     (vec cmd)))

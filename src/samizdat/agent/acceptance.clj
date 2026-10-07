@@ -179,3 +179,16 @@
      (prompt/render "acceptance-failed"
                     {:failed (mapv (fn [r] (update r :output #(tail % n))) f)
                      :passed (not-empty (mapv :name (filter #(true? (:passed? %)) results)))}))))
+
+(defn configured-commands
+  "The shell commands `config` names for a run: :run :verify-cmd and every
+  :run :acceptance :check. A malformed :acceptance contributes none — the
+  acceptance stage reports that itself. Operator text in config.edn, which no
+  tool the agent holds can write: what verify/seal-run! lets a cell run, and
+  what a branch's flow label does not stop (samizdat.security.policy)."
+  [config]
+  (let [checks (try (->> (get-in config [:run :acceptance])
+                         normalize
+                         (keep #(when (= :check (:kind %)) (:text %))))
+                    (catch Throwable _ nil))]
+    (into #{} (remove str/blank?) (cons (some-> (get-in config [:run :verify-cmd]) str) checks))))

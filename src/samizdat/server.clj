@@ -40,6 +40,7 @@
             [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm-client]
             [samizdat.store.db :as db]
+            [samizdat.security.token :as token]
             [samizdat.system :as system]
             [samizdat.userspace :as userspace]
             [ruuter.core :as ruuter]))
@@ -403,11 +404,63 @@
    ;; Anything unmatched, a known path under the wrong method included.
    {:path :not-found :response #(not-found %)}])
 
+(defn- loopback-host?
+  "Whether `host` — a Host header, or an Origin's authority — names this
+  machine's loopback, with or without a port."
+  [host]
+  (let [h (str/lower-case (str host))
+        h (cond (str/starts-with? h "[") (subs h 0 (inc (or (str/index-of h "]") (dec (count h)))))
+                (= 1 (count (filter #{\:} h))) (first (str/split h #":"))
+                :else h)]
+    (contains? #{"localhost" "127.0.0.1" "[::1]" "::1"} h)))
+
+(defn- header [req k] (get (:headers req) k))
+
+(defn refusal
+  "Why `req` may not be served, as a response, or nil when it may.
+
+  The server binds loopback, which leaves the operator's own BROWSER as a
+  way in: any page they have open can send a
+  text/plain POST to 127.0.0.1 without a preflight, and a page on a name that
+  rebinds to 127.0.0.1 reads the answers as same-origin. body-json parsed
+  whatever arrived, so `POST /v1/runs` from a web page started a run on the
+  page's prompt (karamazov-3vu1.1). Three checks close it without a secret:
+  the Host must be loopback, an Origin (every browser sends one cross-origin)
+  must be loopback, and a request with a body must declare it JSON — the one
+  type a page cannot send without a preflight nothing here answers.
+
+  And while this process's server holds a token (samizdat.security.token),
+  every request but /health carries it. On Linux a process the agent runs
+  can reach loopback, and the token is in a file it cannot read
+  (karamazov-3vu1.11). A request with no headers is not exempt: HTTP/1.0
+  lets a raw socket send exactly that."
+  [req]
+  (let [host (header req "host")
+        origin (header req "origin")
+        ct (some-> (header req "content-type") str/lower-case)
+        body? (let [b (:body req)] (and b (not (and (string? b) (str/blank? b)))))]
+    (cond
+      (and host (not (loopback-host? host)))
+      (json-response 403 {:error {:message (str "host not served: " host)}})
+
+      (and origin (not (loopback-host? (str/replace origin #"^[a-z]+://" ""))))
+      (json-response 403 {:error {:message (str "cross-origin request refused: " origin)}})
+
+      (and body? (seq (:headers req))
+           (not (#{:get :head} (:request-method req)))
+           (not (some-> ct (str/starts-with? "application/json"))))
+      (json-response 415 {:error {:message "body must be JSON"}})
+
+      (and (token/current) (not= "/health" (:uri req))
+           (not (token/valid? (header req "authorization"))))
+      (json-response 401 {:error {:message "bearer token required"}}))))
+
 (defn handler [req]
   (try
     ;; The table by name on every request, so a redefined one is what routes.
     ;; ruuter compiles a table once and caches it by value, which is why the
     ;; table is a def and not built here.
-    (ruuter/route routes req)
+    (or (refusal req)
+        (ruuter/route routes req))
     (catch Throwable e
       (json-response 500 {:error {:message (ex-message e) :type "internal_error"}}))))

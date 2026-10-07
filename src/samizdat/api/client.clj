@@ -38,7 +38,8 @@
             [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
-            [jolt.http-client :as http]))
+            [jolt.http-client :as http]
+            [samizdat.security.token :as token]))
 
 (def ^:private opts
   {:socket-timeout 10000 :conn-timeout 3000 :throw-exceptions false})
@@ -52,8 +53,18 @@
     {:ok false :error (str "HTTP " (:status r)
                            (some->> (:body r) decode :error :message (str ": ")))}))
 
+(defn auth-headers
+  "The Authorization header for a server at `base`: the token the harness on
+  that loopback port issued (samizdat.security.token), or {} for any other
+  host or a port with none."
+  [base]
+  (let [[_ host port] (re-find #"^https?://(\[[^\]]+\]|[^:/]+)(?::(\d+))?" (str base))]
+    (or (when (and port (#{"127.0.0.1" "localhost" "[::1]"} host))
+          (some->> (token/read-for (parse-long port)) (str "Bearer ") (hash-map "Authorization")))
+        {})))
+
 (defn- GET [base path]
-  (try (result (http/get (str base path) opts))
+  (try (result (http/get (str base path) (assoc opts :headers (auth-headers base))))
        (catch Throwable e {:ok false :error (ex-message e)})))
 
 (defn- POST
@@ -61,7 +72,8 @@
   ([base path body socket-timeout-ms]
    (try (result (http/post (str base path)
                            (cond-> (assoc opts
-                                          :headers {"Content-Type" "application/json"}
+                                          :headers (merge {"Content-Type" "application/json"}
+                                                          (auth-headers base))
                                           :body (json/write-str (or body {})))
                              socket-timeout-ms (assoc :socket-timeout socket-timeout-ms))))
         (catch Throwable e {:ok false :error (ex-message e)}))))
@@ -159,7 +171,7 @@
                                          (conj (str "notes=" (str/join "," (map str note-kinds))))
                                          since (conj (str "since=" since)))]
                                  (when (seq q) (str "?" (str/join "&" q)))))
-                          (assoc opts :socket-timeout 45000)))
+                          (assoc opts :socket-timeout 45000 :headers (auth-headers base))))
         (catch Throwable e {:ok false :error (ex-message e)}))))
 
 (def start-timeout-ms

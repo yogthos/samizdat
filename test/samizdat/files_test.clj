@@ -513,3 +513,71 @@
         (is (= :success (:category r)) (:result r))
         (is (str/includes? (:result r) "took assertions out of the exam"))
         (is (str/includes? (:result r) "3 assertion(s) before, 1 after"))))))
+
+;; --- a read outside every root is a person's call (karamazov-3vu1.3) ----------
+;;
+;; Decision 2026-09-30: reading outside the project is allowed when the user
+;; allows it — reference paths, an approval — or yolo mode is on. Refused, as
+;; before, when nobody is there to allow it. The secret regions stay refused
+;; either way: read_file runs in the harness process, not under the shell's
+;; sandbox, so nothing else would keep ~/.ssh out of it.
+
+(deftest a-read-outside-the-roots-follows-the-approval-mode
+  (let [root (str "/tmp/samizdat-files-" (random-uuid))
+        other (str (fs/create-temp-dir))
+        f (str other "/notes.txt")]
+    (fs/create-dirs root)
+    (spit f "OUTSIDE-NOTES")
+    (try
+      (with-redefs [samizdat.approval/policy (constantly {:mode :refuse :wait-ms 1 :on-timeout :deny})]
+        (let [r (files/read-file (ctx root "read_file" {:path f}))]
+          (is (= :mechanics (:category r)))
+          (is (not (str/includes? (:result r) "OUTSIDE-NOTES")))))
+      (with-redefs [samizdat.approval/policy (constantly {:mode :yolo :wait-ms 1 :on-timeout :deny})]
+        (let [r (files/read-file (ctx root "read_file" {:path f}))]
+          (is (str/includes? (:result r) "OUTSIDE-NOTES") (:result r)))
+        (testing "but not the operator's secrets"
+          (with-redefs [samizdat.security.confine/secret-regions (fn [_ _] [other])]
+            (let [r (files/read-file (ctx root "read_file" {:path f}))]
+              (is (not (str/includes? (:result r) "OUTSIDE-NOTES")))))))
+      (testing "a person's approval lets it through"
+        (with-redefs [samizdat.approval/policy (constantly {:mode :block :wait-ms 3000 :on-timeout :deny})]
+          (future (loop [n 0]
+                    (if-let [p (first (samizdat.approval/pending "r-read"))]
+                      (samizdat.approval/decide! (:id p) {:decision :allow})
+                      (when (< n 400) (Thread/sleep 5) (recur (inc n))))))
+          (let [r (files/read-file (assoc (ctx root "read_file" {:path f}) :run-id "r-read"))]
+            (is (str/includes? (:result r) "OUTSIDE-NOTES") (:result r)))))
+      (finally (fs/delete-tree root) (fs/delete-tree other)))))
+
+;; --- what confines the agent is a person's to change (karamazov-3vu1.2) ------
+
+(deftest a-write-to-what-confines-the-agent-needs-a-person
+  ;; The role surfaces and the refusal rules. A VALID edit to either can hand
+  ;; the agent a tool its role was denied, so validation is not enough there.
+  (let [root (str "/tmp/samizdat-files-" (random-uuid))]
+    (fs/create-dirs (str root "/.samizdat/cells"))
+    (spit (str root "/.samizdat/roles.edn") "{:implementor {}}")
+    (spit (str root "/.samizdat/cells/x.clj") "(ns cells.x)")
+    (try
+      (with-redefs [samizdat.approval/policy (constantly {:mode :refuse :wait-ms 1 :on-timeout :deny})]
+        (doseq [r [(files/write-file (ctx root "write_file" {:path ".samizdat/roles.edn" :content "{}"}))
+                   (files/edit-file (ctx root "edit_file" {:path ".samizdat/roles.edn"
+                                                           :old_text "implementor" :new_text "x"}))
+                   (files/write-file (ctx root "write_file" {:path ".samizdat/phases.edn" :content "{}"}))
+                   (files/write-file (ctx root "write_file" {:path ".samizdat/userspace.edn" :content "{}"}))]]
+          (is (= :mechanics (:category r)) (:result r))
+          (is (str/includes? (:result r) "workflow") (:result r)))
+        (is (= "{:implementor {}}" (slurp (str root "/.samizdat/roles.edn"))))
+        (is (not (fs/exists? (str root "/.samizdat/phases.edn"))))
+        (testing "the rest of the workflow is still the agent's, through the validated path"
+          (files/write-file (ctx root "write_file" {:path ".samizdat/cells/x.clj" :content "(ns cells.y)"}))
+          (is (= "(ns cells.y)" (slurp (str root "/.samizdat/cells/x.clj"))))))
+      (with-redefs [samizdat.approval/policy (constantly {:mode :yolo :wait-ms 1 :on-timeout :deny})]
+        (files/write-file (ctx root "write_file" {:path ".samizdat/roles.edn" :content "{:a 1}"}))
+        (is (= "{:a 1}" (slurp (str root "/.samizdat/roles.edn"))) "yolo allows it")
+        (testing "and the run config stays out of reach even so"
+          (let [r (files/write-file (ctx root "write_file" {:path ".samizdat/config.edn" :content "{}"}))]
+            (is (= :mechanics (:category r)))
+            (is (not (fs/exists? (str root "/.samizdat/config.edn")))))))
+      (finally (fs/delete-tree root)))))

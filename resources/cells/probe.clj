@@ -84,7 +84,7 @@
   model.
 
   Mirrors samizdat.workflow/role-ctx rather than requiring it: a shipped cell
-  is load-stringed from inside the loop compile, and reaching back into the
+  is loaded from inside the loop compile, and reaching back into the
   loop driver from there is the cycle samizdat.agent.tools.manifest documents
   avoiding for the same reason."
   [ctx role]

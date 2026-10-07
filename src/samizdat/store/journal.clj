@@ -44,6 +44,7 @@
             [jdbc.core :as jdbc]
             [samizdat.agent.gates :as gates]
             [samizdat.events :as events]
+            [samizdat.security.flow :as flow]
             [samizdat.security.policy :as policy]
             [samizdat.session :as session]
             [samizdat.store.db :as db]))
@@ -643,11 +644,14 @@
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO artifacts (run_id, branch_id, turn, kind, claim, code,
-                                            verdict, witness, claim_status, tier, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                            verdict, witness, claim_status, tier, created_at,
+                                            flow)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (name kind) claim (str code)
                     (some-> verdict name) (when witness (js witness))
-                    (name claim-status) (name (or tier :fast)) (db/now)]))
+                    (name claim-status) (name (or tier :fast)) (db/now)
+                    ;; What the branch that made it had read (v39).
+                    (flow/carried-by-branch conn run-id branch-id)]))
   (emit! conn run-id :artifact {:branch-id branch-id :turn turn
                                 :data {:kind kind :claim claim
                                        :claim-status claim-status}}))
@@ -700,7 +704,7 @@
   Cheap: gen-20's entire confirmed set is 1,495 characters of claim text."
   [conn run-id]
   (let [rows (db/fetch conn
-                       ["SELECT id, branch_id, turn, kind, tier, claim, claim_status
+                       ["SELECT id, branch_id, turn, kind, tier, claim, claim_status, flow
                          FROM artifacts
                          WHERE run_id = ?
                            AND claim_status IN ('confirmed', 'refuted', 'sketch')
@@ -715,7 +719,7 @@
      ;; Seeded rows only. A live branch's shared artifacts are already in
      ;; `artifacts` above, so including them here would double-count.
      :inherited (vec (db/fetch conn
-                               ["SELECT id, branch_id, turn, kind, tier, claim
+                               ["SELECT id, branch_id, turn, kind, tier, claim, flow
                                  FROM shared_artifacts
                                  WHERE run_id = ? AND branch_id LIKE 'seed:%'
                                  ORDER BY id" run-id]))}))

@@ -197,3 +197,57 @@
     (let [r (run root {:action "take" :kind "prompt" :name "critic" :rationale "wanted"})]
       (is (str/includes? (:result r) "Adopted")))
     (is (str/includes? (:result (run root {:action "list"})) "Nothing on offer"))))
+
+;; --- what is taken without asking (karamazov-3vu1.12) -------------------------
+;;
+;; A project whose copy is the template it last saw made no choice an update
+;; could override, and a project far enough behind cannot adopt its way out:
+;; measured on this repo, 66 such offers, and a supervisor that read the
+;; rejected old cells as bugs to repair and never called adopt.
+
+(deftest a-new-role-the-project-never-saw-is-unedited
+  (with-project [_root _ (without-critic-prompt) nil]
+    (is (false? (:edited? (offer :prompt "critic"))))))
+
+(deftest a-role-the-project-dropped-counts-as-edited
+  (with-project [root _ (without-critic-prompt) nil]
+    ;; It saw an older critic, and its map has none: it dropped the role.
+    (let [a (adoption root)]
+      (spit (file root "adoption.edn")
+            (pr-str (assoc-in a [:seen "prompt/critic"] (hash "an older critic")))))
+    (let [o (offer :prompt "critic")]
+      (is (= :new (:offer o)))
+      (is (true? (:edited? o))))))
+
+(deftest unedited-offers-are-adopted-and-the-rest-stay-offered
+  (with-project [root conn (without-critic-prompt)
+                 (stored-before conn :prompt "plan-tool" "Our own plan tool {{x}}.")]
+    (as-if-seen! root :prompt "system-tools" "Tools, as an older release had them.")
+    (as-if-seen! root :prompt "file-tool" "File tool, as an older release had it.")
+    (spit (file root "prompts/file-tool.md") "File tool, as this project rewrote it.")
+    (let [r (us/adopt-unedited!)]
+      (is (= #{["prompt" "critic"] ["prompt" "system-tools"]}
+             (set (map (juxt (comp name :kind) :name) (:adopted r)))))
+      (is (empty? (:refused r))))
+    (testing "the untouched copies are the templates now"
+      (is (= (us/template :prompt "system-tools") (slurp (file root "prompts/system-tools.md"))))
+      (is (= (us/template :prompt "critic") (slurp (file root "prompts/critic.md")))))
+    (testing "an edited copy and a stored version still wait for the supervisor"
+      (is (true? (:edited? (offer :prompt "file-tool"))))
+      (is (= "File tool, as this project rewrote it." (slurp (file root "prompts/file-tool.md"))))
+      (is (= :pending (:offer (offer :prompt "plan-tool")))))
+    (testing "the history says it was not a person or the supervisor"
+      (is (str/includes? (str (:rationale (last (us/versions :prompt "system-tools"))))
+                         "unedited")))
+    (is (= {:adopted [] :refused []} (us/adopt-unedited!)) "and it is idempotent")))
+
+(deftest an-update-that-needs-another-is-taken-after-it
+  ;; Live on this repo: the loop manifest's update extends `turn`, a role the
+  ;; project did not have yet and that came later in the same pass, so the
+  ;; loop failed its compile and stayed behind.
+  (with-project [root _ (update (us/template-map) :manifests dissoc :turn) nil]
+    (as-if-seen! root :manifest "loop" "{:id :old-loop}")
+    (let [r (us/adopt-unedited!)]
+      (is (= #{"loop" "turn"} (set (map :name (filter #(= :manifest (:kind %)) (:adopted r))))))
+      (is (empty? (:refused r)) (pr-str (:refused r))))
+    (is (= (us/template :manifest "loop") (slurp (file root "manifests/loop.edn"))))))

@@ -42,6 +42,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [jolt.fs :as fs]
+            [jolt.process]
             [samizdat.security.sandbox :as sandbox]))
 
 (def ^:private spec
@@ -108,16 +109,59 @@
            (str/index-of p "(allow process-exec*"))
         "last match wins — the allow has to come after the deny")))
 
-(deftest the-network-is-denied-except-loopback
+(deftest the-network-is-inbound-loopback-only
   ;; nREPL is how the harness talks to this image at all, so loopback bind has
   ;; to survive the network deny. Verified: the sandboxed server binds 7899
   ;; and is reachable, with outbound still refused.
+  ;;
+  ;; OUTBOUND LOOPBACK IS NOT ALLOWED EITHER (karamazov-3vu1.1). It was, and
+  ;; loopback is where the harness listens: its HTTP API (approvals, grants,
+  ;; the approval mode) and its own nREPL, which is the whole harness process.
+  ;; A per-port carve-out does not work — measured on macOS 26.3, a
+  ;; `(deny network-outbound (remote ip "localhost:P"))` after an allow of
+  ;; localhost:* is ignored, and so is a require-not inside the allow — so the
+  ;; image, which only ever ACCEPTS the harness's connection, gets no outbound
+  ;; at all.
   (let [p (profile)]
     (is (str/includes? p "(deny network*)"))
-    (is (str/includes? p "localhost")
+    (is (str/includes? p "network-inbound")
         "denying all network leaves the harness unable to reach the image")
+    (is (not (str/includes? p "network-outbound"))
+        "the image could connect to the harness's own ports")
     (is (< (str/index-of p "(deny network*)")
            (str/index-of p "network-bind")))))
+
+;; --- the shell's profile (karamazov-3vu1.5) ----------------------------------
+
+(def ^:private shell-spec
+  {:project-root "/Users/dev/proj"
+   :scratch-paths ["/tmp"]
+   :writable ["/Users/dev/.jolt"]
+   :deny-read ["/Users/dev/.ssh"]
+   :deny-ports [3985 7888]})
+
+(deftest the-shell-may-run-anything-but-write-only-where-it-is-told
+  (let [p (sandbox/seatbelt-shell-profile shell-spec)]
+    (is (str/includes? p "(allow default)"))
+    (is (not (str/includes? p "process-exec"))
+        "a shell that cannot exec is not a shell; the confinement is on what it touches")
+    (is (< (str/index-of p "(deny file-write*)") (str/index-of p "(allow file-write*")))
+    (doseq [w ["/Users/dev/proj" "/Users/dev/.jolt"]]
+      (is (str/includes? p (sandbox/resolved w)) w))
+    (is (< (str/index-of p "(deny file-read*") (str/last-index-of p "(allow file-read*"))
+        "the project is re-allowed after the secret denies")))
+
+(deftest the-shell-cannot-reach-the-harness-ports
+  (let [p (sandbox/seatbelt-shell-profile shell-spec)]
+    (is (not (str/includes? p "(deny network*)"))
+        "git fetch and a dependency download are ordinary shell work")
+    (doseq [port [3985 7888]]
+      (is (str/includes? p (str "(deny network-outbound (remote ip \"localhost:" port "\"))"))
+          (str port)))))
+
+(deftest a-port-that-is-not-a-port-is-not-emitted
+  (let [p (sandbox/seatbelt-shell-profile (assoc shell-spec :deny-ports [nil 0 70000 "3985\")(allow default"]))]
+    (is (not (str/includes? p "remote ip")))))
 
 ;; --- a path is not a place to put SBPL --------------------------------------
 
@@ -283,3 +327,108 @@
     (spit file "s")
     (is (= {:deny-dirs [dir] :deny-files [file]}
            (sandbox/deny-read-kinds [dir file (str dir "/absent") nil ""])))))
+
+(deftest bwrap-confines-the-shell-without-the-image-filter
+  ;; The shell has to make child processes — that is what a shell is — so it
+  ;; gets the image's mounts without the seccomp filter that refuses them.
+  (let [argv (sandbox/bwrap-shell-argv {:project-root "/work/proj"
+                                        :scratch-paths ["/tmp/s"]
+                                        :writable ["/home/dev/.jolt"]
+                                        :deny-dirs ["/home/dev/.ssh"]
+                                        :deny-files ["/home/dev/.netrc"]})]
+    (is (= ["bwrap" "--ro-bind" "/" "/"] (subvec argv 0 4)))
+    (is (run-of argv ["--bind" "/home/dev/.jolt" "/home/dev/.jolt"]))
+    (is (run-of argv ["--tmpfs" "/home/dev/.ssh"]))
+    (is (not (some #{"--seccomp"} argv)))
+    (is (= "--" (peek argv)))))
+
+(deftest wrapping-a-shell-command
+  (is (= ["bash" "-c" "ls"] (sandbox/wrap-shell :none {} ["bash" "-c" "ls"])))
+  (is (= ["sandbox-exec" "-f" "/p" "bash" "-c" "ls"]
+         (sandbox/wrap-shell :seatbelt {:profile "/p"} ["bash" "-c" "ls"])))
+  (let [argv (sandbox/wrap-shell :bwrap {:spec {:project-root "/w"}} ["bash" "-c" "ls"])]
+    (is (= "bwrap" (first argv)))
+    (is (= ["--" "bash" "-c" "ls"] (subvec argv (- (count argv) 4))))))
+
+;; --- the shell's profile, measured ------------------------------------------
+
+(defn- mac? [] (str/starts-with? (str (System/getProperty "os.name")) "Mac OS X"))
+
+(deftest a-sandboxed-shell-works-in-the-project-and-cannot-leave-it
+  ;; Measured under sandbox-exec, not reasoned about: the per-port deny is the
+  ;; one rule shape seatbelt honours for the network here (see
+  ;; the-network-is-inbound-loopback-only for the two it ignores).
+  (when (mac?)
+    (let [root (str (fs/create-temp-dir))
+          secret (str (fs/create-temp-dir))
+          outside (str (fs/create-temp-dir))
+          _ (spit (str secret "/key") "SECRET")
+          harness (java.net.ServerSocket. 0)
+          other (java.net.ServerSocket. 0)
+          profile (str (fs/create-temp-dir) "/shell.sb")
+          _ (spit profile (sandbox/seatbelt-shell-profile
+                           {:project-root root :deny-read [secret]
+                            :deny-ports [(.getLocalPort harness)]}))
+          sh (fn [cmd] (let [r (jolt.process/sh "sandbox-exec" "-f" profile "bash" "-c" cmd)]
+                         (str (:out r) (:err r) " exit=" (:exit r))))]
+      (try
+        (testing "the project is writable and readable"
+          (is (str/includes? (sh (str "cd " root " && echo ok > f && cat f")) "ok")))
+        (testing "outside it is not writable"
+          (sh (str "echo x > " outside "/escape"))
+          (is (not (.exists (java.io.File. (str outside "/escape"))))))
+        (testing "a secret directory is not readable"
+          (is (not (str/includes? (sh (str "cat " secret "/key")) "SECRET"))))
+        (testing "the harness port is unreachable and another loopback port is not"
+          (is (str/includes? (sh (str "echo > /dev/tcp/127.0.0.1/" (.getLocalPort harness) " && echo CONNECTED"))
+                             "exit=1"))
+          (is (str/includes? (sh (str "echo > /dev/tcp/127.0.0.1/" (.getLocalPort other) " && echo CONNECTED"))
+                             "CONNECTED")))
+        (finally (.close harness) (.close other))))))
+
+;; --- read-only inside a writable tree (karamazov-3vu1.2) ---------------------
+;;
+;; <root>/.samizdat holds the project's workflow: the cells that run in the
+;; harness, the role surfaces, the refusal rules, the database with the
+;; grants table. The project root is writable to the image and the shell, so
+;; all of that was too — `cp evil.clj .samizdat/cells/loop.clj` was an allowed
+;; command. The supervisor changes the workflow through its own tools, in the
+;; harness; nothing the agent spawns writes it.
+
+(deftest a-protected-tree-is-not-writable-inside-a-writable-one
+  (doseq [p [(sandbox/seatbelt-profile (assoc spec :protect ["/Users/dev/proj/.samizdat"]))
+             (sandbox/seatbelt-shell-profile (assoc shell-spec :protect ["/Users/dev/proj/.samizdat"]))]]
+    (let [deny (str "(deny file-write* (subpath \"" (sandbox/resolved "/Users/dev/proj/.samizdat") "\"))")]
+      (is (str/includes? p deny))
+      (is (< (str/index-of p "(allow file-write*") (str/index-of p deny))
+          "last match wins: the deny has to come after the allow it carves from"))))
+
+(deftest bwrap-mounts-a-protected-tree-read-only-over-the-writable-one
+  (let [dir (str (fs/create-temp-dir))
+        prot (str dir "/.samizdat")]
+    (fs/create-dirs prot)
+    (doseq [argv [(sandbox/bwrap-argv {:project-root dir :protect [prot]})
+                  (sandbox/bwrap-shell-argv {:project-root dir :protect [prot]})]]
+      (let [bind (.indexOf argv "--bind")
+            ro (some (fn [i] (when (= ["--ro-bind" prot prot] (subvec argv i (+ i 3))) i))
+                     (range (- (count argv) 2)))]
+        (is ro)
+        (is (< bind ro) "mounted after the writable bind, so it lands on top")))
+    (testing "a protected path that does not exist is not mounted — bwrap would fail"
+      (is (not (some #{"/nope/.samizdat"}
+                     (sandbox/bwrap-argv {:project-root dir :protect ["/nope/.samizdat"]})))))))
+
+(deftest a-sandboxed-shell-cannot-write-the-workflow
+  (when (mac?)
+    (let [root (str (fs/create-temp-dir))
+          prot (str root "/.samizdat")
+          _ (fs/create-dirs prot)
+          _ (spit (str prot "/gates.edn") "{}")
+          profile (str (fs/create-temp-dir) "/shell.sb")
+          _ (spit profile (sandbox/seatbelt-shell-profile {:project-root root :protect [prot]}))
+          sh (fn [cmd] (jolt.process/sh "sandbox-exec" "-f" profile "bash" "-c" (str "cd " root " && " cmd)))]
+      (sh "echo pwned > .samizdat/gates.edn; echo x > .samizdat/new.clj")
+      (is (= "{}" (slurp (str prot "/gates.edn"))))
+      (is (not (.exists (java.io.File. (str prot "/new.clj")))))
+      (is (str/includes? (:out (sh "cat .samizdat/gates.edn && echo ok > f && cat f")) "ok")
+          "readable, and the rest of the project still writable"))))

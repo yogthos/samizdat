@@ -201,6 +201,52 @@
   [root]
   (:sandbox (eval-settings (when root (file-config root)))))
 
+;; --- the shell's confinement (karamazov-3vu1.5) ------------------------------
+
+(def ^:private shell-sandboxes #{:auto :none :bwrap})
+
+(defn- names [xs]
+  (vec (filter #(and (string? %) (not (str/blank? %))) (when (sequential? xs) xs))))
+
+(defn shell-settings
+  "The `:shell` block of a project config, normalised to
+  `{:sandbox … :writable [path …] :pass-env [name …] :env-refs [name …]}`.
+
+  `:sandbox` is `:auto` (the platform's backend), `:none`, or `:bwrap` by
+  name. `:writable` adds trees the shell may write beyond the project, its
+  scratch and the build caches (samizdat.security.confine) — a toolchain that
+  keeps its cache somewhere else. Read from config.edn, which no tool the
+  agent holds can write (policy/protected-paths, files/run-config?), so the
+  confined party cannot widen it.
+
+  Strict in the same direction as `eval-settings`: a value that is not
+  exactly a known keyword is the default, never the open setting."
+  [cfg]
+  (let [m (:shell cfg)
+        m (if (map? m) m {})]
+    {:sandbox (get shell-sandboxes (:sandbox m) :auto)
+     :writable (names (:writable m))
+     ;; Vars handed to the shell's child as they are, credentials included —
+     ;; GITHUB_TOKEN for a project that needs gh (karamazov-3vu1.4).
+     :pass-env (names (:pass-env m))
+     ;; The names a command may reference as {{env/NAME}}; none by default.
+     :env-refs (names (:env-refs m))}))
+
+(defn userspace-settings
+  "The `:userspace` block of a config, normalised to `{:adopt …}`.
+
+  `:adopt :unedited` (the default) takes, when a project binds, every shipped
+  update whose project copy was never edited (userspace/adopt-unedited!);
+  `:none` leaves all of them to the supervisor. Anything else is the default."
+  [cfg]
+  (let [m (:userspace cfg)]
+    {:adopt (get #{:unedited :none} (when (map? m) (:adopt m)) :unedited)}))
+
+(defn shell-sandbox
+  "The shell settings for the project rooted at `root`."
+  [root]
+  (shell-settings (when root (file-config root))))
+
 (def harness-image-roles
   "The roles that keep the LIVE harness image under `:mode :project`.
 
@@ -263,13 +309,15 @@
               :features #{:prefill :native-tool-choice :native-tools :thinking-toggle
                           :reasoning-effort :stream}
               :key-env  "DEEPSEEK_API_KEY"
-              ;; deepseek-v4-flash is the development and test model: cheap
-              ;; enough to run the beam repeatedly. deepseek-v4-pro is the
+              ;; deepseek-flash is the development and test model: cheap
+              ;; enough to run the beam repeatedly. The API renamed it from
+              ;; deepseek-v4-flash (V4.1, measured 2026-10-06) and no longer
+              ;; lists the old id. deepseek-v4-pro is the
               ;; second arm. Both think by default (high effort); the
               ;; TypeScript default, deepseek-reasoner, is no longer served by
               ;; the API. Both serve a 1M context — :context-window below is a
               ;; compaction-ladder budget, not the model's window (karamazov-fass).
-              :model    "deepseek-v4-flash"}
+              :model    "deepseek-flash"}
    ;; The coding endpoint, not the general /api/paas/v4: it is the one dirge
    ;; drives GLM through in practice, tuned for agentic coding traffic. Same
    ;; OpenAI-compatible chat-completions surface, so the openai-family adapter
@@ -420,7 +468,7 @@
 ;;   {:providers {:bonsai {:type :local :base-url "http://127.0.0.1:8080/v1"
 ;;                         :thinking? true :gen-floor-tps 15}
 ;;                :glm    {:model "glm-5.3"}             ; alias = built-in, no :type
-;;                :flash  {:type :deepseek :model "deepseek-v4-flash"}
+;;                :flash  {:type :deepseek :model "deepseek-flash"}
 ;;                :vllm   {:type :openai :base-url "https://gpu:8000/v1"
 ;;                         :api-key "${VLLM_KEY}" :headers {"X-Org" "${ORG}"}}}
 ;;    :roles {:default :bonsai :supervisor :glm :reader :flash}}
@@ -503,7 +551,7 @@
   "The top-level keys a config file may set. :run stays open below this:
   cells read their own :run keys, and a list of them here would be a
   decision about behaviour made in src."
-  #{:http :nrepl :db :eval :run :providers :roles})
+  #{:http :nrepl :db :eval :run :providers :roles :shell :approval :userspace})
 
 (defn- refuse-unrecognized!
   "Throw naming the file and the key when a config layer sets a top-level

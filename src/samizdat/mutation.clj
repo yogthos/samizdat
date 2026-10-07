@@ -54,11 +54,11 @@
   "Load the cells the protocol checkpoints: `dirs` when the caller named them;
   otherwise the project's own files in file mode (karamazov-1a51.3), where a
   dir scan would load the shipped library beside them; otherwise the legacy
-  scan of cells/default-dirs."
+  scan of cells/scan-dirs."
   [dirs]
   (if (and (nil? dirs) (userspace/files?))
     (cells/load-cells!)
-    (cells/load-cells! (or dirs cells/default-dirs))))
+    (cells/load-cells! (or dirs (cells/scan-dirs)))))
 
 (defn- restore-files!
   "Write the checkpoint's file contents back to disk — undo the agent's edit."
@@ -196,10 +196,10 @@
   \"dry\" run, and an :effects cell missing :net would be stubbed as if the
   provider were not in it. Neither is an error the soak can see — the body
   compiles, the cells register, the run passes — so the check is on the
-  source, before load-string, and nothing is rolled back because nothing was
-  installed (karamazov-viht.1).
+  source, before it is evaluated, and nothing is rolled back because nothing
+  was installed (karamazov-viht.1).
 
-  Best effort on a body that will not read: load-string reports that far
+  Best effort on a body that will not read: the load reports that far
   better, so a reader failure here is nil, not a second complaint."
   [body]
   (try
@@ -358,7 +358,7 @@
   cannot (karamazov-990).
 
   Best effort: a body that will not read is not this function's complaint to
-  make — `load-string` below reports that far better."
+  make — the load below reports that far better."
   [name body]
   (try
     (let [ids (set (cells/defcell-ids body))]
@@ -435,10 +435,11 @@
 
       :else
     (try
-      ;; INSTALL the candidate into the live image, on top of the project's
-      ;; other cells. Syntax errors surface here.
-      (binding [*ns* *ns*]
-        (load-string body))
+      ;; INSTALL the candidate on top of the project's other cells: in SCI,
+      ;; in a context of its own (cells/eval-candidate!), so a reach past the
+      ;; allowlist is refused here, naming it, and a rollback leaves the
+      ;; running cells' helpers untouched. Syntax errors surface here too.
+      (cells/eval-candidate! body)
       (if-let [reason (or (validate compile-fn loop-def)
                           (some (fn [[nm d]]
                                   (when-let [r (validate compile-fn d)]

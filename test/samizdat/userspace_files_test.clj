@@ -28,6 +28,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [samizdat.agent.gates :as gates]
+            [samizdat.config :as config]
             [samizdat.store.db :as db]
             [samizdat.store.userspace :as store]
             [samizdat.system :as system]
@@ -204,7 +205,9 @@
     (us/seed-project! shipped)
     (us/save! :manifest "mine" "{:mine true}" "a loop of our own")
     (is (= "{:mine true}" (slurp (file root "manifests/mine.edn"))))
-    (is (= "{:mine true}" (us/body :manifest "mine")))
+    ;; Not a manifest that compiles, so read through `unchecked`: the stored
+    ;; fallback is re-checked now, and an invalid text is never what runs.
+    (unchecked (is (= "{:mine true}" (us/body :manifest "mine"))))
     (is (= "manifests/mine.edn"
            (get-in (edn/read-string (slurp (file root "userspace.edn"))) [:manifests :mine])))
     (testing "a new cell is appended to the ordered list"
@@ -290,6 +293,39 @@
         (us/unbind!) (us/bind-root! prev-root) (gates/reload-config!)
         (db/close c)
         (delete-recursively (io/file root))))))
+
+;; karamazov-3vu1.12: a project behind the templates takes the updates it
+;; never edited when it binds, unless the operator says not to.
+(defn- behind!
+  "Make the seeded project at `root` look one release behind on the critic
+  prompt, its copy untouched."
+  [root]
+  (let [old "The critic, as an older release had it."
+        a (edn/read-string (slurp (file root "adoption.edn")))]
+    (spit (file root "prompts/critic.md") old)
+    (spit (file root "adoption.edn") (pr-str (assoc-in a [:seen "prompt/critic"] (hash old))))))
+
+(deftest binding-a-project-takes-the-updates-it-never-edited
+  (doseq [[setting taken?] [[nil true] [{:adopt :unedited} true] [{:adopt :none} false]]]
+    (let [root (temp-dir)
+          c (db/open! ":memory:")
+          prev-root (us/bind-root! root)]
+      (try
+        (system/bind-project! c)
+        (behind! root)
+        (us/invalidate!)
+        (system/bind-project! c (config/userspace-settings {:userspace setting}))
+        (is (= taken? (= (us/template :prompt "critic") (slurp (file root "prompts/critic.md"))))
+            (pr-str setting))
+        (finally
+          (us/unbind!) (us/bind-root! prev-root) (gates/reload-config!)
+          (db/close c)
+          (delete-recursively (io/file root)))))))
+
+(deftest the-userspace-setting-is-read-strictly
+  (is (= {:adopt :unedited} (config/userspace-settings {})))
+  (is (= {:adopt :none} (config/userspace-settings {:userspace {:adopt :none}})))
+  (is (= {:adopt :unedited} (config/userspace-settings {:userspace {:adopt "none"}}))))
 
 (deftest a-run-drives-the-loop-the-projects-file-says
   ;; load-loop! read the STORED row, so in a project with files a run started

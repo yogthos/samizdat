@@ -11,6 +11,7 @@
   both from ctx — a branch cannot spoof a sender."
   (:require [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.security.flow :as flow]
             [samizdat.store.messages :as messages]))
 
 (def ^:private message-usage
@@ -52,16 +53,23 @@
            ;; :from is the branch's ID, not the branch map (provenance R2-2): the
            ;; store str's it, and a str'd 50KB state dump both bloated the
            ;; table and broke the inbox's sender-exclusion comparison.
-           (let [id (messages/send! conn {:run-id run-id :from (:id branch) :to to :body body})]
+           (let [id (messages/send! conn {:run-id run-id :from (:id branch) :to to :body body
+                                          ;; What the sender had read goes with it.
+                                          :flow (flow/carried ctx)})]
             (base/ok branch
                      (str "Sent " id
                           (if (str/blank? (str to)) " (broadcast)" (str " to " to))
                           "."))))
 
         "inbox"
-        (let [rows (messages/inbox conn run-id branch)]
+        ;; The branch's ID, not its map: with the map, a message addressed to
+        ;; this branch never matched, so the tool showed an empty inbox and
+        ;; the context preview showed the message forever.
+        (let [rows (messages/inbox conn run-id (:id branch))]
           (if (seq rows)
             (let [n (messages/mark-read! conn (mapv :id rows))]
+              ;; Reading them takes what their senders had read.
+              (flow/receive! ctx (map :flow rows) "message")
               (base/ok branch
                        (str (str/join "\n" (map render-message rows))
                             "\n(" n " marked read)")))

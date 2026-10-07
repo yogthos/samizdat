@@ -201,8 +201,8 @@
                :doc "list the models, or switch: `/model glm-5.3` for every role, `/model critic glm:glm-5.3` for one, `/model critic flash` for a provider config.edn declares — live for the run on screen, else the next run"}
   "/effort"   {:do :effort :args "[role] <low|medium|high|max>"
                :doc "how hard the model thinks, for every role or one — live for the run on screen, else the next run"}
-  "/mode"     {:do :mode :args "[refuse|block]"
-               :doc "when a run needs you: refuse, or block and ask"}
+  "/mode"     {:do :mode :args "[refuse|block|yolo]"
+               :doc "when a run needs you: refuse, block and ask, or yolo (allow every ask)"}
   "/run"      {:do :start :args "<problem>" :doc "start a run on a problem"}
   "/abort"    {:do :abort :doc "abort the run on screen"}
   "/resume"   {:do :resume :doc "resume the run on screen"}

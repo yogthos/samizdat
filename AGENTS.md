@@ -65,11 +65,14 @@ Two kinds of file, deliberately different:
   their HISTORY: a tool save writes the file and a version with its
   rationale, a revert rewrites the file, and an edit made to the file
   directly is recorded as a version on its next read. A template a later
-  release adds or changes is not written into an existing project, and
-  neither is a version stored before the project had files: each is OFFERED
-  to the supervisor (`userspace/offers`, shown once per run in the oversight
-  pass), answered with the `adopt` tool, and the answer is remembered in
-  `.samizdat/adoption.edn`.
+  release adds or changes is taken when the project binds only where the
+  project's copy is still the template it last saw, or the role is one it
+  never had (`userspace/adopt-unedited!`; config.edn `:userspace {:adopt
+  :none}` turns that off). Everything else — a copy the project edited, a
+  role it dropped, a version stored before the project had files — is
+  OFFERED to the supervisor (`userspace/offers`, shown once per run in the
+  oversight pass), answered with the `adopt` tool, and the answer is
+  remembered in `.samizdat/adoption.edn`.
 - **Settings follow the person.** `config.edn` and each front end's file
   (`tui.edn`, later `gui.edn`, `webui.edn`) are LAYERED by
   `samizdat.layers`: `$SAMIZDAT_<NAME>_FILE` > `.samizdat/<name>.edn` >
@@ -105,6 +108,10 @@ reference:
 ```bash
 jolt test          # the full suite (deps.edn :tasks test — raises ulimit -n)
 jolt serve         # start the harness: HTTP + nREPL, writes .nrepl-port
+                   # the API wants the token it wrote at start:
+                   # curl -H "Authorization: Bearer $(cat ~/.config/samizdat/http/3985.token)" …
+                   # (the front ends find it themselves; on Linux the nREPL
+                   # starts only with config.edn :nrepl {:unconfined :allow})
 jolt -A:test -e '(require (quote clojure.test) (quote samizdat.foo-test))
                  (clojure.test/run-tests (quote samizdat.foo-test))'
                    # one namespace, for a fast inner loop

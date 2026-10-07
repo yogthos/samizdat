@@ -76,7 +76,11 @@
   [{:name samizdat.cells/loaded
     :summary "Which cells are registered and which file each came from."}
    {:name samizdat.cells/load-cells!
-    :summary "Reload every cell from resources. Transactional — a broken edit rolls the registry back."}
+    :summary "Reload every cell from resources. Cells are evaluated in SCI, not the harness compiler: a cell sees clojure.core and samizdat.sandbox.sci/cell-api and nothing else. Transactional — a broken edit, or one that reaches past the allowlist, rolls the registry back and names what failed."}
+   {:name samizdat.sandbox.sci/cell-api
+    :summary "What a cell may call, namespace by namespace, and why each effectful entry is safe to hand it: the model, the run record through the store's own functions, the tool path (with its policy and approval), the task board. No process, file writes, raw SQL, FFI or host eval; the one command a cell may run is the run's configured check (verify/run-configured). In src on purpose — an allowlist the agent could edit would not confine it. A cell that needs more is refused at load naming the symbol; widening the list is a human's change."}
+   {:name samizdat.sandbox.sci/form-api
+    :summary "What a gates.edn / phases.edn :when, :message-form or :measure form, and a manifest's (fn [d] ...) dispatch, may call — compiled in SCI against this list (form-homes gives each table its bare names and aliases). An edit naming anything else is refused with every unresolved symbol listed."}
    {:name samizdat.mutation/propose-cell!
     :summary "The safety around a cell edit: refuse a mark the body does not earn, install, validate against every manifest, soak, commit a project version or roll back."}
    {:name samizdat.cells/effect-problems
@@ -134,11 +138,27 @@
    {:name samizdat.agent.live/apply-to
     :summary "What a person switched on a RUNNING run: the `model` and `effort` intervention kinds apply on arrival (POST /v1/runs/:id/interventions {kind: \"model\", payload: id}), and loop/call-model merges them over the run's llm config on every request, so every branch's next turn uses them. Each switch is journalled as :llm-switch. Forgotten when the run ends."}
    {:name samizdat.approval/set-mode!
-    :summary "The approval mode for this server session — :refuse or :block — over gates.edn :approval :mode, which stays the project's default. POST /v1/harness/approval-mode; the TUI's /mode. In memory: who is at the keyboard now is not a fact about the project."}
+    :summary "The approval mode for this server session — :refuse, :block or :yolo (every ask allowed; a deny stays a deny) — over config.edn's and gates.edn's :approval. POST /v1/harness/approval-mode; the TUI's /mode. In memory: who is at the keyboard now is not a fact about the project."}
+   {:name samizdat.approval/policy
+    :summary "The approval policy in force and where each part comes from: gates.edn may choose :refuse or :block and the wait; :yolo and :on-timeout :allow only from the operator's config.edn :approval or a person's session mode. A loosening value in gates.edn is ignored."}
    {:name samizdat.approval/session-grants
     :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
+   {:name samizdat.security.token/issue!
+    :summary "The HTTP API's bearer token: issued when the server starts, written owner-only to ~/.config/samizdat/http/<port>.token (a place no shell command or eval image can read), required on every request but /health, dropped on stop. samizdat.api.client and the event stream send it for a loopback base URL."}
+   {:name samizdat.security.flow/label-of
+    :summary "What a branch has read, as {:trust :trusted|:untrusted :audience :project|:operator :because {...}}. Web content (webfetch, websearch) makes it :untrusted; an approved read outside the project makes it :operator. Labels only narrow. After :untrusted a shell command that is not read-only asks a person; after :operator webfetch, websearch and any non-read-only command do. The table is in src (samizdat.security.flow/table), not gates.edn: it confines the agent. Each change is a :flow journal note."}
+   {:name samizdat.security.flow/receive!
+    :summary "A branch reading what another wrote takes the writer's label: a message from the inbox, a task it claims, shows or lists, a recalled memory (from any run), another branch's turn via fetch_turn; a fork starts with its parent's. Messages, tasks and memories carry it in a flow column (the writer branch's label, or the run's when no branch is named). The inbox preview withholds a labelled message's body, and the memory blocks shown unasked leave labelled memories out. The operator's configured commands (:run :verify-cmd, acceptance checks) need no trust: they still run after web content."}
+   {:name samizdat.security.flow/wrote!
+    :summary "Files carry labels too: a write_file/edit_file/patch by a branch that read web content or private files labels the file (file_flow, kept across runs); a branch that reads it with read_file, read_digest, a grep hit or a shell command that prints it takes the label; a clean branch's whole rewrite clears it. The ledger, shared artifacts, crossover and failures withhold or skip labelled entries; fetch_artifact takes the label; a supervisor's intervene carries its label; a branch opened on a derived problem, and the supervisor each pass, takes the run's label. After web content the workflow-editing actions (cell/manifest/prompt/policy save, patch, revert; adopt take, decline) and eval in the harness image need a person."}
+   {:name samizdat.security.flow/remedies
+    :summary "The ways forward from a flow block, as data on the result's :policy beside its :gaps: {:plan :authorize :authority :person} and, for a trust gap on the shell, {:plan :narrow :to :read-only}."}
+   {:name samizdat.security.replay/run-file
+    :summary "Replay a policy trace file — tool calls with the decision each should get (:allow :ask :deny, optionally :gaps) — against the real shell and flow decisions, running nothing. `jolt policy-test [file-or-dir]`; the shipped traces are test/policy/*.edn."}
    {:name samizdat.userspace/offers
-    :summary "What this project has not taken yet: a role the shipped map has and the project's lacks (:new), a shipped template that changed since the project saw it (:updated, :edited? when the project changed its copy too), a version stored before the workflow lived in files (:pending). Never applied on its own; the supervisor answers each with the `adopt` tool, and .samizdat/adoption.edn remembers the answer."}
+    :summary "What this project has not taken yet: a role the shipped map has and the project's lacks (:new), a shipped template that changed since the project saw it (:updated, :edited? when the project changed its copy too), a version stored before the workflow lived in files (:pending). The supervisor answers each with the `adopt` tool, and .samizdat/adoption.edn remembers the answer. A :new or :updated offer that is not :edited? is taken when the project binds (adopt-unedited!), so what stays on offer is what the project chose differently."}
+   {:name samizdat.userspace/adopt-unedited!
+    :summary "Take every shipped update whose project copy is still the template the project last saw, and every role the project never had — they override no choice it made. Run when a project binds, unless config.edn sets :userspace {:adopt :none}. :pending versions and edited copies stay on offer. An update that does not pass its check stays on offer too."}
    {:name samizdat.userspace/role-path
     :summary "Which file serves a role: the project's .samizdat/userspace.edn maps each manifest, prompt and policy role to a file and lists the cells in load order. Repoint a role, add one, or drop one by editing that map; a role the map lacks is refused, not answered by the shipped template."}
    {:name samizdat.userspace/rejections
@@ -387,6 +407,15 @@
     :summary "The macOS profile the project image runs under, as text — read it when a refusal is surprising."}
    {:name samizdat.security.sandbox/bwrap-argv
     :summary "The Linux confinement, as the bubblewrap argv the image runs under: filesystem read-only but the project, secrets hidden by mounts, no child processes (seccomp), network open."}]}
+
+ {:group "What the shell can reach"
+  :entries
+  [{:name samizdat.security.confine/shell-spec
+    :summary "The shell's OS confinement: writes only in the project, its scratch, /tmp and the build caches (~/.jolt, ~/.m2, ~/.cargo …); the project's .samizdat read-only; the secret regions unreadable; the harness's own ports unreachable. Operator settings in config.edn :shell {:sandbox :writable :pass-env :env-refs}."}
+   {:name samizdat.security.policy/outside-reads
+    :summary "The paths a shell command names outside the project, its reference roots and the build caches. Any at all turns the command into a question for a person — allowed by a grant, an approval, or yolo."}
+   {:name samizdat.agent.files/workflow-refused?
+    :summary "Why write_file/edit_file/patch to the role map, the roles policy or the phases policy asks a person: those decide which tools each role holds and what is refused. The rest of .samizdat/ stays writable through the validated path; the shell and eval cannot write .samizdat/ at all."}]}
 
  {:group "Runs as training data"
   :entries

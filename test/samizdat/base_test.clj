@@ -207,6 +207,19 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/sandbox/sci.clj"
+   {:vocabulary {"Could not find namespace ([\\w.\\-]+)"
+                 "SCI's own resolution-failure wording, matched to say what
+                  it means in the cell sandbox (outside-message). The words are
+                  SCI's protocol, not a vocabulary a project chooses."
+                 "Unable to resolve symbol: ([\\w.\\-]+/[^\\s]+)"
+                 "The same, for a qualified symbol."}}
+
+   "src/samizdat/security/token.clj"
+   {:vocabulary {"(?i)Bearer\\s+(\\S+)"
+                 "The Authorization header's Bearer scheme (RFC 6750). HTTP's
+                  protocol, not a vocabulary a project chooses."}}
+
    "src/samizdat/agent/select.clj"
    {:vocabulary {"(?i)^[\\s*_`#-]*(kind|size|workflow)[\\s*_`]*[:=]\\s*(.+)$"
                  "The triage reply's own field labels — the parser's side of
@@ -216,7 +229,10 @@
                   one would also have to change what reads it."}}
 
    "src/samizdat/api/client.clj"
-   {:threshold {200 "The success range of a status code. Protocol, as in
+   {:vocabulary {"^https?://(\\[[^\\]]+\\]|[^:/]+)(?::(\\d+))?"
+                 "A URL's scheme, host and port: which loopback port's token
+                  to send (security.token). URL syntax, not a vocabulary."}
+    :threshold {200 "The success range of a status code. Protocol, as in
                      server.clj."
                 299 "The other end of that range."
                 150000 "How long the client waits for POST /v1/runs. Bounded by

@@ -39,11 +39,17 @@
     (is (false? (pred {:call {:ok true}})))
     (is (false? (pred {})))))
 
-(deftest the-fn-form-passes-through-untouched
+(deftest a-fn-form-compiles-in-the-sandbox
   ;; BOTH forms accepted, so migration is per-manifest and nothing breaks.
-  (let [form '(fn [d] (:x d))]
-    (is (= [:x form] (d/compile-entry [:x form]))
-        "a form is left for maestro's compile-time eval"))
+  ;; A form no longer passes through to maestro's eval: it compiles here, in
+  ;; SCI against clojure.core, like every agent-editable form.
+  (let [form '(fn [d] (:x d))
+        [label pred] (d/compile-entry [:x form])]
+    (is (= :x label))
+    (is (= 1 (pred {:x 1})) "a form compiles to a predicate, in SCI (karamazov-3vu1.9)"))
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"branch :x.*slurp"
+                        (d/compile-entry [:x '(fn [d] (slurp "deps.edn"))]))
+      "and one reaching outside clojure.core is refused, naming its branch")
   (let [f (fn [d] (:x d))]
     (is (identical? f (second (d/compile-entry [:x f])))
         "a function is already compiled")))

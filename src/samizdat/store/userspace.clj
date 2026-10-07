@@ -33,7 +33,7 @@
   Four kinds, one lifecycle — seed, load latest, append a version, roll back
   by pointing at an older row:
 
-    :cell      Clojure source, load-stringed into the live image
+    :cell      Clojure source, evaluated in SCI (samizdat.sandbox.sci)
     :manifest  EDN, a mycelium workflow definition
     :policy    EDN, a table of thresholds/rules (gates, phases, retention)
     :prompt    markdown, text the model reads

@@ -22,6 +22,7 @@
             [samizdat.agent.state :as state]
             [samizdat.llm.client :as llm]
             [samizdat.agent.tools.tasks :as task-tool]
+            [samizdat.security.flow :as flow]
             [samizdat.store.journal :as journal]
             [samizdat.store.tasks :as tasks]
             [samizdat.store.runs :as runs]
@@ -143,6 +144,11 @@
             ;; rather than rewriting how it ended.
             _ (runs/open-branch! conn run-id {:branch-id bid :problem prob :role :implementor
                                               :prompt-suffix suffix})
+            ;; Woken holding its pieces' answers, it takes what the run's
+            ;; branches had read (samizdat.security.flow).
+            _ (when parked
+                (flow/receive! {:conn conn :run-id run-id :branch {:id bid}}
+                               [(flow/carried-by-run conn run-id)] "handoff"))
             b (cond-> (or (some-> parked
                                   (assoc :status :active)
                                   (dissoc :delegated :inactive-reason)

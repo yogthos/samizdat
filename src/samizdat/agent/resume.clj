@@ -119,6 +119,8 @@
             [samizdat.agent.handoff :as handoff]
             [samizdat.llm.message :as message]
             [samizdat.agent.gitdiff :as gitdiff]
+            [samizdat.agent.verify :as verify]
+            [samizdat.security.flow :as flow]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.state :as state]
             [samizdat.agent.storm :as storm]
@@ -356,6 +358,7 @@
           (workflow/compile-turn-loop conn loop-nm)
           ;; The manifest's own instructions, as beam/run! seeds them.
           prompt-suffix (workflow/workflow-prompt loop-def)
+          _ (verify/seal-run! run-id root config)
           ctx {:conn conn :run-id run-id :config config :problem (:problem run)
                :llm-adapter llm-adapter :llm-config llm-config
                :max-turns max-turns :beam? (> width 1) :beam-width width
@@ -410,4 +413,7 @@
           ;; The anchor: rounds completed are the max turn in the journal, so
           ;; the loop continues one past it. max-turns is the ORIGINAL budget.
           start-turn (inc (reduce max 0 (map :turn turn-rows)))]
-      (beam/run-rounds ctx branches start-turn))))
+      ;; The seal made above ends with the resumed run (verify/unseal-run!).
+      (try (beam/run-rounds ctx branches start-turn)
+           (finally (verify/unseal-run! run-id)
+                    (flow/forget-run! run-id))))))

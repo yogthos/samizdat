@@ -165,5 +165,9 @@
             (catch Throwable e (userspace/problem :render e)))
        (when-let [missing (seq (dropped-tokens nm text))]
          {:stage :format
-          :message (render-str (userspace/body :prompt "reply-format-dropped")
-                               {:name nm :missing (str/join ", " missing)})}))))
+          ;; The bare list when this project's map has no reply-format-dropped
+          ;; prompt (one older than it): rendering nil threw, and the check
+          ;; reported a valid-looking prompt as failed with the message "s".
+          :message (if-let [t (userspace/body :prompt "reply-format-dropped")]
+                     (render-str t {:name nm :missing (str/join ", " missing)})
+                     (str/join ", " missing))}))))

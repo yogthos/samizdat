@@ -135,6 +135,7 @@
             [samizdat.lisp-test]
             [samizdat.lsp-test]
             [samizdat.cells-test]
+            [samizdat.cells-sci-test]
             [samizdat.digest-test]
             [samizdat.park-test]
             [samizdat.events-test]
@@ -151,6 +152,7 @@
             [samizdat.repl-test]
             [samizdat.roles-test]
             [samizdat.sandbox-test]
+            [samizdat.confine-test]
             [samizdat.websearch-test]
             [samizdat.webfetch-test]
             [samizdat.toolerr-test]
@@ -178,6 +180,11 @@
             [samizdat.beam-test]
             [samizdat.kanban-test]
             [samizdat.security.policy-test]
+            [samizdat.security.flow-test]
+            [samizdat.security.flow-carry-test]
+            [samizdat.security.flow-handoff-test]
+            [samizdat.security.replay-test]
+            [samizdat.security.token-test]
             [samizdat.llm-test]
             [samizdat.toolspec-test]
             [samizdat.llm-stream-test]
@@ -352,6 +359,7 @@
     samizdat.lisp-test
     samizdat.lsp-test
     samizdat.cells-test
+    samizdat.cells-sci-test
     samizdat.digest-test
     samizdat.park-test
     samizdat.events-test
@@ -368,6 +376,7 @@
     samizdat.repl-test
     samizdat.roles-test
     samizdat.sandbox-test
+    samizdat.confine-test
     samizdat.websearch-test
     samizdat.webfetch-test
     samizdat.toolerr-test
@@ -395,6 +404,11 @@
     samizdat.beam-test
     samizdat.kanban-test
     samizdat.security.policy-test
+    samizdat.security.flow-test
+    samizdat.security.flow-carry-test
+    samizdat.security.flow-handoff-test
+    samizdat.security.replay-test
+    samizdat.security.token-test
     samizdat.prompt-test
     samizdat.server-test
     samizdat.adapter-test

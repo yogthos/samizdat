@@ -184,7 +184,7 @@ role plumbing. Two functions worth knowing apart:
 
 | fn | contract |
 |---|---|
-| `(load-cells!)` | **The project's** cells: seed templates into the store, read back, `load-string` into the live image. `.samizdat/cells` files seed alongside. Unbound, reads the templates. |
+| `(load-cells!)` | **The project's** cells: seed templates into the store, read back, evaluated in SCI against `samizdat.sandbox.sci`'s allowlist. `.samizdat/cells` files seed alongside. Unbound, reads the templates. |
 | `(load-cells! dirs)` | A literal source scan of `dirs` plus shipped resources, **no store**. The seam a test loading a temp directory needs; deliberately not the production path. |
 | `(loaded)` | `{cell-id {:source name}}`. |
 | `(loaded-file-content)` | Last-good on-disk content, for the file-based rollback. |
@@ -224,7 +224,7 @@ over stored versions.
 ### The mutation protocol
 
 ```
-propose → load-string the candidate into the live image
+propose → evaluate the candidate in SCI, in a context of its own
         → validate: does the loop still compile?
         → soak: dry-run with effectful cells stubbed to identity, under a timeout
         → commit as a new version   |   reject, registry restored
@@ -263,12 +263,13 @@ workflow/compile-loop
 | A cell edit that breaks the loop never goes live. | `propose-cell!`'s validate + soak. |
 | A cell that declares no effects is rejected. | `mutation/validate` reads mycelium's `:undeclared-effects` warning. |
 | Every shipped cycle can change its own exit. | `manifests/unguarded-cycles`: a cycle is guarded when a dispatch on it with an edge out reads a key a cell on it promises in `:output`; otherwise `compile-definition` carries an `:unguarded-cycle` warning and `manifest save`/`patch` render it (karamazov-viht.4, the manifest dialect's descent test — a warning, never a refusal, since termination stays dynamic). `manifest-test/no-shipped-manifest-has-an-unguarded-cycle`. |
-| A cell's mark covers what its body reaches. | `mutation/unearned-marks` before `load-string` in `propose-cell!` and after reload in `apply-cell-edit!`; `mutation-test/a-cell-whose-mark-its-body-does-not-earn-is-refused-before-it-is-installed`; `cells-test/every-shipped-cell-earns-its-mark-against-the-shipped-catalog` pins the shipped cells against the shipped catalog. |
+| A cell's mark covers what its body reaches. | `mutation/unearned-marks` before the candidate is evaluated in `propose-cell!` and after reload in `apply-cell-edit!`; `mutation-test/a-cell-whose-mark-its-body-does-not-earn-is-refused-before-it-is-installed`; `cells-test/every-shipped-cell-earns-its-mark-against-the-shipped-catalog` pins the shipped cells against the shipped catalog. |
 | Declared constraints are compile-time errors. | mycelium `:constraints`; `beam-test` asserts a violating edit is refused. |
 | Every registered cell is reachable from some manifest. | `beam-test/every-shipped-cell-is-reachable-from-some-manifest`. |
 | Every shipped manifest compiles and is in the catalogue. | `beam-test/every-shipped-manifest-compiles-and-is-selectable`. |
 | The shipped cell list matches the directory. | `cells-test/shipped-cells-match-what-ships`. |
-| A shipped cell's requires are reachable without `load-string`. | `cells-test`, against `samizdat.cell-prelude`. |
+| A shipped cell's requires are in a built image. | `cells-test`, against `samizdat.cell-prelude`. |
+| A cell reaches only the allowlist. | `samizdat.sandbox.sci`; `cells-sci-test`. |
 
 ### Declared constraints today
 
@@ -295,8 +296,10 @@ workflow/compile-loop
   means for the agent is that the tools are the gated route and a direct
   write is not; RFC-001 says a direct edit is honoured. The shipped
   `resources/cells` are templates only once a project has files: editing
-  one changes nothing that runs, and is offered to the supervisor for
-  adoption (karamazov-95u5 observed the opposite before files mode).
+  one changes nothing that runs until the project binds again: then it is
+  taken if the project's copy was never edited, and otherwise offered to
+  the supervisor for adoption (karamazov-95u5 observed the opposite before
+  files mode; karamazov-3vu1.12 the auto-adopt).
 - **Every declared invariant is enforced.** Every ordering rule a manifest
   claims is declared in its `:invariants`, each saying what it `:protects`
   and whether it is `:enforced`; the enforced ones are DERIVED into the

@@ -40,10 +40,15 @@
 
 (def ^:private safe-exact
   "Names that match a pattern by accident but must reach the tools that need
-  them — X11, locale, the user's editor, and the git/gh credentials."
+  them — X11, locale, the user's editor, the ssh agent socket.
+
+  Not GITHUB_TOKEN/GH_TOKEN any more (karamazov-3vu1.4). They were here so gh
+  worked, which put a token that can push in every child of the shell, whose
+  network is open. The operator passes them by name when a project needs gh
+  (config.edn :shell :pass-env)."
   #{"DISPLAY" "TERM" "SHLVL" "PWD" "OLDPWD" "PATH" "MANPATH" "LANG" "LC_ALL"
     "LC_CTYPE" "EDITOR" "VISUAL" "PAGER" "HOSTNAME" "USER" "LOGNAME" "HOME"
-    "SSH_AUTH_SOCK" "GITHUB_TOKEN" "GH_TOKEN"})
+    "SSH_AUTH_SOCK"})
 
 (def ^:private explicit-names
   "Cloud-credential names with no generic pattern of their own."
@@ -176,19 +181,25 @@
   "The environment a subprocess is allowed to see. Name-sensitive vars and
   `parent-only-vars` are removed; any remaining var whose value is
   credential-shaped OR contains a known stripped value is replaced with
-  [REDACTED]. Pure over the env map so it is testable without a spawn."
-  [env]
-  (let [known (stripped-values env)]
+  [REDACTED]. Pure over the env map so it is testable without a spawn.
+
+  `pass` names vars the operator hands the child as they are, sensitive or
+  not (config.edn :shell :pass-env) — the one way a credential reaches one."
+  ([env] (scrub-env env #{}))
+  ([env pass]
+  (let [pass (set (map str pass))
+        known (stripped-values (apply dissoc env pass))]
     (into {}
           (keep (fn [[k v]]
                   (cond
+                    (contains? pass (str k)) [k v]
                     (contains? parent-only-vars (str k)) nil
                     (sensitive-name? k) nil
                     (or (sensitive-value? v)
                         (some #(str/includes? (str v) %) known))
                     [k redacted]
                     :else [k v])))
-          env)))
+          env))))
 
 (defn scrubbed-process-env
   "The current process environment, scrubbed — what a spawned tool inherits.
@@ -207,6 +218,19 @@
   [text env]
   (str/replace (str text) ref-re
                (fn [[_ name]] (str (get env name "")))))
+
+(defn refs-in
+  "The names `text` references as `{{env/NAME}}`."
+  [text]
+  (set (map second (re-seq ref-re (str text)))))
+
+(defn refs-refused
+  "The names `text` references that are not in `allowed` — the operator's
+  config.edn :shell :env-refs. A reference was resolved for ANY name, so a
+  model that could not read a provider key could still spend it: write it
+  into a URL and fetch that (karamazov-3vu1.4)."
+  [text allowed]
+  (set (remove (set (map str allowed)) (refs-in text))))
 
 (defn refs-used
   "The set of secret values a `resolve-refs` on `text` would expose — the

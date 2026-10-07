@@ -67,6 +67,8 @@
             [samizdat.agent.gates :as gates]
             [samizdat.agent.handoff :as handoff]
             [samizdat.agent.gitdiff :as gitdiff]
+            [samizdat.agent.verify :as verify]
+            [samizdat.security.flow :as flow]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
@@ -105,8 +107,10 @@
   because the child already carries them in its inherited history."
   [conn run-id parent-id]
   (let [{:keys [statuses limit]} (gates/threshold :crossover)
-        others (remove #(= parent-id (:branch_id %))
-                       (journal/artifacts conn run-id))
+        ;; Less the labelled ones: the block is put in the child's opening
+        ;; unasked (samizdat.security.flow).
+        others (flow/unlabelled (remove #(= parent-id (:branch_id %))
+                                        (journal/artifacts conn run-id)))
         confirmed (filter #(contains? statuses (:claim_status %)) others)]
     (when (seq confirmed)
       ;; Tier 2d: the header prose is prompts/crossover.md — runtime-editable,
@@ -168,6 +172,10 @@
                                     :created-at-turn turn
                                     :role (:role b)
                                     :prompt-suffix (:prompt-suffix ctx)})
+    ;; A child starts from its parent's conversation or thesis, so it starts
+    ;; with what its parent had read (samizdat.security.flow).
+    (when parent-id
+      (flow/inherit! {:conn conn :run-id run-id :turn turn} parent-id id))
     (if thesis
       (do (runs/set-thesis! conn run-id id thesis)
           (-> b
@@ -465,6 +473,10 @@
              ;; the parsed human words; the raw column is a JSON blob and the
              ;; gate rendered it verbatim (blt.38).
              (let [d' (assoc d :payload-text (interventions/text-of d))]
+               ;; Each branch it reaches takes what its issuer had read (v39).
+               (doseq [b bs :when (matches? b)]
+                 (flow/receive! {:conn conn :run-id run-id :branch {:id (:id b)} :turn turn}
+                                [(:flow d)] "intervene"))
                (assoc acc :branches
                       (mapv #(if (matches? %) (assoc % :pending-directive d') %) bs))))
 
@@ -491,6 +503,10 @@
                  ;; children survived — a person asking for a fork is asking
                  ;; for a fork.
                  (let [parent (first parents)]
+                   ;; The parent carries the thesis to its child, which
+                   ;; inherits its label in open-branch!.
+                   (flow/receive! {:conn conn :run-id run-id :branch {:id (:id parent)} :turn turn}
+                                  [(:flow d)] "intervene")
                    (assoc acc :branches
                           (mapv #(if (= (:id %) (:id parent))
                                    (update % :pending-branch-theses
@@ -882,6 +898,16 @@
             ;; budget that exists to bound model calls (karamazov-808).
             :spent? (boolean (:oversight/worth-a-look? out))}))))))
 
+(defn close-advisory-branches!
+  "Close the run's supervisor branch rows still marked active. The supervisor
+  stream outlives no run, but nothing closed its row: every supervisor branch
+  in this repository's own project db read `active` after its run had ended.
+  A working branch is not touched — its driver closes it with its own reason."
+  [conn run-id]
+  (doseq [{:keys [id role status]} (runs/branches conn run-id)
+          :when (and (= "supervisor" role) (= "active" status))]
+    (runs/close-branch! conn run-id id :done "the run ended")))
+
 (defn run-rounds
   "Drive the beam's scheduler manifest from round `start-turn`.
 
@@ -969,6 +995,8 @@
         ;; One stream now, with both phases on it: the reflex that used to be
         ;; samizdat.watch's own thread runs on this one (RFC-012).
         (when-let [stop (:stop-oversight ctx)] (stop))
+        (try (close-advisory-branches! conn run-id)
+             (catch Throwable e (log/warn "closing the supervisor branch failed:" (ex-message e))))
         ;; Release the reflex's tap and its per-run memory; on a serve process
         ;; neither would otherwise be reclaimed for the life of the process.
         (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
@@ -1205,6 +1233,10 @@
         ;; REPL-first against the project under work, and without this that
         ;; instruction is unreachable the moment :run :root is not the harness.
         _ (repl/ensure-project-roots! root)
+        ;; The commands a cell may run for this run (verify/run-configured):
+        ;; the ones this config names, in this root, sealed before any cell
+        ;; sees the ctx it could otherwise rewrite (karamazov-3vu1.9).
+        _ (verify/seal-run! run-id root config)
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
              ;; The injected model call, when the caller supplied one
@@ -1304,7 +1336,10 @@
                                     :outcome :error})
                              (userspace/record-run-outcome! :error)
                              (catch Throwable _ nil))
-                        (throw e)))]
+                        (throw e))
+                      ;; The run's sealed commands end with it (verify).
+                      (finally (verify/unseal-run! run-id)
+                               (flow/forget-run! run-id)))]
       ;; HOW THIS WORKFLOW WENT, for the next run's choice. A run only ever
       ;; sees its own attempt, so `direct attempts on this project keep getting
       ;; stuck` is not something any single run can notice — it has to be

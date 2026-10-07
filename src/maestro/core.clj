@@ -63,9 +63,13 @@
 
 (defn- compile-dispatch-pred
   "Compiles a dispatch predicate. If it's already an IFn (inline spec),
-   uses it directly. Otherwise evaluates it as a form (EDN spec)."
+   uses it directly. Otherwise compiles it as a form (EDN spec) — in SCI,
+   against clojure.core only, never `eval` in the host: a manifest is text
+   the agent edits (samizdat.sandbox.sci, karamazov-3vu1.9)."
   [pred]
-  (if (ifn? pred) pred (eval pred)))
+  (if (ifn? pred)
+    pred
+    ((requiring-resolve 'samizdat.sandbox.sci/form-fn) :dispatch nil pred)))
 
 (defn- compile-state-handler
   [state-id {:keys [handler dispatches async?]} valid-dispatch-targets rethrow?]

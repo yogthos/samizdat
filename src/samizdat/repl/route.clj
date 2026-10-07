@@ -48,6 +48,7 @@
             [samizdat.repl :as repl]
             [samizdat.repl.guard :as guard]
             [samizdat.repl.image :as image]
+            [samizdat.security.confine :as confine]
             [samizdat.security.sandbox :as sandbox]))
 
 (defonce ^:private images
@@ -75,24 +76,10 @@
   `policy/protected-paths` states. This is the list of places the agent's own
   image may not read; a list the agent can edit is not a list."
   [home harness-root]
-  {:deny-read (remove nil?
-                      [(when home (str home "/.ssh"))
-                       (when home (str home "/.aws"))
-                       (when home (str home "/.gnupg"))
-                       (when home (str home "/.config/gh"))
-                       (when home (str home "/.claude"))
-                       (when home (str home "/.samizdat-secrets"))
-                       "/etc"
-                       ;; THE HARNESS'S OWN CHECKOUT. Writes and hot-patching
-                       ;; are already closed, but reads are open by default
-                       ;; here (a strict read allowlist aborts the runtime), so
-                       ;; without this the project image can slurp harness
-                       ;; source by ABSOLUTE path — measured, and the reason
-                       ;; the confinement test that "passed" only proved cwd
-                       ;; had moved. Harmless when the harness IS the project:
-                       ;; seatbelt-profile re-allows the project root after the
-                       ;; denies, so self-hosting reads itself fine.
-                       harness-root])
+  ;; The secret regions and the harness checkout are shared with the shell
+  ;; (samizdat.security.confine); /etc is the image's alone, because a shell
+  ;; resolves names and verifies TLS through it and a jolt REPL does not.
+  {:deny-read (conj (confine/secret-regions home harness-root) "/etc")
    ;; THE RUNTIME BINARY'S OWN DIRECTORY, and nothing else.
    ;;
    ;; This has to be narrow and it is easy to get wrong in the safe-looking

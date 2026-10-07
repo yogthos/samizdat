@@ -197,7 +197,12 @@ shell({command})
 
     To use a secret without seeing it, reference it as {{env/NAME}} in the
     command; the value is substituted when the command runs and never appears
-    in your context or the output.
+    in your context or the output. Only the names the operator has allowed
+    resolve; a command referencing any other is refused.
+
+    The shell runs in a sandbox: it writes only inside the project (not its
+    .samizdat/ workflow directory), the temp directory and the build caches,
+    and a read outside the project needs a person to allow it.
 ```
 
 ### Guidance you can load

@@ -39,6 +39,7 @@
             [samizdat.agent.state :as state]
             [samizdat.agent.supervisor :as supervisor]
             [samizdat.prompt :as sp]
+            [samizdat.sandbox.sci :as sandbox]
             [samizdat.userspace :as userspace]
             [samizdat.util :as util]))
 
@@ -284,50 +285,38 @@
 
 (defn unresolved-symbols
   "The symbols in `form` that are neither special forms, bound in the form,
-  gate-context locals, nor resolvable in this namespace — each of them a
-  call that can only fail when the gate fires.
+  gate-context locals, nor resolvable in the gates' sandbox — each of them a
+  call the gate cannot make.
 
-  Checked explicitly rather than left to `eval`, because under jolt's dev
-  mode (an nREPL image) an unresolved symbol compiles and fails at CALL time,
-  so a broken gate saved as if it were sound (karamazov-i6f1)."
+  Listed explicitly rather than left to the compile, so the refusal names
+  every one at once, not the first (karamazov-i6f1). What resolves is the
+  :gates home in samizdat.sandbox.sci: the names these forms were written
+  against in this namespace, and nothing else (karamazov-3vu1.9)."
   [form]
-  (let [bound (into context-locals (bound-names form))
-        this (the-ns 'samizdat.agent.gates)]
-    (->> (tree-seq coll? seq form)
-         (filter symbol?)
-         (remove #(or (special-symbol? %) (contains? bound %)
-                      (= '& %) (str/starts-with? (name %) ".")
-                      (str/ends-with? (name %) ".")
-                      (try (ns-resolve this %) (catch Throwable _ false))))
-         distinct
-         sort
-         vec)))
+  (sandbox/unresolved :gates form (into context-locals (bound-names form))))
 
 (defn- compile-form
   "Compile an EDN form into (fn [ctx] form) with the gate-context keys bound
   as plain locals — the environment both :when and :message-form build on.
-  prompt/threshold/state and the required namespaces resolve at compile, in
-  this namespace; the config atom is still read at FIRE time.
 
-  `*ns*` is bound explicitly because `eval` resolves the form's free symbols
-  against whatever namespace is current when it runs. That used to be this
-  one for free: the table was a top-level `def`, so the compile happened at
-  namespace load. Now that it is memoized and compiled on FIRST USE, the
-  caller could be anything — jolt.main, a test namespace — and `threshold`,
-  `prompt`, `state/…` and `supervisor/…` resolve in none of them."
+  In SCI, in the :gates home (samizdat.sandbox.sci): `threshold`, `prompt`,
+  `state/…`, `supervisor/…`, `roles/…`, `sp/…` and `str/…` resolve as they
+  did when these forms were `eval`ed in this namespace, and nothing else
+  does — gates.edn is agent-editable, and a :when that could call spit was
+  the whole process (karamazov-3vu1.9). The config atom is still read at
+  FIRE time."
   [form]
   (when-let [bad (seq (unresolved-symbols form))]
     (throw (ex-info (str "unresolved: " (str/join ", " bad))
                     {:unresolved (vec bad) :form form})))
-  (binding [*ns* (the-ns 'samizdat.agent.gates)]
-    (eval `(fn [~'ctx]
-           (let [~'directive            (get ~'ctx :directive)
-                 ~'done-block           (get ~'ctx :done-block)
-                 ~'branch               (get ~'ctx :branch)
-                 ~'max-turns            (get ~'ctx :max-turns)
-                 ~'branch-count         (get ~'ctx :branch-count)
-                 ~'safe-state-coverage  (get ~'ctx :safe-state-coverage)]
-             ~form)))))
+  (sandbox/form-fn :gates '[ctx]
+                   `(let [~'directive            (get ~'ctx :directive)
+                          ~'done-block           (get ~'ctx :done-block)
+                          ~'branch               (get ~'ctx :branch)
+                          ~'max-turns            (get ~'ctx :max-turns)
+                          ~'branch-count         (get ~'ctx :branch-count)
+                          ~'safe-state-coverage  (get ~'ctx :safe-state-coverage)]
+                      ~form)))
 
 (defn- compile-when
   [form]

@@ -24,6 +24,20 @@ to whoever is returning a result.
 Clojure in the harness process, and that is deliberate — it is the substrate the
 mutation protocol is built on (RFC-002).
 
+**Code the agent edits as data is not.** Cells (`resources/cells/*.clj` and a
+project's copies), the policy tables' forms (`gates.edn` and `phases.edn`
+`:when` / `:message-form` / `:measure` / `:finished-key`) and a manifest's
+`(fn [d] ...)` dispatch predicates are rewritten by the agent while it runs,
+and used to be `load-string`ed or `eval`ed into the harness compiler — so an
+edited cell or rule had the whole process. They are evaluated in SCI now
+(`samizdat.sandbox.sci`), against an allowlist that lives in `src/`: a cell
+reaches the model, the run record and the tool path through the same
+higher-level functions native code uses, and never a process, a file write,
+raw SQL, FFI or host eval. The one command a cell may run is the run's own
+configured check (`verify/run-configured`, sealed from the config the run was
+started with). `eval` stays the deliberate in-process channel described above;
+this boundary is about the code the agent persists into its own workflow.
+
 So the secrets boundary protects against **accidental** leakage into the
 transcript and the journal: a model prints a config map while debugging and a
 provider key lands in the branch messages permanently. It does **not** protect
@@ -311,6 +325,19 @@ and the shell policy refuse to let a run write.
 | 5 | A complex command never rides an `allow`. | `policy/decide` promotes it to a whole-command claim. `policy-test/complex-commands-never-ride-an-allow`. |
 | 7 | A `webfetch` never reaches loopback, link-local or an RFC1918 host, and never follows a redirect into one. | `webfetch/allowed?` on the request and again on the `location` header. Hardcoded in src on purpose, like invariant 6: a host list in agent-editable gates.edn could be widened by the party it confines. Known limit, stated rather than hidden — the check is string-shaped, so a public NAME that resolves to a private address is not caught; a DNS round trip inside a guard is a place where a slow resolver hangs the harness, and the redirect re-check is what covers the common case. |
 | 6 | The run config (`.samizdat/config.edn`) — the ship-gate definition — is not writable by the run it gates. | `files/run-config?` refuses it in `write_file`/`edit_file`/`patch`; `policy/decide` hard-denies any shell statement naming it under a write-capable head (grants do not unlock it). Reads stay open. `files-test/the-run-config-is-not-writable-by-the-run-it-gates`, `policy-test/the-shell-cannot-mutate-the-run-config-either`. Hardcoded in src on purpose: a protected list in agent-editable gates.edn could be unprotected by the party it protects against (karamazov-kvw). |
+| 8 | Nothing the agent spawns can connect to the harness's own listening ports (the HTTP API, the nREPL). | The eval image's seatbelt profile allows network INBOUND only; the shell's profile denies outbound to each port `security.listen` recorded (`(allow default)` plus a per-port deny is the one shape seatbelt honours — an allow of `localhost:*` overrides a later per-port deny). `image-test` (a listening socket stays unreachable from the image), `sandbox-test/a-sandboxed-shell-works-in-the-project-and-cannot-leave-it`. macOS only; see the known gaps for Linux (karamazov-3vu1.1). |
+| 9 | The HTTP API serves only loopback Hosts and loopback Origins, and a request body must be `application/json`. | `server/refusal`. Closes the operator's own browser as the way in: a page could POST a text/plain body to 127.0.0.1 without a preflight, and a name rebinding to 127.0.0.1 read the answers as same-origin. `server-test/a-foreign-host-is-refused`, `a-cross-origin-request-is-refused`, `a-write-must-say-it-is-json` (karamazov-3vu1.1). |
+| 10 | Every shell command runs under the OS sandbox: writes only in the project, its scratch, /tmp and the build caches; the secret regions unreadable; the project's `.samizdat/` read-only. | `confine/shell-command`, from `run-shell`. The allow table decides whether a command runs; this decides what it reaches — the table admits heads that run code the agent wrote (`make`, `jolt -e`). `policy-test/an-allowed-command-is-still-confined-by-the-os`. Setting in config.edn `:shell`, which no agent tool writes (karamazov-3vu1.5). |
+| 11 | `.samizdat/` is not writable by anything the agent spawns, and a file-tool write to what confines the agent — the role map and the files serving `roles` and `phases` — is a person's call. | `confine/protected` in both sandbox profiles (spawned writes are not validated); `files/workflow-refused?` in write_file/edit_file/patch (asks under :block, allows under :yolo, refuses under :refuse). The rest of the workflow stays writable through the file tools, where every edit is validated before it runs (karamazov-3vu1.2). |
+| 12 | The approval settings that loosen anything — `:on-timeout :allow`, `:mode :yolo` — come only from the operator's config.edn or a person's session mode. | `approval/policy`: gates.edn (agent-editable) may choose `:refuse`/`:block` and the wait, nothing else. `approval-test/the-agents-file-cannot-loosen-the-approval-policy`. |
+| 13 | A read outside the project and its declared reference roots is a person's call. | `policy/outside-reads` turns a shell allow into an ask unless a grant allowed it; `files/resolve-read!` asks for read_file and read_digest. The secret regions stay refused to read_file even under yolo, since it runs in-process (karamazov-3vu1.3). |
+| 14 | `{{env/NAME}}` resolves only names the operator listed (`:shell :env-refs`); GitHub tokens reach a child only by name (`:shell :pass-env`). | `secrets/refs-refused` in `run-shell` (deny before resolve); `secrets/scrub-env`'s `pass`. A reference let a model spend a key it could not read (karamazov-3vu1.4). |
+| 15 | Agent-editable code — cells, policy-table forms, manifest dispatch forms — is evaluated only in SCI against `samizdat.sandbox.sci`'s allowlist, never by `load-string`/`eval` in the harness. A reference outside the list is refused at load, naming it. | `cells/load-cells!`, the `:cell` userspace validator and `mutation/propose-cell!` evaluate through `sandbox/eval-source!`; `gates`, `phases`, `state`, `tools.ship` and `symbolic.dispatch`/`maestro` compile through `sandbox/form-fn`. Hardcoded in src on purpose, like 6 and 7. `cells-sci-test`. Known limit: a cell still holds the ctx it is handed, so it can call an allowlisted function with a root or run-id of its choosing — `verify/run-configured` checks the command against the run's seal, `gitdiff` refuses an option-shaped revision, and `files/read-sources` stays under the root it is given. |
+| 16 | A branch that has read web content (webfetch, websearch) runs only a read-only shell command, or one the operator's config names (`:run :verify-cmd`, an acceptance `:check`, exactly as written), without a person; one that has read outside the project (an approved outside read) sends nothing out — webfetch, websearch, or a shell command that is not read-only — without a person. Labels only narrow, per branch, and survive a resume. | `samizdat.security.flow` (table in src, like 6 and 7); `policy/with-flow` in `run-shell` and in the trace replay; `tools/run-tool`'s flow gate for the other sinks and its `observe!` for sources; `files/resolve-read!` and `run-shell` observe outside reads. Every change is a `:flow` journal note; `forget-run!` at run end. A gap turns an allow into an ask, settled by the approval policy like any other (yolo allows); the ask shows the call and its gaps, and offers no allow-always (karamazov-3vu1.7). `flow-test`. |
+| 17 | A flow block says what is missing and the ways forward as data — `:gaps` and `:remedies` on the result's `:policy` and on the approval request — and the policy is pinned by trace files replayed against the real decisions. | `flow/remedies`; prompts/flow-blocked.md; `samizdat.security.replay`, test/policy/*.edn, `jolt policy-test` (karamazov-3vu1.8). `replay-test`. |
+| 18 | Every HTTP API request but `/health` carries the bearer token this process issued; the token is written owner-only under `~/.config/samizdat/http/<port>.token`, inside the secret regions; and the nREPL listens only where both the shell and the eval image run under seatbelt, or the operator set `:nrepl {:unconfined :allow}`. | `security.token` (issued before the server listens, revoked on stop); `server/refusal` (no exemption for a request with no headers — HTTP/1.0 lets a raw socket send one); `api.client/auth-headers` and `api.sse` read the file per port; `core/nrepl-allowed?`. Closes invariant 8's Linux gap (karamazov-3vu1.11). `token-test`. |
+| 19 | What one branch writes for another carries what the writer had read: a message, a task (created or edited), a memory (into later runs too) holds the writer's label in its `flow` column — the branch's when known, else the meet of every branch in the run. A branch that reads one on purpose takes it (the inbox, a task it claims, shows or lists, `recall`, another branch's turn through `fetch_turn`); a fork takes its parent's. What is put in front of a branch unasked leaves a labelled row's text out: the inbox preview withholds the body, and standing, learned-since, graduation candidates and the breadcrumb index skip labelled memories. | Migration v38; `flow/carried`, `run-label`, `receive!`, `inherit!`; `tasks/claim!` lowers the claimer; `beam/open-branch!` (karamazov-3vu1.13). `flow-carry-test`. |
+| 20 | What the harness hands between branches carries labels as invariant 19's rows do: artifacts (the ledger withholds a labelled claim's text and keeps its line; the shared and crossover samples and the failures block leave labelled rows out; `fetch_artifact` takes the label), directives (an `intervene` carries the supervisor's label to the branch it reaches; a person's carries none), and files (a file tool's write by a labelled branch labels the file in `file_flow`, across runs; `read_file`, `read_digest`, a `grep` hit and a shell command that prints it take the label; a clean whole rewrite clears it). A branch opened on a problem other than the run's own, and the supervisor at every pass, takes the run's label. The workflow-editing actions (`cell`, `manifest`, `prompt`, `policy`, `adopt`) and `eval` in the harness's own image need trust; `eval` in a project image with network needs the audience. | Migration v39; `loop/ledger-block`, `flow/unlabelled`, `flow/wrote!`, `flow/read!`; `runs/open-branch!`; `tools/sink-of` (karamazov-3vu1.14). `flow-handoff-test`, test/policy/workflow-edits.edn. |
 
 **A property is only as strong as the graph it is checked against.** Adding a
 model-reachable tool means adding a node to the diagram above and extending the
@@ -337,8 +364,27 @@ mechanical catches that omission.
   script, a `cd` first) and `eval`'s `slurp` are not covered, so a model set
   on reading a denied file can still reach it; what it stops is the
   ordinary ways of reading carrying it to that provider.
-- Invariant 6 holds on the file-tool and shell paths only. `eval` (and
-  `jolt -e`) can still `spit` the run config — the same containment gap as
-  every other eval escape, tracked as karamazov-zrq. The invariant's job is
-  stopping a run *drifting* into rewriting its own gate, which is the observed
-  failure; it is not a jail.
+- On LINUX the network is not confined: bwrap shares the host's network, and
+  seccomp cannot tell a loopback connect from any other, so invariant 8 holds
+  on macOS only — a Linux shell or image can CONNECT to the harness's ports.
+  Invariant 18 makes that connection worth nothing: the API wants a token the
+  process cannot read, and the nREPL is not listening unless the operator
+  opted in. An nREPL on a unix socket the sandbox hides (which jolt.nrepl does
+  not offer yet) would let it start there by default.
+- The shell's network is open by design (git fetch, a dependency download),
+  so a command the table allows can still send data out — a `jolt -e` that
+  opens a socket. What stops a SECRET going with it is that the child never
+  holds one (scrub-env, invariant 14) and the secret regions are unreadable
+  (invariant 10). Data the agent READ is tracked by invariants 16, 19 and 20
+  on the paths they name. What they do not see: a file written by the shell
+  or by eval rather than the file tools (only the file tools label what they
+  write, and a labelled branch's shell writes already need a person); a
+  file read by a path `read-paths` cannot name; a side call's prompt (the
+  critic, the judge), whose OUTPUT is covered because it becomes a task or a
+  problem, which carry the run's label; and a shell command that reads
+  outside through a substitution `outside-reads` cannot see.
+- ~~Invariant 6 holds on the file-tool and shell paths only; `eval` and
+  `jolt -e` can still `spit` the run config.~~ Closed by invariants 10 and 11:
+  the project image and the shell both run with `.samizdat/` read-only. The
+  supervisor's eval in the harness image is the exception, as it is for
+  everything (see the threat model).

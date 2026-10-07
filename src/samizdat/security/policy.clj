@@ -37,10 +37,15 @@
   (:require [clojure.string :as str]
             [instaparse.combinators :as c]
             [instaparse.core :as insta]
+            [samizdat.agent.acceptance :as acceptance]
             [samizdat.approval :as approval]
+            [samizdat.config :as config]
             [samizdat.engine.proc :as proc]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
+            [samizdat.security.confine :as confine]
+            [samizdat.security.flow :as flow]
+            [samizdat.security.listen :as listen]
             [samizdat.security.secrets :as secrets]
             [samizdat.store.grants :as grants]
             [samizdat.util :as util]))
@@ -630,6 +635,59 @@
        (keep (fn [[needle label]] (when (str/includes? raw needle) label)))
        distinct))
 
+;; Defined below, with the other readers of a command's paths.
+(declare outside-reads read-paths)
+
+(defn read-only?
+  "Whether `command` only reads: every statement's head is one of the flow
+  table's `:read-only-heads` (a `git` one with a read-only subcommand), with
+  nothing the shell would expand or redirect and no `find` action that runs
+  or deletes. Anything else — a VAR= prefix, a wrapper — is not."
+  [command]
+  (let [{:keys [segments complex? decomposable? malformed]} (classify command)
+        {:keys [read-only-heads read-only-git read-only-refused-args]} flow/table
+        statement? (fn [seg]
+                     (let [[head sub :as ws] (str/split (str/trim seg) #"\s+")]
+                       (and (contains? read-only-heads head)
+                            (or (not= "git" head) (contains? read-only-git sub))
+                            (not-any? read-only-refused-args ws))))]
+    (boolean (and (not malformed)
+                  (or (not complex?) decomposable?)
+                  (seq segments)
+                  (every? statement? segments)))))
+
+(defn shell-gaps
+  "What a branch labelled `label` lacks to run `command`
+  (samizdat.security.flow). `configured` is the set of commands the
+  operator's config names for the run (acceptance/configured-commands)."
+  ([label command] (shell-gaps label command #{}))
+  ([label command configured]
+   (flow/gaps flow/table "shell" {:read-only? (read-only? command)
+                                  :configured? (contains? (set configured) (str/trim (str command)))}
+              label)))
+
+(defn- flow-reason
+  "A gap as the short rule text a person's dialog shows beside the call."
+  [{:keys [gap required actual because]}]
+  (str "flow " (name gap) " " (name actual) " (needs " (name required) ")"
+       (when-let [t (:tool because)] (str " since " t (some->> (:turn because) (str " turn "))))))
+
+(defn with-flow
+  "`decided` (a `decide` result, after the run's own adjustments) for a
+  branch labelled `label`: the flow gaps and the ways forward attached, and an
+  allow turned into an ask when there is a gap (karamazov-3vu1.7). A deny
+  stays a deny. Not cleared by a grant: a grant says the command is fine,
+  not that the branch is. Pure — run-shell and the policy trace replay
+  (samizdat.security.replay) both decide through it."
+  [decided label command configured]
+  (let [gaps (when (not= :deny (:effect decided))
+               (not-empty (shell-gaps label command configured)))]
+    (cond-> decided
+      gaps (assoc :gaps gaps :remedies (flow/remedies "shell" gaps))
+      (and gaps (= :allow (:effect decided)))
+      (assoc :effect :ask :flow? true
+             :rule {:name :flow :pattern (str/join "; " (map flow-reason gaps))}))))
+
 (defn run-shell
   "Run a shell command through the full gate: decide, then (on allow) resolve
   symbolic refs, spawn with a scrubbed environment, and redact the output
@@ -655,6 +713,33 @@
                 malformed rule]
          :as decided}
         (decide session command)
+        ;; A read outside the project turns an allow into a question — unless
+        ;; the allow was a person's own grant, which already answered it.
+        ;; Only when the caller named the readable roots: a caller that did
+        ;; not is not a run's shell tool.
+        ;; Every outside read, granted or not: what it brings in narrows the
+        ;; branch's flow label either way.
+        outside-all (when (and (:read-roots ctx) (= :allow (:effect decided)))
+                      (not-empty (outside-reads command root (:read-roots ctx))))
+        outside (when (not= :grant (:name rule)) outside-all)
+        ;; WHAT THE BRANCH HAS READ (karamazov-3vu1.7): after web content a
+        ;; command that does more than read is asked about, and after a
+        ;; private read anything that is not read-only is too.
+        label (when (and run-id (or (get-in ctx [:branch :id]) (:branch-id ctx)))
+                (flow/label-of ctx))
+        settings (config/shell-sandbox root)
+        ;; A {{env/NAME}} the operator did not list is refused outright: the
+        ;; model never sees the value, but it can still SPEND it — write it
+        ;; into a URL and fetch that (karamazov-3vu1.4).
+        refused-refs (not-empty (secrets/refs-refused command (:env-refs settings)))
+        decided (cond-> decided
+                  outside (assoc :effect :ask :outside outside
+                                 :rule {:name :outside-project})
+                  refused-refs (assoc :effect :deny :env-refs refused-refs
+                                      :rule {:name :env-ref})
+                  label (with-flow label command
+                                   (acceptance/configured-commands (config/file-config root))))
+        rule (:rule decided)
         rule-text (str/join " " (remove nil? [(name (:name rule)) (:pattern rule)
                                               (:path rule) (:segment rule)
                                               (:index rule)]))
@@ -675,8 +760,14 @@
       ;; refusal counter.
       {:category :mechanics :progress? false
        :result (prompt/render "shell-refused"
-                              (if protected-path
+                              (cond
+                                (:env-refs decided)
+                                {:envrefs (str/join ", " (map #(str "`{{env/" % "}}`")
+                                                              (sort (:env-refs decided))))
+                                 :rule rule-text}
+                                protected-path
                                 {:protected true :path protected-path :rule rule-text}
+                                :else
                                 {:denied true :head head :rule rule-text}))
        ;; :refused names what was refused, so a branch can count a head it
        ;; keeps being refused across varied commands (karamazov-q1tt).
@@ -690,8 +781,25 @@
       ;; nothing in the first refusal said that being COMPOUND was the reason.
       ;; It reads as "the shell is closed" rather than "issue these separately".
       {:category :neutral :progress? false :needs-approval true
-       :result (prompt/render "shell-refused"
+       :result (if (:flow? decided)
+                 (prompt/render "flow-blocked"
+                                {:command command
+                                 :gaps (mapv (fn [{:keys [gap because]}]
+                                               {:trust (= :trust gap) :audience (= :audience gap)
+                                                :tool (:tool because) :via (:via because) :turn (:turn because)})
+                                             (:gaps decided))
+                                 :asking (= :block (:mode (approval/policy)))
+                                 :narrow (some #(= :narrow (:plan %)) (:remedies decided))
+                                 :configured (some->> (acceptance/configured-commands
+                                                       (config/file-config root))
+                                                      sort (map #(str "`" % "`"))
+                                                      (str/join ", ") not-empty)
+                                 :note note :unanswered timed-out})
+                 (prompt/render "shell-refused"
                               {:command command :head head :complex? complex?
+                               :outside (some->> (:outside decided)
+                                                 (map #(str "`" % "`"))
+                                                 (str/join ", "))
                                :promoted promoted? :rule rule-text
                                :malformed (:index malformed)
                                ;; Named when the command DID decompose and one
@@ -712,15 +820,17 @@
                                ;; the default :refuse mode, where the
                                ;; template renders exactly as before.
                                :note note
-                               :unanswered timed-out})
+                               :unanswered timed-out}))
        :policy {:effect :ask
+                :gaps (:gaps decided)
+                :remedies (:remedies decided)
                 :refused (or (some-> blocked-segment command-head) head)
                 ;; No grant unlocks a COMPLEX command (invariant 5 downgrades
                 ;; it to :ask even over a grant), so suggesting `head *` for
                 ;; one taught a fix that could not work — the observed
                 ;; same-wall-twice loop through the grant path (blt.38). The
                 ;; refusal text already teaches "issue these separately".
-                :suggest (when-not complex? (str head " *"))}}
+                :suggest (when-not complex? (approval/grant-pattern head command))}}
 
       :allow
       (let [resolved (secrets/resolve-refs command env)
@@ -728,16 +838,27 @@
             ;; vars removed, value-shaped credentials redacted — so a
             ;; subprocess cannot read a secret the parent holds even by
             ;; expanding $VAR itself. env -i semantics (see proc/run :env).
-            child-env (secrets/scrub-env env)
-            ;; Prefixed rather than passed as a :dir, because proc/run has no
-            ;; working-directory option and `bash -c` is already the shell we
-            ;; are handing the command to. The root is single-quoted through
-            ;; the shared helper; `resolved` is the model's own command and is
-            ;; deliberately NOT quoted — running it as written is the tool.
-            r (proc/run {:timeout-ms (or (:timeout-ms ctx) 120000)
-                         :env child-env}
-                        "bash" "-c"
-                        (str "cd " (util/sh-quote (or root ".")) " && " resolved))
+            child-env (secrets/scrub-env env (:pass-env settings))
+            ;; UNDER THE OS SANDBOX (karamazov-3vu1.5): writes only in the
+            ;; project, its scratch and the build caches, the secret regions
+            ;; unreadable, the harness's own ports unreachable. The allow
+            ;; table admits heads that run code the agent wrote (make,
+            ;; jolt -e), so the table alone never confined anything.
+            ;; `cd root &&` is prefixed rather than passed as a :dir, because
+            ;; proc/run has no working-directory option; the root is quoted,
+            ;; `resolved` is the model's own command and deliberately NOT —
+            ;; running it as written is the tool.
+            {:keys [argv env]} (confine/shell-command
+                                ;; NOT overridable from ctx: a cell builds the ctx
+                                ;; it hands tool-step, and a knob here would be a
+                                ;; cell's way out of the sandbox.
+                                {:backend (confine/backend (:sandbox settings))
+                                 :root (or root ".") :command resolved
+                                 :env child-env :ports (listen/ports)
+                                 :settings settings})
+            r (apply proc/run {:timeout-ms (or (:timeout-ms ctx) 120000)
+                               :env env}
+                     argv)
             out (if (:timeout r)
                   (str "[timed out after " (:ms r) "ms]")
                   (str (:out r)
@@ -749,6 +870,11 @@
             ;; bearing as the start.
             redacted (util/truncate-middle (secrets/redact out known)
                                            (max-output-chars))]
+        ;; What ran read outside the project: the branch holds it now.
+        (when outside-all
+          (flow/observe! ctx (:outside-read flow/table) "shell"))
+        ;; And a project file it printed carries what its writer had read.
+        (try (flow/read! ctx (read-paths command) "shell") (catch Throwable _ nil))
         ;; A missing exit code is a spawn that did not report one, which is
         ;; not evidence the command succeeded. `(or (:exit r) 0)` read it as
         ;; success, the opposite of what run-verify does with the same shape;
@@ -834,3 +960,71 @@
     (boolean (and (= 1 (count segments))
                   (= "cat" (first (words (first segments))))
                   (= 1 (count (read-paths command)))))))
+
+;; --- reading outside the project (karamazov-3vu1.3) --------------------------
+;;
+;; `cat **` is on the allow table, so `cat ~/.aws/credentials` was allowed, and
+;; its output was redacted only where a value LOOKED like a credential. The OS
+;; sandbox now keeps the secret regions unreadable whatever the table says;
+;; this is the layer above it, and the one the operator asked for: the project
+;; and its declared reference roots are readable without asking, and a read
+;; anywhere else is a question for a person — a grant, an approval, or yolo.
+
+(def ^:private non-reading-heads
+  "Heads whose arguments are printed, not opened."
+  #{"echo" "printf"})
+
+(defn- canonical [p]
+  (let [f (java.io.File. (str p))]
+    (try (.getCanonicalPath f) (catch Throwable _ (.getAbsolutePath f)))))
+
+(defn- inside? [dir p]
+  (or (= p dir) (str/starts-with? p (str dir "/"))))
+
+(defn- path-like
+  "The path a shell word names, `~` and `$HOME` expanded, or nil when the word
+  does not look like one this can judge. The value of a `--flag=value` is
+  judged as its own word."
+  [w home]
+  (let [w (if (and (str/starts-with? w "-") (str/includes? w "="))
+            (subs w (inc (str/index-of w "=")))
+            w)
+        w (cond
+            (and home (or (= w "~") (str/starts-with? w "~/"))) (str home (subs w 1))
+            (and home (str/starts-with? w "${HOME}")) (str home (subs w 7))
+            (and home (str/starts-with? w "$HOME")) (str home (subs w 5))
+            :else w)]
+    (when (and (not (str/starts-with? w "-"))
+               (or (str/starts-with? w "/") (str/includes? w "..")))
+      w)))
+
+(defn outside-reads
+  "The existing files and directories `command` names that lie outside `root`
+  and every one of `roots` (canonical or not), as canonical paths. Empty when
+  it names none.
+
+  A word counts when it looks like a path — absolute, `~`, `$HOME`, or
+  climbing with `..` — AND names something that exists. The second half is
+  what keeps `sed -n '/pattern/p'` from reading as a path. /tmp and /dev are
+  never outside: the shell writes the first anyway, and the second is where
+  output is thrown away. `echo` and `printf` print their arguments rather than
+  open them.
+
+  A command this cannot decompose names nothing here; the policy already asks
+  about those whole."
+  [command root roots]
+  (let [{:keys [segments malformed]} (shell-split (str/trim (str command)))
+        home (System/getenv "HOME")
+        allowed (map canonical (concat [root] roots ["/tmp" "/dev"]))]
+    (if malformed
+      []
+      (->> segments
+           (mapcat (fn [seg]
+                     (let [[h & args] (words (exec-prefix-stripped seg))]
+                       (when-not (contains? non-reading-heads h) args))))
+           (keep #(path-like % home))
+           (map (fn [p] (canonical (if (str/starts-with? p "/") p (str (or root ".") "/" p)))))
+           (filter #(.exists (java.io.File. ^String %)))
+           (remove (fn [p] (some #(inside? % p) allowed)))
+           distinct
+           vec))))

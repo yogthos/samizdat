@@ -43,20 +43,24 @@
             [samizdat.lexicon :as lexicon]
             [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
+            [samizdat.security.flow :as flow]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]))
 
 (defn record!
   "A confirmed artifact into the shared log. Callers gate on claim-status and
   the config flag; this function only writes."
-  [conn run-id {:keys [branch-id turn kind tier claim code]}]
+  [conn run-id {:keys [branch-id turn kind tier claim code flow]}]
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO shared_artifacts (run_id, branch_id, turn, kind, tier,
-                                                   claim, code, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                                                   claim, code, created_at, flow)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     run-id branch-id turn (name kind) (name (or tier :fast))
-                    (str claim) (str code) (db/now)])
+                    (str claim) (str code) (db/now)
+                    ;; What its writer had read (v39): given for a seeded
+                    ;; row, else the writing branch's.
+                    (or flow (flow/carried-by-branch conn run-id branch-id))])
     (let [id (db/last-insert-id conn)]
       (db/execute! conn
                      ["INSERT INTO shared_artifacts_fts (rowid, claim) VALUES (?, ?)"
@@ -141,7 +145,7 @@
   ([conn run-id source-run-id {:keys [quarantine]}]
   (let [blocked (into #{} (map normalize-claim) quarantine)
         own (db/fetch conn
-                      ["SELECT branch_id, kind, tier, claim, code FROM artifacts
+                      ["SELECT branch_id, kind, tier, claim, code, flow FROM artifacts
                         WHERE run_id = ? AND claim_status = 'confirmed' ORDER BY id"
                        source-run-id])
         ;; TRANSITIVE. Reading only the source's own artifacts made each
@@ -150,7 +154,7 @@
         ;; the gen-20 boundary and would have lost gen-20's 11 at the next —
         ;; a chain that forgets faster than it learns.
         inherited (db/fetch conn
-                            ["SELECT branch_id, kind, tier, claim, code
+                            ["SELECT branch_id, kind, tier, claim, code, flow
                               FROM shared_artifacts
                               WHERE run_id = ? AND branch_id LIKE 'seed:%'
                               ORDER BY id" source-run-id])
@@ -177,7 +181,9 @@
                             :kind (keyword (:kind r))
                             :tier (keyword (:tier r))
                             :claim (:claim r)
-                            :code (:code r)}))
+                            :code (:code r)
+                            ;; Its label crosses runs with it.
+                            :flow (:flow r)}))
     (journal/note! conn run-id :run-seeded
                    {:data {:source source-run-id :artifacts (count rows)
                            :quarantined (count blocked)}})
@@ -210,7 +216,7 @@
        []
        (try
          (db/fetch conn
-                     ["SELECT sa.id, sa.branch_id, sa.turn, sa.kind, sa.tier, sa.claim, sa.code
+                     ["SELECT sa.id, sa.branch_id, sa.turn, sa.kind, sa.tier, sa.claim, sa.code, sa.flow
                        FROM shared_artifacts_fts fts
                        JOIN shared_artifacts sa ON sa.id = fts.rowid
                        WHERE shared_artifacts_fts MATCH ? AND sa.run_id = ?
@@ -225,7 +231,7 @@
 (defn recent
   ([conn run-id] (recent conn run-id 10))
   ([conn run-id limit]
-   (db/fetch conn ["SELECT id, branch_id, turn, kind, tier, claim, code FROM shared_artifacts
+   (db/fetch conn ["SELECT id, branch_id, turn, kind, tier, claim, code, flow FROM shared_artifacts
                       WHERE run_id = ? ORDER BY id DESC LIMIT ?" run-id limit])))
 
 (defn- max-shared-code-chars

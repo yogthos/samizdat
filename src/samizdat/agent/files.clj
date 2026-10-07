@@ -43,6 +43,10 @@
             [samizdat.agent.exam :as exam]
             [samizdat.agent.outline :as outline]
             [samizdat.security.policy :as policy]
+            [samizdat.security.confine :as confine]
+            [samizdat.approval :as approval]
+            [samizdat.userspace :as userspace]
+            [samizdat.security.flow :as flow]
             [samizdat.store.journal :as journal]))
 
 (def ^:private clojure-exts #{"clj" "cljc" "cljs" "cljd" "edn" "bb"})
@@ -200,6 +204,31 @@
   (or (resolve-under-root root path)
       (some #(resolve-under-root % path) refs)))
 
+(defn resolve-read!
+  "`resolve-for-read`, and when the path is outside every root, a question for
+  a person (karamazov-3vu1.3): approval/resolve-ask, which asks under :block,
+  allows under :yolo and refuses under :refuse. The canonical path when the
+  read may go ahead, nil when not.
+
+  The operator's secret regions are refused whatever the answer. read_file
+  runs in the harness process, not under the shell's sandbox, so this is the
+  only thing that keeps ~/.ssh out of it."
+  [{:keys [root] :as ctx} refs path]
+  (or (resolve-for-read (or root ".") refs path)
+      (let [abs (str (fs/canonicalize (if (absolute? path) path (fs/path (or root ".") path))))
+            secrets (map #(str (fs/canonicalize %))
+                         (confine/secret-regions (System/getenv "HOME") nil))]
+        (when (and (fs/exists? abs)
+                   (not-any? #(under? % abs) secrets)
+                   (= :allow (:effect (approval/resolve-ask
+                                       ctx {:effect :ask :head (:tool-name ctx)
+                                            :complex? true
+                                            :input (str (:tool-name ctx) " " abs)
+                                            :reason "reads outside the project"}))))
+          ;; The branch holds it now (samizdat.security.flow).
+          (flow/observe! ctx (:outside-read flow/table) (:tool-name ctx))
+          abs))))
+
 (defn large-untargeted-read?
   "Whether this read_file call would page a file of at least `min-lines`
   lines through the branch's context from the top — no offset, no limit —
@@ -261,6 +290,38 @@
   [root abs]
   (= abs (resolve-under-root (or root ".") run-config-path)))
 
+(defn- confining-files
+  "The files under `root`'s .samizdat that confine the agent: the role map,
+  which decides which file serves every role, and whichever files it names
+  for the `roles` policy (each role's tool surface) and the `phases` policy
+  (the refusal rules, :outside-role-surface among them)."
+  [root]
+  (let [dir (str root "/.samizdat/")
+        path (fn [nm default]
+               (or (try (userspace/role-path :policy nm) (catch Throwable _ nil)) default))]
+    (map #(str (fs/canonicalize (str dir %)))
+         ["userspace.edn" (path "roles" "roles.edn") (path "phases" "phases.edn")])))
+
+(defn workflow-refused?
+  "Whether a write to `abs` would change what confines the agent and nobody
+  allowed it (karamazov-3vu1.2).
+
+  The rest of .samizdat — cells, manifests, prompts, gates — stays writable
+  through these tools: every such write is validated before it runs and the
+  writer is told what broke. The role surfaces and refusal rules are
+  different in kind. A valid edit to them can hand the agent a tool its role
+  was denied, so a write there is a person's call: asked under :block,
+  allowed under :yolo, refused under :refuse. The shell and the eval image
+  cannot write .samizdat at all (the OS sandbox), since their writes are not
+  validated."
+  [{:keys [tool-name] :as ctx} root abs]
+  (boolean
+   (and (some #{abs} (confining-files (or root ".")))
+        (not= :allow (:effect (approval/resolve-ask
+                               ctx {:effect :ask :head tool-name :complex? true
+                                    :input (str tool-name " " abs)
+                                    :reason "confinement edit"}))))))
+
 (defn- miss [branch msg]
   {:result msg :category :mechanics :progress? false :branch branch})
 
@@ -314,7 +375,7 @@
       (miss branch (msg {:needs-path true :tool "read_file"}))
 
       :else
-      (if-let [abs (resolve-for-read (or root ".") refs path)]
+      (if-let [abs (resolve-read! ctx refs path)]
         (if (fs/exists? abs)
           (if outline?
             ;; NAMES AND RANGES, NOT THE BODY (karamazov-d5wo.10): so the
@@ -385,6 +446,7 @@
       (if-let [abs (resolve-under-root (or root ".") path)]
         (cond
           (run-config? root abs) (miss branch (msg {:protected true :path path}))
+          (workflow-refused? ctx root abs) (miss branch (msg {:workflow true :path path}))
           (not (fs/exists? abs)) (miss branch (msg {:no-file true :path path}))
           :else
           (let [content (str/replace (slurp abs) "\r\n" "\n")
@@ -651,6 +713,9 @@
           (run-config? root abs)
           (miss branch (msg {:protected true :path path}))
 
+          (workflow-refused? ctx root abs)
+          (miss branch (msg {:workflow true :path path}))
+
           (not (fs/exists? abs))
           (miss branch (msg {:no-file true :path path}))
 
@@ -759,8 +824,14 @@
 
       :else
       (if-let [abs (resolve-under-root (or root ".") path)]
-        (if (run-config? root abs)
+        (cond
+          (run-config? root abs)
           (miss branch (msg {:protected true :path path}))
+
+          (workflow-refused? ctx root abs)
+          (miss branch (msg {:workflow true :path path}))
+
+          :else
         ;; Paren repair for Clojure sources: models drop trailing closers, and
         ;; a file that does not read is a file that does not load. A trailing
         ;; truncation or over-close is fixed mechanically and noted; anything

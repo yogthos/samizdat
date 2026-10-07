@@ -38,6 +38,7 @@
             ;; before jdbc.core.
             [db.jdbc]
             [jdbc.core :as jdbc]
+            [samizdat.security.flow :as flow]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.lexicon :as lexicon]))
@@ -281,6 +282,17 @@
                           (some-> role name) (str prompt-suffix)]))]
     (journal/note! conn run-id (if (pos? n) :branch-opened :branch-rejoined)
                    {:branch-id branch-id :data {:parent parent-id}}))
+  ;; WHAT IT OPENS ON (samizdat.security.flow, karamazov-3vu1.14). A problem
+  ;; of its own is built from other branches' work — a review of a feature,
+  ;; a retry with findings, the next round's piece — and a supervisor's
+  ;; brief is every branch's; each opens holding what the run's branches had
+  ;; read. The run's own problem is the person's, and carries nothing.
+  (when (or (and (some? problem)
+                 (not= (str problem) (str (:problem (get-run conn run-id)))))
+            (= "supervisor" (some-> role name)))
+    (flow/receive! {:conn conn :run-id run-id :branch {:id branch-id}
+                    :turn created-at-turn}
+                   [(flow/carried-by-run conn run-id)] "handoff"))
   branch-id)
 
 (defn close-branch!

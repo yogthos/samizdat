@@ -1,0 +1,11 @@
+;; The project's configured test command is the operator's text, not one a
+;; page could have suggested: it still runs after web content. Not after a
+;; private read, since it can still reach the network.
+{:about "configured commands clear a trust gap, never an audience gap"
+ :configured ["make test"]
+ :steps
+ [{:tool "websearch" :args {:query "flaky test fix"} :expect :allow}
+  {:tool "shell" :args {:command "make test"} :expect :allow}
+  {:tool "shell" :args {:command "make test-all"} :expect :ask :gaps [:trust]}
+  {:tool "read_file" :args {:path "/Users/someone/.netrc-notes"} :outside true :expect :allow}
+  {:tool "shell" :args {:command "make test"} :expect :ask :gaps [:audience]}]}

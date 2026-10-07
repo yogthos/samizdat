@@ -33,7 +33,6 @@
             [samizdat.agent.tools :as tools]
             [samizdat.agent.verify :as verify]
             [samizdat.cancel :as cancel]
-            [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm]
             [samizdat.prompt :as prompt]
             [samizdat.store.interventions :as interventions]
@@ -472,7 +471,9 @@
                     {:yes? (judge/parse-yesno (:content r)) :reply (:content r)}))
           results (acceptance/check
                    (vec criteria)
-                   {:run-check #(verify/run-verify root % (get-in config [:run :verify-timeout-ms]))
+                   ;; Only the commands this run was started with: a cell has
+                   ;; no shell of its own (samizdat.sandbox.sci).
+                   {:run-check #(verify/run-configured run-id % (get-in config [:run :verify-timeout-ms]))
                     :judge judge})]
       (journal/note! conn run-id :acceptance
                      {:data {:at "verify"
@@ -534,18 +535,19 @@
         (assoc data :verify/passed? true :verify/note "no :verify-cmd configured")
 
         :else
+        ;; The configured command, run through the one runner a cell has: it
+        ;; runs only what this run was started with, in its root, with the
+        ;; scrubbed environment, and hands back redacted output.
         (let [r (when-not (str/blank? (str cmd))
-                  (proc/run {:timeout-ms (or (get-in config [:run :verify-timeout-ms]) 600000)}
-                            "sh" "-c" (str "cd " root " && " cmd)))
-              green? (if r
-                       (and (not (:timeout r)) (zero? (or (:exit r) 1)))
-                       true)
+                  (verify/run-configured run-id cmd
+                                         (or (get-in config [:run :verify-timeout-ms]) 600000)))
+              green? (if r (boolean (:green? r)) true)
               ;; Green on a suite that never ran the tests this run added or
               ;; changed is not green about them (karamazov-khzy).
               unrun (when (and r green?)
                       (verify/unrun-tests root
                                           (gitdiff/changed-files root (:git-baseline ctx))
-                                          (str (:out r) "\n" (:err r))))
+                                          (str (:output r))))
               tests-passed? (and green? (empty? unrun))
               ;; The criteria are checked whether or not the suite is green:
               ;; a run whose suite is red AND whose criteria fail should hear
@@ -562,18 +564,18 @@
               note (str/join "\n"
                              (remove str/blank?
                                      [(cond (nil? r) "no :verify-cmd configured"
-                                            (:timeout r) "tests TIMED OUT"
+                                            (:timeout? r) "tests TIMED OUT"
                                             (seq unrun) (prompt/render "tests-not-run"
                                                                        {:nses (str/join ", " unrun)})
                                             tests-passed? "tests passed"
                                             :else (str "tests FAILED (exit " (:exit r) ")\n"
-                                                       (tail (str (:out r) "\n" (:err r)) 25)))
+                                                       (tail (str (:output r)) 25)))
                                       (acceptance-note results)]))]
           ;; The note text rides the journal row too: it is the durable
           ;; account of WHY gate 2 refused, and the two halves it now has
           ;; make the booleans alone ambiguous.
           (journal/note! conn run-id :verify
-                         {:data {:passed passed? :exit (:exit r) :timeout (:timeout r)
+                         {:data {:passed passed? :exit (:exit r) :timeout (:timeout? r)
                                  :tests-passed tests-passed? :accepted accepted?
                                  :note (judge/for-the-record :reply-chars note)}})
           ;; The two halves as well as the verdict, so the route note can
