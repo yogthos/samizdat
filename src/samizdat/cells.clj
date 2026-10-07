@@ -32,17 +32,21 @@
   reversible-load half of the mutation protocol (karamazov-ioo.11): the agent
   edits a cell, this reloads it, and a bad edit rolls back cleanly.
 
-  Files are load-stringed rather than required, so they are dynamically loaded
-  into the running image (dev filesystem or a built binary's resources alike)
-  and never AOT-compiled into src."
+  Files are evaluated in SCI (samizdat.sandbox.sci), never load-stringed into
+  the harness compiler: a cell sees clojure.core and the allowlisted API and
+  nothing else, so an edit that reaches for a process, a file, the raw
+  database or an arbitrary namespace is refused at load with the symbol
+  named (karamazov-3vu1.9). Each load evaluates every source into one fresh
+  context, so a failed load leaves the previous load's handlers — and the
+  helpers they close over — exactly as they were."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [jolt.fs :as fs]
             [mycelium.cell :as cell]
-            ;; Preload the namespaces the shipped cells load-string reach for, so
-            ;; they compile the normal way first and the AOT cache stays sound
-            ;; (samizdat.cell-prelude explains the -dirty-build failure it fixes).
+            ;; Preload the namespaces the shipped cells reach for, so a built
+            ;; binary carries them (samizdat.cell-prelude says why).
             [samizdat.cell-prelude]
+            [samizdat.sandbox.sci :as sandbox]
             [samizdat.prompt :as prompt]
             [clojure.tools.logging :as log]
             [samizdat.userspace :as userspace]))
@@ -80,6 +84,21 @@
 ;; load-cells!: the sources as [[id content] …] in load order, and the spec
 ;; object each loaded cell id resolved to once every source was in.
 (defonce ^:private last-load (atom nil))
+
+;; The SCI context the last successful load evaluated into — where the cell
+;; namespaces and their helpers live, since none of them is a host namespace.
+(defonce ^:private live-context (atom nil))
+
+(defn cell-var
+  "The var `sym` in cell namespace `ns-sym` as the last successful load
+  defined it (loading the project's cells first if nothing has), or nil. A
+  cell's helpers live in SCI, not the host, so `ns-resolve` cannot see them;
+  this is how a test or a REPL reaches one. Deref it for the value."
+  [ns-sym sym]
+  (let [lookup #(some-> @live-context (sandbox/var-in ns-sym sym))]
+    (or (lookup)
+        ;; The last load may have been some other set (a test's temp dir).
+        (do ((requiring-resolve 'samizdat.cells/load-cells!)) (lookup)))))
 
 (defn- unchanged-since-last-load?
   "True when `sources` are the last successful load's sources — same ids, same
@@ -247,7 +266,7 @@
 ;; (karamazov-viht.1). This is that walk for a cell file.
 ;;
 ;; The walk is over SOURCE, the same forms defcell-ids reads, so it runs before
-;; the candidate is load-stringed into the image — a mis-marked cell is refused
+;; the candidate is evaluated at all — a mis-marked cell is refused
 ;; before it is installed, like a shadowed id. What it reaches is decided by a
 ;; catalog that is data (gates.edn :effect-symbols), keyed by effect, each
 ;; entry a symbol: a bare name for a core fn (slurp), a namespace for one whose
@@ -361,21 +380,26 @@
       :evidence (select-keys implied missing)})))
 
 (defn- load-source!
-  "Load one cell SOURCE into the live image; return the cell ids it defines.
+  "Evaluate one cell SOURCE into the SCI context `ctx`; return the cell ids
+  it defines.
 
   Takes {:id :content} rather than a path, because a shipped cell may come
-  from an embedded resource with no file behind it.
-
-  The load is wrapped in a *ns* binding: a cell file begins with an `(ns …)`
-  form, and load-string's evaluation of it switches *ns* and does not restore
-  it — leaking the cell namespace into whatever called the loader, and breaking
-  a second load. Binding *ns* to itself reverts it on exit, so the loader is
-  repeatable (the reload the mutation protocol needs) and leaves the caller's
-  namespace untouched."
-  [{:keys [content]}]
-  (binding [*ns* *ns*]
-    (load-string content))
+  from an embedded resource with no file behind it. The source's `(ns …)`
+  switches SCI's namespace for that evaluation only; the caller's *ns* is
+  never touched."
+  [ctx {:keys [content]}]
+  (sandbox/eval-source! ctx content)
   (defcell-ids content))
+
+(defn eval-candidate!
+  "Evaluate one candidate cell source on its own, in a fresh SCI context,
+  registering its cells: the userspace validator's trial and the mutation
+  protocol's install. Its own context, so the candidate's namespace and
+  helpers are new objects — nothing the running cells close over is
+  redefined, whether the candidate is then kept or rolled back. Throws on
+  anything that does not load, naming it."
+  [content]
+  (sandbox/eval-source! (sandbox/cell-context) content))
 
 (defn- cell-names
   "The names the shipped cell templates are known by in the userspace store —
@@ -419,7 +443,7 @@
                         from-dirs)
           ;; Shipped templates load FIRST, in their shipped order; everything
           ;; the project added after them, sorted for determinism. Later
-          ;; load-string wins in the registry, so this is what makes "a
+          ;; registration wins in the registry, so this is what makes "a
           ;; project cell overrides a shipped cell-id" true by construction —
           ;; a plain (sort-by key) made precedence depend on how a project
           ;; name happened to sort against the template basenames
@@ -434,6 +458,11 @@
   []
   (some-> (userspace/project-dir) (str "/cells")))
 
+(defonce ^:private unloadable-warned
+  ;; The role-map entries already reported as having no passing text, so a
+  ;; load on every turn does not repeat the same line every turn.
+  (atom #{}))
+
 (defn- file-sources
   "A project's cells in file mode: the :cells list of its role map, in that
   order — and nothing else. The project owns its whole set, so a cell it
@@ -445,16 +474,27 @@
   (for [rel (:cells (userspace/role-map))
         :let [p (str (userspace/project-dir) "/" rel)
               content (userspace/body :cell (str/replace (last (str/split rel #"/")) #"\.clj$" ""))]
-        :when (or content
-                  (do (log/warn "cells: the role map lists" rel "but it has no text that passes")
+        :when (or (when content (swap! unloadable-warned disj rel) content)
+                  (do (when-not (contains? @unloadable-warned rel)
+                        (swap! unloadable-warned conj rel)
+                        (log/warn "cells: the role map lists" rel "but it has no text that passes"))
                       false))]
     {:id p :content content :file? true}))
 
+(defn scan-dirs
+  "The shipped library, then the BOUND project's .samizdat/cells when there is
+  one. `default-dirs`' second entry is cwd-relative, which read whatever
+  checkout the process was launched from: a test binding a store loaded the
+  developer's own .samizdat/cells, and a harness serving another root loaded
+  the launch directory's cells."
+  []
+  (vec (remove nil? [(first default-dirs) (project-cells-dir)])))
+
 (defn current-dirs
   "The cell dirs the running image loads from: the project's own in file
-  mode, the shipped library plus .samizdat/cells otherwise."
+  mode, the shipped library plus the project's cells dir otherwise."
   []
-  (if (userspace/files?) [(project-cells-dir)] default-dirs))
+  (if (userspace/files?) [(project-cells-dir)] (scan-dirs)))
 
 (defn- dir-sources
   "The legacy source set: shipped resources plus a scan of `dirs`, with no
@@ -506,7 +546,12 @@
                    ;; the cwd is whatever checkout this runs in — this
                    ;; repository's own .samizdat/cells ran in place of the
                    ;; shipped cells its tests were testing.
-                   (userspace/bound?) (project-sources default-dirs)
+                   ;; The BOUND project's own cells dir, not the cwd's: a
+                   ;; test that binds a store read the developer's own
+                   ;; checkout's .samizdat/cells, and a harness serving
+                   ;; another root read the cells of the directory it was
+                   ;; launched from.
+                   (userspace/bound?) (project-sources (scan-dirs))
                    :else (project-sources (take 1 default-dirs)))]
      (if (unchanged-since-last-load? sources)
        @loaded-cells
@@ -515,10 +560,11 @@
 (defn- load-sources!
   "The full load: every source evaluated in order, transactionally."
   [dirs sources]
-   (let [snapshot (cell/registry-snapshot)]
+   (let [snapshot (cell/registry-snapshot)
+         ctx (sandbox/cell-context)]
      (try
        (let [loaded (reduce (fn [acc src]
-                              (into acc (for [id (load-source! src)]
+                              (into acc (for [id (load-source! ctx src)]
                                           [id {:source (:id src)
                                                :store? (boolean (:store? src))}])))
                             {}
@@ -529,6 +575,7 @@
          (doseq [id (remove (set (keys loaded)) (keys @loaded-cells))]
            (cell/remove-cell! id))
          (reset! loaded-cells loaded)
+         (reset! live-context ctx)
          ;; The known-good content of every source, for the mutation
          ;; protocol's rollback. Keyed by whatever identifies the source:
          ;; a path for the legacy scan, a store name for the project path.
@@ -548,11 +595,14 @@
                          {:dirs dirs} e))))))
 
 ;; A cell edit is checked before it is loaded for real (karamazov-1a51.8): it
-;; has to read, it has to define a cell, and it has to LOAD — tried inside a
-;; registry snapshot that is put back whatever happens, so a candidate that
-;; fails half way registers nothing. Whether the manifests still compile
-;; against it is the manifest check's, and the mutation protocol's for an edit
-;; made through the cell tool.
+;; has to read, it has to define a cell, and it has to LOAD — in SCI, in a
+;; context of its own, inside a registry snapshot that is put back whatever
+;; happens, so a candidate that fails half way registers nothing and a
+;; candidate that reaches past the allowlist is refused naming what it
+;; reached for. Its own context means the trial never redefines a helper
+;; the running cells close over, which load-string's trial did. Whether the
+;; manifests still compile against it is the manifest check's, and the
+;; mutation protocol's for an edit made through the cell tool.
 (userspace/register-validator!
  :cell
  (fn [_ text]
@@ -568,6 +618,6 @@
        {:stage :requires :message (requires-problem text)}
        :else
        (let [snapshot (cell/registry-snapshot)]
-         (try (binding [*ns* *ns*] (load-string text)) nil
+         (try (eval-candidate! text) nil
               (catch Throwable e (userspace/problem :load e))
               (finally (cell/registry-restore! snapshot))))))))

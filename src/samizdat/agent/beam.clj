@@ -67,6 +67,8 @@
             [samizdat.agent.gates :as gates]
             [samizdat.agent.handoff :as handoff]
             [samizdat.agent.gitdiff :as gitdiff]
+            [samizdat.agent.verify :as verify]
+            [samizdat.security.flow :as flow]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
@@ -882,6 +884,16 @@
             ;; budget that exists to bound model calls (karamazov-808).
             :spent? (boolean (:oversight/worth-a-look? out))}))))))
 
+(defn close-advisory-branches!
+  "Close the run's supervisor branch rows still marked active. The supervisor
+  stream outlives no run, but nothing closed its row: every supervisor branch
+  in this repository's own project db read `active` after its run had ended.
+  A working branch is not touched — its driver closes it with its own reason."
+  [conn run-id]
+  (doseq [{:keys [id role status]} (runs/branches conn run-id)
+          :when (and (= "supervisor" role) (= "active" status))]
+    (runs/close-branch! conn run-id id :done "the run ended")))
+
 (defn run-rounds
   "Drive the beam's scheduler manifest from round `start-turn`.
 
@@ -969,6 +981,8 @@
         ;; One stream now, with both phases on it: the reflex that used to be
         ;; samizdat.watch's own thread runs on this one (RFC-012).
         (when-let [stop (:stop-oversight ctx)] (stop))
+        (try (close-advisory-branches! conn run-id)
+             (catch Throwable e (log/warn "closing the supervisor branch failed:" (ex-message e))))
         ;; Release the reflex's tap and its per-run memory; on a serve process
         ;; neither would otherwise be reclaimed for the life of the process.
         (try (some-> (:event-ch ctx) events/unsubscribe!) (catch Throwable _ nil))
@@ -1205,6 +1219,10 @@
         ;; REPL-first against the project under work, and without this that
         ;; instruction is unreachable the moment :run :root is not the harness.
         _ (repl/ensure-project-roots! root)
+        ;; The commands a cell may run for this run (verify/run-configured):
+        ;; the ones this config names, in this root, sealed before any cell
+        ;; sees the ctx it could otherwise rewrite (karamazov-3vu1.9).
+        _ (verify/seal-run! run-id root config)
         ctx {:conn conn :run-id run-id :config config :problem problem
              :llm-adapter llm-adapter :llm-config llm-config
              ;; The injected model call, when the caller supplied one
@@ -1304,7 +1322,10 @@
                                     :outcome :error})
                              (userspace/record-run-outcome! :error)
                              (catch Throwable _ nil))
-                        (throw e)))]
+                        (throw e))
+                      ;; The run's sealed commands end with it (verify).
+                      (finally (verify/unseal-run! run-id)
+                               (flow/forget-run! run-id)))]
       ;; HOW THIS WORKFLOW WENT, for the next run's choice. A run only ever
       ;; sees its own attempt, so `direct attempts on this project keep getting
       ;; stuck` is not something any single run can notice — it has to be

@@ -207,6 +207,14 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/sandbox/sci.clj"
+   {:vocabulary {"Could not find namespace ([\\w.\\-]+)"
+                 "SCI's own resolution-failure wording, matched to say what
+                  it means in the cell sandbox (outside-message). The words are
+                  SCI's protocol, not a vocabulary a project chooses."
+                 "Unable to resolve symbol: ([\\w.\\-]+/[^\\s]+)"
+                 "The same, for a qualified symbol."}}
+
    "src/samizdat/agent/select.clj"
    {:vocabulary {"(?i)^[\\s*_`#-]*(kind|size|workflow)[\\s*_`]*[:=]\\s*(.+)$"
                  "The triage reply's own field labels — the parser's side of

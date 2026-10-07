@@ -49,7 +49,6 @@
             [samizdat.llm.client :as llm]
             [samizdat.metrics :as metrics]
             [samizdat.prompt :as prompt]
-            [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.store.runs :as runs]
             [samizdat.store.tasks :as tasks]
@@ -105,9 +104,7 @@
   [conn run-id]
   (doseq [t (tasks/board conn {:run-id run-id})
           :when (and (= "in_progress" (:status t)) (:branch_id t))
-          :let [b (db/fetch-one conn ["SELECT status FROM branches
-                                       WHERE run_id = ? AND id = ?"
-                                      run-id (:branch_id t)])]
+          :let [b (runs/get-branch conn run-id (:branch_id t))]
           :when (not= "active" (:status b))]
     (journal/note! conn run-id :board-release
                    {:data {:task (:id t) :from (:branch_id t)

@@ -46,7 +46,7 @@ resources/            TEMPLATE          shipped, read-only at runtime
 userspace table       THE PROJECT'S     append-only, versioned
    │  latest version
    ▼
-loaders               LIVE IMAGE        cells load-stringed, manifests compiled
+loaders               LIVE IMAGE        cells evaluated in SCI, manifests compiled
 ```
 
 Four kinds, one lifecycle — seed, read latest, append on edit, revert by
@@ -54,7 +54,7 @@ re-appending:
 
 | kind | body | consumed by |
 |---|---|---|
-| `:cell` | Clojure source | `samizdat.cells` → `load-string` |
+| `:cell` | Clojure source | `samizdat.cells` → SCI (`samizdat.sandbox.sci`) |
 | `:manifest` | EDN | `samizdat.workflow` → mycelium compile |
 | `:policy` | EDN | `gates`, `phases`, `wordlists`, `manual`, `prompt-chain` |
 | `:prompt` | markdown | `samizdat.prompt` → selmer |
@@ -192,7 +192,7 @@ system/start!
   ├─ db/open! (project db)         [out] conn
   └─ userspace/bind! conn          [in]  every later read resolves per-project
 
-cells/load-cells!         [in] userspace/seed-all! :cell   → load-string
+cells/load-cells!         [in] userspace/seed-all! :cell   → SCI eval
 workflow/load-loop!       [in] store.workflows (shim over :manifest)
 gates/load-config         [in] userspace/edn-body! :policy "gates"
 phases/load-phases        [in] userspace/edn-body! :policy "phases"

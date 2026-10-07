@@ -40,40 +40,72 @@
   gate) and a questionnaire (`ask_human`). They differ only in what the
   request carries and what the answer carries, so they share the queue, the
   deadline and the endpoints."
-  (:require [clojure.tools.logging :as log]
+  (:require [clojure.string :as str]
+            [clojure.tools.logging :as log]
             [samizdat.agent.gates :as gates]
             [samizdat.events :as events]))
 
 (def modes
   "What happens when a run needs a person: :refuse (nobody is asked; a
-  simulated user answers ask_human when the run has user context) or :block
-  (the question waits for a person, up to :wait-ms)."
+  simulated user answers ask_human when the run has user context), :block
+  (the question waits for a person, up to :wait-ms), or :yolo (every ask is
+  allowed without asking; a deny is still a deny)."
+  #{:refuse :block :yolo})
+
+(def ^:private project-modes
+  "The modes the project's own gates.edn may choose. Both SAFE: refusing, and
+  asking a person. gates.edn is userspace the agent edits, so a mode that
+  loosens anything is the operator's or a person's to set, never the file's
+  (karamazov-3vu1.2)."
   #{:refuse :block})
 
-;; The mode a person set for this server session (/mode in the TUI), over the
-;; project's gates.edn. In memory on purpose: it says who is at the keyboard
-;; NOW, which is not a fact about the project to write into its policy.
 (defonce ^:private session-mode (atom nil))
 
+(defonce ^:private operator
+  ;; The operator's `:approval` block from config.edn — see `configure!`.
+  (atom nil))
+
+(defn configure!
+  "Install the operator's `:approval` block (config.edn): `{:mode
+  :refuse|:block|:yolo :on-timeout :deny|:allow :wait-ms n}`, or nil. Called
+  at system start. config.edn is the one settings file no tool the agent
+  holds can write, which is why the loosening keys are read from here and
+  nowhere else."
+  [m]
+  (clojure.core/reset! operator (when (map? m) m))
+  nil)
+
+(declare policy)
+
 (defn set-mode!
-  "Set the session's approval mode, or nil to go back to the project's.
+  "Set the session's approval mode, or nil to go back to the configured one.
   Returns the mode in force, or nil for one that is not a mode."
   [mode]
   (let [m (some-> mode name keyword)]
     (cond
-      (nil? mode) (do (clojure.core/reset! session-mode nil) (:mode (gates/threshold :approval)))
+      (nil? mode) (do (clojure.core/reset! session-mode nil) (:mode (policy)))
       (contains? modes m) (do (clojure.core/reset! session-mode m) m)
       :else nil)))
 
 (defn policy
-  "The approval policy: `{:mode :refuse|:block :wait-ms n :on-timeout
-  :deny|:allow}` — gates.edn's, with the session's mode over it."
-  []
-  (cond-> (gates/threshold :approval)
-    @session-mode (assoc :mode @session-mode)))
+  "The approval policy: `{:mode :refuse|:block|:yolo :wait-ms n :on-timeout
+  :deny|:allow}`.
 
-;; {id {:id :run-id :branch-id :kind :input :details :reason :questions
-;;      :status :asked-at :promise}}
+  Layered by who may loosen it. The project's gates.edn may pick :refuse or
+  :block and the wait; :on-timeout :allow and :yolo come only from the
+  operator's config.edn or a person's session mode. A value the file sets
+  outside that is ignored rather than honoured, in the direction of asking."
+  []
+  (let [g (let [t (gates/threshold :approval)] (if (map? t) t {}))
+        o (or @operator {})
+        mode (or @session-mode
+                 (get modes (:mode o))
+                 (get project-modes (:mode g))
+                 :refuse)]
+    {:mode mode
+     :wait-ms (or (:wait-ms o) (:wait-ms g))
+     :on-timeout (if (= :allow (:on-timeout o)) :allow :deny)}))
+
 (defonce ^:private requests (atom {}))
 
 ;; {run-id [pattern …]} — what a person allowed ALWAYS, for this session. In
@@ -109,12 +141,16 @@
 (defn request!
   "Register a question and return its id. Does not wait — `await!` does that,
   so a caller can register, publish, and then park."
-  [{:keys [run-id branch-id kind input details reason questions always]}]
+  [{:keys [run-id branch-id kind input details reason questions always gaps]}]
   (let [id (new-id)]
     (swap! requests assoc id
            {:id id :run-id run-id :branch-id branch-id
             :kind (or kind :shell)
             :input input :details details :reason reason :questions questions
+            ;; What the call lacks, as data (samizdat.security.flow): the
+            ;; person is shown the call and its gaps, not the model's account
+            ;; of why it wants to run it.
+            :gaps gaps
             ;; The pattern "allow always" would allow, when there is one, so
             ;; the person sees what they would be agreeing to.
             :always always
@@ -201,6 +237,21 @@
       (when promise (deliver promise {:decision :deny :note "the run ended"})))
     (count gone)))
 
+(defn grant-pattern
+  "The pattern an \"allow always\" on `command` (whose head is `head`) grants:
+  `head sub *` when the word after the head is a subcommand — `git push *`,
+  `cargo run *` — and `head *` otherwise. It was always `head *`, so allowing
+  one `git push` allowed every git command for the rest of the session
+  (karamazov-3vu1.6). A word is a subcommand when it is a bare lowercase name:
+  not a flag, a path, a URL, or a file with an extension."
+  [head command]
+  (when head
+    (let [words (str/split (str/trim (str command)) #"\s+")
+          sub (second (drop-while #(not= % head) words))]
+      (if (and sub (re-matches #"[a-z][a-z0-9-]*" sub))
+        (str head " " sub " *")
+        (str head " *")))))
+
 ;; --- the policy seam ---------------------------------------------------------
 
 (defn resolve-ask
@@ -214,18 +265,26 @@
   Never throws. This sits in the path of every shell command, and an
   approval registry that could fail would be a registry that can stop a run
   from doing anything at all."
-  [{:keys [run-id branch-id]} {:keys [effect input details reason] :as decision}]
+  [{:keys [run-id branch-id]} {:keys [effect input details reason gaps] :as decision}]
   (let [{:keys [mode wait-ms on-timeout]} (policy)]
-    (if-not (and (= :ask effect) (= :block mode))
-      decision
+    (cond
+      (not= :ask effect) decision
+      ;; Nobody is asked and everything that would have been is allowed.
+      ;; Flagged, so the journal tells a yolo allow from a person's.
+      (= :yolo mode) (assoc decision :effect :allow :yolo true)
+      (not= :block mode) decision
+      :else
       (try
         (let [;; A compound command is never grantable (the policy downgrades
               ;; it to :ask over any grant), so there is no pattern to offer.
-              always (when (and (:head decision) (not (:complex? decision)))
-                       (str (:head decision) " *"))
+              ;; Nor for a flow gap: a grant clears a command, not what the
+              ;; branch has read.
+              always (when (and (:head decision) (not (:complex? decision))
+                                (not (:flow? decision)))
+                       (grant-pattern (:head decision) input))
               id (request! {:run-id run-id :branch-id branch-id :kind :shell
                             :input input :details details :reason reason
-                            :always always})
+                            :gaps gaps :always always})
               answer (await! id wait-ms {:decision (or on-timeout :deny)})]
           (cond
             (= :allow (:decision answer))

@@ -53,6 +53,7 @@
             [samizdat.agent.gates :as gates]
             [samizdat.cancel :as cancel]
             [samizdat.prompt :as prompt]
+            [samizdat.security.confine :as confine]
             [samizdat.security.sandbox :as sandbox]
             [samizdat.security.secrets :as secrets]))
 
@@ -82,7 +83,7 @@
   (RFC-013). A bare `jolt nrepl-server` answers the interrupt op with
   unknown-op. base-test holds this equal to deps.edn's pin, so the two cannot
   drift."
-  "6e8cfa214dbd43c9ed72358f3d1191bb29a695cd")
+  "aad8baef0dfe56d288792017841f37321d8160b1")
 
 (def nrepl-sdeps
   "The -Sdeps map the image is started with: the nrepl dependency and its
@@ -146,7 +147,8 @@
         ;; file differently and cannot mount over a path that is not there;
         ;; seatbelt reads the plain list and ignores the classification.
         spec (merge sandbox-spec
-                    {:project-root root :scratch-paths [scratch]}
+                    {:project-root root :scratch-paths [scratch]
+                     :protect (confine/protected root)}
                     (sandbox/deny-read-kinds (:deny-read sandbox-spec)))]
     (sandbox/write-profile! backend profile spec)
     (loop [attempt 1 port port]

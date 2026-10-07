@@ -91,6 +91,12 @@
   A task's :tests that is a test PATH is not an item: it is judged by running
   it (the verify rung), not by the answer saying so."
   [{:keys [acceptance task-tests declared problem whole-problem?]}]
+  ;; NO POLICY, NO CHECKLIST: a project whose gates.edn predates
+  ;; :ship-checklist runs as it did before the key existed, until it adopts
+  ;; the update. Reading on regardless threw from deep inside `done` on every
+  ;; answer (string-hash: nil is not a string).
+  (if-not (policy)
+    []
   (let [tag (fn [prefix source texts]
               (map-indexed (fn [i t] {:id (str prefix (inc i)) :text t :source source}) texts))
         ;; Its first paragraph: the board writes a standing paragraph of
@@ -102,7 +108,7 @@
     (vec (concat (tag "a" :acceptance (map #(if (= :judge (:kind %)) (:text %) (:name %)) acceptance))
                  (tag "t" :task task)
                  (tag "c" :declared (remove str/blank? (map str declared)))
-                 (tag "p" :problem (problem-list problem whole-problem?))))))
+                 (tag "p" :problem (problem-list problem whole-problem?)))))))
 
 ;; --- the answer's entries -----------------------------------------------------
 

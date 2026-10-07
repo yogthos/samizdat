@@ -53,6 +53,7 @@
   is reachable and the key works, which the TypeScript harness also does. It is
   no longer ordering-critical."
   (:require [clojure.tools.logging :as log]
+            [samizdat.security.listen :as listen]
             ;; Statically required, both so the ordering bug stays fixed in the
             ;; open rather than by accident and so `jolt build` reaches it.
             [jolt.nrepl]
@@ -117,6 +118,9 @@
   (jolt.host/block-sigint)
   (try
     (let [stop (jolt.nrepl/start port ['nrepl.middleware/default-middleware])]
+      ;; The nREPL is the whole harness process; nothing the agent runs may
+      ;; reach it (security.listen).
+      (listen/register! :nrepl port)
       (jolt.host/add-shutdown-hook stop)
       stop)
     (catch Throwable e

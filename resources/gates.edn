@@ -228,7 +228,7 @@
                  samizdat.agent.gitdiff/baseline samizdat.agent.gitdiff/snapshot
                  samizdat.agent.gitdiff/changed-files samizdat.agent.gitdiff/changed-lines
                  samizdat.agent.gitdiff/diff
-                 samizdat.agent.verify/run-verify
+                 samizdat.agent.verify/run-verify samizdat.agent.verify/run-configured
                  samizdat.agent.loop/tool-step samizdat.agent.beam/advance-all]}
   :kind :policy :capability-tunable? false
   :provenance ["karamazov-viht.1"]
@@ -2208,7 +2208,7 @@
  :approval
  {:value {:mode :refuse :wait-ms 300000 :on-timeout :deny}
   :kind :threshold :capability-tunable? false
-  :provenance ["karamazov-whbw.3"]
+  :provenance ["karamazov-whbw.3" "karamazov-3vu1.2"]
   :doc "Whether a command the policy wants to ASK about waits for a person.
 
         `:refuse` is the default and is what this harness has always done:
@@ -2224,8 +2224,14 @@
         loses one command rather than the night. `on-timeout` says what an
         unanswered question resolves to: `:deny` keeps the refusal (and the
         model is told nobody was there, so it reads as an absence rather
-        than a rule), `:allow` lets an unattended run proceed for a project
-        that would rather have that.
+        than a rule).
+
+        THIS FILE MAY ONLY TIGHTEN IT (karamazov-3vu1.2). It is userspace the
+        agent edits, so it chooses between the two safe modes and the wait,
+        and nothing else is read from it: `:on-timeout :allow` and `:mode
+        :yolo` (every ask allowed) are the operator's, in config.edn's
+        `:approval` block, or a person's session mode (`/mode` in the TUI).
+        A value set here that would loosen the gate is ignored.
 
         A run that ends releases its waiters regardless — see
         samizdat.approval/abandon!."}

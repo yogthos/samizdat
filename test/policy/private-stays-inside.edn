@@ -1,0 +1,10 @@
+;; Once a branch has read something from outside the project, which only the
+;; operator should see, nothing that could send it out runs without a person.
+{:about "a private read narrows the audience; egress waits for a person"
+ :steps
+ [{:tool "webfetch" :args {:url "https://example.com/docs"} :expect :allow}
+  {:tool "read_file" :args {:path "/Users/someone/notes.txt"} :outside true :expect :allow}
+  {:tool "webfetch" :args {:url "https://example.com/?q=notes"} :expect :ask :gaps [:audience]}
+  {:tool "websearch" :args {:query "notes"} :expect :ask :gaps [:audience]}
+  {:tool "shell" :args {:command "git push"} :expect :ask :gaps [:trust :audience]}
+  {:tool "shell" :args {:command "cat src/a.clj"} :expect :allow}]}

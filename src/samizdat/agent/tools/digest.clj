@@ -104,7 +104,7 @@
       (str/blank? question) (base/malformed branch (msg {:needs-question true}))
       :else
       (let [resolved (for [p paths]
-                       {:path p :abs (files/resolve-for-read (or root ".") refs p)})
+                       {:path p :abs (files/resolve-read! ctx refs p)})
             outside (first (remove :abs resolved))
             missing (first (filter #(and (:abs %) (not (fs/exists? (:abs %)))) resolved))
             ;; A directory was slurped, and the branch read the host's

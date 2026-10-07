@@ -10,7 +10,9 @@
   three things that had to survive the move: the round's ORDER, its three
   endings, and the driver's ownership of the crash record and teardown — the
   two things a manifest cannot own."
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [samizdat.agent.verify :as verify]
+            [samizdat.security.flow :as flow]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [ebb.core :as ebb]
             [mycelium.cell :as cell]
             [samizdat.agent.beam :as beam]
@@ -237,6 +239,33 @@
       (let [[row] (store/versions c :prompt "mine")]
         (is (= 0 (:failure_count row)))
         (is (= 1 (:error_count row))))
+      (finally (us/unbind!) (db/close c)))))
+
+(deftest a-run-forgets-its-sealed-commands-when-it-ends
+  ;; verify/seal-run! records the commands a run's cells may execute, keyed by
+  ;; run-id in memory. Nothing removed an entry, so a serve process grew by
+  ;; one per run for its whole life. The seal ends with the run — finished,
+  ;; failed or crashed — and not at compaction, which runs mid-run while the
+  ;; seal is still needed.
+  (let [c (db/open! ":memory:")
+        seen (atom nil)]
+    (try
+      (us/bind! c)
+      (with-redefs [beam/run-rounds (fn [ctx _branches _turn]
+                                      (reset! seen (:run-id ctx))
+                                      (is (verify/sealed? (:run-id ctx)) "sealed while it runs")
+                                      ;; And a branch's flow label, kept per run the same way.
+                                      (flow/observe! {:run-id (:run-id ctx) :branch {:id "B1"}}
+                                                     {:trust :untrusted} "webfetch")
+                                      (throw (ex-info "provider fell over" {})))
+                    llm/chat (fn [& _] {:content "" :finish-reason "stop"})]
+        (is (thrown? Exception
+                     (beam/run! {:conn c :config {:run {:loop "loop" :verify-cmd "true"}}
+                                 :llm-adapter :a :llm-config {:max-tokens 100}
+                                 :problem "p" :max-turns 3}))))
+      (is (some? @seen))
+      (is (not (verify/sealed? @seen)) "and forgotten when it ends, crash included")
+      (is (not-any? (fn [[[r _] _]] (= r @seen)) (flow/cached)) "its flow labels too")
       (finally (us/unbind!) (db/close c)))))
 
 (deftest teardown-sees-the-branches-as-they-stood-when-the-round-died
@@ -707,4 +736,18 @@
       (is (some? @started) "the caller still got the id")
       (is (= "failed" (:status (runs/get-run c @started))))
       (is (some? (journal/last-note c @started :run-failed)) "and the journal says why")
+      (finally (db/close c)))))
+
+(deftest the-supervisor-branch-closes-with-the-run
+  ;; Every supervisor branch in this repository's own project db read `active`
+  ;; after its run had ended: the stream stopped, the row did not.
+  (let [c (db/open! ":memory:")
+        rid (runs/start-run! c {:problem "p"})]
+    (try
+      (runs/open-branch! c rid {:branch-id "SUP" :role :supervisor})
+      (runs/open-branch! c rid {:branch-id "B1"})
+      (beam/close-advisory-branches! c rid)
+      (is (not= "active" (:status (runs/get-branch c rid "SUP"))))
+      (is (= "active" (:status (runs/get-branch c rid "B1")))
+          "a working branch is the driver's to close, with its own reason")
       (finally (db/close c)))))

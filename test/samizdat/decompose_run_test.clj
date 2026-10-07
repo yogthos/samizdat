@@ -24,11 +24,10 @@
             [samizdat.workflow :as workflow]))
 
 (defn- cell-fn
-  "A var out of the loaded cell namespace. find-ns first: ns-resolve THROWS on
-  an absent namespace rather than returning nil."
+  "A function out of the loaded cell namespace."
   [sym]
-  (when-not (find-ns 'cells.decompose) (cells/load-cells!))
-  (or (ns-resolve 'cells.decompose sym)
+  ;; The cell's namespace lives in SCI, not the host (karamazov-3vu1.9).
+  (or (some-> (cells/cell-var 'cells.decompose sym) deref)
       (throw (ex-info (str "cells.decompose/" sym " did not load") {}))))
 
 (defn- done-call [answer]

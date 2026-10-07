@@ -123,13 +123,23 @@
                                  str/trim not-empty)}
            (porcelain-counts (git root "status" "--porcelain")))))
 
+;; A baseline is a revision, and it reaches the tool as an argument: one that
+;; begins with "-" is an OPTION there (`diff --output=<file>` writes a file).
+;; Every baseline these functions take comes from the run's ctx, which a cell
+;; can build, so one that looks like an option is not a revision and the call
+;; answers as if the repository could not (karamazov-3vu1.9).
+(defn rev?
+  "Whether `baseline` can be passed on as a revision."
+  [baseline]
+  (and (some? baseline) (not (str/starts-with? (str baseline) "-"))))
+
 (defn file-at
   "`path`'s content in the `baseline` commit, or nil when it was not there
   (or there is no git). The baseline commit holds untracked files too, so
   this is the file as the run found it — what the exam ratchet compares a
   test file against (karamazov-fgsb)."
   [root baseline path]
-  (when (and root baseline path)
+  (when (and root (rev? baseline) path)
     ;; `./` makes the path the project root's, as git -C runs from there.
     (git root "show" (str baseline ":./" path))))
 
@@ -143,7 +153,7 @@
   changed'. Ground truth for whether a run that claims done actually produced
   anything."
   [root baseline]
-  (when (and root baseline)
+  (when (and root (rev? baseline))
     ;; --relative: paths from the project root, and only the files under
     ;; it. Without it git names paths from the REPOSITORY top, so a project
     ;; in a subdirectory of a repo read its edits as paths it did not have.
@@ -175,7 +185,7 @@
   A binary file contributes nothing rather than failing the count: numstat
   reports `-` for it, and a budget is about code the model wrote."
   [root baseline]
-  (when (and root baseline)
+  (when (and root (rev? baseline))
     (let [num (fn [s] (or (parse-long (str s)) 0))
           {:keys [stale created]} (untracked-split root baseline)
           tracked (some->> (git root "diff" "--numstat" "--relative" baseline)
@@ -204,7 +214,7 @@
   ;; (gates.edn :rubric :diff-fetch-chars) and cuts per question afterwards
   ;; (karamazov-0way).
   ([root baseline cap]
-   (or (when (and root baseline)
+   (or (when (and root (rev? baseline))
          ;; Without the untracked files the baseline holds unchanged, which
          ;; `git diff` would show as deleted — the run did not delete them.
          (some-> (apply git root "diff" "--relative" baseline "--" "."

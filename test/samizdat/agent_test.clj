@@ -61,10 +61,8 @@
 ;; namespace instead of the harness's. Resolved at CALL time rather than at
 ;; load, because the cell namespace does not exist until the loader has run.
 (defn- cell-fn [sym]
-  ;; find-ns first: ns-resolve THROWS on an absent namespace rather than
-  ;; returning nil, so an `or` never reaches its fallback.
-  (when-not (find-ns 'cells.beam) (cells/load-cells!))
-  (or (ns-resolve 'cells.beam sym)
+  ;; The cell's namespace lives in SCI, not the host (karamazov-3vu1.9).
+  (or (some-> (cells/cell-var 'cells.beam sym) deref)
       (throw (ex-info (str "cells.beam/" sym " did not load") {}))))
 
 (defn- cull-or-keep [& args] (apply (cell-fn 'cull-or-keep) args))

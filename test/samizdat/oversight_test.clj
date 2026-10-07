@@ -189,7 +189,7 @@
 
 (defn- worth-a-look? [& args]
   (cells/load-cells!)
-  (apply @(ns-resolve 'cells.oversight 'worth-a-look?) args))
+  (apply @(cells/cell-var 'cells.oversight 'worth-a-look?) args))
 
 (deftest a-healthy-run-costs-nothing
   ;; The cheap path has to be the DEFAULT, or the stream costs more than the
@@ -245,7 +245,7 @@
 
 (deftest sent-back-green-reads-the-round-the-loop-already-writes
   (cells/load-cells!)
-  (let [f @(ns-resolve 'cells.oversight 'sent-back-green?)]
+  (let [f @(cells/cell-var 'cells.oversight 'sent-back-green?)]
     (testing "the two facts are both on the :route note the feature loop
               journals every round — nothing new has to be recorded"
       (is (true? (f {:decision "revise" :tests-passed true})))
@@ -392,7 +392,7 @@
       (is (false? (:oversight/worth-a-look? (gather-now conn rid)))))))
 
 (deftest unmet-and-idle-count-from-the-last-look
-  (let [since @(ns-resolve 'cells.oversight 'since-last-look)
+  (let [since @(cells/cell-var 'cells.oversight 'since-last-look)
         floors {:idle-floor 25}]
     (testing "no earlier pass: the levels, as before"
       (is (= 5 (:unmet-gates (since {:unmet 5 :idle 3} nil floors)))))
@@ -451,7 +451,7 @@
   ;; so any multi-line answer overran the shortened string. It would have
   ;; thrown on the first real supervisor conclusion and been swallowed whole by
   ;; the (then silent) stage guard.
-  (let [clip (do (cells/load-cells!) @(ns-resolve 'cells.oversight 'clip))]
+  (let [clip (do (cells/load-cells!) @(cells/cell-var 'cells.oversight 'clip))]
     (is (= "a b c" (clip "a\n\n\nb\t\tc" 400))
         "collapsing must not leave the index past the end")
     (is (= "abc" (clip "abc" 400)) "shorter than the limit is returned whole")
@@ -467,7 +467,7 @@
   ;; prevent, reintroduced by the mechanism meant to give it memory.
   ;;
   ;; The carry must preserve what it LEARNED and not that it had STOPPED.
-  (let [resume (do (cells/load-cells!) @(ns-resolve 'cells.oversight 'resume-branch))
+  (let [resume (do (cells/load-cells!) @(cells/cell-var 'cells.oversight 'resume-branch))
         finished {:id "S0" :messages [{:role "user" :content "hello"}
                                       {:role "assistant" :content "a conclusion"}]
                   :final-answer "done for now" :verdict :done :advisory? true
@@ -840,7 +840,14 @@
           (is (true? (:oversight/worth-a-look? gather)))
           (is (str/includes? (str prob) "manifests/review.edn"))
           (is (str/includes? (str prob) "no-such/cell"))
-          (is (str/includes? (str prob) "Fix each one in place")))
+          (is (str/includes? (str prob) "Fix each one in place"))
+          (is (not (str/includes? (str prob) "is on offer")) "nothing is on offer for it")
+          (testing "and when the shipped workflow has an update for that file, the
+                    rejection says so beside it"
+            (with-redefs [userspace/offers (constantly [{:offer :updated :kind :manifest
+                                                         :name "review" :path "manifests/review.edn"}])]
+              (let [{:keys [prob]} (reasoning-over conn rid)]
+                (is (str/includes? (str prob) "An updated `review` is on offer"))))))
         (testing "an edit already rejected back to the branch that wrote it is not"
           (userspace/check-written! (.getPath f) {:branch-id "B1"})
           (let [g ((:handler (cell/get-cell! :oversight/gather))

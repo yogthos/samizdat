@@ -11,7 +11,8 @@
   gates in the require graph (gates requires state) and cannot read its
   accessor, while the phase table and the winner rubric are consumed down
   there. system.clj calls reload! on every start."
-  (:require [samizdat.userspace :as userspace]
+  (:require [samizdat.sandbox.sci :as sandbox]
+            [samizdat.userspace :as userspace]
             [samizdat.util :as util]))
 
 (defn- load-phases
@@ -88,9 +89,15 @@
 ;; them before anyone compiled the table. The table is memoized on first use,
 ;; so the first caller decided: a run's eval image that required phases before
 ;; tools compiled rules that threw "No such var: samizdat.agent.gates/
-;; storm-policy" on every call, after the namespaces had loaded too. Requiring
-;; the namespaces a form names, at compile time, makes the table correct
-;; whoever compiles it first (karamazov-b76m's validation run found it).
+;; storm-policy" on every call, after the namespaces had loaded too
+;; (karamazov-b76m's validation run found it).
+;;
+;; NOW IN SCI, not `eval` (karamazov-3vu1.9): phases.edn is agent-editable,
+;; and a form `eval`ed here could call anything in the process. The :phases
+;; home in samizdat.sandbox.sci holds the functions these rules call and
+;; nothing else; building it requires their namespaces, which is what makes
+;; the table correct whoever compiles it first. A form no longer loads what
+;; it names: a namespace outside the allowlist is refused, not required.
 
 (defn namespaces-named
   "The namespaces a form calls, as symbols: every qualified symbol in it,
@@ -104,15 +111,12 @@
 (defn- compile-refusal
   [entry]
   (let [form (:when entry)]
-    (doseq [ns-sym (namespaces-named form)]
-      (require ns-sym))
     (assoc entry
            :when-form form
-           :when (binding [*ns* (the-ns 'samizdat.agent.phases)]
-                   (eval `(fn [~'ctx]
-                            (let [~'branch    (get ~'ctx :branch)
-                                  ~'tool-name (get ~'ctx :tool-name)]
-                              ~form)))))))
+           :when (sandbox/form-fn :phases '[ctx]
+                                  `(let [~'branch    (get ~'ctx :branch)
+                                         ~'tool-name (get ~'ctx :tool-name)]
+                                     ~form)))))
 
 (def refusals
   "The compiled conditional withholds, in table order — first match wins.

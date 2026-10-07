@@ -334,7 +334,7 @@
                                "\n\n" (usage)))))))
 
 ;; A policy edit is checked before it is what runs (karamazov-1a51.8): it has
-;; to read as a map, and then the same verification a `policy save` runs —
+;; to read as its shape (a map; the manual's, a vector), and then the same verification a `policy save` runs —
 ;; the gates compile, the rules do not cycle, the roles name registered tools
 ;; — is run against the CANDIDATE through userspace/with-candidate, and the
 ;; caches it filled are refilled from the text that stays live.
@@ -343,7 +343,12 @@
  (fn [name text]
    (let [{:keys [value problem]} (userspace/read-edn text)]
      (or problem
-         (when-not (map? value) {:stage :shape :message "not a map"})
+         ;; The manual is a VECTOR of groups; every other policy is a map.
+         ;; Requiring a map refused the manual on every read, and what ran was
+         ;; the store's newest copy, unchecked (karamazov-3vu1.9).
+         (if (= "manual" (str name))
+           (when-not (vector? value) {:stage :shape :message "not a vector"})
+           (when-not (map? value) {:stage :shape :message "not a map"}))
          (userspace/with-candidate :policy name text
            (fn [] (try (reload-and-verify! name) nil
                        (catch Throwable e (userspace/problem :compile e))))

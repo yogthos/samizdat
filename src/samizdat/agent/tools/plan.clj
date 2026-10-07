@@ -65,6 +65,16 @@
       (seq not-paths)
       (base/malformed branch (msg {:not-a-path (first not-paths)}))
 
+      ;; Empty, over a plan that still owes files: WITHDRAW what was never
+      ;; written. done refuses owed files and tells the branch to re-plan,
+      ;; so without this a branch that found no change was needed could not
+      ;; finish at all (run 52eba2b2).
+      (and (empty? (concat files tests)) (seq (state/unwritten branch)))
+      (let [b (state/withdraw-unwritten branch goal)]
+        (assoc (base/ok branch (msg {:withdrawn true
+                                     :files (clojure.string/join ", " (:files (state/plan b)))}))
+               :branch b))
+
       (empty? (concat files tests))
       ;; An empty plan is the state this tool exists to rule out, so it is a
       ;; malformed call rather than an accepted no-op.

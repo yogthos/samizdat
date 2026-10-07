@@ -18,6 +18,7 @@
             [samizdat.agent.roles :as roles]
             [samizdat.agent.verify :as verify]
             [samizdat.lexicon :as lexicon]
+            [samizdat.sandbox.sci :as sandbox]
             [samizdat.store.journal :as journal]
             [samizdat.store.tasks :as tasks]
             [samizdat.util :as util]
@@ -351,29 +352,28 @@
 ;; at fire time. Adding a rung is a data edit.
 
 (defn- compile-rung-form
-  "`*ns*` bound for the same reason as gates/compile-form: the rungs are now
-  compiled on first use rather than at namespace load, and `str/blank?` and
-  `engages-problem?` resolve in this namespace and nowhere the caller might
-  happen to be."
+  "In SCI, in the :ship home (samizdat.sandbox.sci): `str/…`, `checklist/…`,
+  `exam/…` and this namespace's `engages-problem?`, `asks-the-reader?` and
+  `unfinished-claim?` resolve as they did when the rungs were `eval`ed here,
+  and nothing else does — gates.edn is agent-editable (karamazov-3vu1.9)."
   [form]
-  (binding [*ns* (the-ns 'samizdat.agent.tools.ship)]
-    (eval `(fn [~'ctx]
-             (let [~'answer            (get ~'ctx :answer)
-                   ~'problem           (get ~'ctx :problem)
-                   ~'evidence          (get ~'ctx :evidence)
-                   ~'uncovered-numbers (get ~'ctx :uncovered-numbers)
-                   ;; Whether the branch's role may write: what covers a
-                   ;; figure, and so what a refusal should ask for, differs.
-                   ~'can-write?        (get ~'ctx :can-write? true)
-                   ;; A reviewer or supervisor, whose answer is a verdict.
-                   ~'advisory?         (get ~'ctx :advisory? false)
-                   ;; The checklist items the answer has not accounted for
-                   ;; (karamazov-dsfx); empty when nothing is owed.
-                   ~'unaccounted-checklist (get ~'ctx :unaccounted-checklist)
-                   ;; Pre-existing tests changed or deleted with no reason
-                   ;; given (karamazov-fgsb); empty when none.
-                   ~'unexplained-tests (get ~'ctx :unexplained-tests)]
-               ~form)))))
+  (sandbox/form-fn :ship '[ctx]
+           `(let [~'answer            (get ~'ctx :answer)
+                  ~'problem           (get ~'ctx :problem)
+                  ~'evidence          (get ~'ctx :evidence)
+                  ~'uncovered-numbers (get ~'ctx :uncovered-numbers)
+                  ;; Whether the branch's role may write: what covers a
+                  ;; figure, and so what a refusal should ask for, differs.
+                  ~'can-write?        (get ~'ctx :can-write? true)
+                  ;; A reviewer or supervisor, whose answer is a verdict.
+                  ~'advisory?         (get ~'ctx :advisory? false)
+                  ;; The checklist items the answer has not accounted for
+                  ;; (karamazov-dsfx); empty when nothing is owed.
+                  ~'unaccounted-checklist (get ~'ctx :unaccounted-checklist)
+                  ;; Pre-existing tests changed or deleted with no reason
+                  ;; given (karamazov-fgsb); empty when none.
+                  ~'unexplained-tests (get ~'ctx :unexplained-tests)]
+              ~form)))
 
 (def ship-gates
   "The lexical ship rungs, compiled from gates.edn :ship-gates.
@@ -414,12 +414,11 @@
   bindings rather than a shared set, because a rung that could reference
   `answer` here would compile and always read nil."
   [form]
-  (binding [*ns* (the-ns 'samizdat.agent.tools.ship)]
-    (eval `(fn [~'ctx]
-             (let [~'reason  (get ~'ctx :reason)
-                   ~'problem (get ~'ctx :problem)
-                   ~'floor   (get ~'ctx :floor)]
-               ~form)))))
+  (sandbox/form-fn :ship '[ctx]
+           `(let [~'reason  (get ~'ctx :reason)
+                  ~'problem (get ~'ctx :problem)
+                  ~'floor   (get ~'ctx :floor)]
+              ~form)))
 
 (def give-up-gates
   "The lexical give_up rungs, compiled from gates.edn :give-up-gates.

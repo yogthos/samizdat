@@ -17,6 +17,7 @@
   derivation (`focused-cmd`) are pure, so the gate is testable without spawning a
   process. Same split as planner.clj vs cells/team.clj."
   (:require [clojure.java.io :as io]
+            [samizdat.agent.acceptance :as acceptance]
             [samizdat.prompt :as prompt]
             [clojure.string :as str]
             [samizdat.agent.gates :as gates]
@@ -219,3 +220,63 @@
     (catch Throwable e
       {:green? false :timeout? false
        :output (str "verify command failed to run: " (ex-message e))})))
+
+;; --- the commands a run was configured with ----------------------------------
+;;
+;; A cell runs in SCI (samizdat.sandbox.sci) and has no process capability of
+;; its own. What cells/feature.clj legitimately needs is to run the project's
+;; test command and its acceptance :check commands — the ones the OPERATOR
+;; configured, in .samizdat/config.edn, which the agent cannot write (policy
+;; protected-paths). Handing a cell run-verify would hand it `sh -c` of any
+;; string; the config it would take the command from is a map it can build.
+;; So the driver that starts a run SEALS the run's commands and root here,
+;; from the config it was started with, and a cell names the run-id and the
+;; command: anything but a sealed command in the sealed root is refused.
+
+(defonce ^:private sealed (atom {}))
+
+(defn configured-commands
+  "The shell commands `config` names for a run: :run :verify-cmd and every
+  :run :acceptance :check. A malformed :acceptance contributes none — the
+  acceptance stage reports that itself."
+  [config]
+  (let [checks (try (->> (get-in config [:run :acceptance])
+                         acceptance/normalize
+                         (keep #(when (= :check (:kind %)) (:text %))))
+                    (catch Throwable _ nil))]
+    (into #{} (remove str/blank?) (cons (some-> (get-in config [:run :verify-cmd]) str) checks))))
+
+(defn seal-run!
+  "Record the commands and root run `run-id` may execute through
+  run-configured. Called by the drivers that start (or resume) a run, with
+  the config they were handed — never by a cell. Returns nil."
+  [run-id root config]
+  (when run-id
+    (swap! sealed assoc run-id {:root (str root) :cmds (configured-commands config)}))
+  nil)
+
+(defn unseal-run!
+  "Forget run `run-id`'s seal. Called where the run ENDS — beam/run!,
+  resume!, workflow/run!, in their finally — so a serve process does not
+  keep one entry per run it ever ran. Not at compaction: a fold happens
+  mid-run, while the cells still need the seal."
+  [run-id]
+  (when run-id (swap! sealed dissoc run-id))
+  nil)
+
+(defn sealed?
+  "Whether run `run-id` currently holds a seal."
+  [run-id]
+  (contains? @sealed run-id))
+
+(defn run-configured
+  "Run `cmd` for run `run-id` through run-verify, when it is one of the
+  commands the run was sealed with, in the sealed root. Otherwise nothing
+  runs and the result is not green, with :refused? true and the reason as
+  its :output — the cell reports it like any failed check."
+  [run-id cmd timeout-ms]
+  (let [{:keys [root cmds]} (get @sealed run-id)]
+    (if (and root (contains? cmds (str cmd)))
+      (run-verify root cmd timeout-ms)
+      {:green? false :timeout? false :refused? true
+       :output (prompt/render "verify-refused" {:cmd (str cmd)})})))

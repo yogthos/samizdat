@@ -35,7 +35,8 @@
             [samizdat.agent.tools :as tools]
             [samizdat.security.policy :as policy]))
 
-(use-fixtures :each (fn [f] (approval/reset!) (f) (approval/reset!)))
+(use-fixtures :each (fn [f] (approval/reset!) (approval/set-mode! nil)
+                      (f) (approval/reset!) (approval/set-mode! nil)))
 
 (defn- req [& {:as over}]
   (merge {:run-id "r1" :branch-id "B1" :kind :shell
@@ -297,3 +298,56 @@
                          (do (Thread/sleep 5) (recur)))))
       (let [out (deref r 5000 ::hung)]
         (is (re-find #"declined to answer it: not now" (:result out)))))))
+
+;; --- who sets the policy (karamazov-3vu1.2, karamazov-3vu1.10) ----------------
+;;
+;; gates.edn is userspace: the agent edits it. `:on-timeout :allow` there was an
+;; approval the agent could grant itself by editing a file, and a yolo mode
+;; reachable from it would be the same hole wider. The loosening settings come
+;; from the operator — config.edn, which no tool the agent holds can write —
+;; or from a person at a front end (the session mode). The agent's file may
+;; still choose between the two SAFE modes and how long to wait.
+
+(defn- policy-with [gates operator]
+  (with-redefs [samizdat.agent.gates/threshold (fn [k] (when (= k :approval) gates))]
+    (approval/configure! operator)
+    (try (approval/policy) (finally (approval/configure! nil)))))
+
+(deftest the-agents-file-cannot-loosen-the-approval-policy
+  (is (= :deny (:on-timeout (policy-with {:mode :block :wait-ms 5 :on-timeout :allow} nil)))
+      "an unanswered question would have become the agent's own yes")
+  (is (= :refuse (:mode (policy-with {:mode :yolo} nil))))
+  (is (= :block (:mode (policy-with {:mode :block} nil)))
+      "asking a person is the safe direction, and stays the project's choice")
+  (is (= 5 (:wait-ms (policy-with {:mode :block :wait-ms 5} nil)))))
+
+(deftest the-operator-can
+  (is (= :allow (:on-timeout (policy-with {:mode :block :wait-ms 5} {:on-timeout :allow}))))
+  (is (= :yolo (:mode (policy-with {:mode :refuse} {:mode :yolo}))))
+  (testing "and the session mode, set by a person at a front end, is over both"
+    (approval/set-mode! :yolo)
+    (try (is (= :yolo (:mode (policy-with {:mode :block} {:mode :refuse}))))
+         (finally (approval/set-mode! nil)))))
+
+(deftest yolo-allows-every-ask-without-asking
+  (with-redefs [approval/policy (constantly {:mode :yolo :wait-ms 1000 :on-timeout :deny})]
+    (let [r (approval/resolve-ask {:run-id "r1"} {:effect :ask :input "curl example.com"})]
+      (is (= :allow (:effect r)))
+      (is (:yolo r) "journalled as yolo, not as a person's approval")
+      (is (empty? (approval/pending "r1"))))
+    (testing "a deny is not an ask, and stays a deny"
+      (is (= :deny (:effect (approval/resolve-ask {:run-id "r1"} {:effect :deny :input "rm -rf /"})))))))
+
+(deftest allow-always-names-the-subcommand-not-the-whole-tool
+  ;; karamazov-3vu1.6. `head *` meant a person who allowed `git push origin
+  ;; main` once had allowed `git push --force`, `git reset --hard` and every
+  ;; other git for the rest of the session. The pattern stops at the
+  ;; subcommand when there is one.
+  (is (= "git push *" (approval/grant-pattern "git" "git push origin main")))
+  (is (= "cargo run *" (approval/grant-pattern "cargo" "cargo run --release")))
+  (is (= "frobnicate *" (approval/grant-pattern "frobnicate" "frobnicate --widgets")))
+  (is (= "curl *" (approval/grant-pattern "curl" "curl https://example.com"))
+      "a URL is not a subcommand")
+  (is (= "cat *" (approval/grant-pattern "cat" "cat /etc/hosts")) "nor is a path")
+  (is (= "python3 *" (approval/grant-pattern "python3" "python3 script.py")) "nor a file name")
+  (is (nil? (approval/grant-pattern nil "x"))))

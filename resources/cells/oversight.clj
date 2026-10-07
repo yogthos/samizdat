@@ -497,14 +497,25 @@
                                   :rejected (when-let [rs (seq (:oversight/rejected data))]
                                               (prompt/render
                                                "userspace-rejections"
-                                               {:files (mapv (fn [{:keys [path kind name problem]}]
+                                               ;; A rejected file the shipped
+                                               ;; workflow has an update for
+                                               ;; says so: a live supervisor
+                                               ;; read board.clj as REJECTED
+                                               ;; and as an offer in separate
+                                               ;; blocks, and set about
+                                               ;; repairing by hand what one
+                                               ;; `adopt take` replaces.
+                                               {:files (let [offered (set (map (juxt :kind :name)
+                                                                               (safely :offers userspace/offers [])))]
+                                                         (mapv (fn [{:keys [path kind name problem]}]
                                                                {:path path :kind (clojure.core/name kind)
+                                                                :offered (contains? offered [kind name])
                                                                 :role name
                                                                 :stage (clojure.core/name (or (:stage problem) :check))
                                                                 :line (:line problem) :column (:column problem)
                                                                 :message (clip (:message problem)
                                                                                (gates/threshold :oversight-note-chars))})
-                                                             rs)}))
+                                                             rs))}))
                                   :refused (when-let [rs (seq (:oversight/refused data))]
                                              (prompt/render
                                               "mutation-refused"

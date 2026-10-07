@@ -263,10 +263,19 @@
           (is (= :success (:category r)))))
       (testing "a secret referenced by the command never reaches the result"
         (grants/grant! c rid "echo *")
+        (with-redefs [samizdat.config/shell-sandbox
+                      (constantly {:sandbox :auto :env-refs ["SECRET_API_KEY"]})]
+          (let [r (call "echo using {{env/SECRET_API_KEY}} now")]
+            (is (= :success (:category r)))
+            (is (not (str/includes? (:result r) canary)))
+            (is (str/includes? (:result r) "[REDACTED]")))))
+      (testing "and one the operator did not list is refused before it resolves
+                (karamazov-3vu1.4)"
         (let [r (call "echo using {{env/SECRET_API_KEY}} now")]
-          (is (= :success (:category r)))
-          (is (not (str/includes? (:result r) canary)))
-          (is (str/includes? (:result r) "[REDACTED]"))))
+          (is (= :deny (get-in r [:policy :effect])))
+          (is (str/includes? (:result r) "{{env/SECRET_API_KEY}}") (:result r))
+          (is (str/includes? (:result r) ":env-refs"))
+          (is (not (str/includes? (:result r) canary)))))
       (testing "the child cannot read a sensitive var the command did NOT
                 reference — the scrubbed env removed it, so $VAR expands empty"
         ;; This is the primary control, not the redaction backstop: use a
@@ -551,3 +560,92 @@
   (is (not (policy/whole-file-read? "head -n 20 a.clj")))
   (is (not (policy/whole-file-read? "cat a.clj | head")) "piped into something that cuts it")
   (is (not (policy/whole-file-read? "cat a.clj b.clj")) "one file at a time"))
+
+(deftest an-allowed-command-is-still-confined-by-the-os
+  ;; karamazov-3vu1.5. `touch **` is on the allow table, and so are heads that
+  ;; run code the agent wrote; the table decides whether a command RUNS, the
+  ;; OS sandbox decides what it can reach. Measured on macOS, where :auto is
+  ;; seatbelt.
+  (when (str/starts-with? (str (System/getProperty "os.name")) "Mac OS X")
+    (let [root (str (jolt.fs/create-temp-dir))
+          escape (str (System/getenv "HOME") "/SAMIZDAT-SHELL-ESCAPE-TEST")
+          env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")}]
+      (try
+        (let [r (policy/run-shell {:root root :env env
+                                   :args {:command (str "touch " escape)}})]
+          (is (= :allow (get-in r [:policy :effect])))
+          (is (not (.exists (java.io.File. escape))) "the shell wrote into $HOME"))
+        (let [r (policy/run-shell {:root root :env env :args {:command "touch inside && ls"}})]
+          (is (str/includes? (:result r) "inside") "the project is writable"))
+        (let [r (policy/run-shell {:root root :env env :args {:command "ls ~/.ssh"}})]
+          (is (not= :success (:category r)) "the secret regions are unreadable"))
+        (finally (.delete (java.io.File. escape)))))))
+
+;; --- reading outside the project (karamazov-3vu1.3) ---------------------------
+;;
+;; `cat **` is allowed, so `cat ~/.aws/credentials` was too, and the output was
+;; redacted only where a value LOOKED like a credential. Decision 2026-09-30:
+;; the project and its declared reference roots are readable without asking;
+;; anything else needs a person (a grant, an approval) or yolo mode.
+
+(deftest outside-reads-names-existing-paths-outside-the-roots
+  (let [root (str (jolt.fs/canonicalize (str (jolt.fs/create-temp-dir))))
+        ref (str (jolt.fs/canonicalize (str (jolt.fs/create-temp-dir))))
+        other (str (jolt.fs/canonicalize (str (jolt.fs/create-temp-dir))))
+        home (System/getenv "HOME")
+        roots [root ref]
+        out (fn [cmd] (policy/outside-reads cmd root roots))]
+    (spit (str other "/f") "x")
+    (spit (str ref "/r") "x")
+    (spit (str root "/in") "x")
+    (is (= [(str other "/f")] (out (str "cat " other "/f"))))
+    (is (empty? (out "cat in")) "the project's own file")
+    (is (empty? (out (str "cat " ref "/r"))) "a declared reference root")
+    (is (seq (out "cat ~/.zshrc ~/.bashrc ~/.profile ~/")) "~ is home")
+    (is (seq (out (str "ls " home))) "a directory counts")
+    (is (seq (out "cat ../../../../../../etc/hosts")) "climbing out of the root")
+    (is (seq (out (str "grep -r --include=x foo " other))) "any word, not just the first argument")
+    (is (seq (out (str "ls && cat " other "/f"))) "every statement of a list")
+    (is (seq (out (str "cat --file=" other "/f"))) "the value of a --flag=")
+    (testing "what is not a read of something outside"
+      (is (empty? (out "sed -n '/pattern/p' in")) "a sed address is not a path that exists")
+      (is (empty? (out "grep foo in 2>/dev/null")))
+      (is (empty? (out "ls /tmp")) "the scratch trees the shell may write anyway")
+      (is (empty? (out (str "echo " other))) "echo prints its argument, it does not read it"))))
+
+(deftest a-read-outside-the-project-is-asked-about
+  (let [root (str (jolt.fs/create-temp-dir))
+        other (str (jolt.fs/create-temp-dir))
+        env {"PATH" (System/getenv "PATH")}]
+    (spit (str other "/f") "OUTSIDE-CONTENT")
+    (let [r (policy/run-shell {:root root :env env :read-roots [root]
+                               :args {:command (str "cat " other "/f")}})]
+      (is (= :ask (get-in r [:policy :effect])))
+      (is (not (str/includes? (:result r) "OUTSIDE-CONTENT")))
+      (is (str/includes? (:result r) "outside the project") (:result r)))
+    (testing "a grant is a person's allow, and holds"
+      (with-redefs [samizdat.approval/session-grants (constantly [(str "cat " other "/*")])
+                    samizdat.security.confine/backend (constantly :none)]
+        (let [r (policy/run-shell {:root root :env env :read-roots [root]
+                                   :args {:command (str "cat " other "/f")}})]
+          (is (str/includes? (:result r) "OUTSIDE-CONTENT") (:result r)))))
+    (testing "and so does yolo"
+      (with-redefs [samizdat.approval/policy (constantly {:mode :yolo :wait-ms 1 :on-timeout :deny})
+                    samizdat.security.confine/backend (constantly :none)]
+        (let [r (policy/run-shell {:root root :env env :read-roots [root]
+                                   :args {:command (str "cat " other "/f")}})]
+          (is (str/includes? (:result r) "OUTSIDE-CONTENT") (:result r)))))
+    (testing "and the sandbox is not a knob the caller's ctx can turn: a cell
+              builds the ctx it hands tool-step"
+      (let [r (policy/run-shell {:root root :env env :read-roots [root]
+                                 :shell-backend :none
+                                 :grants [(str "cat " other "/*")]
+                                 :args {:command (str "cat " other "/f")}})]
+        (is (not (str/includes? (str (:result r)) "OUTSIDE-CONTENT"))))
+      (when (str/starts-with? (str (System/getProperty "os.name")) "Mac OS X")
+        (let [escape (str (System/getenv "HOME") "/SAMIZDAT-CTX-KNOB-TEST")]
+          (try
+            (policy/run-shell {:root root :env env :shell-backend :none
+                               :args {:command (str "touch " escape)}})
+            (is (not (.exists (java.io.File. escape))))
+            (finally (.delete (java.io.File. escape)))))))))

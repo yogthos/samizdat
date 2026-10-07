@@ -35,11 +35,15 @@
             [samizdat.agent.tools :as tools]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.telemetry :as telemetry]
-            [cells.board :as board]
+            [samizdat.cells :as cells]
             [samizdat.agent.supervisor :as supervisor]
             [samizdat.llm.fence :as fence]
             [samizdat.llm.message :as message]
             [samizdat.store.journal :as journal]))
+
+;; cells/board.clj lives in SCI, not the host, so its helper is reached
+;; through the loader rather than required (karamazov-3vu1.9).
+(defn- surface-block [m] (@(cells/cell-var 'cells.board 'surface-block) m))
 
 ;; --- the marker announces itself before it says anything else ---------------
 
@@ -574,24 +578,24 @@
   (let [goal "Build a small FPS level"
         siblings [{:id "t2" :title "Build the raylib window layer" :status "open"}
                   {:id "t3" :title "Enemy AI and waves" :status "in_progress"}]
-        s (board/surface-block {:goal goal :siblings siblings :mine "t1"})]
+        s (surface-block {:goal goal :siblings siblings :mine "t1"})]
     (is (str/includes? s goal) "the whole this part serves")
     (is (str/includes? s "Build the raylib window layer"))
     (is (str/includes? s "Enemy AI and waves"))
     (is (str/includes? s "in_progress")
         "and whether somebody is already on it — that is the do-not-duplicate signal"))
   (testing "the owner's OWN task is not listed back as a sibling"
-    (let [s (board/surface-block
+    (let [s (surface-block
              {:goal "G" :mine "t1"
               :siblings [{:id "t1" :title "MINE" :status "in_progress"}
                          {:id "t2" :title "OTHER" :status "open"}]})]
       (is (not (str/includes? s "MINE")))
       (is (str/includes? s "OTHER"))))
   (testing "no siblings means no surface section rather than an empty heading"
-    (is (nil? (board/surface-block {:goal "G" :siblings [] :mine "t1"})))
-    (is (nil? (board/surface-block {:goal "G" :siblings nil :mine "t1"}))))
+    (is (nil? (surface-block {:goal "G" :siblings [] :mine "t1"})))
+    (is (nil? (surface-block {:goal "G" :siblings nil :mine "t1"}))))
   (testing "a surface with siblings but no goal still says what else exists"
-    (let [s (board/surface-block {:siblings [{:id "t2" :title "OTHER" :status "open"}]
+    (let [s (surface-block {:siblings [{:id "t2" :title "OTHER" :status "open"}]
                                   :mine "t1"})]
       (is (str/includes? s "OTHER")))))
 
@@ -948,6 +952,28 @@
     (testing "an entry that still carries list syntax is not a path"
       (let [r (plan-of {"files" ["[\"src/a.clj\"" "b.clj"] "goal" "g"})]
         (is (= :mechanics (:category r)))))))
+
+;; Seen live 2026-10-02 (run 52eba2b2): a read-only question, a branch that
+;; planned to read listen.clj, then rightly decided nothing needed changing.
+;; `done` was refused — "you said you would change these files … call plan
+;; again with what you actually now intend to change" — and `plan` refused an
+;; empty list, so the honest answer, "nothing", could not be given. Eleven
+;; turns to the cap. An empty plan WITHDRAWS what was declared and never
+;; written; what was written stays declared.
+(deftest an-empty-plan-withdraws-what-was-never-written
+  (let [b0 (state/new-branch {:id "b1" :problem "p"})
+        plan-of (fn [b args] (tools/run-tool {:tool-name "plan" :branch b :args args}))
+        b (:branch (plan-of b0 {"files" ["src/a.clj" "src/b.clj"] "goal" "edit two"}))
+        b (state/note-write b "src/a.clj")
+        r (plan-of b {"files" [] "goal" "no change needed after all"})]
+    (is (not= :mechanics (:category r)) (:result r))
+    (is (= ["src/a.clj"] (:files (state/plan (:branch r)))) "what was written stays")
+    (is (empty? (state/unwritten (:branch r))) "and nothing is owed")
+    (testing "with nothing written, nothing is left declared"
+      (let [b (:branch (plan-of b0 {"files" ["src/a.clj"] "goal" "g"}))
+            r (plan-of b {"files" [] "goal" "read-only after all"})]
+        (is (not= :mechanics (:category r)) (:result r))
+        (is (empty? (state/unwritten (:branch r))))))))
 
 ;; --- a refusal a branch cannot discharge is a deadlock ----------------------
 ;;

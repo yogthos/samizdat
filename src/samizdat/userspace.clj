@@ -714,10 +714,20 @@
     (swap! synced assoc [kind name] text)))
 
 (defn- last-good
-  "The last text of `kind`/`name` that passed: the store's newest version,
-  since only a passing text is ever recorded."
+  "The newest stored text of `kind`/`name` that passes the check IN FORCE.
+
+  It was the store's newest version, on the argument that only a passing text
+  is ever recorded. That stops holding the moment a check gets stricter: the
+  cell sandbox (karamazov-3vu1.9) refuses raw store.db access, and this
+  repository's own board.clj — stored when that was allowed — came back as
+  the fallback for its own refused file and the harness failed to start. A
+  stored version is history, not a verdict; it is re-checked like any text."
   [kind name]
-  (some-> (conn) (store/load-latest kind name) :body))
+  (when-let [c (conn)]
+    (some (fn [{:keys [version]}]
+            (let [b (:body (store/load-version c kind name version))]
+              (when (and b (nil? (check kind name b))) b)))
+          (reverse (store/versions c kind name)))))
 
 (defn- read-project-file
   "`kind`/`name` from the project's files, or nil when the project's map has
@@ -891,7 +901,10 @@
                         :when (and t (not= (hash t) (seen kind role)))
                         :let [own (role-path kind role pm)]]
                     (if-not own
-                      {:offer :new :kind kind :name role :path rel}
+                      ;; Edited when the project saw this role and its map
+                      ;; has none: it dropped the role.
+                      {:offer :new :kind kind :name role :path rel
+                       :edited? (some? (seen kind role))}
                       (let [ft (file-text (str (project-dir) "/" own))]
                         (when (not= ft t)
                           {:offer :updated :kind kind :name role :path own
@@ -947,6 +960,45 @@
                       (clojure.core/name kind) name)
             {:adopted o :version v}))))
     {:no-offer true}))
+
+(defn adopt-unedited!
+  "Adopt every shipped offer, :new or :updated, that is not :edited? — the
+  project's copy is the template it last saw, or the role is one it never
+  had, so taking it overrides no choice the project made. A :pending version
+  is the project's own past and an :edited? one its present: both stay
+  offered to the supervisor.
+
+  The one way out for a project far enough behind (karamazov-3vu1.12): its old
+  copies can break against newer code before a supervisor gets to adopt, and
+  measured here, one with 66 such offers never did.
+
+  Taken in the order the checks depend on — cells, then policies, prompts
+  and manifests, a role the project lacks before an update — and in passes
+  until one takes nothing, because an update can need another: the loop
+  manifest's extends a `turn` the project did not have.
+
+  Returns {:adopted [offer …] :refused [{:offer :problem} …]}."
+  []
+  (let [kind-order {:cell 0 :policy 1 :prompt 2 :manifest 3}
+        pending (fn []
+                  (sort-by (juxt #(get kind-order (:kind %) 4) #(if (= :new (:offer %)) 0 1))
+                           (filter #(and (#{:new :updated} (:offer %)) (false? (:edited? %)))
+                                   (offers))))
+        pass (fn [adopted]
+               (reduce (fn [acc o]
+                         (let [r (adopt! (:kind o) (:name o) "adopted unedited at startup")]
+                           (cond (:adopted r) (update acc :adopted conj (:adopted r))
+                                 (:problem r) (update acc :refused conj (select-keys r [:offer :problem]))
+                                 :else acc)))
+                       {:adopted adopted :refused []}
+                       (pending)))]
+    (loop [r (pass [])]
+      (if (and (seq (:refused r)) (seq (:adopted r)))
+        (let [r2 (pass (:adopted r))]
+          (if (> (count (:adopted r2)) (count (:adopted r)))
+            (recur r2)
+            r2))
+        r))))
 
 (defn decline!
   "Answer the offer for `kind`/`name` with no, keeping `reason` for the next

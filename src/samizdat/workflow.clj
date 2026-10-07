@@ -53,6 +53,8 @@
             [samizdat.agent.live :as live]
             [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
+            [samizdat.agent.verify :as verify]
+            [samizdat.security.flow :as flow]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
@@ -376,6 +378,10 @@
         ;; REPL-first against the project under work, and without this that
         ;; instruction is unreachable the moment :run :root is not the harness.
         _ (repl/ensure-project-roots! root)
+        ;; The commands a cell may run for this run (verify/run-configured):
+        ;; the ones this config names, in this root, sealed before any cell
+        ;; sees the ctx it could otherwise rewrite (karamazov-3vu1.9).
+        _ (verify/seal-run! run-id root config)
         ctx {:conn conn :run-id run-id :config config
              :llm-adapter llm-adapter :llm-config llm-config
              ;; The injected model call, when the caller supplied one — the
@@ -457,6 +463,10 @@
             (assoc :run-id run-id)))
       (finally
         (stop-watch)
+        ;; The run's sealed commands end with it (verify/unseal-run!).
+        (verify/unseal-run! run-id)
+        ;; And its branches' flow labels (samizdat.security.flow).
+        (flow/forget-run! run-id)
         ;; NOTHING IS LEFT PENDING ON A RUN NOBODY WILL DRAIN AGAIN. The
         ;; drains leave workflow kinds (switch/budget/stop) for a workflow's
         ;; own directives stage and only feature.edn has one, so on any other

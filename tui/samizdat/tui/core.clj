@@ -242,7 +242,7 @@
                           (swap! state st/apply-project (client/project base)))
                       (say! (str "mode not set: " (:error r))))))
                 (say! (str "approval mode: " (or (get-in @state [:project :approval_mode]) "unknown")
-                           " — /mode refuse or /mode block")))
+                           " — /mode refuse, /mode block, or /mode yolo (every ask allowed)")))
         :intervene
         (cond
           (not run-id) (say! "no run on screen to direct")

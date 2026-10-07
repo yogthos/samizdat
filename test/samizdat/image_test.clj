@@ -120,6 +120,17 @@
               (is (str/includes? (str (:value r)) "DENIED")
                   "the REPL shelled out of the sandbox")))
 
+          (testing "and it cannot connect to a port on loopback, where the harness listens"
+            ;; karamazov-3vu1.1: the harness's HTTP API and nREPL are on
+            ;; loopback, and the image used to be allowed outbound there.
+            (let [listener (java.net.ServerSocket. 0)]
+              (try
+                (let [r (image/eval-in im (str "(try (.close (java.net.Socket. \"127.0.0.1\" "
+                                               (.getLocalPort listener) ")) :CONNECTED"
+                                               " (catch Throwable _ :DENIED))"))]
+                  (is (= ":DENIED" (:value r))))
+                (finally (.close listener)))))
+
           (testing "and it cannot read the harness's own source"
             ;; The first move of the observed escape.
             (let [r (image/eval-in im "(try (slurp \"src/samizdat/agent/tools/introspect.clj\")

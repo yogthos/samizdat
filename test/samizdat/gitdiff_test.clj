@@ -23,6 +23,17 @@
   (is (= "" (gd/diff "/tmp" nil)))
   (is (nil? (gd/baseline nil))))
 
+(deftest a-baseline-that-looks-like-an-option-never-reaches-git
+  ;; `git diff --output=<file>` writes a file, and a baseline comes from the
+  ;; run's ctx, which a cell can build (karamazov-3vu1.9).
+  (let [calls (atom [])]
+    (with-redefs [proc/run (fn [_ & args] (swap! calls conj args) {:exit 0 :out "" :err ""})]
+      (is (= "" (gd/diff "/tmp/some-root" "--output=/tmp/owned")))
+      (is (nil? (gd/changed-files "/tmp/some-root" "--output=/tmp/owned")))
+      (is (nil? (gd/changed-lines "/tmp/some-root" "-o/tmp/owned")))
+      (is (nil? (gd/file-at "/tmp/some-root" "--output=/tmp/owned" "a.clj"))))
+    (is (empty? @calls) "nothing was spawned")))
+
 (defn- sh [dir cmd]
   (proc/run {:timeout-ms 15000} "sh" "-c" (str "cd " dir " && " cmd)))
 
