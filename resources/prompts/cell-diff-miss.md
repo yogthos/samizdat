@@ -1,0 +1,1 @@
+No diff for cell '{{name}}'{% if from %} from v{{from}}{% endif %}{% if to %} to v{{to}}{% endif %}: {% if versions %}its stored versions are {{versions}}.{% else %}this project has stored no versions of it; it is running the shipped template.{% endif %}

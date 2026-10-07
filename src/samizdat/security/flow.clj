@@ -106,7 +106,7 @@
            "eval/networked" {:audience :project}
            ;; The workflow is code every later turn and run executes, so
            ;; changing it needs trust (karamazov-3vu1.14). Reading it does not.
-           "cell" {:trust :trusted :read-actions #{"list" "show" "versions"}}
+           "cell" {:trust :trusted :read-actions #{"list" "show" "versions" "diff"}}
            "manifest" {:trust :trusted :read-actions #{"list" "show" "versions" "diff" "refs"}}
            "prompt" {:trust :trusted :read-actions #{"list" "show" "versions"}}
            "policy" {:trust :trusted :read-actions #{"list" "show" "versions"}}

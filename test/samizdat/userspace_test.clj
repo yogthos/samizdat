@@ -212,6 +212,28 @@
   (us/save! :cell "critic" ";; mine")
   (is (re-find #"v1" (:result (run-cell *conn* {:action "versions" :name "critic"})))))
 
+(deftest the-cell-tool-says-what-an-edit-changed-by-where-it-is
+  ;; karamazov-0e2c.2: a cell edit read as text hunks; sdiff names the form,
+  ;; the clause and the binding instead.
+  (us/bind! *conn*)
+  (store/save! *conn* :cell "c" "(ns c)\n(defn f [x]\n  (let [y 1]\n    (+ x y)))\n")
+  (store/save! *conn* :cell "c" "(ns c)\n(defn f [x]\n  (let [y 2]\n    (+ x y)))\n")
+  (testing "the newest version against the one before it"
+    (let [r (:result (run-cell *conn* {:action "diff" :name "c"}))]
+      (is (str/includes? r "defn f") r)
+      (is (str/includes? r "binding y") r)))
+  (testing "or any two"
+    (store/save! *conn* :cell "c" "(ns c)\n;; a note\n(defn f [x]\n  (let [y 2]\n    (+ x y)))\n")
+    (is (re-find #"comments-only|whitespace-only"
+                 (:result (run-cell *conn* {:action "diff" :name "c" :from 2 :to 3}))))
+    (is (str/includes? (:result (run-cell *conn* {:action "diff" :name "c" :from 1 :to 3}))
+                       "binding y")))
+  (testing "a committed save says what it changed"
+    (with-redefs [samizdat.mutation/propose-cell! (fn [_] {:status :committed :version 4})]
+      (let [r (:result (run-cell *conn* {:action "save" :name "c" :rationale "tune"
+                                         :clj "(ns c)\n(defn f [x]\n  (let [y 3]\n    (* x y)))\n"}))]
+        (is (str/includes? r "binding y") r)))))
+
 (deftest the-cell-tool-reverts-and-keeps-the-abandoned-version-readable
   (us/bind! *conn*)
   (us/save! :cell "critic" ";; v1")

@@ -34,6 +34,7 @@
             [samizdat.manifests :as manifests]
             [samizdat.mutation :as mutation]
             [samizdat.prompt :as prompt]
+            [samizdat.sdiff.text :as sdiff-text]
             [samizdat.store.userspace]
             [samizdat.userspace :as userspace]))
 
@@ -118,8 +119,10 @@
 
 ;; --- the project's own cells (userspace) -------------------------------------
 
-(def ^:private cell-usage
-  "Actions: list, show {name, version?}, save {name, clj | file, rationale}, versions {name}, revert {name, version, rationale}. A cell is one step of the loop, as Clojure. Save validates by compiling the loop and dry-running it before it stores, and stores a new VERSION in this project — the shipped template is never written. For a large body, write it to a file first (write_file), then save {name, file}: a fix left as a file and never saved does not exist. rationale: one sentence on why — the history shows it to the next supervisor deciding whether your change stays.")
+(defn- cell-usage
+  "The tool's usage, from prompts/cell-usage.md."
+  []
+  (prompt/prompt "cell-usage"))
 
 (defn- render-versions [name]
   (let [rows (userspace/versions :cell name)]
@@ -138,7 +141,7 @@
     (try
       (case action
         nil
-        (base/malformed branch (str "`cell` needs an `action`. " cell-usage))
+        (base/malformed branch (str "`cell` needs an `action`. " (cell-usage)))
 
         "list"
         (let [rows (userspace/names :cell)]
@@ -172,6 +175,25 @@
           (base/malformed branch (base/missing ctx :name))
           (base/ok branch (render-versions name)))
 
+        "diff"
+        ;; karamazov-0e2c.2: what an edit changed, by where it is.
+        (if-not name
+          (base/malformed branch (base/missing ctx :name))
+          (let [vs (mapv :version (userspace/versions :cell name))
+                num (fn [k] (some-> (base/arg ctx k) str str/trim not-empty parse-long))
+                to (or (num :to) (last vs))
+                from (or (num :from) (last (filter #(< % (or to 0)) vs)))
+                body-at (fn [v] (some-> (userspace/conn)
+                                        (samizdat.store.userspace/load-version :cell name v)
+                                        :body))]
+            (if-not (and from to (body-at from) (body-at to))
+              (base/malformed branch (prompt/render "cell-diff-miss"
+                                                    {:name name :from from :to to
+                                                     :versions (str/join ", " vs)}))
+              (base/ok branch (str name " v" from " → v" to "\n\n"
+                                   (sdiff-text/edit-text (str "cells/" name ".clj")
+                                                         (body-at from) (body-at to)))))))
+
         "save"
         (let [{body :body err :error} (base/save-body ctx :clj)
               why (base/rationale ctx)]
@@ -182,6 +204,8 @@
             (nil? why) (base/malformed branch (base/missing ctx :rationale))
             :else
             (let [active (active-name ctx)
+                  ;; What it replaces, so the result can say what changed.
+                  before (try (userspace/body :cell name) (catch Throwable _ nil))
                   r (mutation/propose-cell!
                      {:name name :body (str body) :rationale why
                       :loop-def (current-loop-def ctx)
@@ -208,7 +232,10 @@
                          (str "Saved cell '" name "' as v" (:version r)
                               " in this project — it compiled, it dry-ran, and it"
                               " is live on your next turn. The shipped template is"
-                              " unchanged; other projects still start from it.")
+                              " unchanged; other projects still start from it."
+                              (when before
+                                (str "\n\n" (sdiff-text/edit-text (str "cells/" name ".clj")
+                                                                    before (str body)))))
                          :progress? true)
 
                 ;; Validate and soak passed and the edit is live in this
@@ -250,7 +277,7 @@
               (base/malformed branch (str "No v" v " of cell '" name
                                           "' in this project. " (render-versions name))))))
 
-        (base/malformed branch (str "Unknown cell action `" action "`. " cell-usage)))
+        (base/malformed branch (str "Unknown cell action `" action "`. " (cell-usage))))
       (catch Throwable e
         (base/fail branch (str "`cell " action "` refused: " (ex-message e)
-                               "\n\n" cell-usage))))))
+                               "\n\n" (cell-usage)))))))

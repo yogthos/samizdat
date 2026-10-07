@@ -10,7 +10,8 @@
   (:refer-clojure :exclude [short])
   (:require [rewrite-clj.node :as n]
             [clojure.string :as str]
-            [samizdat.sdiff.core :refer [fmt-path head short]]))
+            [samizdat.sdiff.core :refer [fmt-path head short]]
+            [samizdat.sdiff.core]))
 
 (defn- kept-list [kept] (str/join ", " (map #(short (n/string (first %))) kept)))
 
@@ -71,3 +72,13 @@
   "`print-report` as a string."
   [r]
   (with-out-str (print-report r)))
+
+;; --- samizdat's addition (karamazov-0e2c.2) --------------------------------------
+
+(defn edit-text
+  "One file's edit, `old` to `new`, as the report text: what a cell or other
+  Clojure userspace edit changed, by where it is."
+  [path old new]
+  (let [{:keys [files renames]} (samizdat.sdiff.core/rollup-renames
+                                 [(samizdat.sdiff.core/file-report path (str old) (str new))])]
+    (str/trim (report-text {:clj files :renames renames}))))
