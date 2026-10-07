@@ -372,6 +372,10 @@ adopt({action, ...})
       decline {kind, name, rationale} Say no; it is not offered again until
                            a later release changes it.
 ```
+    `propose-grant {pattern, reason}` drafts a shell grant for what this run
+    was refused — at least the command and its first argument before any
+    `*`, and matching a refused command — and asks a person; only their yes
+    records it, for this run.
 
 The loop is not fixed infrastructure. Inspect how it is wired and running with
 `introspect`; change a step's behaviour with `cell save`; reshape the wiring

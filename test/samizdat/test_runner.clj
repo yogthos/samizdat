@@ -194,6 +194,7 @@
             [samizdat.perturb-test]
             [samizdat.basis-test]
             [samizdat.eval-hint-test]
+            [samizdat.grant-proposal-test]
             [samizdat.llm-test]
             [samizdat.toolspec-test]
             [samizdat.llm-stream-test]
@@ -427,6 +428,7 @@
     samizdat.perturb-test
     samizdat.basis-test
     samizdat.eval-hint-test
+    samizdat.grant-proposal-test
     samizdat.prompt-test
     samizdat.server-test
     samizdat.adapter-test

@@ -109,7 +109,9 @@
            "cell" {:trust :trusted :read-actions #{"list" "show" "versions" "diff"}}
            "manifest" {:trust :trusted :read-actions #{"list" "show" "versions" "diff" "refs"}}
            "prompt" {:trust :trusted :read-actions #{"list" "show" "versions"}}
-           "policy" {:trust :trusted :read-actions #{"list" "show" "versions"}}
+           ;; propose-grant writes nothing: a person decides it, and sees the
+           ;; call when they do (tools/policy).
+           "policy" {:trust :trusted :read-actions #{"list" "show" "versions" "propose-grant"}}
            "adopt" {:trust :trusted :read-actions #{"list" "show"}}}
    ;; Not sort (-o), uniq (an output file), tree (-o) or rg (--pre runs a
    ;; command): each can write or run something.

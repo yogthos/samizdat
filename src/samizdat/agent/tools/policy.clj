@@ -39,6 +39,12 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [samizdat.agent.gates :as gates]
+            [jolt.time]
+            [clojure.data.json :as json]
+            [samizdat.store.db :as db]
+            [samizdat.store.grants :as grants]
+            [samizdat.security.policy :as policy]
+            [samizdat.approval :as approval]
             [samizdat.agent.judge :as judge]
             [samizdat.agent.phases :as phases]
             [samizdat.agent.tools.base :as base]
@@ -78,6 +84,53 @@
                       (catch Throwable _ nil))]
       (when (pos? n)
         (str "\n\n" (msg {:when-forms n}))))))
+
+(defn- refused-commands
+  "The shell commands this run was refused, newest last."
+  [conn run-id]
+  (when (and conn run-id)
+    (vec (keep (fn [r] (some-> (try (json/read-str (str (:args r)) :key-fn keyword)
+                                    (catch Throwable _ nil))
+                               :command str not-empty))
+               (db/fetch conn ["SELECT args FROM turns WHERE run_id = ? AND tool_name = 'shell'
+                                AND policy_refusal = 1 ORDER BY id" run-id])))))
+
+(defn- literal-words
+  "How many whole words `pattern` names before its first wildcard."
+  [pattern]
+  (count (take-while #(not (re-find #"[*?]" %)) (str/split (str/trim (str pattern)) #"\s+"))))
+
+(defn- propose-grant
+  [{:keys [branch conn run-id] :as ctx}]
+  (let [pattern (some-> (base/arg ctx :pattern) str str/trim not-empty)
+        reason (some-> (base/arg ctx :reason) str str/trim not-empty)
+        render #(prompt/render "grant-proposal" (assoc % :pattern pattern))]
+    (cond
+      (nil? pattern) (base/malformed branch (base/missing ctx :pattern))
+      (nil? reason) (base/malformed branch (base/missing ctx :reason))
+      (< (literal-words pattern) 2) (base/malformed branch (render {:too-broad true}))
+      :else
+      (let [matched (vec (distinct (filter #(policy/matches? pattern %) (refused-commands conn run-id))))
+            shown (str/join ", " (map #(str "`" % "`") (take 5 matched)))
+            {:keys [mode wait-ms on-timeout]} (approval/policy)]
+        (cond
+          (empty? matched) (base/malformed branch (render {:matches-nothing true}))
+          (= :yolo mode) (base/ok branch (render {:yolo true}))
+          (not= :block mode)
+          (do (journal/note! conn run-id :grant-proposed
+                             {:branch-id (:id branch)
+                              :data {:pattern pattern :reason reason :matched matched}})
+              (base/ok branch (render {:recorded true})))
+          :else
+          (let [id (approval/request! {:run-id run-id :branch-id (:id branch) :kind :grant
+                                       :input pattern :reason reason
+                                       :details (str/join "\n" (take 5 matched))})
+                answer (approval/await! id wait-ms {:decision (or on-timeout :deny)})]
+            (if (= :allow (:decision answer))
+              (do (grants/grant! conn run-id pattern)
+                  (base/ok branch (render {:granted true :matched shown}) :progress? true))
+              (base/ok branch (render {:declined true :unanswered (:timed-out answer)
+                                       :note (:note answer)})))))))))
 
 (defn reload-and-verify!
   "Reload whatever caches serve `name`, and force the derived tables to
@@ -318,6 +371,12 @@
                             (base/rejected branch
                                            (msg {:rolled-back true :name name
                                                  :complaint (ex-message e)})))))))))))
+
+        "propose-grant"
+        ;; A NARROW SHELL GRANT, DRAFTED HERE AND DECIDED BY A PERSON
+        ;; (karamazov-0e2c.20, after xi's recommend-a-rule). The grants
+        ;; table stays a person's: this only asks, and writes on their yes.
+        (propose-grant ctx)
 
         "revert"
         (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)

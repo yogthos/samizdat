@@ -93,6 +93,7 @@
             [samizdat.security.policy]
             [samizdat.security.sandbox]
             [samizdat.session]
+            [samizdat.store.grants]
             [samizdat.store.interventions]
             [samizdat.store.journal]
             [samizdat.symbolic]
