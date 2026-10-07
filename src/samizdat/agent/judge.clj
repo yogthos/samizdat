@@ -388,15 +388,43 @@
              (not (some (comp outside-tool? :tool_name) rows)))
     (:outside-message (rules))))
 
+(defn- veto-regex
+  "A veto phrase as a pattern: its tokens, any whitespace or none between
+  them, so a tab, a non-breaking space or a dropped space does not get a
+  disabled test past it (iFixAi pipeline.py)."
+  [phrase]
+  (re-pattern (str "(?i)" (str/join "[\\s\\u00a0]*"
+                                    (map #(java.util.regex.Pattern/quote %)
+                                         (remove str/blank? (str/split (str phrase) #"\s+")))))))
+
+(defn diff-veto
+  "The first gates.edn :judge-vetoes entry a line the run ADDED matches, as
+  {:id :line :why}, or nil (karamazov-0e2c.5). Removed and unchanged lines
+  are not the run's doing. Cheap and certain, so it runs before any judge."
+  [diff]
+  (let [vetoes (try (gates/threshold :judge-vetoes) (catch Throwable _ nil))
+        added (->> (str/split-lines (str diff))
+                   (filter #(and (str/starts-with? % "+") (not (str/starts-with? % "+++"))))
+                   (map #(subs % 1)))]
+    (first (for [{:keys [id phrase why]} vetoes
+                 :let [re (veto-regex phrase)]
+                 line added
+                 :when (re-find re line)]
+             {:id id :line (str/trim line) :why why}))))
+
 (defn deterministic-block
   "The first deterministic finalization gate that fires, or nil. These are
   cheap and specific, so they run before the LLM judge and outrank it.
   `tool-surface` is the registered tool names — source-block checks the
-  run's reach against it (drg-4026 #56)."
-  [answer rows tool-surface]
-  (or (verifier-block rows)
-      (claim-block answer rows)
-      (source-block answer rows tool-surface)))
+  run's reach against it (drg-4026 #56). `diff`, when given, is checked
+  against gates.edn :judge-vetoes (`diff-veto`)."
+  ([answer rows tool-surface] (deterministic-block answer rows tool-surface nil))
+  ([answer rows tool-surface diff]
+   (or (verifier-block rows)
+       (claim-block answer rows)
+       (source-block answer rows tool-surface)
+       (when-let [v (and diff (diff-veto diff))]
+         (prompt/render "judge-veto" v)))))
 
 (defn preamble
   "The judge's standing instructions, from resources/prompts/judge.md (tier

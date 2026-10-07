@@ -651,7 +651,7 @@
   ;; command ever counted as a test run.
   (let [seen (atom nil)]
     (with-redefs [llm/chat ships-its-task
-                  judge/deterministic-block (fn [_ rows _] (reset! seen (vec rows)) nil)]
+                  judge/deterministic-block (fn [_ rows & _] (reset! seen (vec rows)) nil)]
       (let [conn (db/open! ":memory:")]
         (tasks/create! conn {:title "checked work"})
         (run-board conn {})

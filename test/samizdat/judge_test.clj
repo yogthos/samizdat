@@ -751,3 +751,28 @@ Some trailing prose that is not a bullet.
     (testing "the acceptance and plan questions seal theirs too"
       (is (re-find #"<material-[0-9a-f]+>" (judge/yesno-prompt {:question "q" :answer attack})))
       (is (re-find #"<material-[0-9a-f]+>" (judge/plan-prompt {:requirement "r" :plan attack}))))))
+
+;; --- vetoes on the diff, before any judge (karamazov-0e2c.5) ----------------------
+
+(deftest a-disabled-test-is-vetoed-before-the-judge-is-asked
+  (let [diff (str "diff --git a/test/x_test.clj b/test/x_test.clj\n"
+                  "--- a/test/x_test.clj\n+++ b/test/x_test.clj\n"
+                  "@@ -1,3 +1,3 @@\n"
+                  " (ns x-test)\n"
+                  "-(deftest parses\n"
+                  "+#_ (deftest parses\n"
+                  "   (is (= 1 (parse \"1\"))))\n")
+        v (judge/diff-veto diff)]
+    (is (= :disabled-test (:id v)))
+    (is (str/includes? (str (:line v)) "(deftest"))
+    (testing "whitespace between the tokens does not get it through"
+      (is (some? (judge/diff-veto (str/replace diff "#_ (deftest" "#_\t(deftest"))))
+      (is (some? (judge/diff-veto (str/replace diff "#_ (deftest" "#_(deftest")))))
+    (testing "only what the run ADDED: a removed or unchanged line is not its doing"
+      (is (nil? (judge/diff-veto (str "diff --git a/t b/t\n--- a/t\n+++ b/t\n@@ -1 +1 @@\n"
+                                      "-#_(deftest old\n #_(deftest kept\n+(deftest new\n")))))
+    (testing "the deterministic gate reports it, ahead of the judge"
+      (is (str/includes? (str (judge/deterministic-block "done" [] #{} diff)) "deftest")))
+    (testing "and an assertion switched off"
+      (is (= :disabled-assertion
+             (:id (judge/diff-veto "diff --git a/t b/t\n+++ b/t\n+  #_(is (= 1 2))\n")))))))

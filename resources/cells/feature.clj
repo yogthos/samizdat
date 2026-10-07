@@ -308,17 +308,19 @@
               ;; Ground truth first: a done with no diff is not a completed
               ;; feature, whatever the workers claimed. This bounces before the
               ;; LLM judge is even paid for.
+              ;; Structural for Clojure, cosmetic files named not shown; and
+              ;; checked for a test switched off before any judge is paid.
+              diff (gitdiff/review-diff root git-baseline (gitdiff/max-diff-chars))
               det (or (when (hollow? ctx)
                         "no files were changed — the implementors called done but the working tree is unchanged, so nothing was actually built")
-                      (judge/deterministic-block answer rows (tools/tool-names)))
+                      (judge/deterministic-block answer rows (tools/tool-names) diff))
               ;; {:decision :verdict :findings}: the judge's verdict and its
               ;; findings come out beside the decision so the note can carry
               ;; them (karamazov-3htz).
               judged
               (if det
                 {:decision :revise}
-                (let [diff (gitdiff/review-diff root git-baseline (gitdiff/max-diff-chars))
-                      ;; THE REQUIREMENT is the feature the run was asked
+                (let [;; THE REQUIREMENT is the feature the run was asked
                       ;; for. This passed the pre-requirement keys (:rules,
                       ;; the answer as :transcript), so the judge's
                       ;; requirement section rendered empty (karamazov-iev2).

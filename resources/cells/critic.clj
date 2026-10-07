@@ -87,16 +87,17 @@
       (if (>= attempts max-critic-attempts)
         (ship data)
         (let [rows (map parse-args (journal/turns conn run-id))
+              ;; Structural for Clojure, cosmetic files named not shown; and
+              ;; checked for a test switched off before the judge is paid.
+              diff (gitdiff/review-diff root git-baseline (gitdiff/max-diff-chars))
               det (judge/deterministic-block (:final-answer branch) rows
-                                              (tools/tool-names))]
+                                              (tools/tool-names) diff)]
           (if det
             ;; A cheap, specific gate fired — block without paying for the judge.
             (do (note! {:verdict :deterministic :blocked true
                         :reason (judge/for-the-record :reply-chars det)})
                 (revise data branch (str "[critic] " det) (inc attempts)))
             (let [evidence (judge/evidence rows)
-                  ;; Structural for Clojure, cosmetic files named not shown.
-                  diff (gitdiff/review-diff root git-baseline (gitdiff/max-diff-chars))
                   prompt (judge/critic-prompt {;; WHAT WAS ASKED, which this
                                                ;; never used to carry: the
                                                ;; critic was asked whether the

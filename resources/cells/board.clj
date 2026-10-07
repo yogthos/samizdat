@@ -1129,7 +1129,7 @@
           ;; run is worse than no gate (the reasoning behind feature.clj's
           ;; `safely`, which this cell sits inside when nested).
           det (when landed?
-                (try (judge/deterministic-block answer rows (tools/tool-names))
+                (try (judge/deterministic-block answer rows (tools/tool-names) diff)
                      (catch Throwable _ nil)))
           ;; WHAT THE TASK ASKED FOR, in the judge's own requirement slot.
           ;; This call still passed the pre-requirement keys (:rules and

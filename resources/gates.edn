@@ -900,6 +900,32 @@
         HARNESS_TURN_DEADLINE_MS still overrides, for an operator who needs it
         for one run without editing the project's policy."}
 
+ :judge-vetoes
+ {:value [{:id :disabled-test :phrase "#_ (deftest"
+           :why "A test commented out with #_ no longer runs, so it can no longer fail."}
+          {:id :disabled-assertion :phrase "#_ (is"
+           :why "An assertion commented out with #_ no longer checks anything."}
+          {:id :commented-test :phrase "(comment (deftest"
+           :why "A test inside (comment ...) is never run."}
+          {:id :skipped-pytest :phrase "@pytest.mark.skip"
+           :why "A skipped test no longer runs."}
+          {:id :skipped-js-test :phrase "it.skip("
+           :why "A skipped test no longer runs."}
+          {:id :skipped-js-suite :phrase "describe.skip("
+           :why "A skipped suite no longer runs."}
+          {:id :ignored-rust-test :phrase "#[ignore]"
+           :why "An ignored test no longer runs."}
+          {:id :skipped-go-test :phrase "t.Skip("
+           :why "A skipped test no longer runs."}]
+  :kind :policy :capability-tunable? false
+  :doc "Lines a run may not ADD to its diff without saying why: each switches
+        off a test or an assertion, which turns a red suite green without
+        fixing anything. Checked before any judge is asked (judge/diff-veto,
+        from judge/deterministic-block), whitespace-insensitively between the
+        phrase's tokens. A hit sends the branch back with :why
+        (prompts/judge-veto.md)."
+  :provenance ["karamazov-0e2c.5"]}
+
  :critic-consensus
  {:value {:samples 3}
   :kind :cost-ceiling :capability-tunable? false
