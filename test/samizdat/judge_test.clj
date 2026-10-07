@@ -822,3 +822,50 @@ Some trailing prose that is not a bullet.
         (is (:inconclusive? r))))
     (testing "everything decided is never inconclusive"
       (is (not (:inconclusive? (run (crit 1 1) ["YES" "NO"])))))))
+
+;; --- rubrics as data, mandatory criteria (karamazov-0e2c.8) ----------------------------
+
+(deftest a-mandatory-criterion-vetoes-the-weighted-score
+  (is (= {:criterion "parses nested fences" :weight 1.0 :kind :positive :mandatory? true}
+         (first (judge/parse-criteria "## Acceptance criteria\n- [!] parses nested fences\n"))))
+  (is (= 3.0 (:weight (first (judge/parse-criteria "## Acceptance criteria\n- [3!] streams\n")))))
+  (let [criteria [{:criterion "a" :weight 1.0 :kind :positive}
+                  {:criterion "b" :weight 1.0 :kind :positive}
+                  {:criterion "c" :weight 1.0 :kind :positive}
+                  {:criterion "must" :weight 0.1 :kind :positive :mandatory? true}]
+        answers (atom ["YES" "YES" "YES" "NO"])
+        r (judge/review-rubric {:chat (fn [_] (let [a (first @answers)] (swap! answers rest) a))
+                                :criteria criteria :answer "x" :threshold 0.7})]
+    (is (> (:reward r) 0.9) "the weighted score alone would pass")
+    (is (not (:pass? r)) "a mandatory criterion not met fails it")
+    (is (str/includes? (:findings r) "must"))))
+
+(deftest a-rubric-table-is-checked-for-its-shape
+  (is (nil? (judge/rubric-problems
+             {:critic {:dimensions [{:id :x :question "q?" :mandatory true
+                                     :examples [{:verdict :fail :snippet "s" :rationale "r"}]}]}})))
+  (is (some? (judge/rubric-problems {:critic {:dimensions [{:id :x}]}})) "a dimension needs a question")
+  (is (some? (judge/rubric-problems {:critic {:dimensions [{:id :x :question "q"
+                                                            :examples [{:verdict :maybe}]}]}}))
+      "an example is a pass or a fail")
+  (is (some? (judge/rubric-problems {:critic {}})) "a rubric has dimensions")
+  (is (nil? (judge/rubric-problems (clojure.edn/read-string (slurp (io/resource "rubrics.edn")))))
+      "the shipped table passes its own check"))
+
+(deftest the-critic-is-shown-its-rubric-with-worked-failures
+  (let [p (judge/critic-prompt {:requirement "r" :answer "a"})
+        table (clojure.edn/read-string (slurp (io/resource "rubrics.edn")))
+        d (first (get-in table [:critic :dimensions]))]
+    (is (str/includes? p (:question d)))
+    (is (str/includes? p (:snippet (first (:examples d)))))))
+
+(deftest a-broken-rubric-is-refused-at-save
+  (let [c (db/open! ":memory:")]
+    (try
+      (samizdat.userspace/bind! c)
+      (let [r (tools/run-tool {:branch {:id "SUP"} :conn c :tool-name "policy"
+                               :args {:action "save" :name "rubrics" :rationale "test"
+                                      :edn "{:critic {:dimensions [{:id :x}]}}"}})]
+        (is (not= :success (:category r)) (:result r))
+        (is (re-find #"(?i)question" (str (:result r))) (:result r)))
+      (finally (samizdat.userspace/unbind!) (db/close c)))))

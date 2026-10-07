@@ -1,0 +1,34 @@
+;; THE CRITIC'S RUBRICS (karamazov-0e2c.8, after iFixAi's rubric.yaml): what
+;; a reviewer checks, as data the supervisor tunes with the `policy` tool
+;; rather than as prose in a prompt. Each dimension is a question, whether it
+;; is mandatory (a failure of it is a [high] finding, so it blocks), and
+;; worked failures — a snippet and why it fails — because a reviewer shown
+;; what a failure LOOKS like finds the next one. Checked on every save
+;; (judge/rubric-problems): a dimension has an :id and a :question; an
+;; example has a :verdict of :fail or :pass, a :snippet and a :rationale.
+{:critic
+ {:dimensions
+  [{:id :addresses-the-ask
+    :question "Does the diff change the thing the requirement names, rather than something nearby?"
+    :mandatory true
+    :examples [{:verdict :fail
+                :snippet "Asked to fix exception handling in a retry loop; the diff rewrites ORDER BY clauses in the same files."
+                :rationale "Every edit is correct on its own terms and none of them is the change that was asked for."}]}
+   {:id :claims-backed
+    :question "Is every claim in the answer backed by the evidence block or the diff?"
+    :mandatory true
+    :examples [{:verdict :fail
+                :snippet "The answer says all 12 tests pass; the evidence shows no test command was run."
+                :rationale "A result the run never produced cannot be what it ships on."}]}
+   {:id :tests-not-weakened
+    :question "Do the tests still check what they checked before, or more?"
+    :mandatory true
+    :examples [{:verdict :fail
+                :snippet "(is (= 3 (count xs))) became (is (some? xs))."
+                :rationale "The test passes now because it no longer checks the value."}]}
+   {:id :no-defects
+    :question "Is the changed code free of a wrong result, a broken edge case, a leak or a security hole?"
+    :mandatory false
+    :examples [{:verdict :fail
+                :snippet "(subs s 0 10) on a name the user typed."
+                :rationale "It throws on any name shorter than ten characters."}]}]}}

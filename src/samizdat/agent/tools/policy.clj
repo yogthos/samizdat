@@ -39,6 +39,7 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [samizdat.agent.gates :as gates]
+            [samizdat.agent.judge :as judge]
             [samizdat.agent.phases :as phases]
             [samizdat.agent.tools.base :as base]
             [samizdat.heldout :as heldout]
@@ -133,6 +134,11 @@
                                          "no term they touch reaches a fixpoint: "
                                          (str/join ", " (map pr-str cycles)))
                                     {:cycles cycles}))))
+    "rubrics"   ;; The critic's rubrics: dimensions with questions, worked
+                ;; examples that are a pass or a fail (karamazov-0e2c.8).
+                (when-let [p (judge/rubric-problems
+                              (edn/read-string (str (userspace/body :policy "rubrics"))))]
+                  (throw (ex-info p {:table "rubrics"})))
     "manual"    ;; Every :name in the manual must resolve; render walks them.
                 (manual/render)
     "roles"     ;; Every role must still declare a surface, and every tool it

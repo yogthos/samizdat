@@ -37,9 +37,11 @@
   prompts/ and change the reader here, in the same edit. That pairing is why
   they are not policy in their own right, and why a project retuning what the
   judge is told to say has to touch both."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [samizdat.agent.gates :as gates]
             [samizdat.lexicon :as lexicon]
+            [samizdat.userspace :as userspace]
             [samizdat.llm.message :as message]
             [samizdat.prompt :as prompt]
             [samizdat.util :as util]))
@@ -441,6 +443,45 @@
   []
   (prompt/prompt "judge"))
 
+(defn rubric-problems
+  "Why `table` is not a rubrics table (karamazov-0e2c.8), as a sentence, or
+  nil: each rubric has :dimensions; each dimension an :id and a :question;
+  each worked example a :verdict of :fail or :pass, a :snippet and a
+  :rationale."
+  [table]
+  (cond
+    (not (map? table)) "a rubrics table is a map of rubric name to rubric"
+    :else
+    (first
+     (for [[rname {:keys [dimensions]}] table
+           p (cons (when-not (and (sequential? dimensions) (seq dimensions))
+                     (str rname " has no :dimensions"))
+                   (for [{:keys [id question examples] :as d} dimensions
+                         p (cons (when-not (and (keyword? id) (not (str/blank? (str question))))
+                                   (str rname " has a dimension without an :id and a :question: " (pr-str d)))
+                                 (for [{:keys [verdict snippet rationale] :as e} examples
+                                       :when (not (and (#{:fail :pass} verdict)
+                                                       (not (str/blank? (str snippet)))
+                                                       (not (str/blank? (str rationale)))))]
+                                   (str rname " " id " has an example that is not {:verdict :fail|:pass :snippet :rationale}: "
+                                        (pr-str e))))
+                         :when p]
+                     p))
+           :when p]
+       p))))
+
+(defn- rubric-block
+  "The critic rubric from the project's rubrics.edn as the prompt's
+  checklist, or nil when the project has none."
+  [rubric-name]
+  (when-let [{:keys [dimensions]} (try (get (edn/read-string (str (userspace/body :policy "rubrics")))
+                                            rubric-name)
+                                       (catch Throwable _ nil))]
+    (prompt/render "critic-rubric"
+                   {:dimensions (mapv (fn [d] (update d :examples
+                                                      (fn [es] (mapv #(assoc % :fail (= :fail (:verdict %))) es))))
+                                      dimensions)})))
+
 (defn critic-prompt
   "The critic's user message: THE REQUIREMENT, the diff of what the run
   changed, the deterministic evidence, and the answer under review.
@@ -461,6 +502,7 @@
     (prompt/render
      "judge-user"
      {:sealed sealed
+      :rubric (rubric-block :critic)
       :requirement (one-line requirement (:judge-rules-chars budget))
       :evidence (seal evidence)
       :diff (seal diff)
@@ -848,13 +890,18 @@
   [rfc]
   (into []
         (map (fn [line]
-               (if-let [[_ mark rest] (re-matches #"(?s)\[\s*(x?-?[0-9]+(?:\.[0-9]+)?)\s*\]\s*(.+)" line)]
-                 (let [mult? (str/starts-with? mark "x")
-                       n (Double/parseDouble (if mult? (subs mark 1) mark))]
-                   (cond
-                     mult? {:criterion (str/trim rest) :weight (Math/abs n) :kind :multiplicative}
-                     (neg? n) {:criterion (str/trim rest) :weight (- n) :kind :deduction}
-                     :else {:criterion (str/trim rest) :weight n :kind :positive}))
+               (if-let [[_ mark bang rest] (re-matches #"(?s)\[\s*(x?-?[0-9]+(?:\.[0-9]+)?)?\s*(!)?\s*\]\s*(.+)" line)]
+                 (let [mark (or mark "1")
+                       mult? (str/starts-with? mark "x")
+                       n (Double/parseDouble (if mult? (subs mark 1) mark))
+                       ;; `[!]` / `[3!]`: MANDATORY — not met fails the
+                       ;; rubric whatever the weighted score (karamazov-0e2c.8).
+                       must (fn [m] (cond-> m bang (assoc :mandatory? true)))]
+                   (must
+                    (cond
+                      mult? {:criterion (str/trim rest) :weight (Math/abs n) :kind :multiplicative}
+                      (neg? n) {:criterion (str/trim rest) :weight (- n) :kind :deduction}
+                      :else {:criterion (str/trim rest) :weight n :kind :positive})))
                  {:criterion line :weight 1.0 :kind :positive})))
         (section-bullets rfc (re-pattern (:heading-regex (gates/threshold :rubric))))))
 
@@ -924,13 +971,17 @@
                          (or (and (= :positive kind) (false? rating))
                              (and (not= :positive kind) (true? rating))))
                        ratings)
-        line (fn [{:keys [criterion kind reply]}]
+        ;; A mandatory criterion rated NOT met vetoes the weighted score.
+        vetoed? (some #(and (:mandatory? %) (false? (:rating %))) ratings)
+        line (fn [{:keys [criterion kind reply mandatory?]}]
                (str "- [rubric] "
-                    (if (= :positive kind) "not met: " "penalty: ")
+                    (cond mandatory? "[high] mandatory, not met: "
+                          (= :positive kind) "not met: "
+                          :else "penalty: ")
                     criterion
                     (when-let [r (some-> reply str/trim not-empty)]
                       (str " — " (first (str/split-lines r))))))]
-    (let [pass? (or (nil? reward) (>= reward (double threshold)))
+    (let [pass? (and (not vetoed?) (or (nil? reward) (>= reward (double threshold))))
           ;; THE PASS, IF EVERY UNDECIDED RATING HAD GONE AGAINST IT
           ;; (karamazov-0e2c.7, after iFixAi's unscored_pass): an undecided
           ;; positive unmet, an undecided penalty fired. When that would not

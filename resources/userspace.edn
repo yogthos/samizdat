@@ -39,6 +39,7 @@
    :phases "phases.edn"
    :prompt-chain "prompt-chain.edn"
    :roles "roles.edn"
+   :rubrics "rubrics.edn"
    :rules "rules.edn"
    :wordlists "wordlists.edn"}
 
@@ -202,6 +203,7 @@
    :judge-sealed "prompts/judge-sealed.md"
    :judge-veto "prompts/judge-veto.md"
    :rubric-inconclusive "prompts/rubric-inconclusive.md"
+   :critic-rubric "prompts/critic-rubric.md"
    :split-decision "prompts/split-decision.md"
    :split-tool "prompts/split-tool.md"
    :stale-write "prompts/stale-write.md"

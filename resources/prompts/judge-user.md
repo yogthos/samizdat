@@ -4,7 +4,8 @@
 
 {{requirement}}
 
-## Evidence (deterministic facts about the run)
+{% if rubric %}{{rubric}}
+{% endif %}## Evidence (deterministic facts about the run)
 
 {{evidence}}
 {% if diff %}

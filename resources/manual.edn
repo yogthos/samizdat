@@ -145,6 +145,8 @@
     :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
    {:name samizdat.security.token/issue!
     :summary "The HTTP API's bearer token: issued when the server starts, written owner-only to ~/.config/samizdat/http/<port>.token (a place no shell command or eval image can read), required on every request but /health, dropped on stop. samizdat.api.client and the event stream send it for a loopback base URL."}
+   {:name samizdat.agent.judge/rubric-problems
+    :summary "rubrics.edn (policy role :rubrics) holds the critic's rubric as data: dimensions with a :question, :mandatory (a failure is a [high] finding) and worked :examples {:verdict :fail|:pass :snippet :rationale}, rendered into the critic prompt; a save is refused unless it has that shape. In an RFC's acceptance criteria, [!] or [3!] marks a criterion mandatory: not met fails the rubric whatever the weighted score."}
    {:name samizdat.agent.judge/diff-veto
     :summary "Lines a run may not add without saying why — a test or assertion switched off (#_ (deftest, (comment (deftest, pytest skip, it.skip, #[ignore], t.Skip) — from gates.edn :judge-vetoes, matched whitespace-insensitively on the diff's added lines and checked in judge/deterministic-block before any judge is paid."}
    {:name samizdat.agent.judge/consensus
