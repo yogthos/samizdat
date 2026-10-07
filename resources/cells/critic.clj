@@ -14,6 +14,7 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [mycelium.cell :as cell]
+            [samizdat.agent.gates :as gates]
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.judge :as judge]
             [samizdat.agent.loop :as turn]
@@ -107,16 +108,20 @@
                                                :evidence evidence
                                                :diff diff
                                                :answer (:final-answer branch)})
-                  reply (try (:content (llm/chat llm-adapter llm-config
-                                                 [{:role "user" :content prompt}]))
-                             (catch Throwable _ nil))
-                  verdict (if reply (judge/parse-verdict reply) :complete)
+                  ;; CONSENSUS (karamazov-0e2c.3): gates.edn
+                  ;; :critic-consensus :samples asks; the majority of the
+                  ;; samples that answered decides, and the split is kept.
                   ;; A COMPLETE verdict still blocks on a critical/high finding.
-                  blocking (when reply (judge/blocking-findings reply))]
+                  {:keys [pass? verdict blocking reply split]}
+                  (judge/consensus
+                   #(:content (llm/chat llm-adapter llm-config
+                                        [{:role "user" :content prompt}]))
+                   (or (:samples (gates/threshold :critic-consensus)) 1))]
               (note! {:verdict verdict
-                      :blocked (or (not= :complete verdict) (boolean blocking))
+                      :blocked (not pass?)
+                      :split split
                       :findings (judge/for-the-record :reply-chars (judge/findings reply))})
-              (if (and (= :complete verdict) (not blocking))
+              (if pass?
                 (ship data)
                 (revise data branch
                         (if (= :complete verdict)

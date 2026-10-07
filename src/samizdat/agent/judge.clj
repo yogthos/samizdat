@@ -427,6 +427,44 @@
      {:requirement (one-line requirement (:judge-rules-chars budget))
       :plan (str plan)})))
 
+(declare blocking-findings)
+
+(defn consensus
+  "Ask the critic `n` times (`ask` returns a reply or nil) and take the
+  majority of the samples that ANSWERED, after iFixAi's judge_consensus
+  (karamazov-0e2c.3): one sample is one point of noise, and the record of the
+  split says how sure the gate was.
+
+  A sample passes when its verdict is :complete and it names no blocking
+  finding. One that errored or came back empty is unscored — not a vote — and
+  the published reasoning is a reply that parsed and agrees with the outcome,
+  so one bad parse cannot hide a demonstrated fail. A tie does not pass. Every
+  sample failing is the single critic's fail-open: a judge that cannot answer
+  must not wedge the loop.
+
+  Returns {:pass? :verdict :blocking :reply :split {:passes :total :errors}}.
+  Asks one after another: a local server serves one generation at a time."
+  [ask n]
+  (let [samples (loop [i 0 acc []]
+                  (if (< i (max 1 (long n)))
+                    (let [r (try (ask) (catch Throwable _ nil))
+                          ok? (not (str/blank? (usable r)))
+                          v (when ok? (parse-verdict r))
+                          b (when ok? (blocking-findings r))]
+                      (recur (inc i) (conj acc {:reply r :scored? ok? :verdict v :blocking b
+                                                :pass? (and ok? (= :complete v) (nil? b))})))
+                    acc))
+        scored (filter :scored? samples)
+        passes (count (filter :pass? scored))
+        total (count scored)
+        pass? (or (zero? total) (> (* 2 passes) total))
+        chosen (first (filter #(= pass? (:pass? %)) scored))]
+    {:pass? pass?
+     :verdict (or (:verdict chosen) :complete)
+     :blocking (:blocking chosen)
+     :reply (:reply chosen)
+     :split {:passes passes :total total :errors (- (count samples) total)}}))
+
 (defn blocking-findings
   "The findings a review blocks on. Returns the whole findings text when any
   finding carries a blocking severity, else nil.

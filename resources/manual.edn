@@ -145,6 +145,8 @@
     :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
    {:name samizdat.security.token/issue!
     :summary "The HTTP API's bearer token: issued when the server starts, written owner-only to ~/.config/samizdat/http/<port>.token (a place no shell command or eval image can read), required on every request but /health, dropped on stop. samizdat.api.client and the event stream send it for a loopback base URL."}
+   {:name samizdat.agent.judge/consensus
+    :summary "The ship-gate critic asked gates.edn :critic-consensus :samples times: the majority of the samples that answered decides, the split {:passes :total :errors} is journaled on the :critic note, an errored sample is not a vote, a tie does not pass, and all failing is the usual fail-open."}
    {:name samizdat.agent.gitdiff/review-diff
     :summary "What a critic reads of a run's changes: sdiff's structural report of the changed Clojure files (each change named by the binding, clause or arity it lives in, renames rolled up, whitespace- or comment-only files named) and then the line diff of the rest. gates.edn :review-diff; samizdat.sdiff is sdiff (semantic-namespace/diff) ported."}
    {:name samizdat.sdiff.core/file-report

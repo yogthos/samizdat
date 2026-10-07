@@ -685,3 +685,37 @@ Some trailing prose that is not a bullet.
     (is (str/includes? (str out) "the constants are not in the diff"))
     (is (not (str/includes? (str out) "But wait")) "the deliberation is not a finding")
     (is (not (str/includes? (str out) "Looking at the first")))))
+
+;; --- consensus at the ship gate (karamazov-0e2c.3) ------------------------------
+
+(defn- scripted [& replies]
+  (let [q (atom (vec replies))]
+    (fn [] (let [r (first @q)] (swap! q (comp vec rest)) r))))
+
+(deftest consensus-is-the-majority-of-the-samples-that-answered
+  (let [ok "VERDICT: COMPLETE\nFINDINGS: none"
+        no "VERDICT: INCOMPLETE\nFINDINGS: the parser is not wired"
+        high "VERDICT: COMPLETE\nFINDINGS: [high] the cache is never invalidated"]
+    (testing "two of three"
+      (let [r (judge/consensus (scripted ok no ok) 3)]
+        (is (:pass? r))
+        (is (= {:passes 2 :total 3 :errors 0} (:split r)))))
+    (testing "a blocking finding counts against, like a verdict"
+      (let [r (judge/consensus (scripted high no ok) 3)]
+        (is (not (:pass? r)))
+        (is (= {:passes 1 :total 3 :errors 0} (:split r)))))
+    (testing "a sample that errored is unscored, not a vote, and the published
+              reasoning is one that parsed"
+      (let [r (judge/consensus (scripted nil no no) 3)]
+        (is (not (:pass? r)))
+        (is (= {:passes 0 :total 2 :errors 1} (:split r)))
+        (is (= no (:reply r)))))
+    (testing "a tie does not pass: the doubt goes to the critic"
+      (is (not (:pass? (judge/consensus (scripted nil ok no) 3)))))
+    (testing "every sample failing is the single critic's fail-open"
+      (let [r (judge/consensus (scripted nil nil nil) 3)]
+        (is (:pass? r))
+        (is (= {:passes 0 :total 0 :errors 3} (:split r)))))
+    (testing "one sample is what the gate always did"
+      (is (:pass? (judge/consensus (scripted ok) 1)))
+      (is (not (:pass? (judge/consensus (scripted no) 1)))))))

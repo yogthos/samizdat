@@ -900,6 +900,18 @@
         HARNESS_TURN_DEADLINE_MS still overrides, for an operator who needs it
         for one run without editing the project's policy."}
 
+ :critic-consensus
+ {:value {:samples 3}
+  :kind :cost-ceiling :capability-tunable? false
+  :doc "How many times the ship-gate critic (cells/critic.clj) is asked
+        before a branch ships. The majority of the samples that answered
+        decides and the split is journaled with the verdict, so one noisy
+        call neither ships nor blocks a branch on its own; a sample that
+        errored is not a vote, a tie does not pass, and every sample failing
+        is the single critic's fail-open. 1 is one call, as before. Each
+        sample is a full critic call: this multiplies the gate's cost."
+  :provenance ["karamazov-0e2c.3"]}
+
  :review-diff
  {:value {:structural? true :structural-chars 6000}
   :kind :threshold :capability-tunable? false
