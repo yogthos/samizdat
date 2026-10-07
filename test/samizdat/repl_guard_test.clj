@@ -8,9 +8,12 @@
   teardown or process disposal calls exit. Reproduced directly — an eval of
   `(System/exit 0)` ends the process, and the line after it never runs
   (karamazov-1xx)."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
+            [samizdat.approval]
             [samizdat.repl :as repl]
-            [samizdat.repl.guard :as guard]))
+            [samizdat.repl.guard :as guard]
+            [samizdat.repl.route]))
 
 (defn- forms [s] (read-string (str "[" s "\n]")))
 
@@ -127,3 +130,39 @@
 (deftest the-exit-refusal-names-its-rule
   (let [r (repl/eval-code "(System/exit 0)")]
     (is (re-find #"process-exit" (str (:error r))))))
+
+;; --- a harness eval's effects, read before it runs (karamazov-0e2c.21) --------------
+
+(deftest the-effects-of-a-harness-eval-are-read-before-it-runs
+  ;; After xi's scan-code: the literal processes, writes and requests a form
+  ;; would make, so a person is asked once, with the list, before it runs.
+  (is (= [{:kind :process :call "clojure.java.shell/sh" :target "rm"}]
+         (guard/effects '(clojure.java.shell/sh "rm" "-rf" "build"))))
+  (is (= [{:kind :write :call "spit" :target "resources/prompts/system.md"}]
+         (guard/effects '(spit "resources/prompts/system.md" "x"))))
+  (is (= :network (:kind (first (guard/effects '(jolt.http-client/get "https://x.example"))))))
+  (is (empty? (guard/effects '(defn later [] (spit "x" "y"))))
+      "defining a thing that writes is not writing")
+  (is (empty? (guard/effects '(->> (samizdat.store.journal/turns conn "R") (take 3))))
+      "reading the run is the supervisor's job"))
+
+(deftest a-harness-eval-with-effects-is-a-persons-call
+  (let [ran (atom 0)
+        ctx {:root "/tmp" :role :supervisor :run-id "R"}]
+    (with-redefs [samizdat.repl/eval-code (fn [& _] (swap! ran inc) {:ok true :value "nil"})]
+      (testing "under refuse it does not run, and says what to use"
+        (with-redefs [samizdat.approval/policy (constantly {:mode :refuse})]
+          (let [r (samizdat.repl.route/eval-for ctx "(spit \"notes.txt\" \"x\")" nil 1000)]
+            (is (not (:ok r)))
+            (is (re-find #"(?i)write_file|shell" (str (:error r))))
+            (is (zero? @ran)))))
+      (testing "a form with no effects runs as before"
+        (with-redefs [samizdat.approval/policy (constantly {:mode :refuse})]
+          (is (:ok (samizdat.repl.route/eval-for ctx "(+ 1 2)" nil 1000)))))
+      (testing "under block a person sees the effects, once"
+        (let [asked (atom nil)]
+          (with-redefs [samizdat.approval/policy (constantly {:mode :block :wait-ms 1 :on-timeout :deny})
+                        samizdat.approval/request! (fn [q] (reset! asked q) "id")
+                        samizdat.approval/await! (fn [_ _ _] {:decision :allow})]
+            (is (:ok (samizdat.repl.route/eval-for ctx "(spit \"notes.txt\" \"x\")" nil 1000)))
+            (is (str/includes? (str (:input @asked)) "notes.txt"))))))))

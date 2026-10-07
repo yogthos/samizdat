@@ -86,6 +86,34 @@
   and refusing those would refuse the whole point of the role."
   #"(^|/)src/")
 
+(def effect-calls
+  "Calls whose effect leaves the evaluation, by kind (karamazov-0e2c.21,
+  after xi's scan-code): starting a process, putting bytes on disk or moving
+  them, reaching the network. Read before a harness-image eval runs."
+  {:process '#{clojure.java.shell/sh sh shell/sh jolt.process/sh process/sh
+               proc/run samizdat.engine.proc/run babashka.process/process
+               babashka.process/shell ProcessBuilder. java.lang.ProcessBuilder.}
+   :write '#{spit clojure.java.io/copy io/copy write-lines fs/write-lines jolt.fs/spit fs/spit
+             fs/delete fs/delete-if-exists jolt.fs/delete jolt.fs/delete-if-exists
+             fs/move jolt.fs/move fs/copy jolt.fs/copy fs/create-dirs jolt.fs/create-dirs}
+   :network '#{http/get http/post http/request jolt.http-client/get jolt.http-client/post
+               jolt.http-client/request clj-http.client/get clj-http.client/post}})
+
+(declare executed-subforms)
+
+(defn effects
+  "The effects `form` would have when evaluated — definition bodies left out,
+  as for exits — as [{:kind :call :target}], target the call's first literal
+  string argument, or nil when there is none to show."
+  [form]
+  (let [kind-of (into {} (for [[k syms] effect-calls s syms] [s k]))]
+    (vec (for [x (executed-subforms form)
+               :when (and (seq? x) (symbol? (first x)))
+               :let [k (kind-of (first x))]
+               :when k]
+           {:kind k :call (str (first x))
+            :target (first (filter string? (rest x)))}))))
+
 (defn- call?
   [x]
   (and (seq? x) (symbol? (first x))))

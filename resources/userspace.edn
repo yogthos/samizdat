@@ -211,6 +211,7 @@
    :change-groups "prompts/change-groups.md"
    :eval-hint "prompts/eval-hint.md"
    :grant-proposal "prompts/grant-proposal.md"
+   :harness-eval-effects "prompts/harness-eval-effects.md"
    :split-decision "prompts/split-decision.md"
    :split-tool "prompts/split-tool.md"
    :stale-write "prompts/stale-write.md"

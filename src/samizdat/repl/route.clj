@@ -44,6 +44,7 @@
             [jolt.fs :as fs]
             [clojure.tools.logging :as log]
             [samizdat.config :as config]
+            [samizdat.approval :as approval]
             [samizdat.prompt :as prompt]
             [samizdat.repl :as repl]
             [samizdat.repl.guard :as guard]
@@ -204,7 +205,27 @@
                   :error (prompt/render "kernel-write-refused"
                                         {:rule (name (:rule hit))
                                          :on (str (:on hit))})}
-                 (repl/eval-code code session timeout))
+                 ;; WHAT IT WOULD DO OUTSIDE ITSELF, read first
+                 ;; (karamazov-0e2c.21, after xi's scan-code): a process, a
+                 ;; write, a request from inside the harness skips every
+                 ;; check the shell and file tools make. A person decides it
+                 ;; under :block, yolo lets it, :refuse sends it to the tools
+                 ;; that are checked.
+                 (let [effs (guard/effects (try (read-string (str "(do " code "\n)"))
+                                                (catch Exception _ nil)))]
+                   (if (empty? effs)
+                     (repl/eval-code code session timeout)
+                     (let [listed (str/join "\n" (map #(str (name (:kind %)) ": " (:call %)
+                                                            (some->> (:target %) (str " "))) effs))
+                           d (approval/resolve-ask ctx {:effect :ask :head "eval" :complex? true
+                                                        :input listed
+                                                        :reason "harness eval with effects"})]
+                       (if (= :allow (:effect d))
+                         (repl/eval-code code session timeout)
+                         {:ok false :error-type "harness-effects" :policy-refusal? true
+                          :error (prompt/render "harness-eval-effects"
+                                                {:effects listed
+                                                 :unanswered (:timed-out d)})})))))
       ;; NO ROOT, NO IMAGE. Confinement is defined relative to the project, so
       ;; a ctx that never said which project cannot be confined to it: the
       ;; profile came out with no writable project root and the subprocess
