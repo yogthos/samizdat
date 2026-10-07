@@ -222,6 +222,13 @@
                    comes back as it was: a bound on a loop, not a decision
                    (karamazov-0e2c.11)."}}
 
+   "src/samizdat/sdiff/names.clj"
+   {:vocabulary {"(^|/)test/|_test\\.clj"
+                 "Which files are tests, so their aliases (SUT) do not name
+                  namespaces: ported from sdiff (karamazov-0e2c.16)."}
+    :threshold {3 "sdiff's namespaces of three or more segments are the ones
+                   worth shortening; ported as written (karamazov-0e2c.16)."}}
+
    "src/samizdat/sdiff/core.clj"
    {:vocabulary {"\\.(clj|cljs|cljc|edn|bb)$"
                  "Which files are Clojure source: the language's extensions,

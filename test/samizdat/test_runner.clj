@@ -187,6 +187,7 @@
             [samizdat.security.token-test]
             [samizdat.sdiff.core-test]
             [samizdat.sdiff.address-test]
+            [samizdat.sdiff.names-test]
             [samizdat.llm-fallback-test]
             [samizdat.injection-probe-test]
             [samizdat.perturb-test]
@@ -417,6 +418,7 @@
     samizdat.security.token-test
     samizdat.sdiff.core-test
     samizdat.sdiff.address-test
+    samizdat.sdiff.names-test
     samizdat.llm-fallback-test
     samizdat.injection-probe-test
     samizdat.perturb-test

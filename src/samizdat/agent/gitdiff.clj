@@ -12,6 +12,7 @@
   (:require [clojure.string :as str]
             [samizdat.engine.proc :as proc]
             [samizdat.sdiff.core :as sdiff]
+            [samizdat.sdiff.names :as names]
             [samizdat.sdiff.text :as sdiff-text]
             [samizdat.lexicon :as lexicon]
             [samizdat.security.secrets :as secrets]))
@@ -268,6 +269,15 @@
                                 files))
             report (when (seq files)
                      (let [t (str/trim (sdiff-text/report-text {:clj files :renames renames}))
+                           ;; Long paths and namespaces shortened, with a
+                           ;; legend, only where it saves more than the legend
+                           ;; costs (sdiff names, karamazov-0e2c.16). The
+                           ;; critic reads this and calls no tool with it.
+                           names (try (names/used (names/table {:clj files :other []}) t)
+                                      (catch Throwable _ nil))
+                           t (if (or (seq (:paths names)) (seq (:nss names)))
+                               (str (names/legend-text names) (names/shorten-text names t))
+                               t)
                            n (long (or structural-chars cap))]
                        (if (> (count t) n) (str (subs t 0 n) "\n…") t)))
             lines (diff root baseline cap cosmetic)]
