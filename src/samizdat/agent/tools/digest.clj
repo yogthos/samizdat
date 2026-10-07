@@ -105,15 +105,17 @@
       :else
       (let [resolved (for [p paths]
                        {:path p :abs (files/resolve-read! ctx refs p)})
-            outside (first (remove :abs resolved))
-            missing (first (filter #(and (:abs %) (not (fs/exists? (:abs %)))) resolved))
+            ;; EVERY path it cannot read, named at once (karamazov-0e2c.13):
+            ;; naming the first sent the model back one path at a time.
+            outside (not-empty (remove :abs resolved))
+            missing (not-empty (filter #(and (:abs %) (not (fs/exists? (:abs %)))) resolved))
             ;; A directory was slurped, and the branch read the host's
             ;; "(Is a directory)" — named here, with the move that works.
             directory (first (filter #(and (:abs %) (.isDirectory (java.io.File. (str (:abs %)))))
                                      resolved))]
         (cond
-          outside (base/malformed branch (msg {:outside-root true :path (:path outside)}))
-          missing (base/malformed branch (msg {:missing true :path (:path missing)}))
+          outside (base/malformed branch (msg {:outside-root true :path (str/join ", " (map :path outside))}))
+          missing (base/malformed branch (msg {:missing true :path (str/join ", " (map :path missing))}))
           directory (base/malformed branch (msg {:directory true :path (:path directory)}))
           :else
           (let [anchors? (boolean (base/arg ctx :anchors))

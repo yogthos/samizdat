@@ -93,6 +93,11 @@
         (base/malformed branch (files/glob-msg {:bad-pattern true :pattern pattern
                                                 :detail (second hits)}))
 
+        ;; A scope that names nothing is said to, not searched as empty.
+        (and (empty? hits) (seq (files/unresolved-scopes root (base/arg ctx :paths))))
+        (base/malformed branch (files/glob-msg {:no-scope true
+                                                :missing (str/join ", " (files/unresolved-scopes root (base/arg ctx :paths)))}))
+
         (empty? hits)
         (base/ok branch (files/glob-msg {:no-matches true :pattern pattern}))
 
@@ -105,7 +110,9 @@
                         (str/join "\n" hits)
                         (when next
                           (files/glob-msg {:more true :remaining (- total (+ from (count hits)))
-                                           :next next :pattern (pr-str pattern)})))))))))
+                                           :next next :pattern (pr-str pattern)}))
+                        (when-let [m (seq (files/unresolved-scopes root (base/arg ctx :paths)))]
+                          (str "\n" (files/glob-msg {:missing-scopes true :missing (str/join ", " m)}))))))))))
 
 (defmethod base/run-tool "grep" [{:keys [branch root] :as ctx}]
   ;; Search the project's Clojure sources for a regex. :neutral — searching
@@ -135,6 +142,11 @@
         (and (vector? hits) (= ::error (first hits)))
         (base/malformed branch (files/grep-msg {:bad-pattern true :detail (second hits)}))
 
+        ;; A scope that names nothing is said to, not searched as empty.
+        (and (empty? hits) (seq (files/unresolved-scopes root (base/arg ctx :paths))))
+        (base/malformed branch (files/grep-msg {:no-scope true
+                                                :missing (str/join ", " (files/unresolved-scopes root (base/arg ctx :paths)))}))
+
         (empty? hits)
         (base/ok branch (files/grep-msg {:no-matches true :pattern (pr-str pattern)}))
 
@@ -148,4 +160,6 @@
                                          (str path ":" line ": " (str/trim text))))
                         (when next
                           (str "\n" (files/grep-msg {:more true :pattern pattern
-                                                     :next next :total total}))))))))))
+                                                     :next next :total total})))
+                        (when-let [m (seq (files/unresolved-scopes root (base/arg ctx :paths)))]
+                          (str "\n" (files/grep-msg {:missing-scopes true :missing (str/join ", " m)}))))))))))

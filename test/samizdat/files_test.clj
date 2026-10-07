@@ -23,7 +23,8 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is]]
             [jolt.fs :as fs]
-            [samizdat.agent.files :as files]))
+            [samizdat.agent.files :as files]
+            [samizdat.agent.tools]))
 
 (defn- ctx [root tool args]
   {:tool-name tool :args args :branch {:id "B1"} :root root})
@@ -581,3 +582,32 @@
             (is (= :mechanics (:category r)))
             (is (not (fs/exists? (str root "/.samizdat/config.edn")))))))
       (finally (fs/delete-tree root)))))
+
+;; --- a target that names nothing is named back (karamazov-0e2c.13) -------------
+
+(deftest a-search-scope-that-names-nothing-is-reported
+  ;; After sdiff's validate: every target the model named that does not
+  ;; resolve comes back by name. A grep scoped to a path that does not exist
+  ;; used to answer "No matches" — the same words as a real miss.
+  (let [root (str (fs/create-temp-dir))
+        run (fn [tool args] (samizdat.agent.tools/run-tool (ctx root tool args)))]
+    (fs/create-dirs (str root "/src"))
+    (spit (str root "/src/a.clj") "(ns a)\n(defn route [] :ok)\n")
+    (testing "grep"
+      (let [r (:result (run "grep" {:pattern "route" :paths ["src/nope"]}))]
+        (is (str/includes? r "src/nope") r)
+        (is (not (re-find #"(?i)^no matches" r)) r))
+      (let [r (:result (run "grep" {:pattern "route" :paths ["src" "lib/missing"]}))]
+        (is (str/includes? r "src/a.clj") "the scope that exists is searched")
+        (is (str/includes? r "lib/missing") "and the one that does not is named")))
+    (testing "glob"
+      (let [r (:result (run "glob" {:pattern "*.clj" :paths ["srcx"]}))]
+        (is (str/includes? r "srcx") r)))
+    (testing "a scope that exists and matches nothing is still a plain miss"
+      (is (re-find #"(?i)no match" (:result (run "grep" {:pattern "zzz" :paths ["src"]})))))))
+
+(deftest read-digest-names-every-path-it-cannot-read
+  (let [root (str (fs/create-temp-dir))
+        r (samizdat.agent.tools/run-tool (ctx root "read_digest" {:paths ["a.clj" "b.clj"] :question "q"}))]
+    (is (str/includes? (:result r) "a.clj") (:result r))
+    (is (str/includes? (:result r) "b.clj") "both, not the first")))

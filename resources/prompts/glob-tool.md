@@ -14,4 +14,4 @@ question that wanted a directory.
 Globs are path patterns, not regexes. `**` spans directories, `*` does not
 cross a `/`, and `{a,b}` alternates. To search file CONTENTS by regex, that is
 `grep`.
-{% endif %}
+{% endif %}{% if no-scope %}Nothing was searched: no such path in the project: {{missing}}. Check the path with glob, or leave `paths` out to search everything.{% endif %}{% if missing-scopes %}(No such path, so not searched: {{missing}}.){% endif %}

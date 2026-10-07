@@ -497,6 +497,19 @@
   [ctx]
   (prompt/render "grep-tool" ctx))
 
+(defn unresolved-scopes
+  "The `paths` scopes (a string or a list) that name nothing on disk —
+  relative to `root`, or absolute — to be named back rather than searched as
+  if they were empty (karamazov-0e2c.13, after sdiff's resolve-or-report)."
+  [root paths]
+  (vec (for [s (remove str/blank? (map str (cond (nil? paths) []
+                                                  (coll? paths) paths
+                                                  :else [paths])))
+             :let [s (str/replace s #"/$" "")
+                   f (if (absolute? s) (io/file s) (io/file (str (or root ".")) s))]
+             :when (not (.exists f))]
+         s)))
+
 (defn- in-scope?
   "Whether the root-relative path `rel` falls under any of `scopes` — a path
   prefix each, matched at a segment boundary so `sub` selects `sub/b.clj` and
