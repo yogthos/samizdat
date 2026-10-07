@@ -40,6 +40,7 @@
   (:require [clojure.string :as str]
             [samizdat.agent.source :as source]
             [samizdat.agent.tools.base :as base]
+            [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
             [samizdat.repl :as repl]
             [samizdat.repl.route :as route]
@@ -51,6 +52,15 @@
   cannot drift in what they consider a secret."
   [s]
   (secrets/redact (str s) (secrets/known-values (into {} (System/getenv)))))
+
+(defn eval-hint
+  "The move that works instead of what `error` says failed, from wordlists.edn
+  :eval-hints (first match), or nil (karamazov-0e2c.18)."
+  [error]
+  (some (fn [[pattern hint]]
+          (when (try (re-find (re-pattern pattern) (str error)) (catch Throwable _ nil))
+            hint))
+        (try (lexicon/wordlist :eval-hints) (catch Throwable _ nil))))
 
 (defn- eval-vetted
   "Evaluate source that has already passed the syntax gate. `note` is the
@@ -72,6 +82,10 @@
       (assoc (base/fail branch
                         (scrubbed (str prefix "Eval error: " (:error r)
                                        (when (seq (:out r)) (str "\n" (:out r)))
+                                       ;; What works instead, when the error
+                                       ;; is one jolt users meet by habit.
+                                       (when-let [h (eval-hint (:error r))]
+                                         (str "\n\n" (prompt/render "eval-hint" {:hint h})))
                                        ;; WHERE it ran, every time it fails.
                                        ;; A branch that cannot tell a stale
                                        ;; session from a broken file reads

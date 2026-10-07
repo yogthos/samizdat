@@ -193,6 +193,7 @@
             [samizdat.injection-probe-test]
             [samizdat.perturb-test]
             [samizdat.basis-test]
+            [samizdat.eval-hint-test]
             [samizdat.llm-test]
             [samizdat.toolspec-test]
             [samizdat.llm-stream-test]
@@ -425,6 +426,7 @@
     samizdat.injection-probe-test
     samizdat.perturb-test
     samizdat.basis-test
+    samizdat.eval-hint-test
     samizdat.prompt-test
     samizdat.server-test
     samizdat.adapter-test

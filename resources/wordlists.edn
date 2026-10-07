@@ -443,6 +443,24 @@
    "i was unable" "i am unable" "i'm unable" "i have not been able"
    "i haven't been able" "i was not able" "i wasn't able"}
 
+ :eval-hints
+ ;; An eval error, mapped to the move that works instead (karamazov-0e2c.18,
+ ;; after xi's interop-hint). jolt is Clojure without a JVM, and a model with
+ ;; JVM habits loses a turn to each of these unless the error says so. First
+ ;; match wins: a namespace the image cannot have before one it lacks.
+ [["(?i)Could not locate clojure/java/(shell|process)"
+   "The project image cannot start processes. Run commands with the `shell` tool."]
+  ["(?i)Could not locate (babashka|clojure/java/io)"
+   "jolt has no clojure.java.io or babashka here: use jolt.fs for files (jolt.fs/exists?, jolt.fs/list-dir), and slurp/spit."]
+  ["(?i)Could not locate .+ on the source roots"
+   "That namespace is not on the project's source paths: check the file exists under a :paths directory in deps.edn, and that its name matches its path (dashes in the ns name are underscores in the file)."]
+  ["(?i)Unknown class (\\S+)"
+   "jolt has no JVM classes beyond the ones it shims. If that name is a namespace alias, require it in this session first ((require '[the.ns :as alias])); for interop, use clojure.core, clojure.string or jolt.fs."]
+  ["(?i)Unable to resolve symbol"
+   "Each branch's eval session starts empty: require the namespace that defines it first, or use its fully qualified name."]
+  ["(?i)No matching (method|field|ctor)"
+   "jolt shims only part of each Java class. Prefer the clojure.core or clojure.string function that does the same thing."]]
+
  :tool-error-classes
  ;; What a failed tool result SAYS, mapped to what the branch should do about
  ;; it (samizdat.agent.toolerr, ported from dirge tool_error_class.rs). The
