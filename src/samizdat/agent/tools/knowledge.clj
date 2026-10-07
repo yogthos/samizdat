@@ -14,6 +14,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.lexicon :as lexicon]
             [samizdat.agent.tools.base :as base]
+            [samizdat.basis :as basis]
             [samizdat.security.flow :as flow]
             [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
@@ -76,7 +77,14 @@
   (if-let [miss (base/missing ctx :content)]
     (base/malformed branch (str miss "\n\n" @usage))
     (let [kind (or (base/arg ctx :kind) "procedural")
-          content (base/arg ctx :content)]
+          content (base/arg ctx :content)
+          ;; WHAT IT RESTS ON (karamazov-0e2c.12): turns, artifacts, tasks
+          ;; or memories it names, each of which must be in the record.
+          cited (basis/refs (base/arg ctx :basis))
+          bad (when (seq cited) (seq (basis/unresolved ctx cited)))]
+      (cond
+        bad (base/malformed branch (basis/refusal bad))
+        :else
       (if (unverified-completion? ctx content)
         ;; GROUND TRUTH, and it is the only memory the harness can check.
         ;; Prototyping in eval is not finishing, and a "settled and verified"
@@ -92,12 +100,15 @@
                         ;; with no recorded origin can only be deleted later,
                         ;; never reconsidered — and the next run cannot judge a
                         ;; claim whose evidence went unrecorded (karamazov-oov).
-                        :cause (some-> (base/arg ctx :cause) str not-empty)
+                        :cause (let [why (some-> (base/arg ctx :cause) str not-empty)]
+                                 (if (seq cited)
+                                   (str (or why "") (when why " ") "[basis: " (clojure.string/join ", " cited) "]")
+                                   why))
                         ;; What this branch had read goes with it, into later
                         ;; runs too.
                         :flow (flow/carried ctx)})]
           (base/ok branch (msg {:remembered true :id id :kind kind
-                                :content content})))))))
+                                :content content}))))))))
 
 (defmethod base/run-tool "outcome" [{:keys [branch conn] :as ctx}]
   ;; The axis that makes memory a loop rather than a list. Kind, use and

@@ -207,6 +207,21 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/agent/judge.clj"
+   {:vocabulary {"(?i)</material"
+                 "The closing tag of the material envelope judge/seal writes
+                  (karamazov-0e2c.4): the envelope's own syntax, escaped so
+                  run text cannot end it."
+                 "(?im)^(\\s*)(system|user|assistant|developer|tool)(\\s*):"
+                 "The chat roles a line of run text could pose as. The roles
+                  are the providers' message protocol, not a vocabulary a
+                  project chooses (karamazov-0e2c.4)."}}
+
+   "src/samizdat/perturb.clj"
+   {:threshold {8 "How many seeded tries before a text with nowhere to jitter
+                   comes back as it was: a bound on a loop, not a decision
+                   (karamazov-0e2c.11)."}}
+
    "src/samizdat/sdiff/core.clj"
    {:vocabulary {"\\.(clj|cljs|cljc|edn|bb)$"
                  "Which files are Clojure source: the language's extensions,

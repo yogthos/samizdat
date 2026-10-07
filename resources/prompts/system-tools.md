@@ -290,14 +290,16 @@ manifest({action, ...})
                            saving a new name adds a loop that config
                            (:run :loop) can select. For a new manifest;
                            for an edit, patch.
-intervene({kind, branch?, text?})
+intervene({kind, branch?, text?, basis?})
     Steer a run that is happening right now. `kind` is one of message,
     review, cull, fork, retract, extend, pause, resume; `message` is the one
     you want almost always. It lands at the top of that branch's next turn,
     above every machine gate.
     Say the specific thing to do next, not that it seems stuck — a branch
     that could tell it was stuck would have stopped already. Watch what it
-    does with one directive before sending another.
+    does with one directive before sending another. `basis`, as for
+    `remember`, names the turns or artifacts the directive rests on; each
+    must exist, or nothing is sent.
 experiment({name, change, hypothesis, kind?, target?, predicts?})
     Bind a change you are making to what you expect it to do, so the next
     round can tell you whether it worked. Start one whenever you edit a cell,
@@ -454,11 +456,13 @@ the one failure the board exists to prevent.
 ### Long-term knowledge
 
 ```
-remember({content, kind?, confidence?, cause?})
+remember({content, kind?, confidence?, cause?, basis?})
     Store a fact for later runs. Returns the id. `cause` is WHY you believe
     it — the observation that made you write it down. Record it: a memory with
     no stated cause can only be deleted later, never judged, and the next run
-    cannot tell a hard-won conclusion from a guess. `kind` sets how durable it
+    cannot tell a hard-won conclusion from a guess. `basis` names where in the
+    record it came from — turns (`t12`, `B2:t7`), artifacts (`a#3`), tasks or
+    memories — and each must exist, or nothing is stored. `kind` sets how durable it
     is, most durable first: identity (who and what this project is), semantic
     (a durable fact), procedural (a how-to or rule — the default), episodic
     (a specific thing that happened), working (current task context),

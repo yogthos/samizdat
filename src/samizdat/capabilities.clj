@@ -83,6 +83,8 @@
             [samizdat.security.replay]
             [samizdat.security.token]
             [samizdat.sdiff.core]
+            [samizdat.basis]
+            [samizdat.perturb]
             [samizdat.security.exposure]
             [samizdat.security.policy]
             [samizdat.security.sandbox]

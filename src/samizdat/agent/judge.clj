@@ -443,32 +443,39 @@
   []
   (prompt/prompt "judge"))
 
-(defn rubric-problems
-  "Why `table` is not a rubrics table (karamazov-0e2c.8), as a sentence, or
-  nil: each rubric has :dimensions; each dimension an :id and a :question;
-  each worked example a :verdict of :fail or :pass, a :snippet and a
-  :rationale."
+(defn rubric-problem
+  "The first thing wrong with `table` as a rubrics table (karamazov-0e2c.8),
+  as {:problem :rubric :dimension :item}, or nil: each rubric has
+  :dimensions; each dimension an :id and a :question; each worked example a
+  :verdict of :fail or :pass, a :snippet and a :rationale."
   [table]
-  (cond
-    (not (map? table)) "a rubrics table is a map of rubric name to rubric"
-    :else
+  (if-not (map? table)
+    {:problem :not-a-map}
     (first
      (for [[rname {:keys [dimensions]}] table
            p (cons (when-not (and (sequential? dimensions) (seq dimensions))
-                     (str rname " has no :dimensions"))
+                     {:problem :no-dimensions :rubric rname})
                    (for [{:keys [id question examples] :as d} dimensions
                          p (cons (when-not (and (keyword? id) (not (str/blank? (str question))))
-                                   (str rname " has a dimension without an :id and a :question: " (pr-str d)))
+                                   {:problem :bad-dimension :rubric rname :item d})
                                  (for [{:keys [verdict snippet rationale] :as e} examples
                                        :when (not (and (#{:fail :pass} verdict)
                                                        (not (str/blank? (str snippet)))
                                                        (not (str/blank? (str rationale)))))]
-                                   (str rname " " id " has an example that is not {:verdict :fail|:pass :snippet :rationale}: "
-                                        (pr-str e))))
+                                   {:problem :bad-example :rubric rname :dimension id :item e}))
                          :when p]
                      p))
            :when p]
        p))))
+
+(defn rubric-problems
+  "Why `table` is not a rubrics table, as the sentence
+  prompts/rubric-problem.md makes of `rubric-problem`, or nil."
+  [table]
+  (when-let [{:keys [problem] :as p} (rubric-problem table)]
+    (prompt/render "rubric-problem"
+                   (assoc p problem true :rubric (str (:rubric p)) :dimension (str (:dimension p))
+                          :item (pr-str (:item p))))))
 
 (defn- rubric-block
   "The critic rubric from the project's rubrics.edn as the prompt's

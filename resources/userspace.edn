@@ -204,6 +204,8 @@
    :judge-veto "prompts/judge-veto.md"
    :rubric-inconclusive "prompts/rubric-inconclusive.md"
    :critic-rubric "prompts/critic-rubric.md"
+   :basis-unresolved "prompts/basis-unresolved.md"
+   :rubric-problem "prompts/rubric-problem.md"
    :split-decision "prompts/split-decision.md"
    :split-tool "prompts/split-tool.md"
    :stale-write "prompts/stale-write.md"

@@ -26,6 +26,7 @@
   hold the words."
   (:require [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.basis :as basis]
             [samizdat.security.flow :as flow]
             [samizdat.claims :as claims]
             [samizdat.lexicon :as lexicon]
@@ -64,8 +65,18 @@
 (defmethod base/run-tool "intervene" [{:keys [branch conn run-id] :as ctx}]
   (let [kind (some-> (base/arg ctx :kind) str str/trim not-empty)
         target (some-> (base/arg ctx :branch) str str/trim not-empty)
-        text (some-> (base/arg ctx :text) str not-empty)]
+        text (some-> (base/arg ctx :text) str not-empty)
+        ;; WHAT IT RESTS ON (karamazov-0e2c.12): each reference must be in
+        ;; the record, and they travel with the directive.
+        cited (basis/refs (base/arg ctx :basis))
+        bad (when (seq cited) (seq (basis/unresolved ctx cited)))
+        text (if (and text (seq cited) (not bad))
+               (str text " [basis: " (str/join ", " cited) "]")
+               text)]
     (cond
+      bad
+      (base/malformed branch (basis/refusal bad))
+
       (nil? kind)
       (base/malformed branch (msg {:needs-kind true :kinds (described)}))
 
