@@ -94,7 +94,8 @@
                         :reason (judge/for-the-record :reply-chars det)})
                 (revise data branch (str "[critic] " det) (inc attempts)))
             (let [evidence (judge/evidence rows)
-                  diff (gitdiff/diff root git-baseline)
+                  ;; Structural for Clojure, cosmetic files named not shown.
+                  diff (gitdiff/review-diff root git-baseline (gitdiff/max-diff-chars))
                   prompt (judge/critic-prompt {;; WHAT WAS ASKED, which this
                                                ;; never used to carry: the
                                                ;; critic was asked whether the

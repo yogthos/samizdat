@@ -185,6 +185,7 @@
             [samizdat.security.flow-handoff-test]
             [samizdat.security.replay-test]
             [samizdat.security.token-test]
+            [samizdat.sdiff.core-test]
             [samizdat.llm-test]
             [samizdat.toolspec-test]
             [samizdat.llm-stream-test]
@@ -409,6 +410,7 @@
     samizdat.security.flow-handoff-test
     samizdat.security.replay-test
     samizdat.security.token-test
+    samizdat.sdiff.core-test
     samizdat.prompt-test
     samizdat.server-test
     samizdat.adapter-test

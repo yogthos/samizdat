@@ -2,7 +2,8 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (ns samizdat.gitdiff-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [samizdat.agent.gitdiff :as gd]
             [samizdat.engine.proc :as proc]
             [samizdat.security.secrets :as scrub]))
@@ -164,4 +165,58 @@
           (is (= "(deftest a (is true))\n" (gd/file-at proj base "test/a_test.clj"))
               "and file-at reads the same path as the run found it")
           (is (nil? (gd/file-at proj base "test/missing_test.clj"))))
+        (finally (sh dir (str "rm -rf " dir)))))))
+
+;; --- the critic's diff, structurally (karamazov-0e2c.1) --------------------------
+
+(deftest the-critic-reads-clojure-changes-by-where-they-are
+  ;; A unified diff names lines; sdiff names the binding, clause or arity a
+  ;; change lives in, and says when a file changed only in whitespace or
+  ;; comments — which the critic then need not read at all.
+  (when (proc/available? "git")
+    (let [dir (str (System/getProperty "java.io.tmpdir") "/gd-structural-"
+                   (System/currentTimeMillis))]
+      (try
+        (proc/run {:timeout-ms 15000} "sh" "-c" (str "mkdir -p " dir))
+        (sh dir "git init -q && git config user.email t@t.co && git config user.name t")
+        (spit (str dir "/a.clj") "(ns a)\n(defn f [x]\n  (let [y (inc x)]\n    (* y 2)))\n")
+        (spit (str dir "/b.clj") "(ns b)\n(defn g [x] x)\n")
+        (spit (str dir "/notes.md") "one\n")
+        (sh dir "git add -A && git commit -qm init")
+        (let [base (gd/baseline dir)]
+          (spit (str dir "/a.clj") "(ns a)\n(defn f [x]\n  (let [y (inc x)\n        z 3]\n    (* y z)))\n")
+          (spit (str dir "/b.clj") "(ns b)\n\n(defn g [x]\n  x)\n")
+          (spit (str dir "/notes.md") "two\n")
+          (let [r (gd/review-diff dir base 20000)]
+            (testing "the structural report names where each change is"
+              (is (str/includes? r "binding z") r)
+              (is (str/includes? r "a.clj")))
+            (testing "a whitespace-only file is named, not shown"
+              (is (re-find #"b\.clj.*whitespace-only" r) r)
+              (is (not (str/includes? r "diff --git a/b.clj"))))
+            (testing "the line diff still carries the code and the other files"
+              (is (str/includes? r "diff --git a/a.clj"))
+              (is (str/includes? r "diff --git a/notes.md")))
+            (testing "switched off, it is the plain diff"
+              (with-redefs [samizdat.lexicon/policy
+                            (let [t samizdat.lexicon/policy]
+                              (fn [k] (if (= k :review-diff) {:structural? false} (t k))))]
+                (is (= (gd/diff dir base 20000) (gd/review-diff dir base 20000)))))))
+        (finally (sh dir (str "rm -rf " dir)))))))
+
+(deftest the-diff-is-unified-whatever-the-operators-git-config-says
+  ;; This machine's git config set diff.external to difftastic, so
+  ;; gitdiff/diff handed the critic a side-by-side the judge could not read.
+  (when (proc/available? "git")
+    (let [dir (str (System/getProperty "java.io.tmpdir") "/gd-ext-" (System/currentTimeMillis))]
+      (try
+        (proc/run {:timeout-ms 15000} "sh" "-c" (str "mkdir -p " dir))
+        (sh dir "git init -q && git config user.email t@t.co && git config user.name t")
+        (sh dir "git config diff.external 'echo EXTERNAL'")
+        (sh dir "echo one > a.txt && git add -A && git commit -qm init")
+        (let [base (gd/baseline dir)]
+          (spit (str dir "/a.txt") "two\n")
+          (let [d (gd/diff dir base 20000)]
+            (is (str/includes? d "diff --git a/a.txt") d)
+            (is (not (str/includes? d "EXTERNAL")))))
         (finally (sh dir (str "rm -rf " dir)))))))

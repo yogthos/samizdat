@@ -317,7 +317,7 @@
               judged
               (if det
                 {:decision :revise}
-                (let [diff (gitdiff/diff root git-baseline)
+                (let [diff (gitdiff/review-diff root git-baseline (gitdiff/max-diff-chars))
                       ;; THE REQUIREMENT is the feature the run was asked
                       ;; for. This passed the pre-requirement keys (:rules,
                       ;; the answer as :transcript), so the judge's

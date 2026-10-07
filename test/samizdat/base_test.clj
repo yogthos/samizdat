@@ -207,6 +207,19 @@
    {:threshold {:all "HTTP status codes and the response-body cap of a
                       transport. Protocol constants, not policy."}}
 
+   "src/samizdat/sdiff/core.clj"
+   {:vocabulary {"\\.(clj|cljs|cljc|edn|bb)$"
+                 "Which files are Clojure source: the language's extensions,
+                  ported from sdiff (karamazov-0e2c)."
+                 ":private"
+                 "Clojure's own metadata key, read to tell a private def."}
+    :threshold {60 "sdiff's display cut for a form's source in a change line;
+                    ported as written (karamazov-0e2c)."
+                0.5 "sdiff's pair-threshold: a removed and an added form pair
+                     when half their structure and tokens agree. Its author
+                     tuned it on 25 merges; used for reporting only, never
+                     for a decision (karamazov-0e2c.1)."}}
+
    "src/samizdat/sandbox/sci.clj"
    {:vocabulary {"Could not find namespace ([\\w.\\-]+)"
                  "SCI's own resolution-failure wording, matched to say what
@@ -832,6 +845,11 @@
     "(an infinite loop or a heavy computation?). If it genuinely "
     "(no docstring — jolt strips core-var metadata)"
     "ms — the code ran too long "
+    }
+   ;; Ported verbatim from sdiff (karamazov-0e2c); its report's own label.
+   "src/samizdat/sdiff/core.clj"
+   #{
+    "signature only: parameters changed, body did not"
     }
    "src/samizdat/smoke.clj"
    #{

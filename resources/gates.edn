@@ -900,6 +900,18 @@
         HARNESS_TURN_DEADLINE_MS still overrides, for an operator who needs it
         for one run without editing the project's policy."}
 
+ :review-diff
+ {:value {:structural? true :structural-chars 6000}
+  :kind :threshold :capability-tunable? false
+  :doc "What a critic reads of the run's changes (gitdiff/review-diff). With
+        :structural? on, sdiff's report of the changed Clojure files comes
+        first: each change named by the binding, clause or arity it lives in,
+        renames rolled up, and a file whose change is whitespace or comments
+        only named as such and left out of the line diff that follows.
+        :structural-chars caps the report; the line diff keeps its own cap.
+        Off, the critic reads the plain line diff."
+  :provenance ["karamazov-0e2c.1"]}
+
  :crossover
  {:value {:statuses #{"confirmed"} :limit 8}
   :kind :threshold :capability-tunable? false

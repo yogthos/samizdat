@@ -11,6 +11,8 @@
   error yields an empty diff, and the critic simply reviews completeness only."
   (:require [clojure.string :as str]
             [samizdat.engine.proc :as proc]
+            [samizdat.sdiff.core :as sdiff]
+            [samizdat.sdiff.text :as sdiff-text]
             [samizdat.lexicon :as lexicon]
             [samizdat.security.secrets :as secrets]))
 
@@ -213,15 +215,60 @@
   ;; `cap` explicit: the epic rubric fetches under its own, larger budget
   ;; (gates.edn :rubric :diff-fetch-chars) and cuts per question afterwards
   ;; (karamazov-0way).
-  ([root baseline cap]
+  ([root baseline cap] (diff root baseline cap #{}))
+  ;; `excluded`: paths left out — a file whose change is whitespace or
+  ;; comments only, which review-diff names instead of showing.
+  ([root baseline cap excluded]
    (or (when (and root (rev? baseline))
          ;; Without the untracked files the baseline holds unchanged, which
          ;; `git diff` would show as deleted — the run did not delete them.
-         (some-> (apply git root "diff" "--relative" baseline "--" "."
+         ;; --no-ext-diff --no-color: the unified diff whatever the
+         ;; operator's git config says. A diff.external (difftastic, here)
+         ;; replaced it with a side-by-side the judge's `diff --git`
+         ;; chunking could not read.
+         (some-> (apply git root "diff" "--no-ext-diff" "--no-color" "--relative" baseline "--" "."
                         (map #(str ":(exclude)" %)
-                             (:stale (untracked-split root baseline))))
+                             (concat (:stale (untracked-split root baseline)) excluded)))
                  (as-> d (if (> (count d) (long cap))
                            (str (subs d 0 (long cap))
                                 "\n… (diff truncated at " cap " chars)")
                            d))))
        "")))
+
+(defn- structural-reports
+  "sdiff's report for each Clojure file changed since `baseline`, renames
+  rolled up across them: {:files :renames}."
+  [root baseline]
+  (let [paths (filter sdiff/clj? (or (changed-files root baseline) []))
+        now (fn [p] (try (slurp (java.io.File. (str root) (str p))) (catch Throwable _ "")))]
+    (sdiff/rollup-renames
+     (vec (for [p paths]
+            (try (sdiff/file-report p (or (file-at root baseline p) "") (now p))
+                 ;; A file sdiff cannot parse is left to the line diff.
+                 (catch Throwable _ nil)))))))
+
+(defn review-diff
+  "What a critic reads of the run's changes (karamazov-0e2c.1): sdiff's
+  structural report of the changed Clojure files — each change named by the
+  binding, clause or arity it lives in, renames rolled up, and a file whose
+  change is whitespace or comments only said to be so — and then the line
+  diff of everything else, those cosmetic files left out.
+
+  gates.edn `:review-diff {:structural? true :structural-chars n}`. A table
+  without the key, or the switch off, is the plain `diff`: the feature
+  absent, not a value made up here."
+  [root baseline cap]
+  (let [{:keys [structural? structural-chars]}
+        (try (lexicon/policy :review-diff) (catch Throwable _ nil))]
+    (if-not (and structural? root (rev? baseline))
+      (diff root baseline cap)
+      (let [{:keys [files renames]} (structural-reports root baseline)
+            files (vec (remove nil? files))
+            cosmetic (set (keep #(when (#{:whitespace-only :comments-only} (:verdict %)) (:path %))
+                                files))
+            report (when (seq files)
+                     (let [t (str/trim (sdiff-text/report-text {:clj files :renames renames}))
+                           n (long (or structural-chars cap))]
+                       (if (> (count t) n) (str (subs t 0 n) "\n…") t)))
+            lines (diff root baseline cap cosmetic)]
+        (str/join "\n\n" (remove str/blank? [report lines]))))))

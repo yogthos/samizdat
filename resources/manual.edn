@@ -145,6 +145,10 @@
     :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
    {:name samizdat.security.token/issue!
     :summary "The HTTP API's bearer token: issued when the server starts, written owner-only to ~/.config/samizdat/http/<port>.token (a place no shell command or eval image can read), required on every request but /health, dropped on stop. samizdat.api.client and the event stream send it for a loopback base URL."}
+   {:name samizdat.agent.gitdiff/review-diff
+    :summary "What a critic reads of a run's changes: sdiff's structural report of the changed Clojure files (each change named by the binding, clause or arity it lives in, renames rolled up, whitespace- or comment-only files named) and then the line diff of the rest. gates.edn :review-diff; samizdat.sdiff is sdiff (semantic-namespace/diff) ported."}
+   {:name samizdat.sdiff.core/file-report
+    :summary "Structural diff of one Clojure file's old and new source: forms paired by identity, children by role, the rest by LCS of structural hashes; :verdict :semantic, :comments-only or :whitespace-only (:rename-only from rollup-renames); moves, extractions with drift, signature-only changes."}
    {:name samizdat.security.flow/label-of
     :summary "What a branch has read, as {:trust :trusted|:untrusted :audience :project|:operator :because {...}}. Web content (webfetch, websearch) makes it :untrusted; an approved read outside the project makes it :operator. Labels only narrow. After :untrusted a shell command that is not read-only asks a person; after :operator webfetch, websearch and any non-read-only command do. The table is in src (samizdat.security.flow/table), not gates.edn: it confines the agent. Each change is a :flow journal note."}
    {:name samizdat.security.flow/receive!

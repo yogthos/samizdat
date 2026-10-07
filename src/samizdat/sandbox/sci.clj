@@ -140,7 +140,7 @@
     ;; under the scrubbed environment. No caller-chosen command; a baseline that
     ;; looks like an option is refused (gitdiff/rev?).
     samizdat.agent.gitdiff
-    {:vars [baseline changed-files diff max-diff-chars]
+    {:vars [baseline changed-files diff max-diff-chars review-diff]
      :effects #{:proc}}
 
     ;; The probe's model calls and its journal line.

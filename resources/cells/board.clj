@@ -866,7 +866,7 @@
               baseline (->> (journal/notes conn run-id :epic-baseline)
                             (filter #(= task (:task %)))
                             last :baseline not-empty)
-              diff (gitdiff/diff root baseline)
+              diff (gitdiff/review-diff root baseline (gitdiff/max-diff-chars))
               rows (map (fn [r] (update r :args
                                         #(try (json/read-str (str %) :key-fn keyword)
                                               (catch Throwable _ {}))))
@@ -1110,7 +1110,8 @@
           attempts (inc (or (:board/attempts data) 0))
           landed? (= :done (:board/outcome data))
           answer (str (:board/answer data))
-          diff (gitdiff/diff root (:board/baseline data))
+          ;; Structural for Clojure, cosmetic files named not shown.
+          diff (gitdiff/review-diff root (:board/baseline data) (gitdiff/max-diff-chars))
           ;; PARSED args, exactly as the critic loop hands them over: the
           ;; judge's evidence predicates read (get-in row [:args :command]),
           ;; and rows carrying raw JSON strings made "no test was run" true of

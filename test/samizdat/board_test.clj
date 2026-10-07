@@ -118,7 +118,8 @@
   ;; review of everything, and every earlier defect somebody else's problem.
   (let [seen (atom [])]
     (with-redefs [llm/chat ships-its-task
-                  gitdiff/diff (fn [_ baseline] (swap! seen conj baseline) "")
+                  ;; The critic reads review-diff (karamazov-0e2c.1).
+                  gitdiff/review-diff (fn [_ baseline _] (swap! seen conj baseline) "")
                   ;; a distinct baseline per claim, without needing a git repo
                   gitdiff/baseline (let [n (atom 0)]
                                      (fn [_] (str "base-" (swap! n inc))))]
@@ -126,9 +127,13 @@
         (tasks/create! conn {:title "first"})
         (tasks/create! conn {:title "second"})
         (run-board conn {})
-        (is (= 2 (count @seen)) "one diff per task")
+        ;; Per task, not per call: a task's review can run more than once
+        ;; (a revise round), and whether it does depended on what ran
+        ;; before this test, so a count of calls passed in the suite and
+        ;; failed alone.
         (is (= 2 (count (distinct @seen)))
-            "each against its OWN baseline, taken when that task was claimed")))))
+            "each against its OWN baseline, taken when that task was claimed")
+        (is (every? #{"base-2" "base-3"} @seen) "and never the whole run's")))))
 
 (deftest a-critic-that-finds-defects-sends-the-task-back-to-its-owner
   (let [attempts (atom 0)
