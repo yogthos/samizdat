@@ -6,6 +6,7 @@
   (:require
             [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.security.flow :as flow]
             [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
             [samizdat.llm.message :as message]))
@@ -98,7 +99,12 @@
                                        {:turn raw
                                         :branch bid
                                         :cross (not= bid (:id branch))}))
-        (base/ok branch
+        (do
+         ;; Another branch's turn carries what that branch had read.
+         (when (not= bid (:id branch))
+           (flow/receive! ctx [(flow/encode (flow/label-of (assoc ctx :branch {:id bid})))]
+                          "fetch_turn"))
+         (base/ok branch
             (str "t" (:turn t)
                  (when (not= bid (:id branch)) (str " [" bid "]"))
                  " " (:tool_name t)
@@ -111,4 +117,4 @@
                                          message/strip-think-blocks
                                          not-empty)]
                    (str "\n\nWHAT YOU SAID\n" said))
-                 "\n\nRESULT\n" (:result t)))))))
+                 "\n\nRESULT\n" (:result t))))))))

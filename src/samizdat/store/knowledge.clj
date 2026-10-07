@@ -38,6 +38,7 @@
             [clojure.tools.logging :as log]
             [samizdat.lexicon :as lexicon]
             [samizdat.memory :as memory]
+            [samizdat.security.flow :as flow]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]
             [samizdat.store.outcomes :as outcomes]))
@@ -103,7 +104,7 @@
   "Insert a fact and return its id. Kind defaults to 'note' — the column
   exists so later kinds (decisions, gotchas, references) need no migration."
   [conn {:keys [content kind salience confidence run-id pinned pattern-key
-                cause supersedes lineage-id]}]
+                cause supersedes lineage-id flow]}]
   (when (str/blank? (str content))
     (throw (ex-info "a memory needs content" {})))
   (let [kind (or kind "note")
@@ -113,7 +114,12 @@
         ;; then moved by whether it gets used and whether acting on it works.
         salience (double (or salience (memory/base-salience kind p)))
         confidence (double (or confidence (:default-confidence p)))
-        now (db/now)]
+        now (db/now)
+        ;; What the writer had read (v38): the branch's when the caller names
+        ;; it, else the run's — a memory distilled at run end is written from
+        ;; every branch's turns. It outlives the run, so a later run that
+        ;; recalls it takes the label too.
+        flow (or flow (flow/carried-by-run conn run-id))]
     (loop [attempt 1]
       (let [id (new-id)
             n (try
@@ -134,12 +140,12 @@
                    ["INSERT INTO knowledge (id, content, kind, created_at,
                                              salience, confidence, run_id, pinned,
                                              last_run_id, pattern_key,
-                                             lineage_id, current, cause, supersedes)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+                                             lineage_id, current, cause, supersedes, flow)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"
                                 id (str content) kind now
                                 salience confidence run-id (if pinned 1 0)
                                 run-id pattern-key
-                                (or lineage-id id) cause supersedes]))
+                                (or lineage-id id) cause supersedes flow]))
                 1
                 (catch Exception e
                   ;; Only a UNIQUE collision is an id problem; anything else
@@ -769,7 +775,7 @@
   [conn]
   (let [p (memory/policy)]
     (vec (db/fetch conn ["SELECT * FROM knowledge
-                            WHERE current = 1 AND kind = 'episodic'
+                            WHERE current = 1 AND flow IS NULL AND kind = 'episodic'
                               AND corroborations >= ?
                               AND success_count >= failure_count
                             ORDER BY corroborations DESC, created_at DESC
@@ -1029,8 +1035,10 @@
      []
      (vec (take limit
                 (memory/rank
+                 ;; Unlabelled only: this is put in front of a branch unasked
+                 ;; (samizdat.security.flow). A labelled one is recalled.
                  (db/fetch conn ["SELECT * FROM knowledge
-                                   WHERE current = 1 AND created_at > ?
+                                   WHERE current = 1 AND created_at > ? AND flow IS NULL
                                    ORDER BY created_at DESC LIMIT ?"
                                  (str since) (* 3 (long limit))])))))))
 
@@ -1076,7 +1084,9 @@
   that are already at the top."
   ([conn] (standing conn (:recall-limit (memory/policy))))
   ([conn limit]
-   (let [rows (db/fetch conn ["SELECT * FROM knowledge WHERE current = 1 ORDER BY salience DESC LIMIT ?"
+   ;; Unlabelled only, like learned-since: every caller shows it unasked.
+   (let [rows (db/fetch conn ["SELECT * FROM knowledge WHERE current = 1 AND flow IS NULL
+                               ORDER BY salience DESC LIMIT ?"
                               (long (* 3 limit))])
          {overviews true others false} (group-by #(= "overview" (:kind %)) rows)]
      (vec (take limit (concat (memory/rank overviews) (memory/rank others)))))))
@@ -1155,6 +1165,9 @@
                   ;; on exactly the turns where a branch has no lead to follow
                   ;; and most needs orienting.
                   (standing conn rows)
-                  (recall conn query rows))]
+                  ;; Unlabelled only: the index sits in every turn unasked,
+                  ;; and a labelled memory's text is for a branch that
+                  ;; recalls it and takes its label.
+                  (remove :flow (recall conn query rows)))]
      (when (seq picked)
        (str/join "\n" (cons preamble (fit-lines preamble cap (map index-line picked))))))))

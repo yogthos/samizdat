@@ -222,7 +222,7 @@
                                   {:command input
                                    :gaps (mapv (fn [{:keys [gap because]}]
                                                  {:trust (= :trust gap) :audience (= :audience gap)
-                                                  :tool (:tool because) :turn (:turn because)})
+                                                  :tool (:tool because) :via (:via because) :turn (:turn because)})
                                                gaps)
                                    :asking (= :block (:mode (approval/policy)))
                                    :note note :unanswered timed-out})

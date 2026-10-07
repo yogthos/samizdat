@@ -143,8 +143,12 @@
     :summary "The approval policy in force and where each part comes from: gates.edn may choose :refuse or :block and the wait; :yolo and :on-timeout :allow only from the operator's config.edn :approval or a person's session mode. A loosening value in gates.edn is ignored."}
    {:name samizdat.approval/session-grants
     :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
+   {:name samizdat.security.token/issue!
+    :summary "The HTTP API's bearer token: issued when the server starts, written owner-only to ~/.config/samizdat/http/<port>.token (a place no shell command or eval image can read), required on every request but /health, dropped on stop. samizdat.api.client and the event stream send it for a loopback base URL."}
    {:name samizdat.security.flow/label-of
     :summary "What a branch has read, as {:trust :trusted|:untrusted :audience :project|:operator :because {...}}. Web content (webfetch, websearch) makes it :untrusted; an approved read outside the project makes it :operator. Labels only narrow. After :untrusted a shell command that is not read-only asks a person; after :operator webfetch, websearch and any non-read-only command do. The table is in src (samizdat.security.flow/table), not gates.edn: it confines the agent. Each change is a :flow journal note."}
+   {:name samizdat.security.flow/receive!
+    :summary "A branch reading what another wrote takes the writer's label: a message from the inbox, a task it claims, shows or lists, a recalled memory (from any run), another branch's turn via fetch_turn; a fork starts with its parent's. Messages, tasks and memories carry it in a flow column (the writer branch's label, or the run's when no branch is named). The inbox preview withholds a labelled message's body, and the memory blocks shown unasked leave labelled memories out. The operator's configured commands (:run :verify-cmd, acceptance checks) need no trust: they still run after web content."}
    {:name samizdat.security.flow/remedies
     :summary "The ways forward from a flow block, as data on the result's :policy beside its :gaps: {:plan :authorize :authority :person} and, for a trust gap on the shell, {:plan :narrow :to :read-only}."}
    {:name samizdat.security.replay/run-file

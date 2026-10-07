@@ -235,16 +235,9 @@
 
 (defonce ^:private sealed (atom {}))
 
-(defn configured-commands
-  "The shell commands `config` names for a run: :run :verify-cmd and every
-  :run :acceptance :check. A malformed :acceptance contributes none — the
-  acceptance stage reports that itself."
-  [config]
-  (let [checks (try (->> (get-in config [:run :acceptance])
-                         acceptance/normalize
-                         (keep #(when (= :check (:kind %)) (:text %))))
-                    (catch Throwable _ nil))]
-    (into #{} (remove str/blank?) (cons (some-> (get-in config [:run :verify-cmd]) str) checks))))
+(def configured-commands
+  "acceptance/configured-commands: what a run is sealed with."
+  acceptance/configured-commands)
 
 (defn seal-run!
   "Record the commands and root run `run-id` may execute through

@@ -194,6 +194,7 @@
    :shell-read-too-large "prompts/shell-read-too-large.md"
    :shell-refused "prompts/shell-refused.md"
    :flow-blocked "prompts/flow-blocked.md"
+   :inbox-withheld "prompts/inbox-withheld.md"
    :split-decision "prompts/split-decision.md"
    :split-tool "prompts/split-tool.md"
    :stale-write "prompts/stale-write.md"

@@ -230,3 +230,32 @@
           (samizdat.agent.files/resolve-read! ctx2 [] "a.txt")
           (is (= :project (:audience (flow/label-of ctx2))))))
       (finally (db/close c)))))
+
+;; --- the operator's own commands ----------------------------------------------
+
+(deftest the-projects-configured-commands-still-run-after-web-content
+  ;; The verify command and the acceptance checks are the operator's text in
+  ;; config.edn, which no tool the agent holds can write — not a command a
+  ;; page could have suggested. Without this, one webfetch under the default
+  ;; approval mode cost a branch its tests for the rest of the run.
+  (is (empty? (policy/shell-gaps untrusted "jolt test" #{"jolt test"})))
+  (is (seq (policy/shell-gaps untrusted "jolt test --focus x" #{"jolt test"}))
+      "the command as written, not a prefix of it")
+  (is (seq (policy/shell-gaps private "jolt test" #{"jolt test"}))
+      "and not after a private read: the command still reaches the network")
+  (is (some #(= {:plan :narrow :to :configured} %)
+            (flow/remedies "shell" (policy/shell-gaps untrusted "make" #{"jolt test"})))))
+
+(deftest a-run-reads-its-configured-commands-from-the-operators-config
+  (let [c (db/open! ":memory:")
+        root (str (fs/create-temp-dir))
+        ctx {:conn c :run-id (samizdat.store.runs/start-run! c {:problem "p"})
+             :branch {:id "B1"} :turn 4 :root root}]
+    (try
+      (fs/create-dirs (str root "/.samizdat"))
+      (spit (str root "/.samizdat/config.edn") (pr-str {:run {:verify-cmd "touch verified"}}))
+      (flow/observe! ctx (flow/delta flow/table "webfetch" {:url "u"}) "webfetch")
+      (with-redefs [samizdat.security.confine/backend (constantly :none)]
+        (is (= :allow (get-in (shell ctx "touch verified") [:policy :effect])))
+        (is (= :ask (get-in (shell ctx "touch other") [:policy :effect]))))
+      (finally (db/close c)))))

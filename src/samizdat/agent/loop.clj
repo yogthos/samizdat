@@ -408,7 +408,10 @@
                    ;; consume — the message tool's inbox action marks read.
                    [:inbox (messages/render-inbox
                             conn run-id (:id branch)
-                            (:inbox-lines (gates/threshold :context-budget)))]
+                            (:inbox-lines (gates/threshold :context-budget))
+                            ;; A labelled message's body is not previewed
+                            ;; (samizdat.security.flow).
+                            (prompt/prompt "inbox-withheld"))]
                    ;; And what the siblings DID, which the mailbox cannot say:
                    ;; it carries what a branch chose to announce, and a worker
                    ;; sharing a tree needs the ground truth. nil for a solo run,

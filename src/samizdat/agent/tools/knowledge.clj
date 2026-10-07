@@ -14,6 +14,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.lexicon :as lexicon]
             [samizdat.agent.tools.base :as base]
+            [samizdat.security.flow :as flow]
             [samizdat.store.journal :as journal]
             [samizdat.store.knowledge :as knowledge]
             [samizdat.prompt :as prompt]))
@@ -91,7 +92,10 @@
                         ;; with no recorded origin can only be deleted later,
                         ;; never reconsidered — and the next run cannot judge a
                         ;; claim whose evidence went unrecorded (karamazov-oov).
-                        :cause (some-> (base/arg ctx :cause) str not-empty)})]
+                        :cause (some-> (base/arg ctx :cause) str not-empty)
+                        ;; What this branch had read goes with it, into later
+                        ;; runs too.
+                        :flow (flow/carried ctx)})]
           (base/ok branch (msg {:remembered true :id id :kind kind
                                 :content content})))))))
 
@@ -140,7 +144,8 @@
 (defmethod base/run-tool "recall" [{:keys [branch conn] :as ctx}]
   (if-let [id (base/arg ctx :id)]
     (if-let [row (knowledge/get-by-id conn id)]
-      (base/ok branch (memory-line row (:run-id ctx)))
+      (do (flow/receive! ctx [(:flow row)] "recall")
+          (base/ok branch (memory-line row (:run-id ctx))))
       (base/fail branch (msg {:no-memory true :id id})))
     (if-let [miss (base/missing ctx :query)]
       (base/malformed branch (str miss "\n\n" @usage))
@@ -166,6 +171,8 @@
                                          :live (knowledge/live-count conn)
                                          :turn (:turn ctx)}})
                   (catch Throwable _ nil)))]
+        ;; Reading them takes what their writers had read.
+        (flow/receive! ctx (map :flow rows) "recall")
         (base/ok branch
                  (cond
                    (seq rows)

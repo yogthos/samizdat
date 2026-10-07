@@ -30,6 +30,7 @@
   must satisfy and the tests that define delivery. A subagent handed a task id
   has, in the row itself, a clear definition of what it must produce."
   (:require [clojure.string :as str]
+            [samizdat.security.flow :as flow]
             [samizdat.store.db :as db]))
 
 (def ^:private status-aliases
@@ -73,7 +74,7 @@
   "Insert a task and return its id. Unset fields take the dirge defaults:
   type task, status open, priority normal, no parent, backlog (no run)."
   [conn {:keys [title body type status priority parent-id run-id contract tests
-                stub-file stubs]}]
+                stub-file stubs flow]}]
   (when (str/blank? (str title))
     (throw (ex-info "a task needs a title" {})))
   (when (and parent-id (nil? (get-task conn parent-id)))
@@ -81,7 +82,11 @@
                     {:parent-id parent-id})))
   (let [status (normalize-status (or status "open"))
         priority (normalize-priority (or priority "normal"))
-        now (db/now)]
+        now (db/now)
+        ;; What the writer had read (v38): the branch's, when the caller
+        ;; names it; else the run's, since a cell writing a task from a
+        ;; branch's findings carries whatever any branch read.
+        flow (or flow (flow/carried-by-run conn run-id))]
     (loop [attempt 1]
       (let [id (new-id)
             r (try
@@ -90,8 +95,8 @@
                                ["INSERT INTO tasks (id, title, body, type, status, priority,
                                                     parent_id, run_id, contract, tests,
                                                     stub_file, stubs,
-                                                    created_at, updated_at, closed_at)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                                                    created_at, updated_at, closed_at, flow)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                                 id (str title) (or body "") (or type "task")
                                 status priority parent-id run-id
                                 (or contract "") (or tests "")
@@ -102,7 +107,7 @@
                                 ;; was built (v21).
                                 (or stub-file "")
                                 (str/join "," (remove str/blank? (map str (or stubs []))))
-                                now now (when (terminal? status) now)]))
+                                now now (when (terminal? status) now) flow]))
                 id
                 (catch Throwable e
                   (if (and (db/id-collision? e) (< attempt 5))
@@ -122,7 +127,7 @@
   same millisecond as the create it raced passed the guard. A field-scoped
   write cannot clobber what it never names."
   [conn id {:keys [title body type status priority parent-id run-id contract tests
-                   plan plan-kind]}]
+                   plan plan-kind flow]}]
   (let [t (get-task conn id)]
     (when-not t
       (throw (ex-info (str "no task " id) {:id id})))
@@ -156,7 +161,13 @@
                  ;; children (karamazov-dq1r).
                  plan-kind (assoc :plan_kind plan-kind)
                  contract (assoc :contract contract)
-                 tests (assoc :tests tests))]
+                 tests (assoc :tests tests))
+          ;; An edit of the text a task carries lowers it by what its writer
+          ;; had read — the branch's when named, else the run's (v38).
+          writer (when (some cols [:title :body :plan :contract :tests])
+                   (or flow (flow/carried-by-run conn (or run-id (:run_id t)))))
+          cols (cond-> cols
+                 writer (assoc :flow (flow/combine (:flow t) writer)))]
       (db/with-writer
         (db/execute! conn
                      (into [(str "UPDATE tasks SET "
@@ -196,6 +207,9 @@
   (let [t (get-task conn id)]
     (when (and t (= run-id (:run_id t)) (= branch-id (:branch_id t))
                (= "in_progress" (:status t)))
+      ;; The branch that holds a task holds its text: it takes what the
+      ;; task's writer had read (samizdat.security.flow).
+      (flow/receive! {:conn conn :run-id run-id :branch {:id branch-id}} [(:flow t)] "task")
       t)))
 
 (defn release!

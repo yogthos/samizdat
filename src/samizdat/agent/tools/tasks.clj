@@ -7,6 +7,7 @@
             [samizdat.agent.gates :as gates]
             [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.security.flow :as flow]
             [samizdat.agent.state :as state]
             [samizdat.prompt :as prompt]
             [samizdat.store.journal :as journal]
@@ -146,11 +147,15 @@
                                           :parent-id (base/arg ctx :parentId)
                                           :contract (base/arg ctx :contract)
                                           :tests (base/arg ctx :tests)
-                                          :run-id (when-not (base/arg ctx :backlog) run-id)})]
+                                          :run-id (when-not (base/arg ctx :backlog) run-id)
+                                          ;; What this branch had read goes with it.
+                                          :flow (flow/carried ctx)})]
               (base/ok branch (str "Created " (task-line (tasks/get-task conn id))))))
 
         "list"
         (let [rows (tasks/board conn {:run-id run-id})]
+          ;; Reading the board takes what its tasks' writers had read.
+          (flow/receive! ctx (map :flow rows) "task")
           (base/ok branch (if (seq rows)
                        (str/join "\n" (map task-line rows))
                        "The board is empty.")))
@@ -158,7 +163,8 @@
         "show"
         (or (want :id)
             (if-let [t (tasks/get-task conn (base/arg ctx :id))]
-              (base/ok branch (render-task conn t))
+              (do (flow/receive! ctx [(:flow t)] "task")
+                  (base/ok branch (render-task conn t)))
               (base/malformed branch (str "No task " (base/arg ctx :id) "."))))
 
         "update"
@@ -173,7 +179,8 @@
                                       :priority (base/arg ctx :priority)
                                       :parent-id (base/arg ctx :parentId)
                                       :contract (base/arg ctx :contract)
-                                      :tests (base/arg ctx :tests)})]
+                                      :tests (base/arg ctx :tests)
+                                      :flow (flow/carried ctx)})]
                 (base/ok branch (str "Updated " (task-line t))))))
 
         "claim"

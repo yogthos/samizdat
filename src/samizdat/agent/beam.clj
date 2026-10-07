@@ -170,6 +170,10 @@
                                     :created-at-turn turn
                                     :role (:role b)
                                     :prompt-suffix (:prompt-suffix ctx)})
+    ;; A child starts from its parent's conversation or thesis, so it starts
+    ;; with what its parent had read (samizdat.security.flow).
+    (when parent-id
+      (flow/inherit! {:conn conn :run-id run-id :turn turn} parent-id id))
     (if thesis
       (do (runs/set-thesis! conn run-id id thesis)
           (-> b

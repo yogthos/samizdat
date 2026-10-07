@@ -23,6 +23,7 @@
 
       {:about \"what this trace pins\"
        :grants [\"make *\"]                ; a person's grants, if any
+       :configured [\"jolt test\"]         ; the run's configured commands
        :steps [{:tool \"webfetch\" :args {:url \"…\"} :expect :allow}
                {:tool \"shell\" :args {:command \"make\"} :expect :ask :gaps [:trust]}
                {:tool \"read_file\" :args {:path \"/elsewhere\"} :outside true
@@ -62,10 +63,10 @@
 
 (defn- decision
   "{:effect :gaps} for step `s` on a branch labelled `label`."
-  [{:keys [tool args]} label grants]
+  [{:keys [tool args]} label grants configured]
   (if (= "shell" (str tool))
     (let [d (policy/with-flow (policy/decide {:grants grants} (:command args))
-                              label (:command args))]
+                              label (:command args) configured)]
       {:effect (:effect d) :gaps (mapv :gap (:gaps d))})
     (let [gaps (flow/gaps flow/table tool args label)]
       {:effect (if (seq gaps) :ask :allow) :gaps (mapv :gap gaps)})))
@@ -73,7 +74,7 @@
 (defn run-trace
   "Replay `trace`. {:passed n :failures [{:step :tool :expected :actual :gaps}]},
   or {:error {:step :why}} for a trace that cannot be replayed."
-  [{:keys [steps grants] :as trace}]
+  [{:keys [steps grants configured] :as trace}]
   (let [bad (cond (not (map? trace)) {:trace :not-a-map}
                   (not (sequential? steps)) {:trace :no-steps}
                   (empty? steps) {:trace :no-steps}
@@ -84,7 +85,7 @@
       (loop [[s & more] steps, i 1, label flow/top, passed 0, failures []]
         (if-not s
           {:passed passed :failures failures}
-          (let [{:keys [effect gaps]} (decision s label (vec grants))
+          (let [{:keys [effect gaps]} (decision s label (vec grants) (set configured))
                 ok? (and (= effect (:expect s))
                          (or (not (contains? s :gaps)) (= (vec (:gaps s)) gaps)))
                 why {:turn i :tool (str (:tool s))}

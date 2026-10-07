@@ -44,6 +44,7 @@
             [samizdat.agent.phases :as phases]
             [samizdat.lexicon :as lexicon]
             [samizdat.config :as config]
+            [samizdat.security.token :as token]
             [samizdat.llm.client :as llm-client]
             [samizdat.llm.fence :as fence]
             [samizdat.llm.registry :as registry]
@@ -255,6 +256,9 @@
          ;; it. Started before the server, so a client that connects on the
          ;; first request is not polling a ring nothing is filling yet.
          _ (steps/start-pump!)
+         ;; The API's bearer token, BEFORE the server listens, so there is
+         ;; no moment it serves without one (security.token, karamazov-3vu1.11).
+         _ (token/issue! (get-in cfg [:http :port]))
          server (adapter/run-server handler (select-keys (:http cfg) [:port :worker-threads]))]
      (reset! system {:config cfg :conn c :server server})
      ;; What the agent's processes are kept off (security.listen).
@@ -280,7 +284,8 @@
   failed start left the process bound to that project — every userspace read
   after it, in a REPL or the next test, went to a project nobody had started."
   [conn]
-  (doseq [f [#(do (steps/stop-pump!) (steps/reset!))
+  (doseq [f [#(token/revoke-all!)
+             #(do (steps/stop-pump!) (steps/reset!))
              #(fence/install-repair! nil)
              #(do (userspace/unbind!) (userspace/bind-root! nil))
              #(when conn (db/close conn))]]
@@ -311,6 +316,7 @@
                                  (log/warn "run" rid "did not stop within 15s;"
                                            "closing the system under it")))))]
                        ["http server" #(adapter/stop-server (:server s))]
+                       ["api token" #(token/revoke-all!)]
                        ;; After the server, so a request in flight can still
                        ;; read the trace it was serving; the rings go with it.
                        ["step pump" #(do (steps/stop-pump!) (steps/reset!))]

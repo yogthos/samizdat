@@ -38,7 +38,7 @@
 (defn send!
   "Insert a message and return its id. :to nil or absent broadcasts to the
   whole run; every branch but the sender sees it in their inbox."
-  [conn {:keys [run-id from to body]}]
+  [conn {:keys [run-id from to body flow]}]
   (when (str/blank? (str body))
     (throw (ex-info "a message needs a body" {})))
   (when (str/blank? (str run-id))
@@ -52,9 +52,10 @@
                 (db/with-writer
                   (db/execute! conn
                                ["INSERT INTO messages
-                                 (id, run_id, from_branch, to_branch, body, created_at)
-                                 VALUES (?, ?, ?, ?, ?, ?)"
-                                id (str run-id) (str from) to (str body) now]))
+                                 (id, run_id, from_branch, to_branch, body, created_at, flow)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                                ;; `flow`: what the sender had read (v38).
+                                id (str run-id) (str from) to (str body) now flow]))
                 1
                 (catch Exception e
                   ;; Only a UNIQUE collision is an id problem; anything else
@@ -111,15 +112,19 @@ action to consume them):")
 (defn- inbox-line
   "from and a ~60-char preview of the body, one line — enough to decide
   whether to open the inbox, nothing more. Broadcast messages show ALL
-  rather than a branch id."
-  [{:keys [from_branch body to_branch]}]
+  rather than a branch id. A message carrying a flow label shows `withheld`
+  in place of its body: the preview is put in front of a branch unasked, and
+  its text is only for a branch that opens the inbox and takes the label."
+  [withheld {:keys [from_branch body to_branch flow]}]
   (str from_branch
        (when (nil? to_branch) " (broadcast)")
        ": "
-       (let [flat (str/trim (str/replace (str body) #"\s+" " "))]
-         (if (> (count flat) 60)
-           (str (subs flat 0 60) "...")
-           flat))))
+       (if (and flow withheld)
+         withheld
+         (let [flat (str/trim (str/replace (str body) #"\s+" " "))]
+           (if (> (count flat) 60)
+             (str (subs flat 0 60) "...")
+             flat)))))
 
 (defn render-inbox
   "The bounded inbox preview for the context block: a preamble plus one
@@ -130,9 +135,10 @@ action to consume them):")
   ;; but SQL. The literal remains as the floor for a caller with no policy in
   ;; reach (a test, a REPL).
   ([conn run-id branch] (render-inbox conn run-id branch 3))
-  ([conn run-id branch cap]
+  ([conn run-id branch cap] (render-inbox conn run-id branch cap "…"))
+  ([conn run-id branch cap withheld]
    (let [rows (inbox conn run-id branch)]
      (when (seq rows)
         (str/join "\n"
                   (cons inbox-preamble
-                        (map inbox-line (take cap rows))))))))
+                        (map (partial inbox-line withheld) (take cap rows))))))))

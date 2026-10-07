@@ -48,6 +48,7 @@
   for the refusal text and the person's dialog."
   (:refer-clojure :exclude [reset!])
   (:require [clojure.data.json :as json]
+            [clojure.string :as str]
             [samizdat.events :as events]
             [samizdat.store.db :as db]))
 
@@ -91,6 +92,8 @@
   {:sources {"webfetch" {:trust :untrusted}
              "websearch" {:trust :untrusted}}
    :outside-read {:audience :operator}
+   ;; The shell: a read-only command needs nothing; one the operator's
+   ;; config names needs no trust (`gaps`).
    :sinks {"shell" {:trust :trusted :audience :project :read-only-exempt true}
            "webfetch" {:audience :project}
            "websearch" {:audience :project}}
@@ -113,9 +116,14 @@
 (defn gaps
   "What `label` lacks for a call to `tool`, as [{:gap :required :actual
   :because} …] — empty when the call may run. `call` is the call's
-  arguments; for the shell, `:read-only?` says the command only reads."
+  arguments; for the shell, `:read-only?` says the command only reads, and
+  `:configured?` that it is one the operator's config names (the verify
+  command, an acceptance check), which clears a trust gap but not an
+  audience one: the operator wrote it, no page did, but it can still send
+  what the branch holds anywhere."
   [table tool call label]
-  (let [need (get-in table [:sinks (str tool)])]
+  (let [need (get-in table [:sinks (str tool)])
+        need (cond-> need (:configured? call) (dissoc :trust))]
     (if (or (nil? need) (and (:read-only-exempt need) (:read-only? call)))
       []
       (vec (concat
@@ -138,7 +146,7 @@
   (when (seq gaps)
     (cond-> [{:plan :authorize :authority :person :covers (mapv :gap gaps)}]
       (and (= "shell" (str tool)) (every? #(= :trust (:gap %)) gaps))
-      (conj {:plan :narrow :to :read-only}))))
+      (conj {:plan :narrow :to :read-only} {:plan :narrow :to :configured}))))
 
 (defn lower-by
   "`label` lowered by the delta `d`, brought in by `why` ({:turn :tool})."
@@ -180,16 +188,18 @@
 (defn- branch-id [ctx]
   (or (get-in ctx [:branch :id]) (:branch-id ctx)))
 
+(defn- note-label
+  "A note's label, read back: it carries only the parts it lowered."
+  [label]
+  (merge top (cond-> label
+               (:trust label) (update :trust keyword)
+               (:audience label) (update :audience keyword))))
+
 (defn- from-journal
   "The label folded from a run's `:flow` notes for one branch."
   [conn run-id bid]
   (reduce (fn [l {:keys [branch label]}]
-            (if (= (str bid) (str branch))
-              ;; A note carries only the parts it lowered.
-              (meet l (merge top (cond-> label
-                                   (:trust label) (update :trust keyword)
-                                   (:audience label) (update :audience keyword))))
-              l))
+            (if (= (str bid) (str branch)) (meet l (note-label label)) l))
           top
           (when conn (notes conn run-id))))
 
@@ -205,21 +215,100 @@
           (swap! labels assoc k l)
           l))))
 
+(declare observe!*)
+
 (defn observe!
   "Lower the branch `ctx` names by `d` (a `delta`), brought in by `tool`.
   Journals the change; a delta that changes nothing writes nothing."
-  [{:keys [conn run-id turn] :as ctx} d tool]
+  [{:keys [turn] :as ctx} d tool]
+  (observe!* ctx d {:turn turn :tool (str tool)}))
+
+(defn observe!*
+  "`observe!` with what lowered it given whole, as {:turn :tool :via}."
+  [{:keys [conn run-id] :as ctx} d why]
   (when (and d run-id (branch-id ctx))
     (let [was (label-of ctx)
-          why {:turn turn :tool (str tool)}
+          why (into {} (remove (comp nil? val)) why)
           now (lower-by was d why)]
       (when (not= (dissoc was :because) (dissoc now :because))
         (swap! labels assoc [run-id (branch-id ctx)] now)
         (when conn
-          (note! conn run-id (branch-id ctx) turn
+          (note! conn run-id (branch-id ctx) (:turn ctx)
                  {:branch (branch-id ctx)
                   :label (assoc d :because (into {} (map (fn [k] [k why])) (keys d)))})))
       now)))
+
+;; --- what a branch writes for others (karamazov-3vu1.13) ----------------------
+;;
+;; A message, a task, a memory carries its writer's label in its row's `flow`
+;; column: JSON, nil for a writer that had read nothing. A branch that reads
+;; one on purpose — the inbox, a task it claims or shows, a recalled memory,
+;; another branch's turn — takes that label; a fork takes its parent's.
+
+(defn- parts
+  "The parts of `label` below the top, as a delta, or nil."
+  [label]
+  (not-empty (into {} (filter (fn [[k v]] (not= v (get top k))))
+                   (select-keys label [:trust :audience]))))
+
+(defn encode
+  "`label` as the text a row carries, or nil when it lowers nothing."
+  [label]
+  (when (parts label)
+    (json/write-str (assoc (parts label) :because (:because label)))))
+
+(defn decode
+  "The label a row's `flow` text carries, or nil."
+  [s]
+  (when-not (str/blank? (str s))
+    (try (let [m (json/read-str (str s) :key-fn keyword)]
+           (cond-> (merge top m)
+             (:trust m) (update :trust keyword)
+             (:audience m) (update :audience keyword)))
+         ;; A label that cannot be read is not a clean one.
+         (catch Throwable _ {:trust :untrusted :audience :operator}))))
+
+(defn carried
+  "What a row written by the branch `ctx` names carries."
+  [ctx]
+  (when (and (:run-id ctx) (branch-id ctx))
+    (encode (label-of ctx))))
+
+(defn run-label
+  "The meet of every branch's label in `run-id`: what a row the run writes
+  with no branch to name carries."
+  [conn run-id]
+  (when (and conn run-id)
+    (let [noted (reduce (fn [l {:keys [label]}] (meet l (note-label label)))
+                        top
+                        (try (notes conn run-id) (catch Throwable _ [])))]
+      (reduce (fn [l [[r _] v]] (if (= r run-id) (meet l v) l)) noted @labels))))
+
+(defn carried-by-run [conn run-id] (some-> (run-label conn run-id) encode))
+
+(defn combine
+  "The text a row carries after a writer carrying `b` edits one carrying `a`."
+  [a b]
+  (encode (meet (or (decode a) top) (or (decode b) top))))
+
+(defn receive!
+  "The branch `ctx` names reads rows carrying `flows` (their `flow` texts)
+  through `via`: it takes each one's label."
+  [ctx flows via]
+  (doseq [l (keep decode flows)
+          :let [d (parts l)]
+          :when d]
+    ;; Each part keeps what lowered it first, and says how it arrived.
+    (doseq [[k v] d]
+      (let [orig (get-in l [:because k])]
+        (observe!* ctx {k v} {:turn (:turn ctx) :tool (or (:tool orig) via) :via via})))))
+
+(defn inherit!
+  "A fork `child` of `parent` in the run `ctx` names starts with its
+  parent's label: it starts from its parent's conversation, or its thesis."
+  [ctx parent child]
+  (let [l (label-of (assoc ctx :branch {:id parent}))]
+    (receive! (assoc ctx :branch {:id child}) [(encode l)] "fork")))
 
 (defn forget-run!
   "Drop a run's labels: the run is over."

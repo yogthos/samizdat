@@ -40,6 +40,7 @@
             [samizdat.engine.proc :as proc]
             [samizdat.llm.client :as llm-client]
             [samizdat.store.db :as db]
+            [samizdat.security.token :as token]
             [samizdat.system :as system]
             [samizdat.userspace :as userspace]
             [ruuter.core :as ruuter]))
@@ -418,8 +419,8 @@
 (defn refusal
   "Why `req` may not be served, as a response, or nil when it may.
 
-  The server binds loopback and asks for no credentials, which leaves the
-  operator's own BROWSER as the way in: any page they have open can send a
+  The server binds loopback, which leaves the operator's own BROWSER as a
+  way in: any page they have open can send a
   text/plain POST to 127.0.0.1 without a preflight, and a page on a name that
   rebinds to 127.0.0.1 reads the answers as same-origin. body-json parsed
   whatever arrived, so `POST /v1/runs` from a web page started a run on the
@@ -428,7 +429,11 @@
   must be loopback, and a request with a body must declare it JSON — the one
   type a page cannot send without a preflight nothing here answers.
 
-  A request with no headers at all is an in-process call, and passes."
+  And while this process's server holds a token (samizdat.security.token),
+  every request but /health carries it. On Linux a process the agent runs
+  can reach loopback, and the token is in a file it cannot read
+  (karamazov-3vu1.11). A request with no headers is not exempt: HTTP/1.0
+  lets a raw socket send exactly that."
   [req]
   (let [host (header req "host")
         origin (header req "origin")
@@ -444,7 +449,11 @@
       (and body? (seq (:headers req))
            (not (#{:get :head} (:request-method req)))
            (not (some-> ct (str/starts-with? "application/json"))))
-      (json-response 415 {:error {:message "body must be JSON"}}))))
+      (json-response 415 {:error {:message "body must be JSON"}})
+
+      (and (token/current) (not= "/health" (:uri req))
+           (not (token/valid? (header req "authorization"))))
+      (json-response 401 {:error {:message "bearer token required"}}))))
 
 (defn handler [req]
   (try

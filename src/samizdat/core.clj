@@ -53,7 +53,10 @@
   is reachable and the key works, which the TypeScript harness also does. It is
   no longer ordering-critical."
   (:require [clojure.tools.logging :as log]
+            [jolt.fs]
+            [samizdat.config :as config]
             [samizdat.security.listen :as listen]
+            [samizdat.security.sandbox :as sandbox]
             ;; Statically required, both so the ordering bug stays fixed in the
             ;; open rather than by accident and so `jolt build` reaches it.
             [jolt.nrepl]
@@ -128,6 +131,31 @@
       (log/warn "nREPL not started:" (ex-message e))
       nil)))
 
+(defn nrepl-allowed?
+  "Whether the harness nREPL may listen: only where the sandbox keeps the
+  agent's shell and eval image off loopback (`:backend :seatbelt` for both),
+  or where the operator's config.edn says `:nrepl {:unconfined :allow}`.
+
+  The nREPL asks for no credentials and is the whole harness process, so on
+  a host whose sandbox shares the network — Linux under bwrap, or no sandbox
+  at all — any command the agent runs could connect to it and leave every
+  confinement behind (karamazov-3vu1.11)."
+  [{:keys [backend nrepl]}]
+  (or (= :seatbelt backend)
+      (= :allow (:unconfined nrepl))))
+
+(defn- loopback-backend
+  "The sandbox the agent's processes run under on this host, as far as
+  loopback is concerned: :seatbelt only when the shell's and the eval image's
+  both are."
+  [cfg]
+  (let [os (System/getProperty "os.name")
+        bwrap? (some? (jolt.fs/which "bwrap"))
+        root (get-in cfg [:run :root])
+        bs [(sandbox/backend-for (:sandbox (config/shell-sandbox root)) os bwrap?)
+            (sandbox/backend-for (config/eval-sandbox root) os bwrap?)]]
+    (if (every? #{:seatbelt} bs) :seatbelt (first (remove #{:seatbelt} bs)))))
+
 (defn- record-exit!
   "Name what was still running when the process ended.
 
@@ -159,7 +187,11 @@
     ;; open and can still say what was running.
     (jolt.host/add-shutdown-hook record-exit!)
     (jolt.host/add-shutdown-hook system/stop!)
-    (start-nrepl! (get-in cfg [:nrepl :port]))
+    (if (nrepl-allowed? {:backend (loopback-backend cfg) :nrepl (:nrepl cfg)})
+      (start-nrepl! (get-in cfg [:nrepl :port]))
+      (log/warn "nREPL not started: on this host the agent's shell can reach"
+                "loopback, and the nREPL asks for no credentials. config.edn"
+                ":nrepl {:unconfined :allow} starts it anyway."))
     {:config cfg :warm warm}))
 
 (defn local-url

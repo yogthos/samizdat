@@ -81,6 +81,7 @@
             [samizdat.security.confine]
             [samizdat.security.flow]
             [samizdat.security.replay]
+            [samizdat.security.token]
             [samizdat.security.exposure]
             [samizdat.security.policy]
             [samizdat.security.sandbox]

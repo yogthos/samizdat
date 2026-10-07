@@ -37,6 +37,7 @@
   (:require [clojure.string :as str]
             [instaparse.combinators :as c]
             [instaparse.core :as insta]
+            [samizdat.agent.acceptance :as acceptance]
             [samizdat.approval :as approval]
             [samizdat.config :as config]
             [samizdat.engine.proc :as proc]
@@ -656,9 +657,14 @@
                   (every? statement? segments)))))
 
 (defn shell-gaps
-  "What a branch labelled `label` lacks to run `command` (samizdat.security.flow)."
-  [label command]
-  (flow/gaps flow/table "shell" {:read-only? (read-only? command)} label))
+  "What a branch labelled `label` lacks to run `command`
+  (samizdat.security.flow). `configured` is the set of commands the
+  operator's config names for the run (acceptance/configured-commands)."
+  ([label command] (shell-gaps label command #{}))
+  ([label command configured]
+   (flow/gaps flow/table "shell" {:read-only? (read-only? command)
+                                  :configured? (contains? (set configured) (str/trim (str command)))}
+              label)))
 
 (defn- flow-reason
   "A gap as the short rule text a person's dialog shows beside the call."
@@ -673,9 +679,9 @@
   stays a deny. Not cleared by a grant: a grant says the command is fine,
   not that the branch is. Pure — run-shell and the policy trace replay
   (samizdat.security.replay) both decide through it."
-  [decided label command]
+  [decided label command configured]
   (let [gaps (when (not= :deny (:effect decided))
-               (not-empty (shell-gaps label command)))]
+               (not-empty (shell-gaps label command configured)))]
     (cond-> decided
       gaps (assoc :gaps gaps :remedies (flow/remedies "shell" gaps))
       (and gaps (= :allow (:effect decided)))
@@ -731,7 +737,8 @@
                                  :rule {:name :outside-project})
                   refused-refs (assoc :effect :deny :env-refs refused-refs
                                       :rule {:name :env-ref})
-                  label (with-flow label command))
+                  label (with-flow label command
+                                   (acceptance/configured-commands (config/file-config root))))
         rule (:rule decided)
         rule-text (str/join " " (remove nil? [(name (:name rule)) (:pattern rule)
                                               (:path rule) (:segment rule)
@@ -779,10 +786,14 @@
                                 {:command command
                                  :gaps (mapv (fn [{:keys [gap because]}]
                                                {:trust (= :trust gap) :audience (= :audience gap)
-                                                :tool (:tool because) :turn (:turn because)})
+                                                :tool (:tool because) :via (:via because) :turn (:turn because)})
                                              (:gaps decided))
                                  :asking (= :block (:mode (approval/policy)))
                                  :narrow (some #(= :narrow (:plan %)) (:remedies decided))
+                                 :configured (some->> (acceptance/configured-commands
+                                                       (config/file-config root))
+                                                      sort (map #(str "`" % "`"))
+                                                      (str/join ", ") not-empty)
                                  :note note :unanswered timed-out})
                  (prompt/render "shell-refused"
                               {:command command :head head :complex? complex?
