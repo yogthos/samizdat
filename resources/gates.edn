@@ -2256,16 +2256,24 @@
         stays stoppable."}
 
  :approval
- {:value {:mode :refuse :wait-ms 300000 :on-timeout :deny}
+ {:value {:mode :attended :wait-ms 300000 :on-timeout :deny}
   :kind :threshold :capability-tunable? false
   :provenance ["karamazov-whbw.3" "karamazov-3vu1.2"]
   :doc "Whether a command the policy wants to ASK about waits for a person.
 
-        `:refuse` is the default and is what this harness has always done:
-        the call is refused, the refusal teaches the retry, and a human adds
-        a grant afterwards without the run ever stopping. Runs are
-        unattended by design and a feature landing must not change that —
-        an upgrade that silently started blocking would hang every campaign.
+        `:attended`, the default, decides per run: while a front end (the
+        TUI) follows the run's event stream there is somebody to ask and it
+        behaves as `:block`; while none does it is `:refuse`. An unattended
+        campaign is never asked, and a person at the TUI is — without it a
+        run started from the TUI told the model `nobody is attached` with
+        somebody watching the question box.
+
+        `:refuse` is what this harness always did and still does with
+        nobody watching: the call is refused, the refusal teaches the retry,
+        and a human adds a grant afterwards without the run ever stopping.
+        Runs are unattended by design and a feature landing must not change
+        that — an upgrade that silently started blocking would hang every
+        campaign, which is why `:attended` asks only someone who is there.
 
         `:mode :block` parks the branch on the question instead, for when
         somebody is watching. What makes that safe is the other two keys.
@@ -2277,7 +2285,7 @@
         than a rule).
 
         THIS FILE MAY ONLY TIGHTEN IT (karamazov-3vu1.2). It is userspace the
-        agent edits, so it chooses between the two safe modes and the wait,
+        agent edits, so it chooses between the three safe modes and the wait,
         and nothing else is read from it: `:on-timeout :allow` and `:mode
         :yolo` (every ask allowed) are the operator's, in config.edn's
         `:approval` block, or a person's session mode (`/mode` in the TUI).
@@ -2295,6 +2303,15 @@
         the critic's scores and the supervisor's notes a conversation shows
         beside the turns. The newest, since a conversation is read from the
         bottom."}
+
+ :project-files-shown
+ {:value 50
+  :kind :cost-ceiling :capability-tunable? false
+  :provenance ["karamazov-uglz"]
+  :doc "How many files GET /v1/harness/files answers an @-mention with —
+        the TUI's file picker. A cap on a response: the picker draws a
+        handful, and a large tree matching a short query would otherwise go
+        over the wire whole on every key."}
 
  :modified-files-shown
  {:value 60
@@ -2871,7 +2888,7 @@
         Not capability-tunable: it describes source files, not a branch."}
 
  :task-fold
- {:value {:enabled? true :min-messages 12}
+ {:value {:enabled? true :min-messages 12 :carry ["ask_human"]}
   :kind :policy :capability-tunable? false
   :provenance ["karamazov-d5wo.5"]
   :doc "FOLD A TASK'S WORK WHEN IT CLOSES (the :tool/dispatch cell;
@@ -2887,6 +2904,11 @@
         task, its status and its turn range, with no model call. Pinned
         messages inside it (a directory's instructions) ride through.
 
+        :carry          tools whose results ride through on the fold's
+                        line. ask_human: a person's answers are decisions
+                        the rest of the run builds on — folded away, the
+                        next turn read the problem's open question as still
+                        open and asked the person again.
         :min-messages   the span has to be at least this long. Rewriting
                         the middle of the tape invalidates the provider's
                         prefix cache from that point on, which costs a

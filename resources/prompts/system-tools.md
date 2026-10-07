@@ -166,12 +166,18 @@ websearch({query, num_results?})
     will not find it and will cost you a turn.
 ask_human({questions})
     Put a question to the person watching this run and wait for their
-    answer. `questions` is a list of {question, options?}. Most runs have
-    nobody attached and you will be told so immediately — that is the normal
-    answer, not a failure. Use it only where the choice is genuinely not
-    yours to make (which of two products to build, whether to touch
-    something outside the project); decide anything else yourself and say
-    which way you went. Asking costs a turn and establishes nothing.
+    answer. `questions` is a list of {question, options?, multi?, header?}:
+    each option a label or {label, description}, the one you recommend first
+    with " (Recommended)" after its label; `multi: true` lets them pick
+    several; `header` groups related questions. Do not add an "Other"
+    option — the person can always type their own answer. Several questions
+    go in one call, not one call each. Runs with nobody watching are told so
+    immediately — that is the normal answer, not a failure. Use it where the
+    choice is genuinely not yours to make (which of two products to build,
+    whether to touch something outside the project) — and ALWAYS when the
+    problem says to ask, or names a decision as the person's: ask before you
+    build on it, not after. Decide anything else yourself and say which way
+    you went. Asking costs a turn and establishes nothing.
 shell({command})
     Run one or MORE shell commands. A command may be several statements —
     separated by newlines, `;`, `&&` or a pipe — and they run in one call, in

@@ -32,6 +32,7 @@
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest testing is use-fixtures]]
             [samizdat.approval :as approval]
+            [samizdat.events]
             [samizdat.agent.tools :as tools]
             [samizdat.security.policy :as policy]))
 
@@ -351,3 +352,77 @@
   (is (= "cat *" (approval/grant-pattern "cat" "cat /etc/hosts")) "nor is a path")
   (is (= "python3 *" (approval/grant-pattern "python3" "python3 script.py")) "nor a file name")
   (is (nil? (approval/grant-pattern nil "x"))))
+
+;; --- attended: ask when somebody is watching ---------------------------------
+;;
+;; The TUI is a person at a terminal. With the mode :refuse a run started from
+;; it told the model "nobody is attached" while somebody sat watching the
+;; question box, and :block hangs the 3am campaign this namespace exists to
+;; protect. :attended is both: a person is asked when a front end is
+;; following the run's event stream, and nobody is waited on when not.
+
+(deftest attended-asks-only-while-a-front-end-follows-the-run
+  (with-redefs [samizdat.agent.gates/threshold (fn [k] (when (= k :approval) {:mode :attended}))]
+    (is (= :attended (:mode (approval/policy))) "the mode as configured")
+    (is (= :refuse (:mode (approval/policy "r1"))) "nobody is following r1")
+    (let [w (samizdat.events/watch! "r1")]
+      (try
+        (is (= :block (:mode (approval/policy "r1"))) "a front end follows r1: ask")
+        (is (= :refuse (:mode (approval/policy "r2"))) "but not r2")
+        (finally (samizdat.events/unwatch! w))))
+    (is (= :refuse (:mode (approval/policy "r1"))) "and once it stops following, nobody is")
+    (testing "a front end following every run attends every run"
+      (let [w (samizdat.events/watch! nil)]
+        (try (is (= :block (:mode (approval/policy "r9"))))
+             (finally (samizdat.events/unwatch! w)))))))
+
+(deftest attended-is-a-mode-the-project-and-a-person-may-pick
+  (is (= :attended (:mode (policy-with {:mode :attended} nil))))
+  (try (is (= :attended (approval/set-mode! "attended")))
+       (finally (approval/set-mode! nil))))
+
+(deftest ask-human-reaches-a-person-who-is-watching
+  (with-redefs [samizdat.agent.gates/threshold
+                (fn [k] (when (= k :approval) {:mode :attended :wait-ms 5000}))]
+    (let [w (samizdat.events/watch! "r1")]
+      (try
+        (let [result (future (ask {:questions [{:question "which backend?"
+                                                :options ["sqlite" "postgres"]}]}))]
+          (future (loop [n 0]
+                    (if-let [p (first (approval/pending "r1"))]
+                      (approval/decide! (:id p) {:decision :answer :answers ["postgres"]})
+                      (when (< n 1000) (Thread/sleep 5) (recur (inc n))))))
+          (is (str/includes? (:result (deref result 8000 {:result "hung"})) "postgres")))
+        (finally (samizdat.events/unwatch! w))))))
+
+(deftest ask-human-takes-options-with-descriptions-and-a-header
+  ;; dirge's `question`: an option is a label and what it means, and a header
+  ;; groups a question. The labels are what is answered; the descriptions are
+  ;; shown beside them.
+  (with-redefs [approval/policy (constantly {:mode :block :wait-ms 5000 :on-timeout :deny})]
+    (let [result (future (ask {:questions [{:header "Storage"
+                                            :question "which backend?"
+                                            :options [{:label "sqlite (Recommended)"
+                                                       :description "one file, no server"}
+                                                      {:label "postgres" :description "a server"}
+                                                      "memory"]}]}))
+          p (loop [n 0] (or (first (approval/pending "r1"))
+                            (when (< n 1000) (Thread/sleep 5) (recur (inc n)))))
+          q (first (:questions p))]
+      (is (= ["sqlite (Recommended)" "postgres" "memory"] (:options q)))
+      (is (= ["one file, no server" "a server" ""] (:descriptions q)))
+      (is (= "Storage" (:header q)))
+      (approval/decide! (:id p) {:decision :answer :answers ["postgres"]})
+      (let [r (:result (deref result 8000 {:result "hung"}))]
+        (is (str/includes? r "Storage"))
+        (is (str/includes? r "which backend? → postgres"))))))
+
+(deftest a-half-answered-questionnaire-says-which-went-unanswered
+  (with-redefs [approval/policy (constantly {:mode :block :wait-ms 5000 :on-timeout :deny})]
+    (let [result (future (ask {:questions [{:question "one?"} {:question "two?"}]}))
+          p (loop [n 0] (or (first (approval/pending "r1"))
+                            (when (< n 1000) (Thread/sleep 5) (recur (inc n)))))]
+      (approval/decide! (:id p) {:decision :answer :answers ["yes"]})
+      (let [r (:result (deref result 8000 {:result "hung"}))]
+        (is (str/includes? r "one? → yes"))
+        (is (str/includes? r "two? → (no answer)"))))))

@@ -299,6 +299,20 @@
         (if (<= body-start body-end) (subs s body-start body-end) ""))
       s)))
 
+(defn framed-result
+  "`[tool body]` of a framed result at the head of `s` — the tool the frame
+  names and the text inside it, without anything appended after the frame —
+  or nil when `s` does not start with one."
+  [s]
+  (let [s (str s)
+        open "<tool_result tool=\""
+        head-end (str/index-of s "\n")
+        close (str/index-of s (str "\n" result-close))]
+    ;; The head is exactly what frame-result writes: open, the tool, `">`.
+    (when (and (str/starts-with? s open) head-end close
+               (str/ends-with? (subs s 0 head-end) "\">"))
+      [(subs s (count open) (- head-end 2)) (subs s (inc head-end) close)])))
+
 (def ledger-open "<!--settled-state-->")
 (def ledger-close "<!--/settled-state-->")
 

@@ -325,10 +325,13 @@
   "An `on-delta` for one call on `branch-id` of `run-id`: the reply's text and
   reasoning gathered and published to the bus at most every gates.edn
   :delta-publish-ms, each piece with the offset it starts at, and a `flush!`
-  for what is still gathered when the call returns. {:on-delta :flush!}."
-  [run-id branch-id]
+  for what is still gathered when the call returns. {:on-delta :flush!}.
+
+  `prefill`, on a forced turn, is the start of the reply the stream never
+  carries — the model continues it — so it goes out as the first text."
+  [run-id branch-id prefill]
   (let [every (gates/threshold :delta-publish-ms)
-        st (atom {:text "" :reasoning "" :sent-text 0 :sent-reasoning 0 :at 0})
+        st (atom {:text (str prefill) :reasoning "" :sent-text 0 :sent-reasoning 0 :at 0})
         publish! (fn [{:keys [text reasoning sent-text sent-reasoning]}]
                    (let [t (subs text sent-text) r (subs reasoning sent-reasoning)]
                      (when (or (seq t) (seq r))
@@ -394,7 +397,7 @@
              ;; the model writes goes onto the bus as it is written. Not a
              ;; probe's (journal? false): a bounce is not a turn anyone sees.
              watch (when (and journal? (:run-id ctx) id)
-                     (delta-publisher (:run-id ctx) (str id)))
+                     (delta-publisher (:run-id ctx) (str id) forced-prefill))
              base (or (:max-tokens (:llm-config ctx))
                       ;; No configured cap: the FIRST attempt keeps the
                       ;; provider's default, but a retry exists to buy room —

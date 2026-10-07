@@ -275,7 +275,7 @@
                                                  {:trust (= :trust gap) :audience (= :audience gap)
                                                   :tool (:tool because) :via (:via because) :turn (:turn because)})
                                                gaps)
-                                   :asking (= :block (:mode (approval/policy)))
+                                   :asking (= :block (:mode (approval/policy (:run-id ctx))))
                                    :note note :unanswered timed-out})
            :policy {:effect :ask :gaps gaps :remedies (flow/remedies sink gaps)}})))))
 

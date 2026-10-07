@@ -750,7 +750,8 @@
 (cell/defcell :board/approve
   {:doc "The plan's gate before construction. HEADLESS the critic already was
         the gate, so this is pass-through and only records the plan as the
-        task's contract. ATTENDED (:approval :mode :block) the plan also goes
+        task's contract. ATTENDED (:approval :mode :block, or :attended with a
+        front end following the run) the plan also goes
         to the person, on the same queue ask_human uses, and construction waits
         for them (karamazov-vale).
 
@@ -762,7 +763,8 @@
    :input  [:map [:board/task {:optional true} :any]
             [:board/plan-text {:optional true} :any]
             [:board/plan-decision {:optional true} :any]]
-   :output [:map [:board/approve-decision :keyword]]}
+   :output [:map [:board/approve-decision :keyword]
+            [:board/design-findings {:optional true} :any]]}
   (fn [{:keys [conn run-id]} {:keys [board/task board/plan-text board/plan-decision] :as data}]
     (when (seq (str plan-text))
       ;; An RFC is stamped plan_kind "rfc" so decompose and the epic-review can
@@ -770,17 +772,30 @@
       (try (tasks/update! conn task (cond-> {:plan (str plan-text)}
                                       (= :rfc plan-decision) (assoc :plan-kind "rfc")))
            (catch Throwable _ nil)))
-    (let [{:keys [mode wait-ms on-timeout]} (approval/policy)
-          approved?
-          (if (or (not= :block mode) (str/blank? (str plan-text)))
-            true
-            (let [id (approval/request!
-                      {:run-id run-id :kind :plan
-                       :details (str "Plan for task " task)
-                       :questions [{:question (str "Approve this plan?\n\n" plan-text)
-                                    :options ["approve" "request changes"]}]})
-                  ans (approval/await! id wait-ms {:decision (or on-timeout :deny)})]
-              (contains? #{:approve :allow} (some-> (:decision ans) keyword))))
+    (let [{:keys [mode wait-ms on-timeout]} (approval/policy run-id)
+          ans (when (and (= :block mode) (not (str/blank? (str plan-text))))
+                (approval/await!
+                 (approval/request!
+                  {:run-id run-id :kind :plan
+                   :details (str "Plan for task " task)
+                   :questions [{:question (str "Approve this plan?\n\n" plan-text)
+                                :options ["approve" "request changes"]}]})
+                 wait-ms {:decision (or on-timeout :deny)}))
+          ;; A front end answers a questionnaire {:decision :answer :answers
+          ;; [...]}: "approve" picked is the approval, and anything else typed
+          ;; is what to change. Reading only :approve/:allow sent every plan a
+          ;; person approved back to rework.
+          picked (some-> (:answers ans) first str str/trim)
+          ;; Nobody answered in time: as headless, where the critic was the
+          ;; gate. Rework would ask the same absent person again, forever.
+          approved? (or (nil? ans) (:timed-out ans)
+                        (contains? #{:approve :allow} (some-> (:decision ans) keyword))
+                        (and (= :answer (some-> (:decision ans) keyword))
+                             (= "approve" (str/lower-case (str picked)))))
+          feedback (when-not approved?
+                     (not-empty (str/trim (str (if (#{"" "request changes"} (str picked))
+                                                 (:note ans)
+                                                 picked)))))
           ;; An approved RFC goes to DECOMPOSE (break into child tasks) rather
           ;; than straight to construction; a lightweight plan goes to :work.
           decision (cond
@@ -789,7 +804,8 @@
                      :else :go)]
       (journal/note! conn run-id :plan-approval
                      {:data {:task task :mode mode :decision decision}})
-      (assoc data :board/approve-decision decision))))
+      (cond-> (assoc data :board/approve-decision decision)
+        feedback (assoc :board/design-findings (str "The person reviewing the plan: " feedback))))))
 
 (cell/defcell :board/decompose
   {:doc "Break an approved RFC into the concrete child tasks it named, under the

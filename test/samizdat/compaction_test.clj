@@ -302,6 +302,30 @@
     (testing "a close that did not end the held task folds nothing"
       (is (= (:messages before) (:messages (dispatch before {:enabled? true :min-messages 4})))))))
 
+(deftest a-task-fold-keeps-what-the-person-answered
+  ;; Seen live: a branch asked ask_human at turn 5, built on the answers,
+  ;; closed its task — and the fold took the answers with it. The next turn
+  ;; read "the operator has not decided" in the problem and asked again.
+  (cells/load-cells!)
+  (let [answer (samizdat.llm.message/frame-result "ask_human" "How long is a loan? → 21 days")
+        convo (assoc (task-convo) 6 {:role "user" :turn 3
+                                     :content (str answer "\n\n---\n\n[harness] a gate said")})
+        before {:id "B1" :task {:id "T1" :title "the task"} :messages convo}]
+    (is (= ["How long is a loan? → 21 days"]
+           (cmp/results-of convo (cmp/task-span convo "T1") #{"ask_human"}))
+        "the framed body, without what the harness appended after the frame")
+    (with-redefs [samizdat.agent.loop/tool-step
+                  (fn [_ _ _ _] {:branch (assoc before :task nil) :result {:ok "closed"} :tool "task"})
+                  gates/threshold (let [orig gates/threshold]
+                                    (fn [k] (if (= k :task-fold)
+                                              {:enabled? true :min-messages 4 :carry ["ask_human"]}
+                                              (orig k))))]
+      (let [out (:branch ((:handler (cell/get-cell! :tool/dispatch))
+                          {} {:branch before :turn 5
+                              :parsed {:name "task" :args {:action "close" :id "T1"}}}))
+            line (:content (first (filter :task-fold (:messages out))))]
+        (is (str/includes? line "21 days") "the answer rides on the fold's line")))))
+
 (deftest a-later-fold-can-find-the-earlier-one
   (let [msgs [{:role "user" :content "a"}
               {:role "system" :content "MARKER:first summary"}

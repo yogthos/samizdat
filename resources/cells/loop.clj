@@ -140,7 +140,7 @@
   the HELD task: a close of someone's backlog row, or one the tool refused,
   leaves the held task in place and folds nothing."
   [parsed before branch]
-  (let [{:keys [enabled? min-messages]} (gates/threshold :task-fold)
+  (let [{:keys [enabled? min-messages carry]} (gates/threshold :task-fold)
         held (:task before)
         args (:args parsed)
         closed? (and enabled? held (nil? (:task branch))
@@ -153,7 +153,10 @@
                       (prompt/render "task-folded"
                                      {:id (:id held) :title (:title held)
                                       :status (str (or (:status args) (get args "status") "done"))
-                                      :from from :to to}))]
+                                      :from from :to to
+                                      ;; What a person answered inside the
+                                      ;; span still stands after it closes.
+                                      :kept (not-empty (cmp/results-of (:messages branch) span carry))}))]
         (update branch :messages cmp/fold-task span text))
       branch)))
 

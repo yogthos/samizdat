@@ -95,12 +95,18 @@
 (deftest a-sandboxed-command-runs
   (when (str/starts-with? (str (System/getProperty "os.name")) "Mac OS X")
     (let [root (str (fs/create-temp-dir))
-          {:keys [argv env]} (confine/shell-command {:backend :seatbelt :root root
-                                                     :command "echo hi > f && cat f && echo $TMPDIR > t && touch \"$(cat t)/ok\" && echo tmp-ok"
-                                                     :env {"PATH" "/usr/bin:/bin"}})
-          r (apply proc/run {:env env :timeout-ms 30000} argv)]
+          {:keys [argv env dir]} (confine/shell-command {:backend :seatbelt :root root
+                                                         :command "echo hi > f && cat f && echo $TMPDIR > t && touch \"$(cat t)/ok\" && echo tmp-ok"
+                                                         :env {"PATH" "/usr/bin:/bin"}})
+          r (apply proc/run {:env env :dir dir :timeout-ms 30000} argv)]
       (is (str/includes? (:out r) "hi") (str r))
-      (is (str/includes? (:out r) "tmp-ok") (str r)))))
+      (is (str/includes? (:out r) "tmp-ok") (str r))
+      ;; The harness's checkout is a denied read region and the harness runs
+      ;; from it: a bash started there could not find its own directory, and
+      ;; every command of every run in a project elsewhere came back with
+      ;; `shell-init: error retrieving current directory` twice on its end.
+      (is (not (str/includes? (str (:err r)) "getcwd")) (str r))
+      (is (= root dir) "the shell starts in the project, not where the harness was started"))))
 
 (deftest the-workflow-is-protected-in-both-specs
   (is (= ["/work/proj/.samizdat"] (confine/protected "/work/proj")))

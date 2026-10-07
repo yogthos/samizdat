@@ -112,7 +112,7 @@
       :else
       (let [matched (vec (distinct (filter #(policy/matches? pattern %) (refused-commands conn run-id))))
             shown (str/join ", " (map #(str "`" % "`") (take 5 matched)))
-            {:keys [mode wait-ms on-timeout]} (approval/policy)]
+            {:keys [mode wait-ms on-timeout]} (approval/policy run-id)]
         (cond
           (empty? matched) (base/malformed branch (render {:matches-nothing true}))
           (= :yolo mode) (base/ok branch (render {:yolo true}))

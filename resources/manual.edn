@@ -41,7 +41,9 @@
    {:name samizdat.agent.compaction/task-span
     :summary "Where a task's work sits in the tape: from its statement to, not including, the call that closed it."}
    {:name samizdat.agent.compaction/fold-task
-    :summary "Replace a span with one line, carrying its pinned messages through. The :tool/dispatch cell folds a closed task this way when its span passes gates.edn :task-fold :min-messages; turns.task_id keeps every folded turn findable."}]}
+    :summary "Replace a span with one line, carrying its pinned messages through. The :tool/dispatch cell folds a closed task this way when its span passes gates.edn :task-fold :min-messages; turns.task_id keeps every folded turn findable."}
+   {:name samizdat.agent.compaction/results-of
+    :summary "The framed bodies of some tools' results inside a span. The task fold puts gates.edn :task-fold :carry (ask_human) on its line, so a person's answers outlive the task that asked them."}]}
 
  {:group "Probing without committing"
   :entries
@@ -138,9 +140,9 @@
    {:name samizdat.agent.live/apply-to
     :summary "What a person switched on a RUNNING run: the `model` and `effort` intervention kinds apply on arrival (POST /v1/runs/:id/interventions {kind: \"model\", payload: id}), and loop/call-model merges them over the run's llm config on every request, so every branch's next turn uses them. Each switch is journalled as :llm-switch. Forgotten when the run ends."}
    {:name samizdat.approval/set-mode!
-    :summary "The approval mode for this server session — :refuse, :block or :yolo (every ask allowed; a deny stays a deny) — over config.edn's and gates.edn's :approval. POST /v1/harness/approval-mode; the TUI's /mode. In memory: who is at the keyboard now is not a fact about the project."}
+    :summary "The approval mode for this server session — :attended (ask while a front end follows the run, else refuse), :refuse, :block or :yolo (every ask allowed; a deny stays a deny) — over config.edn's and gates.edn's :approval. POST /v1/harness/approval-mode; the TUI's /mode. In memory: who is at the keyboard now is not a fact about the project."}
    {:name samizdat.approval/policy
-    :summary "The approval policy in force and where each part comes from: gates.edn may choose :refuse or :block and the wait; :yolo and :on-timeout :allow only from the operator's config.edn :approval or a person's session mode. A loosening value in gates.edn is ignored."}
+    :summary "The approval policy in force and where each part comes from: gates.edn may choose :attended (the shipped default: :block while a front end follows the run's event stream, samizdat.events/watched?, :refuse otherwise; approval/policy given a run-id resolves it), :refuse or :block and the wait; :yolo and :on-timeout :allow only from the operator's config.edn :approval or a person's session mode. A loosening value in gates.edn is ignored."}
    {:name samizdat.approval/session-grants
     :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
    {:name samizdat.security.token/issue!

@@ -83,6 +83,9 @@
   `emit!` takes an SSE event map, or {:comment text} for a heartbeat."
   [{:keys [conn run-id since emit! stop? poll-ms heartbeat-ms page]}]
   (let [sub (events/subscribe)
+        ;; Somebody is on the other end for as long as this pumps: an
+        ;; :attended approval policy asks them (samizdat.approval/policy).
+        watch (events/watch! run-id)
         mine? #(or (nil? run-id) (= run-id (:run-id %)))]
     (try
       (loop [cursor (or since 0), quiet-since (System/currentTimeMillis), catch-up? true]
@@ -106,7 +109,8 @@
                 (recur cursor
                        (if (or (seq sent) beat?) now quiet-since)
                        (= page (count rows))))))))
-      (finally (events/unsubscribe! sub)))))
+      (finally (events/unwatch! watch)
+               (events/unsubscribe! sub)))))
 
 (defn cursor
   "Where a stream request resumes: its Last-Event-ID header, else `since`

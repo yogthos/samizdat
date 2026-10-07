@@ -76,6 +76,31 @@
   (swap! subscribers disj sub)
   nil)
 
+;; --- who is watching ----------------------------------------------------------
+;;
+;; A front end following a run's event stream is a person who can be asked.
+;; Counted here, beside the bus they follow, so the approval policy can tell
+;; an attended run from an unattended one without knowing what a stream is.
+
+(defonce ^:private watchers (atom {}))
+
+(defn watch!
+  "Note that a front end follows `run-id` (nil: every run). Returns a token
+  for `unwatch!`."
+  [run-id]
+  (let [token (Object.)]
+    (swap! watchers assoc token run-id)
+    token))
+
+(defn unwatch! [token]
+  (swap! watchers dissoc token)
+  nil)
+
+(defn watched?
+  "Whether a front end follows `run-id`, directly or by following every run."
+  [run-id]
+  (boolean (some #(or (nil? %) (= run-id %)) (vals @watchers))))
+
 (defn collect
   "Drain whatever `sub` holds right now, without blocking: the events that
   arrived since the last drain, oldest first."

@@ -493,6 +493,27 @@
         (is (= [0 3] (keep #(when (:text %) (:text-at %)) ds)) "each piece says where it goes"))
       (finally (events/unsubscribe! sub)))))
 
+(deftest a-prefilled-call-publishes-its-prefill-first
+  ;; A forced turn's prefill ("```tool-call\n{") is the start of the reply,
+  ;; and the stream carries only what the model wrote after it. Published
+  ;; without it, the TUI drew the rest of the call — bare JSON — as the
+  ;; agent's prose until the turn row landed.
+  (let [sub (events/subscribe)
+        threshold gates/threshold]
+    (try
+      (with-redefs [gates/threshold (fn [k] (if (= :delta-publish-ms k) 0 (threshold k)))
+                    samizdat.llm.client/chat
+                    (fn [_ _ _ {:keys [on-delta]}]
+                      (on-delta {:text "\"name\":\"ls\"}"})
+                      (on-delta {:text "\n```"})
+                      {:content "\"name\":\"ls\"}\n```" :finish-reason "stop"})]
+        ((infer/complete-fn {:llm-adapter ::a :llm-config {:features #{:prefill}} :run-id "R1"})
+         (assoc base-tape :prefill "```tool-call\n{")))
+      (let [ds (filter #(= :delta (:kind %)) (events/collect sub))]
+        (is (= "```tool-call\n{\"name\":\"ls\"}\n```" (apply str (keep :text ds))))
+        (is (= 0 (:text-at (first ds))) "from the very start"))
+      (finally (events/unsubscribe! sub)))))
+
 (deftest a-call-outside-a-run-publishes-nothing
   (let [sub (events/subscribe)
         seen (atom :unset)]

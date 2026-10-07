@@ -124,11 +124,22 @@
     (->> qs
          (keep (fn [q]
                  (cond
-                   (map? q) (let [text (or (:question q) (:text q) (:prompt q))]
+                   (map? q) (let [text (or (:question q) (:text q) (:prompt q))
+                                  ;; An option is a label, or {label,
+                                  ;; description} as dirge's `question` has
+                                  ;; it. The labels are what gets answered.
+                                  opts (mapv (fn [o] (if (map? o)
+                                                       [(str (or (:label o) (:value o) (:name o)))
+                                                        (str (or (:description o) ""))]
+                                                       [(str o) ""]))
+                                             (:options q))
+                                  header (not-empty (str/trim (str (:header q))))]
                               (when (not-empty (str text))
-                                {:question (str text)
-                                 :options (mapv str (:options q))
-                                 :multi (boolean (:multi q))}))
+                                (cond-> {:question (str text)
+                                         :options (mapv first opts)
+                                         :multi (boolean (or (:multi q) (:multi_select q)))}
+                                  (some (comp seq second) opts) (assoc :descriptions (mapv second opts))
+                                  header (assoc :header header))))
                    (not-empty (str q)) {:question (str q) :options []}
                    :else nil)))
          vec)))
@@ -140,7 +151,8 @@
   [questions answers]
   (str/join "\n"
             (map-indexed (fn [i q]
-                           (str (:question q) " → "
+                           (str (when-let [h (:header q)] (str "[" h "] "))
+                                (:question q) " → "
                                 (let [a (nth answers i nil)]
                                   (cond
                                     (sequential? a) (str/join ", " a)
@@ -150,7 +162,7 @@
 
 (defmethod base/run-tool "ask_human" [{:keys [branch run-id branch-id] :as ctx}]
   (let [questions (normalize (base/arg ctx :questions))
-        {:keys [mode wait-ms on-timeout]} (approval/policy)
+        {:keys [mode wait-ms on-timeout]} (approval/policy run-id)
         context (not-empty (str/trim (str (get-in ctx [:config :run :user-context]))))]
     (cond
       (empty? questions)

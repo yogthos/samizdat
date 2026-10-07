@@ -918,3 +918,35 @@
               (is (str/includes? (str (:prompt_suffix row)) "PLANNING")
                   "the brief it opened on, so a rebuild opens the same messages")
               (is (not (str/blank? (str (:problem row))))))))))))
+
+(deftest a-person-who-picks-approve-approves-the-plan
+  ;; The plan goes to a front end as a questionnaire, and a questionnaire is
+  ;; answered {:decision :answer :answers [...]}. The cell read only :approve
+  ;; or :allow, so a person picking "approve" sent every plan back to rework.
+  (cells/load-cells!)
+  (let [conn (db/open! ":memory:")
+        rid (runs/start-run! conn {:problem "p"})
+        t (tasks/create! conn {:title "fade the terrain" :body "b"})
+        approve (fn [answer]
+                  (with-redefs [samizdat.approval/policy (constantly {:mode :block :wait-ms 5000
+                                                                      :on-timeout :deny})]
+                    (let [r (future ((:handler (cell/get-cell! :board/approve))
+                                     {:conn conn :run-id rid :config {}}
+                                     {:board/task t :board/plan-text "Goal: fade it"}))]
+                      (loop [n 0]
+                        (if-let [p (first (samizdat.approval/pending rid))]
+                          (samizdat.approval/decide! (:id p) answer)
+                          (when (< n 1000) (Thread/sleep 5) (recur (inc n)))))
+                      (deref r 8000 ::hung))))]
+    (is (= :go (:board/approve-decision (approve {:decision :answer :answers ["approve"]}))))
+    (let [r (approve {:decision :answer :answers ["use a shader instead"]})]
+      (is (= :rework (:board/approve-decision r)))
+      (is (str/includes? (str (:board/design-findings r)) "use a shader instead")
+          "what the person wrote is what the next design step addresses"))
+    (is (= :rework (:board/approve-decision (approve {:decision :deny :note "rejected"}))))
+    (testing "a plan nobody answered goes ahead, as it would headless"
+      (with-redefs [samizdat.approval/policy (constantly {:mode :block :wait-ms 30 :on-timeout :deny})]
+        (is (= :go (:board/approve-decision
+                    ((:handler (cell/get-cell! :board/approve))
+                     {:conn conn :run-id rid :config {}}
+                     {:board/task t :board/plan-text "Goal: fade it"}))))))))

@@ -796,7 +796,7 @@
                                                {:trust (= :trust gap) :audience (= :audience gap)
                                                 :tool (:tool because) :via (:via because) :turn (:turn because)})
                                              (:gaps decided))
-                                 :asking (= :block (:mode (approval/policy)))
+                                 :asking (= :block (:mode (approval/policy run-id)))
                                  :narrow (some #(= :narrow (:plan %)) (:remedies decided))
                                  :configured (some->> (acceptance/configured-commands
                                                        (config/file-config root))
@@ -852,11 +852,11 @@
             ;; unreadable, the harness's own ports unreachable. The allow
             ;; table admits heads that run code the agent wrote (make,
             ;; jolt -e), so the table alone never confined anything.
-            ;; `cd root &&` is prefixed rather than passed as a :dir, because
-            ;; proc/run has no working-directory option; the root is quoted,
-            ;; `resolved` is the model's own command and deliberately NOT —
-            ;; running it as written is the tool.
-            {:keys [argv env]} (confine/shell-command
+            ;; The child starts in the root (:dir) and `cd root &&` is
+            ;; prefixed as well; the root is quoted, `resolved` is the model's
+            ;; own command and deliberately NOT — running it as written is the
+            ;; tool.
+            {:keys [argv env dir]} (confine/shell-command
                                 ;; NOT overridable from ctx: a cell builds the ctx
                                 ;; it hands tool-step, and a knob here would be a
                                 ;; cell's way out of the sandbox.
@@ -865,7 +865,7 @@
                                  :env child-env :ports (listen/ports)
                                  :settings settings})
             r (apply proc/run {:timeout-ms (or (:timeout-ms ctx) 120000)
-                               :env env}
+                               :env env :dir dir}
                      argv)
             out (if (:timeout r)
                   (str "[timed out after " (:ms r) "ms]")

@@ -138,8 +138,13 @@
            root)))
 
 (defn shell-command
-  "The argv and environment to run `command` in `root` under `backend`, as
-  `{:argv :env :spec :profile}`.
+  "The argv, environment and working directory to run `command` in `root`
+  under `backend`, as `{:argv :env :dir :spec :profile}`.
+
+  `:dir` is the root: the child STARTS there. Started in the harness's own
+  directory — a denied read region — a sandboxed bash could not find its
+  working directory, and every command printed two getcwd errors before the
+  `cd` moved it.
 
   `:env` is the child's complete environment (already scrubbed by the
   caller); under a sandbox it gains TMPDIR pointing at the shell's own scratch.
@@ -153,7 +158,7 @@
   (let [cd-cmd (str "cd " (util/sh-quote (or root ".")) " && " command)
         bash ["bash" "-c" cd-cmd]]
     (if (or (nil? backend) (= :none backend))
-      {:argv bash :env env}
+      {:argv bash :env env :dir root}
       (let [{:keys [scratch profile-dir]} (dirs-for! (str root))
             spec (shell-spec {:home (or home (System/getenv "HOME"))
                               :root (str root)
@@ -169,5 +174,6 @@
               (spit profile text))))
         {:argv (sandbox/wrap-shell backend {:profile profile :spec spec} bash)
          :env (when env (assoc env "TMPDIR" scratch))
+         :dir root
          :spec spec
          :profile profile}))))

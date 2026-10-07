@@ -48,16 +48,17 @@
 (def modes
   "What happens when a run needs a person: :refuse (nobody is asked; a
   simulated user answers ask_human when the run has user context), :block
-  (the question waits for a person, up to :wait-ms), or :yolo (every ask is
-  allowed without asking; a deny is still a deny)."
-  #{:refuse :block :yolo})
+  (the question waits for a person, up to :wait-ms), :attended (:block while
+  a front end follows the run's event stream, :refuse while none does), or
+  :yolo (every ask is allowed without asking; a deny is still a deny)."
+  #{:refuse :block :attended :yolo})
 
 (def ^:private project-modes
   "The modes the project's own gates.edn may choose. Both SAFE: refusing, and
   asking a person. gates.edn is userspace the agent edits, so a mode that
   loosens anything is the operator's or a person's to set, never the file's
   (karamazov-3vu1.2)."
-  #{:refuse :block})
+  #{:refuse :block :attended})
 
 (defonce ^:private session-mode (atom nil))
 
@@ -88,23 +89,33 @@
       :else nil)))
 
 (defn policy
-  "The approval policy: `{:mode :refuse|:block|:yolo :wait-ms n :on-timeout
-  :deny|:allow}`.
+  "The approval policy: `{:mode :refuse|:block|:attended|:yolo :wait-ms n
+  :on-timeout :deny|:allow}`.
 
-  Layered by who may loosen it. The project's gates.edn may pick :refuse or
-  :block and the wait; :on-timeout :allow and :yolo come only from the
-  operator's config.edn or a person's session mode. A value the file sets
-  outside that is ignored rather than honoured, in the direction of asking."
-  []
-  (let [g (let [t (gates/threshold :approval)] (if (map? t) t {}))
-        o (or @operator {})
-        mode (or @session-mode
-                 (get modes (:mode o))
-                 (get project-modes (:mode g))
-                 :refuse)]
-    {:mode mode
-     :wait-ms (or (:wait-ms o) (:wait-ms g))
-     :on-timeout (if (= :allow (:on-timeout o)) :allow :deny)}))
+  Layered by who may loosen it. The project's gates.edn may pick :refuse,
+  :block or :attended and the wait; :on-timeout :allow and :yolo come only
+  from the operator's config.edn or a person's session mode. A value the
+  file sets outside that is ignored rather than honoured, in the direction
+  of asking.
+
+  Given a `run-id`, :attended is resolved for that run — :block while a
+  front end follows it (samizdat.events/watched?), :refuse while none does —
+  so a caller deciding whether to ask about THIS run never sees :attended."
+  ([run-id]
+   (let [p (policy)]
+     (cond-> p
+       (= :attended (:mode p))
+       (assoc :mode (if (events/watched? run-id) :block :refuse)))))
+  ([]
+   (let [g (let [t (gates/threshold :approval)] (if (map? t) t {}))
+         o (or @operator {})
+         mode (or @session-mode
+                  (get modes (:mode o))
+                  (get project-modes (:mode g))
+                  :refuse)]
+     {:mode mode
+      :wait-ms (or (:wait-ms o) (:wait-ms g))
+      :on-timeout (if (= :allow (:on-timeout o)) :allow :deny)})))
 
 (defonce ^:private requests (atom {}))
 
@@ -278,7 +289,7 @@
   approval registry that could fail would be a registry that can stop a run
   from doing anything at all."
   [{:keys [run-id branch-id]} {:keys [effect input details reason gaps content-key] :as decision}]
-  (let [{:keys [mode wait-ms on-timeout]} (policy)]
+  (let [{:keys [mode wait-ms on-timeout]} (policy run-id)]
     (cond
       (not= :ask effect) decision
       ;; The same text a person already allowed on this run: trust is of

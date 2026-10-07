@@ -409,6 +409,18 @@
   (let [ts (keep :turn messages)]
     (when (seq ts) [(apply min ts) (apply max ts)])))
 
+(defn results-of
+  "The bodies of the results of `tools` inside `[start end)`, in order: the
+  text inside each `<tool_result tool=…>` frame, without what the harness
+  appended after it. For a fold that must carry some results through — a
+  person's answers are a decision, not history."
+  [messages [start end] tools]
+  (let [tools (set tools)]
+    (vec (for [m (subvec (vec messages) start end)
+               :let [[tool body] (message/framed-result (:content m))]
+               :when (contains? tools tool)]
+           body))))
+
 (defn fold-task
   "`messages` with `[start end)` replaced by one user message carrying `text`,
   followed by any pinned message the span held (see `pinned-in`). A user
