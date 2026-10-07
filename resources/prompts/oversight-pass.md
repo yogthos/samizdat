@@ -64,7 +64,8 @@ episode and ranks as one.
 {% for m in candidates %}- {{m.id}} seen in {{m.corroborations}} runs: {{m.content}}
 {% endfor %}{% endif %}{% if retire %}
 {{retire}}{% endif %}{% if reviews %}
-{{reviews}}{% endif %}{% if prune %}
+{{reviews}}{% endif %}{% if inconclusive %}
+{{inconclusive}}{% endif %}{% if prune %}
 {{prune}}{% endif %}{% if offers %}
 {{offers}}{% endif %}{% if rejected %}
 {{rejected}}{% endif %}{% if refused %}

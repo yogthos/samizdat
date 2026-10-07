@@ -956,6 +956,9 @@
                                  ;; ratings and not only the total.
                                  :rubric (when rubric
                                            {:reward (:reward rubric) :pass (:pass? rubric)
+                                            ;; A pass the undecided could
+                                            ;; overturn (karamazov-0e2c.7).
+                                            :inconclusive (:inconclusive? rubric)
                                             :threshold (:threshold (gates/threshold :rubric))
                                             :ratings (mapv #(select-keys % [:criterion :kind :weight :rating])
                                                            (:ratings rubric))})}})

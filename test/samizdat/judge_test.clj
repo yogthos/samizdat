@@ -796,3 +796,29 @@ Some trailing prose that is not a bullet.
     (is (not (:pass? r)) "two unreadable replies do not outvote a fail")
     (is (= {:passes 0 :total 1 :errors 2} (:split r)))
     (is (:pass? (judge/consensus (scripted vague ok ok) 3)))))
+
+;; --- a pass that rests on what nobody decided (karamazov-0e2c.7) ----------------------
+
+(deftest a-rubric-pass-the-undecided-could-overturn-is-inconclusive
+  ;; The judges here fail OPEN by measured choice, so this does not refuse a
+  ;; ship: it says the pass was not shown, for the journal and the supervisor.
+  (let [crit (fn [& ws] (mapv (fn [w] {:criterion (str "c" w) :weight w :kind :positive}) ws))
+        ask (fn [answers] (let [q (atom answers)]
+                            (fn [_] (let [a (first @q)] (swap! q rest) a))))
+        run (fn [criteria answers]
+              (judge/review-rubric {:chat (ask answers) :criteria criteria
+                                    :answer "a" :threshold 0.7}))]
+    (testing "two met, one undecided, which could take it under the threshold"
+      (let [r (run (crit 1 1 1) ["YES" "YES" "hmm"])]
+        (is (:pass? r) "still ships: fail-open")
+        (is (:inconclusive? r))))
+    (testing "an undecided criterion that could not change the outcome"
+      (let [r (run (crit 1 1 1 1 1 1 1 1 1 1) (concat (repeat 9 "YES") ["hmm"]))]
+        (is (:pass? r))
+        (is (not (:inconclusive? r)))))
+    (testing "nothing decided at all is inconclusive, not a pass that was shown"
+      (let [r (run (crit 1 1) ["hmm" "hmm"])]
+        (is (:pass? r))
+        (is (:inconclusive? r))))
+    (testing "everything decided is never inconclusive"
+      (is (not (:inconclusive? (run (crit 1 1) ["YES" "NO"])))))))

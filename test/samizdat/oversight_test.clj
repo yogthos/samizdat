@@ -1069,3 +1069,20 @@
   (is (= "turns 1, retried 10, call failed 2"
          (ov/evidence-text (array-map :turns 1 :retried 10 :call-failed 2))))
   (is (= "" (ov/evidence-text nil))))
+
+(deftest the-supervisor-reads-rfc-passes-that-rest-on-undecided-criteria
+  ;; karamazov-0e2c.7: a rubric pass the undecided criteria could overturn
+  ;; ships (fail-open), and the supervisor is told it was never shown.
+  (let [c (samizdat.store.db/open! ":memory:")
+        rid (samizdat.store.runs/start-run! c {:problem "p"})]
+    (try
+      (samizdat.store.journal/note! c rid :epic-review
+                                    {:data {:task "sz-1" :decision "pass"
+                                            :rubric {:reward 1.0 :pass true :inconclusive true
+                                                     :ratings [{:criterion "parses nested" :rating true}
+                                                               {:criterion "streams large files" :rating nil}]}}})
+      (let [t (samizdat.prompt/render "rubric-inconclusive"
+                                      {:reviews [{:task "sz-1" :reward 1.0 :undecided "streams large files"}]})]
+        (is (str/includes? t "sz-1"))
+        (is (str/includes? t "streams large files")))
+      (finally (samizdat.store.db/close c)))))

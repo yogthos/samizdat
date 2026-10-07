@@ -930,11 +930,24 @@
                     criterion
                     (when-let [r (some-> reply str/trim not-empty)]
                       (str " — " (first (str/split-lines r))))))]
-    {:ratings ratings
-     :score score
-     :reward reward
-     :pass? (or (nil? reward) (>= reward (double threshold)))
-     :findings (when (seq failed) (str/join "\n" (map line failed)))}))
+    (let [pass? (or (nil? reward) (>= reward (double threshold)))
+          ;; THE PASS, IF EVERY UNDECIDED RATING HAD GONE AGAINST IT
+          ;; (karamazov-0e2c.7, after iFixAi's unscored_pass): an undecided
+          ;; positive unmet, an undecided penalty fired. When that would not
+          ;; pass, the pass rests on what nobody decided. Still a pass — the
+          ;; judges fail open by measured choice — but marked, so the note
+          ;; and the supervisor read it as not shown.
+          worst (rubric-score (mapv (fn [{:keys [kind rating] :as c}]
+                                      (if (boolean? rating) c
+                                          (assoc c :rating (not= :positive kind))))
+                                    ratings))
+          worst-pass? (some-> (:reward worst) (>= (double threshold)))]
+      {:ratings ratings
+       :score score
+       :reward reward
+       :pass? pass?
+       :inconclusive? (boolean (and pass? (pos? (:undecided score)) (not worst-pass?)))
+       :findings (when (seq failed) (str/join "\n" (map line failed)))})))
 
 (defn critique-message
   "The single consolidated note injected back into the branch when the judge

@@ -563,6 +563,20 @@
                                   ;; The same question for a project edit:
                                   ;; current, failed runs, never shipped one
                                   ;; (karamazov-na2k.10).
+                                  ;; RFC reviews that passed on criteria
+                                  ;; nobody decided (karamazov-0e2c.7).
+                                  :inconclusive (let [ns (safely :inconclusive
+                                                                 #(vec (filter (fn [n] (get-in n [:rubric :inconclusive]))
+                                                                               (journal/notes conn run-id :epic-review)))
+                                                                 [])]
+                                                  (when (seq ns)
+                                                    (prompt/render "rubric-inconclusive"
+                                                                   {:reviews (mapv (fn [n]
+                                                                                     {:task (:task n)
+                                                                                      :reward (get-in n [:rubric :reward])
+                                                                                      :undecided (str/join "; " (keep #(when (nil? (:rating %)) (:criterion %))
+                                                                                                                      (get-in n [:rubric :ratings])))})
+                                                                                   ns)})))
                                   :prune (let [ps (safely :pruning
                                                           #(store-us/pruning-candidates
                                                             conn (gates/threshold :pruning))
