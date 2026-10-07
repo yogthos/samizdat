@@ -12,6 +12,7 @@
   (:require [clojure.string :as str]
             [samizdat.engine.proc :as proc]
             [samizdat.sdiff.core :as sdiff]
+            [samizdat.sdiff.group :as group]
             [samizdat.sdiff.names :as names]
             [samizdat.sdiff.text :as sdiff-text]
             [samizdat.lexicon :as lexicon]
@@ -269,6 +270,14 @@
                                 files))
             report (when (seq files)
                      (let [t (str/trim (sdiff-text/report-text {:clj files :renames renames}))
+                           ;; Which changed forms call one another, ahead of
+                           ;; the per-file report: what to read together
+                           ;; (sdiff group, karamazov-0e2c.17).
+                           grouping (try (let [g (group/by-calls {:clj files})]
+                                           (when (or (seq (:groups g)) (seq (:shared g)))
+                                             (group/outline-text g)))
+                                         (catch Throwable _ nil))
+                           t (if grouping (str (str/trim grouping) "\n\n" t) t)
                            ;; Long paths and namespaces shortened, with a
                            ;; legend, only where it saves more than the legend
                            ;; costs (sdiff names, karamazov-0e2c.16). The

@@ -222,6 +222,11 @@
                    comes back as it was: a bound on a loop, not a decision
                    (karamazov-0e2c.11)."}}
 
+   "src/samizdat/sdiff/group.clj"
+   {:vocabulary {"(^|/)test/|_test\\.clj"
+                 "Which files are tests, so calling from many of them does not
+                  make a hub: ported from sdiff (karamazov-0e2c.17)."}}
+
    "src/samizdat/sdiff/names.clj"
    {:vocabulary {"(^|/)test/|_test\\.clj"
                  "Which files are tests, so their aliases (SUT) do not name

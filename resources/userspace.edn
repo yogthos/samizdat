@@ -208,6 +208,7 @@
    :rubric-problem "prompts/rubric-problem.md"
    :form-miss "prompts/form-miss.md"
    :forms-since-read "prompts/forms-since-read.md"
+   :change-groups "prompts/change-groups.md"
    :split-decision "prompts/split-decision.md"
    :split-tool "prompts/split-tool.md"
    :stale-write "prompts/stale-write.md"

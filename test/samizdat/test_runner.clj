@@ -188,6 +188,7 @@
             [samizdat.sdiff.core-test]
             [samizdat.sdiff.address-test]
             [samizdat.sdiff.names-test]
+            [samizdat.sdiff.group-test]
             [samizdat.llm-fallback-test]
             [samizdat.injection-probe-test]
             [samizdat.perturb-test]
@@ -419,6 +420,7 @@
     samizdat.sdiff.core-test
     samizdat.sdiff.address-test
     samizdat.sdiff.names-test
+    samizdat.sdiff.group-test
     samizdat.llm-fallback-test
     samizdat.injection-probe-test
     samizdat.perturb-test
