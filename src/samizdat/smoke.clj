@@ -35,6 +35,7 @@
             [db.jdbc]
             [jdbc.core :as jdbc]
             [jolt.http-client :as http]
+            [samizdat.api.client :as client]
             [jolt.process :as p]
             [samizdat.config :as config]
             [samizdat.llm.client :as llm]
@@ -182,7 +183,11 @@
                    {:http {:port port} :db {:path ":memory:"}})
     (try
       (let [base (str "http://127.0.0.1:" port)
-            slow (future (http/get (str base "/slow?ms=3000") {:socket-timeout 10000}))
+            ;; The token the server wrote at start (security.token); /health
+            ;; needs none.
+            slow (future (http/get (str base "/slow?ms=3000")
+                                   {:socket-timeout 10000
+                                    :headers (client/auth-headers base)}))
             _ (Thread/sleep 300)
             start (System/currentTimeMillis)
             health (http/get (str base "/health") {:socket-timeout 10000})
