@@ -46,7 +46,8 @@
   them is the analysis step and it is a separate pass, because a rig that both
   produced and judged its own numbers would be the confounded comparison
   RFC-010 already warns about."
-  (:require [clojure.edn :as edn]
+  (:require [samizdat.perturb :as perturb]
+            [clojure.edn :as edn]
             [clojure.pprint]
             [clojure.java.io :as io]
             [clojure.string :as str]
@@ -1292,7 +1293,18 @@
      (assoc t :tasks
             (mapv #(assoc % :problem (str (:problem %) "\n\n" std)
                           :acceptance (into standing (:acceptance %)))
-                  (:tasks t))))))
+                  ;; A task with :variants n (and a :seed) runs n times more,
+                  ;; reworded (samizdat.perturb, karamazov-0e2c.11): a result
+                  ;; that holds across them is not a fluke of phrasing.
+                  (mapcat (fn [{:keys [variants seed problem] :as task}]
+                            (cons task
+                                  (when (and variants (pos? variants))
+                                    (map-indexed (fn [i v]
+                                                   (assoc task :id (keyword (str (name (:id task)) "~v" (inc i)))
+                                                          :variant-of (:id task)
+                                                          :problem v))
+                                                 (perturb/variants problem (or seed 0) variants)))))
+                          (:tasks t)))))))
 
 (defn sweep-tasks!
   "The reference sweep: every task x every arm x n, one row per run.

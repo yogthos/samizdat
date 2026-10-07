@@ -188,6 +188,7 @@
             [samizdat.sdiff.core-test]
             [samizdat.llm-fallback-test]
             [samizdat.injection-probe-test]
+            [samizdat.perturb-test]
             [samizdat.llm-test]
             [samizdat.toolspec-test]
             [samizdat.llm-stream-test]
@@ -415,6 +416,7 @@
     samizdat.sdiff.core-test
     samizdat.llm-fallback-test
     samizdat.injection-probe-test
+    samizdat.perturb-test
     samizdat.prompt-test
     samizdat.server-test
     samizdat.adapter-test
