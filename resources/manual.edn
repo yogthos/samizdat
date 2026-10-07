@@ -145,6 +145,8 @@
     :summary "What a person allowed ALWAYS on a run in this session (the permission dialog's `a`): shell grant patterns like `cargo *`, merged into the policy's grants for that run, held in memory only, and dropped when the run ends. Never written to the project."}
    {:name samizdat.security.token/issue!
     :summary "The HTTP API's bearer token: issued when the server starts, written owner-only to ~/.config/samizdat/http/<port>.token (a place no shell command or eval image can read), required on every request but /health, dropped on stop. samizdat.api.client and the event stream send it for a loopback base URL."}
+   {:name samizdat.sdiff.address/locate
+    :summary "A top-level Clojure form by its id (defn route) or unique bare name, and a place in it by sdiff's printed path (body › binding cap) or any end of that path only one place has. read_file {path, form, at?} reads it; a miss or an ambiguity lists the candidates."}
    {:name samizdat.basis/unresolved
     :summary "What a claim rests on, checked: remember and intervene take a basis — turns (t12, B2:t7), artifacts (a#3, s#2), tasks (sz-…) or memories (k-…) — and refuse when any does not exist in the record, naming each. The basis travels with the memory's cause and the directive's text. Ported from sdiff's validate-ref."}
    {:name samizdat.llm.client/chat

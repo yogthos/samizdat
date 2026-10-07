@@ -206,6 +206,7 @@
    :critic-rubric "prompts/critic-rubric.md"
    :basis-unresolved "prompts/basis-unresolved.md"
    :rubric-problem "prompts/rubric-problem.md"
+   :form-miss "prompts/form-miss.md"
    :split-decision "prompts/split-decision.md"
    :split-tool "prompts/split-tool.md"
    :stale-write "prompts/stale-write.md"

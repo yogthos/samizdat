@@ -25,6 +25,7 @@
   (:require [clojure.string :as str]
             [samizdat.agent.files :as files]
             [samizdat.agent.tools.base :as base]
+            [samizdat.sdiff.address :as address]
             [samizdat.prompt :as prompt]
             [samizdat.security.exposure :as exposure]
             [samizdat.userspace :as userspace]))
@@ -54,8 +55,36 @@
                         (catch Throwable _ (pr-str ctx)))]
           (base/rejected branch (str (:result result) "\n\n" note)))))))
 
-(defmethod base/run-tool "read_file" [ctx]
-  (files/read-file ctx))
+(defn- form-lines
+  "The lines of the form `form` (and the place `at` in it) in the file
+  `ctx` reads, as {:offset :limit}, or {:miss text} (karamazov-0e2c.14)."
+  [{:keys [args] :as ctx}]
+  (let [refs (files/ctx-reference-roots ctx)
+        abs (files/resolve-read! ctx refs (str (:path args)))
+        src (when abs (try (slurp abs) (catch Throwable _ nil)))]
+    (when src
+      (let [{:keys [rows error candidates forms places]} (address/locate src (:form args) (:at args))
+            place? (and (not (str/blank? (str (:at args)))) (or places (and candidates (not forms))))]
+        (if error
+          {:miss (prompt/render "form-miss"
+                                {:none (= :none error) :ambiguous (= :ambiguous error)
+                                 :place place? :form (str (:form args)) :at (str (:at args))
+                                 :name (if place? (str (:at args)) (str (:form args)))
+                                 :path (str (:path args))
+                                 :choices (str/join ", " (map #(str "`" % "`") (or candidates forms places)))})}
+          {:offset (dec (first rows)) :limit (inc (- (second rows) (first rows)))})))))
+
+(defmethod base/run-tool "read_file" [{:keys [branch args] :as ctx}]
+  ;; {form, at?}: the lines of one form, or one place in it, by its name
+  ;; (samizdat.sdiff.address) rather than by line numbers.
+  (if (str/blank? (str (:form args)))
+    (files/read-file ctx)
+    (let [{:keys [miss offset limit] :as found} (form-lines ctx)]
+      (cond
+        miss (base/malformed branch miss)
+        found (files/read-file (assoc ctx :args (-> args (dissoc :form :at)
+                                                    (assoc :offset offset :limit limit))))
+        :else (files/read-file ctx)))))
 
 (defmethod base/run-tool "write_file" [ctx]
   ;; The sibling notice rides the RESULT rather than gating the call: workers

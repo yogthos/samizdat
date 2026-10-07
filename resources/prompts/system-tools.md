@@ -83,7 +83,7 @@ manual({name?})
 ### Doing work
 
 ```
-read_file({path, offset, limit, outline})
+read_file({path, offset, limit, outline, form, at})
 {% if reference-paths %}    Also reads the project's declared reference paths, by absolute path:
 {% for p in reference-paths %}      {{p}}
 {% endfor %}    They are READ-ONLY reference material — worked examples, a language
@@ -178,6 +178,10 @@ shell({command})
     order, as one turn. Prefer that to a turn per command: five separate calls
     to look around cost five model turns and five round trips, where one
     script costs one.
+    `form` reads one top-level Clojure form by its name — `defn route`, or
+    just `route` when only one form has it — and `at` one place inside it,
+    by the path a structural diff prints (`body › binding cap`) or any end
+    of that path only one place has (`binding cap`). A miss lists what there is.
 
         ls src/flight
         grep -rn "ring-clearance" src test | head -20
