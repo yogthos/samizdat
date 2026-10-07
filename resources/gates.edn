@@ -3288,7 +3288,9 @@
    :test-run-regex
    "(?i)-M:test|-A:test|run-tests|\\bjolt\\s+test\\b|\\bpytest\\b|\\bcargo\\s+test\\b|\\bnpm\\s+test\\b"
    :code-ext-regex "(?i)\\.(clj|cljc|cljs|edn|py|ts|js|rs|go)$"
-   :claim-regex "(?i)\\b(tested|all tests pass|passing|verified|ran the (tests|suite))\\b"
+   ;; A COUNT counts as a claim too: "All 12 tests pass" and "3 tests pass"
+   ;; walked past "all tests pass" (karamazov-0e2c.10).
+   :claim-regex "(?i)\\b(tested|all tests pass|(all\\s+)?\\d+\\s+tests?\\s+pass(ed|es|ing)?|passing|verified|ran the (tests|suite))\\b"
    :outside-claim-regex "(?i)(https?://|www\\.|according to|the docs say|the spec says|the api returns)"
    ;; #56: matched against the REGISTERED tool names (and the run's rows).
    ;; fetch_artifact / fetch_turn contain no web-family words, so they never
