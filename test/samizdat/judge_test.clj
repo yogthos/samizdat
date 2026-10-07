@@ -776,3 +776,23 @@ Some trailing prose that is not a bullet.
     (testing "and an assertion switched off"
       (is (= :disabled-assertion
              (:id (judge/diff-veto "diff --git a/t b/t\n+++ b/t\n+  #_(is (= 1 2))\n")))))))
+
+;; --- strict reading of a verdict (karamazov-0e2c.6) ----------------------------------
+
+(deftest an-unreadable-verdict-is-unscored-not-a-pass
+  ;; iFixAi's grounding scores were inflated by a truthiness bug: anything
+  ;; that was not literally false counted as true. parse-verdict's default is
+  ;; the fail-open for a judge that could not answer; in consensus a reply
+  ;; that answered something unreadable is not a vote for shipping.
+  (is (nil? (judge/verdict-of "VERDICT: mostly there, I think")))
+  (is (= :complete (judge/verdict-of "VERDICT: COMPLETE")))
+  (is (= :incomplete (judge/verdict-of "VERDICT: NOT COMPLETE")))
+  (is (= :complete (judge/parse-verdict "VERDICT: mostly there, I think"))
+      "parse-verdict keeps its fail-open default for its other callers")
+  (let [ok "VERDICT: COMPLETE\nFINDINGS: none"
+        vague "VERDICT: mostly there\nFINDINGS: none"
+        no "VERDICT: INCOMPLETE\nFINDINGS: missing"
+        r (judge/consensus (scripted vague vague no) 3)]
+    (is (not (:pass? r)) "two unreadable replies do not outvote a fail")
+    (is (= {:passes 0 :total 1 :errors 2} (:split r)))
+    (is (:pass? (judge/consensus (scripted vague ok ok) 3)))))

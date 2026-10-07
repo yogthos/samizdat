@@ -155,7 +155,7 @@
     ;; The reviewer and critic: prompt text, parsing, and (review, review-plan,
     ;; review-rubric) a provider call.
     samizdat.agent.judge
-    {:vars [blocking-findings consensus critic-prompt critique-message deterministic-block evidence
+    {:vars [blocking-findings consensus critic-prompt critique-message deterministic-block diff-veto evidence
             findings focus-sources focused-diff for-the-record parse-criteria parse-verdict
             parse-yesno review review-plan review-rubric section-bullets yesno-prompt]
      :effects #{:net}}

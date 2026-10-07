@@ -90,6 +90,24 @@
       (str/trim (subs s 0 i))
       s)))
 
+(declare parse-verdict)
+
+(defn verdict-of
+  "The verdict a judge reply's verdict line states, or nil when no rule
+  reads it — STRICT, unlike `parse-verdict`, whose default is the fail-open
+  for a judge that could not answer. An answer nobody can read is unscored,
+  never a pass (karamazov-0e2c.6)."
+  [reply]
+  (let [{:keys [verdict-line-regex verdict-rules]} (rules)
+        reply (usable reply)
+        head (or (some #(when (re-find (re-pattern verdict-line-regex) %) %)
+                       (str/split-lines (str reply)))
+                 (first (str/split-lines (str reply)))
+                 "")
+        up (str/upper-case head)
+        w? (fn [word] (boolean (re-find (re-pattern (str "\\b" word "\\b")) up)))]
+    (some (fn [[verdict words]] (when (every? w? words) verdict)) verdict-rules)))
+
 (defn parse-verdict
   "The verdict from a judge reply's verdict line.
 
@@ -104,17 +122,7 @@
   FAIL-OPEN via `:verdict-default`: an empty or tokenless reply is :complete,
   because a judge that cannot answer must never be able to wedge the loop."
   [reply]
-  (let [{:keys [verdict-line-regex verdict-rules verdict-default]} (rules)
-        reply (usable reply)
-        head (or (some #(when (re-find (re-pattern verdict-line-regex) %) %)
-                       (str/split-lines (str reply)))
-                 (first (str/split-lines (str reply)))
-                 "")
-        up (str/upper-case head)
-        w? (fn [word] (boolean (re-find (re-pattern (str "\\b" word "\\b")) up)))]
-    (or (some (fn [[verdict words]] (when (every? w? words) verdict))
-              verdict-rules)
-        verdict-default)))
+  (or (verdict-of reply) (:verdict-default (rules))))
 
 (defn parse-yesno
   "A narrow yes/no verdict from a judge reply: true, false, or nil when the
@@ -506,8 +514,10 @@
   (let [samples (loop [i 0 acc []]
                   (if (< i (max 1 (long n)))
                     (let [r (try (ask) (catch Throwable _ nil))
-                          ok? (not (str/blank? (usable r)))
-                          v (when ok? (parse-verdict r))
+                          v (when-not (str/blank? (usable r)) (verdict-of r))
+                          ;; Scored only when its verdict READS: an empty
+                          ;; reply and an unreadable one are both no vote.
+                          ok? (some? v)
                           b (when ok? (blocking-findings r))]
                       (recur (inc i) (conj acc {:reply r :scored? ok? :verdict v :blocking b
                                                 :pass? (and ok? (= :complete v) (nil? b))})))
