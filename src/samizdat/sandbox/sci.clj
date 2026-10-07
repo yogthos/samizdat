@@ -290,6 +290,13 @@
     {:vars [graduation-candidates remember! standing]
      :effects #{:db}}
 
+    ;; A branch handed other branches' work takes what they had read
+    ;; (karamazov-3vu1.14). Both only ever LOWER a label, so a cell holding
+    ;; them can confine a branch and never free one.
+    samizdat.security.flow
+    {:vars [carried-by-run receive!]
+     :effects #{:db}}
+
     ;; Run and branch rows, through the store's own functions. get-branch replaced
     ;; a raw SELECT in cells/board.clj.
     samizdat.store.runs

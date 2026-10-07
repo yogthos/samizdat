@@ -49,6 +49,7 @@
   (:refer-clojure :exclude [reset!])
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
+            [jolt.fs :as fs]
             [samizdat.events :as events]
             [samizdat.store.db :as db]))
 
@@ -96,7 +97,20 @@
    ;; config names needs no trust (`gaps`).
    :sinks {"shell" {:trust :trusted :audience :project :read-only-exempt true}
            "webfetch" {:audience :project}
-           "websearch" {:audience :project}}
+           "websearch" {:audience :project}
+           ;; Eval, by where it runs (tools/run-tool names which): the
+           ;; harness's own process is everything the harness can do; a
+           ;; project image with network can send what the branch holds. One
+           ;; under seatbelt can do neither and is not a sink.
+           "eval/harness" {:trust :trusted :audience :project}
+           "eval/networked" {:audience :project}
+           ;; The workflow is code every later turn and run executes, so
+           ;; changing it needs trust (karamazov-3vu1.14). Reading it does not.
+           "cell" {:trust :trusted :read-actions #{"list" "show" "versions"}}
+           "manifest" {:trust :trusted :read-actions #{"list" "show" "versions" "diff" "refs"}}
+           "prompt" {:trust :trusted :read-actions #{"list" "show" "versions"}}
+           "policy" {:trust :trusted :read-actions #{"list" "show" "versions"}}
+           "adopt" {:trust :trusted :read-actions #{"list" "show"}}}
    ;; Not sort (-o), uniq (an output file), tree (-o) or rg (--pre runs a
    ;; command): each can write or run something.
    :read-only-heads #{"ls" "cat" "head" "tail" "wc" "grep" "find" "pwd" "file"
@@ -124,7 +138,9 @@
   [table tool call label]
   (let [need (get-in table [:sinks (str tool)])
         need (cond-> need (:configured? call) (dissoc :trust))]
-    (if (or (nil? need) (and (:read-only-exempt need) (:read-only? call)))
+    (if (or (nil? need) (and (:read-only-exempt need) (:read-only? call))
+            (contains? (:read-actions need)
+                       (some-> (:action call) str str/trim str/lower-case)))
       []
       (vec (concat
             (when (and (:trust need)
@@ -285,6 +301,65 @@
       (reduce (fn [l [[r _] v]] (if (= r run-id) (meet l v) l)) noted @labels))))
 
 (defn carried-by-run [conn run-id] (some-> (run-label conn run-id) encode))
+
+(defn carried-by-branch
+  "What a row the branch `branch-id` of `run-id` writes carries."
+  [conn run-id branch-id]
+  (when (and run-id branch-id)
+    (encode (label-of {:conn conn :run-id run-id :branch {:id branch-id}}))))
+
+(defn unlabelled
+  "`rows` without the ones carrying a label: what is put in front of a branch
+  unasked."
+  [rows]
+  (remove #(not-empty (str (:flow %))) rows))
+
+(declare combine receive!)
+
+;; --- files ---------------------------------------------------------------------
+;;
+;; The branches share one tree, and it outlives the run. A file written by a
+;; labelled branch is labelled, by canonical path, in file_flow; a branch that
+;; reads it takes the label. A clean branch's WHOLE rewrite clears it — what
+;; it wrote, it had read nothing to lower; a clean partial edit leaves it.
+
+(defn- canonical [root path]
+  (try (str (fs/canonicalize (if (.isAbsolute (java.io.File. (str path)))
+                               (str path)
+                               (str (or root ".") "/" path))))
+       (catch Throwable _ nil)))
+
+(defn wrote!
+  "The branch `ctx` names wrote `path`; `whole?` when it replaced the file."
+  [{:keys [conn root run-id] :as ctx} path whole?]
+  (when-let [p (and conn (canonical root path))]
+    (let [mine (carried ctx)
+          had (:flow (first (db/fetch conn ["SELECT flow FROM file_flow WHERE path = ?" p])))
+          now (if whole? mine (combine had mine))]
+      (db/with-writer
+        (if now
+          (db/execute! conn ["INSERT INTO file_flow (path, flow, run_id, updated_at) VALUES (?, ?, ?, ?)
+                              ON CONFLICT(path) DO UPDATE SET flow = excluded.flow,
+                                run_id = excluded.run_id, updated_at = excluded.updated_at"
+                             p now run-id (db/now)])
+          (db/execute! conn ["DELETE FROM file_flow WHERE path = ?" p]))))))
+
+(defn read!
+  "The branch `ctx` names read `paths`: it takes their labels, through `via`."
+  [{:keys [conn root] :as ctx} paths via]
+  (when conn
+    (let [ps (keep #(canonical root %) paths)]
+      (when (seq ps)
+        (receive! ctx
+                  (map :flow (db/fetch conn (into [(str "SELECT flow FROM file_flow WHERE path IN ("
+                                                        (str/join "," (repeat (count ps) "?")) ")")]
+                                                  ps)))
+                  via)))))
+
+(defn labelled-paths
+  "Every labelled file's canonical path."
+  [conn]
+  (when conn (mapv :path (db/fetch conn ["SELECT path FROM file_flow"]))))
 
 (defn combine
   "The text a row carries after a writer carrying `b` edits one carrying `a`."

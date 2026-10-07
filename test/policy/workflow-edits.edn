@@ -1,0 +1,13 @@
+;; The workflow is code every later turn and run executes: after web content,
+;; changing it waits for a person. Reading it does not.
+{:about "workflow edits need trust; reading the workflow does not"
+ :steps
+ [{:tool "prompt" :args {:action "save" :name "system"} :expect :allow}
+  {:tool "webfetch" :args {:url "https://example.com/tuning-tips"} :expect :allow}
+  {:tool "prompt" :args {:action "show" :name "system"} :expect :allow}
+  {:tool "prompt" :args {:action "save" :name "system"} :expect :ask :gaps [:trust]}
+  {:tool "cell" :args {:action "save" :name "loop"} :expect :ask :gaps [:trust]}
+  {:tool "manifest" :args {:action "diff" :name "loop"} :expect :allow}
+  {:tool "manifest" :args {:action "patch" :name "loop"} :expect :ask :gaps [:trust]}
+  {:tool "adopt" :args {:action "take" :kind "prompt" :name "critic"} :expect :ask :gaps [:trust]}
+  {:tool "policy" :args {:action "list"} :expect :allow}]}

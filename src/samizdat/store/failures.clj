@@ -37,6 +37,7 @@
             [jdbc.core :as jdbc]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
+            [samizdat.security.flow :as flow]
             [samizdat.store.db :as db]
             [samizdat.store.journal :as journal]))
 
@@ -45,9 +46,11 @@
   (db/with-writer
     (db/execute! conn
                    ["INSERT INTO failures (run_id, branch_id, turn, tool_name, claim,
-                                           reason, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)"
-                    run-id branch-id turn (str tool-name) (str claim) (str reason) (db/now)])
+                                           reason, created_at, flow)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                    run-id branch-id turn (str tool-name) (str claim) (str reason) (db/now)
+                    ;; What the failing branch had read (v39).
+                    (flow/carried-by-branch conn run-id branch-id)])
     (let [id (db/last-insert-id conn)]
       (db/execute! conn
                      ["INSERT INTO failures_fts (rowid, claim, reason) VALUES (?, ?, ?)"
@@ -83,7 +86,7 @@
        []
        (try
          (db/fetch conn
-                     ["SELECT f.branch_id, f.turn, f.tool_name, f.claim, f.reason
+                     ["SELECT f.branch_id, f.turn, f.tool_name, f.claim, f.reason, f.flow
                        FROM failures_fts fts
                        JOIN failures f ON f.id = fts.rowid
                        WHERE failures_fts MATCH ? AND f.run_id = ?
@@ -98,7 +101,7 @@
 (defn recent
   ([conn run-id] (recent conn run-id 10))
   ([conn run-id limit]
-   (db/fetch conn ["SELECT branch_id, turn, tool_name, claim, reason FROM failures
+   (db/fetch conn ["SELECT branch_id, turn, tool_name, claim, reason, flow FROM failures
                       WHERE run_id = ? ORDER BY id DESC LIMIT ?" run-id limit])))
 
 (defn render

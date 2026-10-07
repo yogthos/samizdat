@@ -928,7 +928,24 @@
    "ALTER TABLE tasks ADD COLUMN flow TEXT"
    "ALTER TABLE knowledge ADD COLUMN flow TEXT"])
 
+(def v39
+  "The rest of what the harness itself hands between branches carries a flow
+  label too (karamazov-3vu1.14): an artifact (the ledger, the shared pool,
+  crossover), a failure, a directive. And file_flow: what the branch that
+  last wrote a project file had read, keyed by its canonical path, so a
+  branch — in this run or a later one — that reads the file takes it. A
+  clean whole rewrite deletes the row."
+  ["ALTER TABLE artifacts ADD COLUMN flow TEXT"
+   "ALTER TABLE shared_artifacts ADD COLUMN flow TEXT"
+   "ALTER TABLE failures ADD COLUMN flow TEXT"
+   "ALTER TABLE interventions ADD COLUMN flow TEXT"
+   "CREATE TABLE IF NOT EXISTS file_flow (
+     path TEXT PRIMARY KEY,
+     flow TEXT NOT NULL,
+     run_id TEXT,
+     updated_at TEXT NOT NULL)"])
+
 (def migrations
   "Ordered. Index 0 is migration 1; PRAGMA user_version holds the count applied."
   [v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24
-   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36 v37 v38])
+   v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36 v37 v38 v39])

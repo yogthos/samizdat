@@ -26,6 +26,7 @@
   hold the words."
   (:require [clojure.string :as str]
             [samizdat.agent.tools.base :as base]
+            [samizdat.security.flow :as flow]
             [samizdat.claims :as claims]
             [samizdat.lexicon :as lexicon]
             [samizdat.prompt :as prompt]
@@ -102,7 +103,9 @@
                                {:branch-id target
                                 :kind kind
                                 :payload (payload-for kind text)
-                                :issued-by "supervisor"})
+                                :issued-by "supervisor"
+                                ;; What the supervisor had read goes with it.
+                                :flow (flow/carried ctx)})
         (base/ok branch (msg {:submitted true :kind kind :target target :text text})
                  :progress? true)
         (catch Throwable e

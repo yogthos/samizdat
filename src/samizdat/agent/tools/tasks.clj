@@ -121,6 +121,28 @@
                             :other-run (not= (str (:run_id row)) (str run-id))
                             :holder (:branch_id row)}))))
 
+(defn- not-yours
+  "Why this branch may not read or change task row `t`, or nil
+  (karamazov-9vqk). Another run's task — one with a run that is not this
+  one — is that run's business, as the board already treats it; backlog (no
+  run) is everyone's. A change also needs the task unheld or held by this
+  branch, and `update` never finishes one: that is `close`, where the
+  holder and the board's review are checked."
+  [t run-id branch {:keys [change? status]}]
+  (let [status (some-> status str str/trim str/lower-case)
+        terminal? (and status (try (tasks/terminal? (tasks/normalize-status status))
+                                   (catch Throwable _ false)))]
+    (cond
+      (and (some? (:run_id t)) (not= (str (:run_id t)) (str run-id)))
+      (prompt/render "task-not-yours" {:id (:id t) :other-run true})
+
+      (and change? (some? (:branch_id t)) (not= (str (:branch_id t)) (str (:id branch))))
+      (prompt/render "task-not-yours" {:id (:id t) :held true :holder (:branch_id t)})
+
+      (and change? terminal?)
+      (prompt/render "task-not-yours" {:id (:id t) :closing true
+                                       :cancel (= "cancelled" (tasks/normalize-status status))}))))
+
 (defmethod base/run-tool "task" [{:keys [branch conn run-id] :as ctx}]
   ;; Every action is `ok` (:neutral) on purpose: working the board is
   ;; bookkeeping, and bookkeeping is not progress — the same reasoning as
@@ -163,14 +185,18 @@
         "show"
         (or (want :id)
             (if-let [t (tasks/get-task conn (base/arg ctx :id))]
-              (do (flow/receive! ctx [(:flow t)] "task")
-                  (base/ok branch (render-task conn t)))
+              (if-let [why (not-yours t run-id branch {})]
+                (base/malformed branch why)
+                (do (flow/receive! ctx [(:flow t)] "task")
+                    (base/ok branch (render-task conn t))))
               (base/malformed branch (str "No task " (base/arg ctx :id) "."))))
 
         "update"
         (or (want :id)
-            (if-not (tasks/get-task conn (base/arg ctx :id))
-              (base/malformed branch (str "No task " (base/arg ctx :id) "."))
+            (if-let [row (tasks/get-task conn (base/arg ctx :id))]
+              (if-let [why (not-yours row run-id branch {:change? true
+                                                         :status (base/arg ctx :status)})]
+                (base/malformed branch why)
               (let [t (tasks/update! conn (base/arg ctx :id)
                                      {:title (base/arg ctx :title)
                                       :body (base/arg ctx :body)
@@ -181,7 +207,8 @@
                                       :contract (base/arg ctx :contract)
                                       :tests (base/arg ctx :tests)
                                       :flow (flow/carried ctx)})]
-                (base/ok branch (str "Updated " (task-line t))))))
+                (base/ok branch (str "Updated " (task-line t)))))
+              (base/malformed branch (str "No task " (base/arg ctx :id) "."))))
 
         "claim"
         (or (want :id)
@@ -246,6 +273,10 @@
               (cond
                 (not row)
                 (base/malformed branch (str "No task " (base/arg ctx :id) "."))
+
+                ;; Another run's task is that run's to close (karamazov-9vqk).
+                (not-yours row run-id branch {})
+                (base/malformed branch (not-yours row run-id branch {}))
 
                 ;; Only the holder closes held work. Any branch could close a
                 ;; sibling's in-progress task — "tidying the board" away from

@@ -49,6 +49,10 @@
             [samizdat.store.journal :as journal]
             [samizdat.approval :as approval]
             [samizdat.security.flow :as flow]
+            [jolt.fs]
+            [samizdat.config :as config]
+            [samizdat.repl.route :as route]
+            [samizdat.security.sandbox :as sandbox]
             [samizdat.agent.tools.base :as base]
             [samizdat.agent.tools.adopt]
             [samizdat.agent.tools.ask]
@@ -203,14 +207,56 @@
 (defn- flow-branch? [{:keys [run-id branch]}]
   (and run-id (:id branch)))
 
+(defn- sink-of
+  "The flow table's name for this call: the tool's own, except `eval`, which
+  is `eval/harness` in the harness's process, `eval/networked` in a project
+  image with network, and no sink in one under seatbelt."
+  [{:keys [tool-name root] :as ctx}]
+  (if (= "eval" (str tool-name))
+    (case (route/image-of ctx)
+      :harness "eval/harness"
+      :project (when-not (= :seatbelt (sandbox/backend-for (config/eval-sandbox root)
+                                                           (System/getProperty "os.name")
+                                                           (some? (jolt.fs/which "bwrap"))))
+                 "eval/networked")
+      nil)
+    (str tool-name)))
+
+(def ^:private whole-writers #{"write_file"})
+(def ^:private file-writers #{"write_file" "edit_file" "patch"})
+
+(defn- paths-arg [v]
+  (cond (sequential? v) (map str v)
+        (some? v) [(str v)]))
+
+(defn- observe-files!
+  "What a call that ran did to the files the branches share
+  (samizdat.security.flow): a write labels the file with the writer's
+  label, a read takes the file's. grep takes the labels of the labelled
+  files its result names."
+  [{:keys [tool-name args root conn] :as ctx} r]
+  (let [t (str tool-name)]
+    (cond
+      (and (file-writers t) (= :success (:category r)) (:path args))
+      (flow/wrote! ctx (:path args) (contains? whole-writers t))
+
+      (= "read_file" t) (flow/read! ctx (paths-arg (:path args)) t)
+      (= "read_digest" t) (flow/read! ctx (paths-arg (:paths args)) t)
+
+      (= "grep" t)
+      (let [out (str (:result r))
+            base (str (try (jolt.fs/canonicalize (or root ".")) (catch Throwable _ root)) "/")
+            hit (filter #(str/includes? out (str/replace % base "")) (flow/labelled-paths conn))]
+        (when (seq hit) (flow/read! ctx hit t))))))
+
 (defn- flow-refusal
   "The result for a call the branch's flow label does not reach
   (samizdat.security.flow), unless a person — or yolo — allows it. nil when
   the call may go ahead. The shell checks its own, per command, in
   policy/run-shell."
   [{:keys [branch tool-name args] :as ctx}]
-  (when (and (flow-branch? ctx) (not= "shell" (str tool-name)))
-    (when-let [gaps (not-empty (flow/gaps flow/table tool-name args (flow/label-of ctx)))]
+  (when-let [sink (and (flow-branch? ctx) (not= "shell" (str tool-name)) (sink-of ctx))]
+    (when-let [gaps (not-empty (flow/gaps flow/table sink args (flow/label-of ctx)))]
       (let [input (str tool-name " " (pr-str args))
             {:keys [effect note timed-out]}
             (approval/resolve-ask ctx {:effect :ask :head (str tool-name) :complex? true
@@ -226,7 +272,7 @@
                                                gaps)
                                    :asking (= :block (:mode (approval/policy)))
                                    :note note :unanswered timed-out})
-           :policy {:effect :ask :gaps gaps :remedies (flow/remedies tool-name gaps)}})))))
+           :policy {:effect :ask :gaps gaps :remedies (flow/remedies sink gaps)}})))))
 
 (defn run-tool
   "Dispatch one tool call and return a result the loop can always use.
@@ -264,7 +310,9 @@
     ;; refused before it ran (:mechanics) brought nothing in.
     (when (and (not denied) (not blocked) (flow-branch? ctx)
                (not= :mechanics (get-in outcome [:ok :category])))
-      (flow/observe! ctx (flow/delta flow/table tool-name (:args ctx)) tool-name))
+      (flow/observe! ctx (flow/delta flow/table tool-name (:args ctx)) tool-name)
+      (try (observe-files! ctx (:ok outcome))
+           (catch Throwable e (log/warn "flow: could not label files:" (ex-message e)))))
     (if-let [e (:threw outcome)]
       (do (log/warn "tool" tool-name "threw:" (ex-message e))
           (redact-result

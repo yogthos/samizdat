@@ -636,7 +636,7 @@
        distinct))
 
 ;; Defined below, with the other readers of a command's paths.
-(declare outside-reads)
+(declare outside-reads read-paths)
 
 (defn read-only?
   "Whether `command` only reads: every statement's head is one of the flow
@@ -873,6 +873,8 @@
         ;; What ran read outside the project: the branch holds it now.
         (when outside-all
           (flow/observe! ctx (:outside-read flow/table) "shell"))
+        ;; And a project file it printed carries what its writer had read.
+        (try (flow/read! ctx (read-paths command) "shell") (catch Throwable _ nil))
         ;; A missing exit code is a spawn that did not report one, which is
         ;; not evidence the command succeeded. `(or (:exit r) 0)` read it as
         ;; success, the opposite of what run-verify does with the same shape;

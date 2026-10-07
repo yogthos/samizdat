@@ -182,6 +182,7 @@
             [samizdat.security.policy-test]
             [samizdat.security.flow-test]
             [samizdat.security.flow-carry-test]
+            [samizdat.security.flow-handoff-test]
             [samizdat.security.replay-test]
             [samizdat.security.token-test]
             [samizdat.llm-test]
@@ -405,6 +406,7 @@
     samizdat.security.policy-test
     samizdat.security.flow-test
     samizdat.security.flow-carry-test
+    samizdat.security.flow-handoff-test
     samizdat.security.replay-test
     samizdat.security.token-test
     samizdat.prompt-test

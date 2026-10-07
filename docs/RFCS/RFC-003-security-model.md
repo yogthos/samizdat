@@ -337,6 +337,7 @@ and the shell policy refuse to let a run write.
 | 17 | A flow block says what is missing and the ways forward as data — `:gaps` and `:remedies` on the result's `:policy` and on the approval request — and the policy is pinned by trace files replayed against the real decisions. | `flow/remedies`; prompts/flow-blocked.md; `samizdat.security.replay`, test/policy/*.edn, `jolt policy-test` (karamazov-3vu1.8). `replay-test`. |
 | 18 | Every HTTP API request but `/health` carries the bearer token this process issued; the token is written owner-only under `~/.config/samizdat/http/<port>.token`, inside the secret regions; and the nREPL listens only where both the shell and the eval image run under seatbelt, or the operator set `:nrepl {:unconfined :allow}`. | `security.token` (issued before the server listens, revoked on stop); `server/refusal` (no exemption for a request with no headers — HTTP/1.0 lets a raw socket send one); `api.client/auth-headers` and `api.sse` read the file per port; `core/nrepl-allowed?`. Closes invariant 8's Linux gap (karamazov-3vu1.11). `token-test`. |
 | 19 | What one branch writes for another carries what the writer had read: a message, a task (created or edited), a memory (into later runs too) holds the writer's label in its `flow` column — the branch's when known, else the meet of every branch in the run. A branch that reads one on purpose takes it (the inbox, a task it claims, shows or lists, `recall`, another branch's turn through `fetch_turn`); a fork takes its parent's. What is put in front of a branch unasked leaves a labelled row's text out: the inbox preview withholds the body, and standing, learned-since, graduation candidates and the breadcrumb index skip labelled memories. | Migration v38; `flow/carried`, `run-label`, `receive!`, `inherit!`; `tasks/claim!` lowers the claimer; `beam/open-branch!` (karamazov-3vu1.13). `flow-carry-test`. |
+| 20 | What the harness hands between branches carries labels as invariant 19's rows do: artifacts (the ledger withholds a labelled claim's text and keeps its line; the shared and crossover samples and the failures block leave labelled rows out; `fetch_artifact` takes the label), directives (an `intervene` carries the supervisor's label to the branch it reaches; a person's carries none), and files (a file tool's write by a labelled branch labels the file in `file_flow`, across runs; `read_file`, `read_digest`, a `grep` hit and a shell command that prints it take the label; a clean whole rewrite clears it). A branch opened on a problem other than the run's own, and the supervisor at every pass, takes the run's label. The workflow-editing actions (`cell`, `manifest`, `prompt`, `policy`, `adopt`) and `eval` in the harness's own image need trust; `eval` in a project image with network needs the audience. | Migration v39; `loop/ledger-block`, `flow/unlabelled`, `flow/wrote!`, `flow/read!`; `runs/open-branch!`; `tools/sink-of` (karamazov-3vu1.14). `flow-handoff-test`, test/policy/workflow-edits.edn. |
 
 **A property is only as strong as the graph it is checked against.** Adding a
 model-reachable tool means adding a node to the diagram above and extending the
@@ -374,14 +375,13 @@ mechanical catches that omission.
   so a command the table allows can still send data out — a `jolt -e` that
   opens a socket. What stops a SECRET going with it is that the child never
   holds one (scrub-env, invariant 14) and the secret regions are unreadable
-  (invariant 10). Data the agent READ is tracked by invariants 16 and 19 on
-  the paths they name. What they do not see: files one branch writes and
-  another reads (the branches share a tree); text the harness hands from one
-  branch to another itself — the artifacts ledger, the failures block,
-  crossover and shared-artifact blocks, review findings and revise guidance
-  turned into the next problem, a team's summary, the critic's and judge's
-  prompts, and the supervisor's oversight pass and interventions; the
-  supervisor's eval in the harness image; and a shell command that reads
+  (invariant 10). Data the agent READ is tracked by invariants 16, 19 and 20
+  on the paths they name. What they do not see: a file written by the shell
+  or by eval rather than the file tools (only the file tools label what they
+  write, and a labelled branch's shell writes already need a person); a
+  file read by a path `read-paths` cannot name; a side call's prompt (the
+  critic, the judge), whose OUTPUT is covered because it becomes a task or a
+  problem, which carry the run's label; and a shell command that reads
   outside through a substitution `outside-reads` cannot see.
 - ~~Invariant 6 holds on the file-tool and shell paths only; `eval` and
   `jolt -e` can still `spit` the run config.~~ Closed by invariants 10 and 11:

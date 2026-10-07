@@ -54,7 +54,10 @@
                           " something this run established, `s#7` for something"
                           " it inherited. A run cannot reach another run's"
                           " artifacts."))
-        (base/ok branch
+        (do
+         ;; Reading it takes what its maker had read (v39).
+         (flow/receive! ctx [(:flow a)] "fetch_artifact")
+         (base/ok branch
             (str (if from-shared? "s#" (if sketch? "p#" "a#")) (:id a)
                  " [" (:branch_id a) " " (:kind a) "/" (:tier a) "]"
                  ;; The status travels with the encoding or a refutation reads
@@ -66,7 +69,7 @@
                               (str/upper-case (str (:claim_status a))))
                  (when (:verdict a) (str ", verdict " (:verdict a)))
                  "\n\nCLAIM\n" (:claim a)
-                 "\n\nENCODING\n" (:code a)))))))
+                 "\n\nENCODING\n" (:code a))))))))
 
 (defmethod base/run-tool "fetch_turn" [{:keys [branch conn run-id] :as ctx}]
   ;; The other half of compaction. Unloading a branch's early turns to one

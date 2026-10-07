@@ -107,8 +107,10 @@
   because the child already carries them in its inherited history."
   [conn run-id parent-id]
   (let [{:keys [statuses limit]} (gates/threshold :crossover)
-        others (remove #(= parent-id (:branch_id %))
-                       (journal/artifacts conn run-id))
+        ;; Less the labelled ones: the block is put in the child's opening
+        ;; unasked (samizdat.security.flow).
+        others (flow/unlabelled (remove #(= parent-id (:branch_id %))
+                                        (journal/artifacts conn run-id)))
         confirmed (filter #(contains? statuses (:claim_status %)) others)]
     (when (seq confirmed)
       ;; Tier 2d: the header prose is prompts/crossover.md — runtime-editable,
@@ -471,6 +473,10 @@
              ;; the parsed human words; the raw column is a JSON blob and the
              ;; gate rendered it verbatim (blt.38).
              (let [d' (assoc d :payload-text (interventions/text-of d))]
+               ;; Each branch it reaches takes what its issuer had read (v39).
+               (doseq [b bs :when (matches? b)]
+                 (flow/receive! {:conn conn :run-id run-id :branch {:id (:id b)} :turn turn}
+                                [(:flow d)] "intervene"))
                (assoc acc :branches
                       (mapv #(if (matches? %) (assoc % :pending-directive d') %) bs))))
 
@@ -497,6 +503,10 @@
                  ;; children survived — a person asking for a fork is asking
                  ;; for a fork.
                  (let [parent (first parents)]
+                   ;; The parent carries the thesis to its child, which
+                   ;; inherits its label in open-branch!.
+                   (flow/receive! {:conn conn :run-id run-id :branch {:id (:id parent)} :turn turn}
+                                  [(:flow d)] "intervene")
                    (assoc acc :branches
                           (mapv #(if (= (:id %) (:id parent))
                                    (update % :pending-branch-theses
