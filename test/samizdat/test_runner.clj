@@ -186,6 +186,7 @@
             [samizdat.security.replay-test]
             [samizdat.security.token-test]
             [samizdat.sdiff.core-test]
+            [samizdat.llm-fallback-test]
             [samizdat.llm-test]
             [samizdat.toolspec-test]
             [samizdat.llm-stream-test]
@@ -411,6 +412,7 @@
     samizdat.security.replay-test
     samizdat.security.token-test
     samizdat.sdiff.core-test
+    samizdat.llm-fallback-test
     samizdat.prompt-test
     samizdat.server-test
     samizdat.adapter-test

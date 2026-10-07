@@ -405,15 +405,15 @@
 
 ;; --- the public surface -----------------------------------------------------
 
-(defn chat
-  "Send `messages` and return {:content :finish-reason :usage :elapsed-ms
-  :model-requested :model} — the last being what the provider reported ran,
-  or nil.
+(defn chat-one
+  "Send `messages` to ONE model and return {:content :finish-reason :usage
+  :elapsed-ms :model-requested :model} — the last being what the provider
+  reported ran, or nil. `chat` is this with the role's fallbacks.
 
   Throws ex-info with :provider and :attempts when every attempt failed. The
   loop is bounded in attempts and each attempt is bounded in wall clock, so a
   stuck provider costs a known amount rather than the run."
-  ([adapter config messages] (chat adapter config messages nil))
+  ([adapter config messages] (chat-one adapter config messages nil))
   ([adapter config messages {:keys [max-tokens temperature max-retries prefill force-tool
                                     cache-key reasoning-effort grammar reasoning-budget
                                     on-delta tools]}]
@@ -547,6 +547,50 @@
              ;; the old sleep allowed).
              (cancel/sleep! wait)
              (recur (inc attempt) errors))))))))
+
+(defonce ^:private retired
+  ;; #{[scope [provider model]]}: models a run gave up on.
+  (atom #{}))
+
+(defn- model-key [c] [(:provider c) (:model c)])
+
+(defn forget-retired!
+  "Forget which models run `scope` retired: the run is over."
+  [scope]
+  (swap! retired (fn [s] (into #{} (remove #(= scope (first %))) s))))
+
+(defn chat
+  "`chat-one`, and when `config` names :fallbacks [{:adapter :config} …]
+  (a role given a list of models, workflow/role-ctx), the next one when a
+  model fails (karamazov-0e2c.9, after iFixAi's judge fallback chain).
+
+  A model whose call failed — its own retries spent — is RETIRED for the
+  rest of the run (:fallback-scope), so the run stops paying its timeouts;
+  the next call starts at the first one still standing. Every candidate
+  failing is the last error. With every candidate retired, they are tried
+  again in order rather than the role going dead for the run. A cancel is
+  not a failure: it goes straight up."
+  ([adapter config messages] (chat adapter config messages nil))
+  ([adapter config messages opts]
+   (if-let [fbs (seq (:fallbacks config))]
+     (let [scope (:fallback-scope config)
+           cands (cons {:adapter adapter :config (dissoc config :fallbacks :fallback-scope)}
+                       fbs)
+           standing (remove #(contains? @retired [scope (model-key (:config %))]) cands)]
+       (loop [[{a :adapter c :config} & more] (if (seq standing) standing cands)
+              last-e nil]
+         (if-not c
+           (throw last-e)
+           (let [r (try {:ok (chat-one a c messages opts)}
+                        (catch Throwable e
+                          (if (cancel/control-signal? e) (throw e) {:e e})))]
+             (if (contains? r :ok)
+               (:ok r)
+               (do (swap! retired conj [scope (model-key c)])
+                   (log/warn "llm: retiring" (:provider c) (:model c) "for this run:"
+                             (ex-message (:e r)))
+                   (recur more (:e r))))))))
+     (chat-one adapter config messages opts))))
 
 (defn- file-stem
   "`/a/b/Qwen3.8-27B-Q8_0.gguf` -> `Qwen3.8-27B-Q8_0`; a bare alias is itself."

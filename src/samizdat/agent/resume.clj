@@ -121,6 +121,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.verify :as verify]
             [samizdat.security.flow :as flow]
+            [samizdat.llm.client :as llm]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.state :as state]
             [samizdat.agent.storm :as storm]
@@ -416,4 +417,5 @@
       ;; The seal made above ends with the resumed run (verify/unseal-run!).
       (try (beam/run-rounds ctx branches start-turn)
            (finally (verify/unseal-run! run-id)
-                    (flow/forget-run! run-id))))))
+                    (flow/forget-run! run-id)
+                    (llm/forget-retired! run-id))))))

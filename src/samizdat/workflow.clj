@@ -55,6 +55,7 @@
             [samizdat.agent.gitdiff :as gitdiff]
             [samizdat.agent.verify :as verify]
             [samizdat.security.flow :as flow]
+            [samizdat.llm.client :as llm]
             [samizdat.agent.loop :as branch-loop]
             [samizdat.agent.instructions :as instr]
             [samizdat.agent.orient :as orient]
@@ -248,7 +249,17 @@
     ;; (samizdat.agent.live), over the configured assignment.
     (live/in-ctx
      (if-let [llm (config/role-llm (:config ctx) (:llm-config ctx) role)]
-       (assoc ctx :llm-adapter (registry/adapter-for (:provider llm)) :llm-config llm)
+       (assoc ctx :llm-adapter (registry/adapter-for (:provider llm))
+              :llm-config (if-let [fbs (seq (:fallback-llms llm))]
+                            ;; Each fallback with its own adapter, retired per
+                            ;; RUN (llm.client/chat, karamazov-0e2c.9).
+                            (-> llm
+                                (dissoc :fallback-llms)
+                                (assoc :fallback-scope (:run-id ctx)
+                                       :fallbacks (mapv (fn [l] {:adapter (registry/adapter-for (:provider l))
+                                                                 :config l})
+                                                        fbs)))
+                            llm))
        ctx))))
 
 (defn note-schema-warnings!
@@ -467,6 +478,8 @@
         (verify/unseal-run! run-id)
         ;; And its branches' flow labels (samizdat.security.flow).
         (flow/forget-run! run-id)
+        ;; And the models it retired (llm.client/chat).
+        (llm/forget-retired! run-id)
         ;; NOTHING IS LEFT PENDING ON A RUN NOBODY WILL DRAIN AGAIN. The
         ;; drains leave workflow kinds (switch/budget/stop) for a workflow's
         ;; own directives stage and only feature.edn has one, so on any other

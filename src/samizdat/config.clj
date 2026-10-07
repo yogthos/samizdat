@@ -797,9 +797,19 @@
   read_digest (one call), so 'which model does this role run on' has one
   answer (karamazov-b76m)."
   [config default-llm role]
-  (when-let [alias (as-key (get-in config [:roles role]))]
-    (when-not (= alias (as-key (or (:provider-name default-llm) (:provider default-llm))))
-      (provider-llm config alias {}))))
+  ;; A LIST names fallbacks, in order (karamazov-0e2c.9): the first runs, and
+  ;; one that fails is retired for the run in favour of the next
+  ;; (llm.client/chat). They ride as :fallback-llms on the first's config.
+  (let [v (get-in config [:roles role])
+        [alias & more] (map as-key (if (sequential? v) v (when v [v])))
+        default? (= alias (as-key (or (:provider-name default-llm) (:provider default-llm))))
+        fallbacks (mapv #(provider-llm config % {}) more)]
+    (when alias
+      (cond
+        (and default? (empty? fallbacks)) nil
+        default? (assoc default-llm :fallback-llms fallbacks)
+        :else (cond-> (provider-llm config alias {})
+                (seq fallbacks) (assoc :fallback-llms fallbacks))))))
 
 (defn redacted
   "The config with every :api-key masked, WHEREVER it sits, for logging and
