@@ -199,3 +199,27 @@
                                  :args {:path "NOTES.md" :content "build with make\n"}))
           (tools/run-tool (assoc b6 :tool-name "read_file" :args {:path "NOTES.md"}))
           (is (= :trusted (trust b6))))))))
+
+;; --- an approval is of a text, by its hash (karamazov-0e2c.19) -------------------
+
+(deftest a-person-approves-a-workflow-edit-by-its-content
+  ;; After xi's mcp/trust.cljs: trust a thing by the hash of what it is, and
+  ;; ask again when that changes.
+  (with-run [c rid]
+    (let [sup (ctx c rid "SUP" {:role :supervisor})
+          asked (atom 0)]
+      (web! sup)
+      (with-redefs [approval/policy (constantly {:mode :block :wait-ms 1 :on-timeout :deny})
+                    approval/request! (fn [_] (swap! asked inc) "id")
+                    approval/await! (fn [_ _ _] {:decision :allow})]
+        (is (:ran? (stubbed sup "prompt" {:action "save" :name "system" :text "v2"})))
+        (is (= 1 @asked))
+        (testing "the same text again is not asked about twice"
+          (is (:ran? (stubbed sup "prompt" {:action "save" :name "system" :text "v2"})))
+          (is (= 1 @asked)))
+        (testing "a different text is"
+          (stubbed sup "prompt" {:action "save" :name "system" :text "v3"})
+          (is (= 2 @asked)))
+        (testing "and so is the same text for another role"
+          (stubbed sup "prompt" {:action "save" :name "critic" :text "v2"})
+          (is (= 3 @asked)))))))

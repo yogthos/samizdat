@@ -261,6 +261,11 @@
             {:keys [effect note timed-out]}
             (approval/resolve-ask ctx {:effect :ask :head (str tool-name) :complex? true
                                        :flow? true :input input :gaps gaps
+                                       ;; A workflow edit is approved by what it
+                                       ;; writes: the same text is not asked
+                                       ;; about twice (karamazov-0e2c.19).
+                                       :content-key [(str tool-name) (str (:name args))
+                                                     (hash (dissoc args :rationale))]
                                        :reason (str "flow " (str/join " " (map (comp name :gap) gaps)))})]
         (when-not (= :allow effect)
           {:branch branch :category :neutral :progress? false :needs-approval true

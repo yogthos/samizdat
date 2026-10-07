@@ -108,6 +108,10 @@
 
 (defonce ^:private requests (atom {}))
 
+(defonce ^:private approved-content
+  ;; #{[run-id key]}: workflow texts a person allowed on a run, by hash.
+  (atom #{}))
+
 ;; {run-id [pattern …]} — what a person allowed ALWAYS, for this session. In
 ;; memory and never written anywhere: an allow that outlived the person who
 ;; gave it would be a standing permission nobody chose to leave on.
@@ -231,11 +235,19 @@
   nobody will ever answer, and the process never gets them back."
   [run-id]
   (swap! allowed dissoc run-id)
+  (swap! approved-content (fn [s] (into #{} (remove #(= run-id (first %))) s)))
   (let [gone (filter #(= run-id (:run-id %)) (vals @requests))]
     (swap! requests #(apply dissoc % (map :id gone)))
     (doseq [{:keys [promise]} gone]
       (when promise (deliver promise {:decision :deny :note "the run ended"})))
     (count gone)))
+
+(defn content-approved?
+  "Whether a person already allowed exactly this content (`key`, e.g.
+  [tool name hash]) on `run-id` (karamazov-0e2c.19, after xi's trust by
+  hash)."
+  [run-id key]
+  (contains? @approved-content [run-id key]))
 
 (defn grant-pattern
   "The pattern an \"allow always\" on `command` (whose head is `head`) grants:
@@ -265,10 +277,14 @@
   Never throws. This sits in the path of every shell command, and an
   approval registry that could fail would be a registry that can stop a run
   from doing anything at all."
-  [{:keys [run-id branch-id]} {:keys [effect input details reason gaps] :as decision}]
+  [{:keys [run-id branch-id]} {:keys [effect input details reason gaps content-key] :as decision}]
   (let [{:keys [mode wait-ms on-timeout]} (policy)]
     (cond
       (not= :ask effect) decision
+      ;; The same text a person already allowed on this run: trust is of
+      ;; the content, so only a change asks again (karamazov-0e2c.19).
+      (and content-key (content-approved? run-id content-key))
+      (assoc decision :effect :allow :approved-before true)
       ;; Nobody is asked and everything that would have been is allowed.
       ;; Flagged, so the journal tells a yolo allow from a person's.
       (= :yolo mode) (assoc decision :effect :allow :yolo true)
@@ -288,7 +304,9 @@
               answer (await! id wait-ms {:decision (or on-timeout :deny)})]
           (cond
             (= :allow (:decision answer))
-            (do (when (and (:always answer) always)
+            (do (when content-key
+                  (swap! approved-content conj [run-id content-key]))
+                (when (and (:always answer) always)
                   (swap! allowed update run-id (fn [ps] (vec (distinct (conj (vec ps) always)))))
                   (log/info "approval: allowed" always "always, for this session, on run" run-id))
                 (assoc decision :effect :allow :note (:note answer)))
