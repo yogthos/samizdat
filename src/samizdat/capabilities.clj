@@ -86,6 +86,8 @@
             [samizdat.sdiff.address]
             [samizdat.sdiff.names]
             [samizdat.sdiff.group]
+            [samizdat.surgeon.move]
+            [samizdat.surgeon.outline]
             [samizdat.agent.run-state]
             [samizdat.basis]
             [samizdat.perturb]

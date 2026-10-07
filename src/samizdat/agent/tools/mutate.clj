@@ -34,7 +34,11 @@
             [samizdat.manifests :as manifests]
             [samizdat.mutation :as mutation]
             [samizdat.prompt :as prompt]
+            [samizdat.sdiff.address :as address]
             [samizdat.sdiff.text :as sdiff-text]
+            [samizdat.surgeon.move :as move]
+            [samizdat.surgeon.outline :as outline]
+            [jolt.fs]
             [samizdat.store.userspace]
             [samizdat.userspace :as userspace]))
 
@@ -131,6 +135,78 @@
       (str "No stored versions of '" name "' in this project."
            " It is still the shipped template."))))
 
+(defn- commit-cell!
+  "Propose `body` as cell `name`'s new text with rationale `why`, through
+  the mutation protocol — validate, soak, store — and say how it went. The
+  one save path: `save`, and the structural edits (karamazov-0e2c.24)."
+  [{:keys [branch conn run-id] :as ctx} name body why]
+  (let [active (active-name ctx)
+        ;; What it replaces, so the result can say what changed.
+        before (try (userspace/body :cell name) (catch Throwable _ nil))
+        r (mutation/propose-cell!
+           {:name name :body (str body) :rationale why
+            :loop-def (current-loop-def ctx)
+            :extra-defs (extra-defs active)
+            ;; The loader's own static pipeline (sub-workflows,
+            ;; ctx-key requires, derived constraints), WITHOUT its
+            ;; registry reload — which would replace the candidate
+            ;; just installed (karamazov-blt.2).
+            :compile-fn manifests/compile-definition
+            :soak-input (soak-input)
+            :defer-fn (fn [cand commit!]
+                        (heldout/defer! conn cand
+                                        {:commit! commit!
+                                         :run-id run-id :branch-id (:id branch)}))
+            :conn conn :run-id run-id})]
+    (case (:status r)
+      :pending
+      (base/ok branch (prompt/render "heldout-pending"
+                                     {:kind "cell" :name name :soaked true})
+               :progress? true)
+
+      :committed
+      (base/ok branch
+               (str "Saved cell '" name "' as v" (:version r)
+                    " in this project — it compiled, it dry-ran, and it"
+                    " is live on your next turn. The shipped template is"
+                    " unchanged; other projects still start from it."
+                    (when before
+                      (str "\n\n" (sdiff-text/edit-text (str "cells/" name ".clj")
+                                                          before (str body)))))
+               :progress? true)
+
+      ;; Validate and soak passed and the edit is live in this
+      ;; image, but nothing was persisted — telling the model it
+      ;; was "saved as v" here was a lie about durability
+      ;; (karamazov-blt.8).
+      :live-unsaved
+      (base/ok branch
+               (prompt/render "cell-tool" {:live-unsaved true
+                                           :name name}))
+
+      ;; Rolled back: validate or the soak refused it, the registry
+      ;; is restored, and nothing was stored. A correctable edit,
+      ;; not a branch failure — see base/rejected.
+      ;; :journaled? — propose-cell! already wrote the refusal,
+      ;; with the attempt, as :mutation-rolled-back.
+      (assoc (base/rejected branch
+                            (str "Cell '" name "' was NOT saved; the loop is"
+                                 " unchanged and nothing entered this project's"
+                                 " history.\n\n" (:reason r)
+                                 "\n\nFix it and save again."))
+             :journaled? true))))
+
+(defn- with-temp-source
+  "Run `f` on a temp file holding `src`, and return [f's result, the file's
+  text after]. xi's clj-surgeon works on files; a cell is a stored body."
+  [src f]
+  (let [d (str (jolt.fs/create-temp-dir))
+        p (str d "/cell.clj")]
+    (spit p (str src))
+    (try [(f p) (slurp p)]
+         (finally (try (jolt.fs/delete-if-exists p) (jolt.fs/delete-if-exists d)
+                       (catch Throwable _ nil))))))
+
 (defmethod base/run-tool "cell" [{:keys [branch conn run-id] :as ctx}]
   ;; The project-scoped half of self-modification. `cells` lists what is
   ;; loaded; this edits it. Every save is a new version in THIS project's
@@ -194,6 +270,58 @@
                                    (sdiff-text/edit-text (str "cells/" name ".clj")
                                                          (body-at from) (body-at to)))))))
 
+        ;; STRUCTURAL EDITS (karamazov-0e2c.24, xi's clj-surgeon ported):
+        ;; forms by name rather than text, each through commit-cell!.
+        "outline"
+        (if-let [src (and name (userspace/body :cell name))]
+          (let [[ol] (with-temp-source src outline/outline)]
+            (base/ok branch (str/join "\n" (for [{:keys [name type line end-line]} (:forms ol)]
+                                             (str line "-" end-line "  " type " " name)))))
+          (base/malformed branch (if name (prompt/render "cell-diff-miss" {:name name})
+                                     (base/missing ctx :name))))
+
+        "move"
+        (let [form (some-> (base/arg ctx :form) str str/trim not-empty)
+              before (some-> (base/arg ctx :before) str str/trim not-empty)
+              why (base/rationale ctx)
+              src (when name (userspace/body :cell name))]
+          (cond
+            (not src) (base/malformed branch (base/missing ctx :name))
+            (not form) (base/malformed branch (base/missing ctx :form))
+            (not before) (base/malformed branch (base/missing ctx :before))
+            (nil? why) (base/malformed branch (base/missing ctx :rationale))
+            :else
+            (let [[r moved] (with-temp-source src #(move/move-form {:file % :form form :before before}))
+                  [ol] (with-temp-source src outline/outline)
+                  there (str/join ", " (map :name (:forms ol)))]
+              (if (:error r)
+                (base/malformed branch (str (:error r) "\n\n" there))
+                (commit-cell! ctx name moved why)))))
+
+        "replace-form"
+        (let [form (some-> (base/arg ctx :form) str str/trim not-empty)
+              text (some-> (base/arg ctx :clj) str not-empty)
+              why (base/rationale ctx)
+              src (when name (userspace/body :cell name))]
+          (cond
+            (not src) (base/malformed branch (base/missing ctx :name))
+            (not form) (base/malformed branch (base/missing ctx :form))
+            (not text) (base/malformed branch (base/missing ctx :clj))
+            (nil? why) (base/malformed branch (base/missing ctx :rationale))
+            :else
+            (let [{:keys [rows error candidates forms]} (address/locate src form)]
+              (if error
+                (base/malformed branch
+                                (prompt/render "form-miss"
+                                               {:none (= :none error) :ambiguous (= :ambiguous error)
+                                                :form form :name form :path (str "cell " name)
+                                                :choices (str/join ", " (map #(str "`" % "`") (or candidates forms)))}))
+                (let [lines (str/split-lines src)
+                      [a b] rows]
+                  (commit-cell! ctx name
+                                (str (str/join "\n" (concat (take (dec a) lines) [text] (drop b lines))) "\n")
+                                why))))))
+
         "save"
         (let [{body :body err :error} (base/save-body ctx :clj)
               why (base/rationale ctx)]
@@ -203,61 +331,7 @@
             (str/blank? (str body)) (base/malformed branch (base/missing ctx :clj))
             (nil? why) (base/malformed branch (base/missing ctx :rationale))
             :else
-            (let [active (active-name ctx)
-                  ;; What it replaces, so the result can say what changed.
-                  before (try (userspace/body :cell name) (catch Throwable _ nil))
-                  r (mutation/propose-cell!
-                     {:name name :body (str body) :rationale why
-                      :loop-def (current-loop-def ctx)
-                      :extra-defs (extra-defs active)
-                      ;; The loader's own static pipeline (sub-workflows,
-                      ;; ctx-key requires, derived constraints), WITHOUT its
-                      ;; registry reload — which would replace the candidate
-                      ;; just installed (karamazov-blt.2).
-                      :compile-fn manifests/compile-definition
-                      :soak-input (soak-input)
-                      :defer-fn (fn [cand commit!]
-                                  (heldout/defer! conn cand
-                                                  {:commit! commit!
-                                                   :run-id run-id :branch-id (:id branch)}))
-                      :conn conn :run-id run-id})]
-              (case (:status r)
-                :pending
-                (base/ok branch (prompt/render "heldout-pending"
-                                               {:kind "cell" :name name :soaked true})
-                         :progress? true)
-
-                :committed
-                (base/ok branch
-                         (str "Saved cell '" name "' as v" (:version r)
-                              " in this project — it compiled, it dry-ran, and it"
-                              " is live on your next turn. The shipped template is"
-                              " unchanged; other projects still start from it."
-                              (when before
-                                (str "\n\n" (sdiff-text/edit-text (str "cells/" name ".clj")
-                                                                    before (str body)))))
-                         :progress? true)
-
-                ;; Validate and soak passed and the edit is live in this
-                ;; image, but nothing was persisted — telling the model it
-                ;; was "saved as v" here was a lie about durability
-                ;; (karamazov-blt.8).
-                :live-unsaved
-                (base/ok branch
-                         (prompt/render "cell-tool" {:live-unsaved true
-                                                     :name name}))
-
-                ;; Rolled back: validate or the soak refused it, the registry
-                ;; is restored, and nothing was stored. A correctable edit,
-                ;; not a branch failure — see base/rejected.
-                ;; :journaled? — propose-cell! already wrote the refusal,
-                ;; with the attempt, as :mutation-rolled-back.
-                (assoc (base/rejected branch
-                                      (str "Cell '" name "' was NOT saved; the loop is"
-                                           " unchanged and nothing entered this project's"
-                                           " history.\n\n" (:reason r)
-                                           "\n\nFix it and save again."))
-                       :journaled? true)))))
+            (commit-cell! ctx name body why)))
 
         "revert"
         (let [v (some-> (base/arg ctx :version) str str/trim not-empty parse-long)

@@ -234,6 +234,35 @@
                                          :clj "(ns c)\n(defn f [x]\n  (let [y 3]\n    (* x y)))\n"}))]
         (is (str/includes? r "binding y") r)))))
 
+(deftest the-cell-tool-edits-forms-not-text
+  ;; karamazov-0e2c.24, xi's clj-surgeon ported: a cell's forms are listed,
+  ;; moved and replaced by name, and every change goes through the same
+  ;; validated save as `save`.
+  (us/bind! *conn*)
+  (store/save! *conn* :cell "c" "(ns c)\n\n(defn b [] (a))\n\n;; the helper\n(defn a [] 1)\n")
+  (testing "outline"
+    (let [r (:result (run-cell *conn* {:action "outline" :name "c"}))]
+      (is (re-find #"b.*\n.*a" r) r)))
+  (let [saved (atom nil)]
+    (with-redefs [samizdat.mutation/propose-cell! (fn [{:keys [body]}] (reset! saved body)
+                                                    {:status :committed :version 2})]
+      (testing "move a form before another, its comment with it"
+        (run-cell *conn* {:action "move" :name "c" :form "a" :before "b" :rationale "define before use"})
+        (is (< (str/index-of @saved "(defn a") (str/index-of @saved "(defn b")) @saved)
+        (is (< (str/index-of @saved ";; the helper") (str/index-of @saved "(defn a"))))
+      (testing "replace one form by name"
+        (reset! saved nil)
+        (run-cell *conn* {:action "replace-form" :name "c" :form "a" :clj "(defn a [] 2)"
+                          :rationale "two"})
+        (is (str/includes? @saved "(defn a [] 2)"))
+        (is (str/includes? @saved "(defn b [] (a))") "the rest untouched"))
+      (testing "a form that is not there is named back, and nothing is saved"
+        (reset! saved nil)
+        (let [r (run-cell *conn* {:action "replace-form" :name "c" :form "zz" :clj "(defn zz [])"
+                                  :rationale "x"})]
+          (is (nil? @saved))
+          (is (str/includes? (:result r) "defn b")))))))
+
 (deftest the-cell-tool-reverts-and-keeps-the-abandoned-version-readable
   (us/bind! *conn*)
   (us/save! :cell "critic" ";; v1")

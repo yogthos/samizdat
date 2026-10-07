@@ -106,7 +106,7 @@
            "eval/networked" {:audience :project}
            ;; The workflow is code every later turn and run executes, so
            ;; changing it needs trust (karamazov-3vu1.14). Reading it does not.
-           "cell" {:trust :trusted :read-actions #{"list" "show" "versions" "diff"}}
+           "cell" {:trust :trusted :read-actions #{"list" "show" "versions" "diff" "outline"}}
            "manifest" {:trust :trusted :read-actions #{"list" "show" "versions" "diff" "refs"}}
            "prompt" {:trust :trusted :read-actions #{"list" "show" "versions"}}
            ;; propose-grant writes nothing: a person decides it, and sees the

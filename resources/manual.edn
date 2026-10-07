@@ -149,6 +149,8 @@
     :summary "The critic's structural report opens with the changed forms grouped by the calls between them (read from the source: a bare name in the same namespace, an alias or full name elsewhere), forms used from three or more other files set apart as shared so they do not join every caller into one group."}
    {:name samizdat.sdiff.names/used
     :summary "Shortened names in the critic's structural report: a long path or namespace becomes its shortest unique suffix (or the alias its files agree on) only where that saves more than the legend line costs, and the legend leads the report. Not used in anything a model calls a tool with."}
+   {:name samizdat.surgeon.move/move-form
+    :summary "Structural cell edits (xi's clj-surgeon, ported): cell outline {name} lists the forms with their lines; cell move {name, form, before, rationale} moves a form, with the comment above it, ahead of another; cell replace-form {name, form, clj, rationale} replaces one top-level form by name. Each saves through the same validated path as cell save."}
    {:name samizdat.sdiff.address/locate
     :summary "A top-level Clojure form by its id (defn route) or unique bare name, and a place in it by sdiff's printed path (body › binding cap) or any end of that path only one place has. read_file {path, form, at?} reads it; a miss or an ambiguity lists the candidates."}
    {:name samizdat.basis/unresolved
