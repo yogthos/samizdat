@@ -109,30 +109,43 @@
         (is (= ["a1" {:decision :allow}] @decided)
             "the click answered the question the dialog was showing")))))
 
-(deftest an-open-ended-question-can-be-typed-into-and-sent
-  ;; The other half of the permission dialog's claim, and the one the data
-  ;; tests cannot make: that a person can actually ANSWER. `ask_human` takes
-  ;; a bare string, which has no options, and an empty menu is not a thing
-  ;; anybody can click — the branch sat parked for the whole deadline. So
-  ;; the keys go in as keys and the answer comes out or it does not.
-  (let [answered (atom nil)
-        q {:id "q9" :kind "question"
-           :questions [{:question "what should I name the module?" :options []}]}
-        app (fn [] (w/approvals {:approvals [q]
-                                 :on {:answer (fn [& xs] (reset! answered (vec xs)))}}
+(deftest the-permission-dialog-wraps-a-long-command-rather-than-cutting-it
+  ;; Seen live: `… ls -R src test 2>/dev/` and the rest past the panel edge.
+  ;; A person cannot judge a command they were shown half of.
+  (let [cmd (str "git status --porcelain; echo ---; git diff --stat; ls -R src test "
+                 "2>/dev/null | head -50; echo THE-END")
+        frame (ui/with-screen [s (fn [] (w/approvals {:approvals [{:id "a1" :kind "shell"
+                                                                    :input cmd}]} {}))]
+                (ui/render-text s 60 16))]
+    (is (str/includes? frame "THE-END") "the end of the command is on screen")))
+
+(deftest clicking-an-option-puts-the-questionnaire-cursor-on-it
+  ;; The keys answer a question (state/dialog-action); the mouse has to agree
+  ;; with them about where the cursor is, or Enter after a click picks the
+  ;; row the keyboard was on rather than the one clicked.
+  (let [state (atom (assoc (st/initial "b")
+                           :approvals [{:id "q1" :questions [{:question "which?"
+                                                              :options ["alpha" "beta"]}]}]))
+        app (fn [] (w/approvals (assoc @state :on {:option #(swap! state st/move-option %)
+                                                   :answer (fn [& _]) :decide (fn [& _])
+                                                   :reply (fn [& _])})
                                 {}))]
     (ui/with-screen [s app]
-      (let [frame (ui/render-text s 70 12)]
-        (is (str/includes? frame "what should I name the module?"))
-        ;; Focus the editor, type, send.
-        (let [y (row-of frame "type an answer")]
-          (is (some? y) "the text box is on screen with its prompt")
-          (ui/send-mouse! s {:button :left :motion :pressed :x 3 :y y})
-          (ui/send-mouse! s {:button :left :motion :released :x 3 :y y}))
-        (ui/send-char! s "mycelium")
-        (ui/send-key! s :return)
-        (is (= ["q9" 0 ["mycelium"]] @answered)
-            "what was typed reached the handler that unparks the branch")))))
+      (let [frame (ui/render-text s 60 14)
+            y (row-of frame "beta")]
+        (is (some? y) "the option is on screen")
+        (ui/send-mouse! s {:button :left :motion :pressed :x 4 :y y})
+        (ui/send-mouse! s {:button :left :motion :released :x 4 :y y})
+        (is (= 1 (:question-option @state)) "the click moved the cursor")
+        (is (str/includes? (ui/render-text s 60 14) "> beta") "and it is drawn there")))))
+
+(deftest an-open-ended-question-points-at-the-compose-box
+  (let [q {:id "q9" :kind "question"
+           :questions [{:question "what should I name the module?" :options []}]}
+        frame (ui/with-screen [s (fn [] (w/approvals {:approvals [q]} {}))]
+                (ui/render-text s 70 12))]
+    (is (str/includes? frame "what should I name the module?"))
+    (is (str/includes? frame "type it below"))))
 
 (defn- at-of
   "The 0-based [row col] `needle` starts at in a rendered frame, or nil. The

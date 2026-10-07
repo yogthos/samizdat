@@ -544,7 +544,9 @@
   "A blob as its own lines, uncut. Used only by the approval dialog, which is
   the one place in this UI where clipping is the wrong answer."
   [s]
-  (into [:vbox] (map (fn [l] [:text l]) (str/split-lines (str s)))))
+  ;; :wrapped, not :text: a :text row is cut at the panel's edge, which
+  ;; clipped the very command this dialog exists to show in full.
+  (into [:vbox] (map (fn [l] [:wrapped l]) (str/split-lines (str s)))))
 
 (defn- permission-dialog
   "dirge's permission prompt: what wants to run, why it was stopped, and the
@@ -563,8 +565,9 @@
      ;; that hid the rest would be asking them to approve something they
      ;; were not shown.
      (lines-of input)
-     (when (not-empty (str reason)) [:text {:class :dim} (str " why: " reason)])
-     (when (not-empty (str details)) [:text {:class :dim} (str " " details)])
+     (when (not-empty (str reason)) [:wrapped {:class :dim} (str " why: " reason)])
+     (when (not-empty (str details))
+       (into [:vbox] (map (fn [l] [:wrapped {:class :dim} (str " " l)]) (str/split-lines (str details)))))
      ;; What the call lacks (samizdat.security.flow), one line a gap.
      (when (seq gaps)
        (into [:vbox]
@@ -587,58 +590,88 @@
                                  :on-click (decide {:decision :deny})}]
                        [:button {:label "deny + note (d)" :style :ascii :on-click reply}])))]))
 
+(def own-answer-label "type your own answer…")
+
+(defn- option-description
+  "What option `n` means, when the question says (`descriptions`)."
+  [q n]
+  (not-empty (str (nth (vec (:descriptions q)) n nil))))
+
 (defn- questionnaire
-  "ask_human's questions, one at a time: pick an option (tick several when
-  the question allows it), or write your own answer, or reject the lot."
+  "ask_human's questions, one at a time, after dirge's `question`: the
+  options under a cursor, a last row to type your own answer, and the keys
+  in a footer — Up/Down (k/j) move, Space ticks or picks, Enter picks or
+  confirms, a digit jumps, Esc rejects (state/dialog-action). The compose
+  box keeps the focus throughout, so the keyboard never has to find the
+  dialog; the mouse can still click an option to put the cursor on it.
+
+  An open-ended question has no rows: its answer is typed in the compose box
+  (state/reply-kind), which already has the focus."
   [state {:keys [id questions]}]
   (let [qs (vec questions)
         i (min (or (:question-cursor state) 0) (max 0 (dec (count qs))))
         q (nth qs i nil)
-        so-far (vec (:question-answers state))
         opts (vec (:options q))
+        at (min (or (:question-option state) 0) (count opts))
         sel (set (:question-selected state))
-        ;; Carry what has already been answered. Handing back only the
-        ;; latest would lose every earlier answer on the way to the last
-        ;; question.
-        answer (fn [a] (when-let [f (get-in state [:on :answer])]
-                         (f id i (conj so-far a))))
+        move (fn [n] (when-let [f (get-in state [:on :option])] (f n)))
         custom (fn [] (when-let [f (get-in state [:on :reply])] (f :custom-answer id)))
         reject (fn [] (when-let [f (get-in state [:on :decide])]
                         (f id {:decision :deny :note "rejected"})))
-        writing? (= {:kind :custom-answer :id id} (:reply state))]
+        writing? (= :custom-answer (st/reply-kind state))]
     [:vbox {:class [:question :question-box]}
      [:text {:class :question :bold true}
       (str " ? QUESTION " (inc i) " of " (count qs) (when (:multi q) " — pick any") " ")]
+     (when-let [h (not-empty (str (:header q)))] [:text {:class :dim} (str " ─── " h " ───")])
      [:separator]
      [:paragraph (str (:question q))]
      (cond
-       writing?
-       [:text {:class :question} " your answer — type it below (Enter sends · Esc goes back)"]
-
-       (and (seq opts) (:multi q))
+       (empty? opts) nil
+       ;; ftxui's checkbox draws its own box; the cursor is the ▶.
+       (:multi q)
        (into [:vbox]
              (concat
-              (map-indexed (fn [n o]
-                             [:checkbox {:label (str o) :checked (contains? sel n)
-                                         :on-change (fn [_] (when-let [f (get-in state [:on :toggle-option])]
-                                                              (f n)))}])
+              (map-indexed (fn [n _]
+                             [:checkbox {:label (str (if (= n at) "▶ " "  ") (nth opts n))
+                                         :checked (contains? sel n)
+                                         :on-change (fn [_]
+                                                      (move n)
+                                                      (when-let [f (get-in state [:on :toggle-option])]
+                                                        (f n)))}])
                            opts)
-              [[:button {:label "confirm" :style :ascii
-                         :on-click (fn [] (when (seq sel) (answer (mapv #(str (nth opts %)) (sort sel)))))}]]))
-
-       (seq opts)
-       [:menu {:entries (mapv str opts)
-               :on-enter (fn [n] (answer (str (nth opts n nil))))}]
-
-       ;; No options is not a malformed question — `ask_human` takes a bare
-       ;; string and an open-ended question is the ordinary use of a tool by
-       ;; that name. Drawn as an empty menu it could not be answered AT ALL,
-       ;; and the branch parked until the deadline for want of a text box.
+              [[:text {:class (if (= at (count opts)) :selected :dim)}
+                (str "  " (if (= at (count opts)) "▶ " "  ") own-answer-label)]]))
+       ;; The own-answer row is the menu's last entry, so the menu's marker
+       ;; is the one cursor on screen; Enter on it hands the box over.
        :else
-       [:input {:placeholder "type an answer — Enter sends"
-                :on-enter (fn [a] (answer (str a)))}])
+       [:menu {:entries (conj (mapv str opts) own-answer-label)
+               :selected at
+               :on-change move
+               :on-enter (fn [n] (if (= n (count opts))
+                                   (custom)
+                                   (when-let [f (get-in state [:on :answer])]
+                                     (f id i (conj (vec (:question-answers state))
+                                                   (str (nth opts n nil)))))))}])
+     ;; The option under the cursor, explained in full and wrapped: a menu
+     ;; row cannot wrap, and the description is where the trade-off is.
+     (when-let [d (and (< at (count opts)) (option-description q at))]
+       [:wrapped {:class :dim} (str "  " d)])
+     [:separator]
+     (cond
+       writing?
+       [:text {:class :question} " your answer — type it below (Enter sends · Esc goes back)"]
+       (:multi q)
+       [:text {:class :dim} " ↑↓ move · Space tick · Enter confirm · 1-9 tick · Esc reject"]
+       :else
+       [:text {:class :dim} " ↑↓ move · Enter pick · 1-9 pick · Esc reject"])
      (when-not writing?
        [:hbox
+        (when (:multi q)
+          [:button {:label "confirm" :style :ascii
+                    :on-click (fn [] (when (seq sel)
+                                       (when-let [f (get-in state [:on :answer])]
+                                         (f id i (conj (vec (:question-answers state))
+                                                       (mapv #(str (nth opts %)) (sort sel)))))))}])
         (when (seq opts) [:button {:label "your own answer" :style :ascii :on-click custom}])
         [:button {:label "reject (Esc)" :style :ascii :on-click reject}]])]))
 
@@ -746,7 +779,7 @@
                       :multiline true
                       :wrap true
                       :value (or (:input state) "")
-                      :placeholder (case (:kind (:reply state))
+                      :placeholder (case (st/reply-kind state)
                                      :deny-note "what the agent should do instead — Enter sends"
                                      :custom-answer "your answer — Enter sends"
                                      (if starting?
@@ -767,6 +800,17 @@
              [:button {:label "resume" :style :ascii
                        :on-click (fn [] (when-let [f (get-in state [:on :resume])] (f)))}]]]
     (cond
+      ;; Ctrl+F open: the box shows the match; this says what it matched.
+      (:search state)
+      (let [{:keys [query miss]} (:search state)]
+        [:vbox (select-keys props [:flex :width])
+         [:text {:class (if miss :warn :info)}
+          (str " history search: " query (when miss "  — no match")
+               "  · Ctrl+F older · Enter take · Esc back")]
+         (if (:boxed props)
+           [:hbox (merge {:class :panel :border :rounded} (select-keys props [:style]))
+            (assoc row 1 {:flex true :height rows})]
+           row)])
       (:title props) (panel props row)
       ;; A border and nothing else: the one-row box beside the avatar.
       (:boxed props) [:hbox (merge {:class :panel :border :rounded}
@@ -775,7 +819,7 @@
       :else row)))
 
 (defn- model-label [{:keys [provider model]}]
-  (cond (and provider model) (str provider ":" model)
+  (cond (and provider model (not= (str provider) (str model))) (str provider ":" model)
         :else (or model provider)))
 
 (defn- footer-model
@@ -876,10 +920,29 @@
 
 ;; --- slash commands ------------------------------------------------------------
 
+(declare command-lines)
+
 (defn command-hints
   "While a slash command is being typed: the commands it could be, each with
   its arguments and what it does — and once the name is typed, that one's
-  usage. Draws nothing otherwise. Tab completes (dirge's ghost, as a list)."
+  usage. Tab completes (dirge's ghost, as a list). While an @-mention is
+  being typed: the project's files that match it, the picker's cursor on
+  one (state/mention-*). Draws nothing otherwise."
+  [state props]
+  (if-let [{:keys [query files at fetched]} (:mention state)]
+    ;; An @-mention: the project's files that match, the cursor on one.
+    (cond
+      (seq files)
+      (into [:vbox {:class :panel :border :rounded}]
+            (map-indexed (fn [i f] [:text {:class (if (= i at) :selected :dim)}
+                                    (str (if (= i at) " ▶ " "   ") f)])
+                         files))
+      fetched [:vbox {:class :panel :border :rounded}
+               [:text {:class :dim} (str " no file matches @" query)]]
+      :else [:empty])
+    (command-lines state props)))
+
+(defn- command-lines
   [state props]
   (let [cs (get-in state [:settings :commands])
         text (str (:input state))

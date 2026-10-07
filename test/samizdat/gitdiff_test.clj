@@ -220,3 +220,15 @@
             (is (str/includes? d "diff --git a/a.txt") d)
             (is (not (str/includes? d "EXTERNAL")))))
         (finally (sh dir (str "rm -rf " dir)))))))
+
+(deftest project-files-lists-the-tree-git-would-see
+  ;; The TUI's @-picker: tracked and new files, never what .gitignore hides.
+  (when (proc/available? "git")
+    (let [dir (str (System/getProperty "java.io.tmpdir") "/gd-files-" (System/currentTimeMillis))]
+      (try
+        (proc/run {:timeout-ms 15000} "sh" "-c" (str "mkdir -p " dir "/src"))
+        (sh dir "git init -q && git config user.email t@t.co && git config user.name t")
+        (sh dir "echo a > src/core.clj && echo build > ignored.log && echo '*.log' > .gitignore && git add -A && git commit -qm init && echo n > src/new.clj")
+        (is (= #{".gitignore" "src/core.clj" "src/new.clj"} (set (gd/project-files dir))))
+        (is (nil? (gd/project-files nil)))
+        (finally (sh dir (str "rm -rf " dir)))))))

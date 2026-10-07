@@ -147,6 +147,13 @@
     ;; `./` makes the path the project root's, as git -C runs from there.
     (git root "show" (str baseline ":./" path))))
 
+(defn project-files
+  "Every file git would show in `root`: tracked ones and new ones, without
+  what .gitignore hides. nil outside a git tree, or with no root."
+  [root]
+  (when root
+    (lines (git root "ls-files" "--cached" "--others" "--exclude-standard"))))
+
 (defn changed-files
   "The paths the run changed since `baseline`: tracked edits (git diff
   --name-only) UNION new files (git ls-files --others). The union matters —

@@ -40,7 +40,7 @@
   that called them, which no test could see because each half was correct on
   its own."
   #{:decide :answer :toggle :select-run :select-branch :input :submit :start
-    :abort :resume :reply :toggle-option :scroll :history-back :history-forward})
+    :abort :resume :reply :toggle-option :option :scroll :history-back :history-forward})
 
 (def max-trace
   "How many steps the UI holds. The server's ring is bounded and so is this:
@@ -95,6 +95,9 @@
    :approval-id nil
    :question-cursor 0
    :question-answers []
+   ;; The row the keyboard is on in the question on screen: an option, or
+   ;; one past the last, `type your own answer`.
+   :question-option 0
    :expanded #{}
    :input ""})
 
@@ -231,7 +234,7 @@
       (cond-> (assoc (connected s) :approvals as)
         (not= head (:approval-id s))
         (assoc :approval-id head :question-cursor 0 :question-answers []
-               :question-selected #{} :reply nil)))))
+               :question-selected #{} :question-option 0 :reply nil)))))
 
 (defn answer-question
   "Record an answer and move to the next question, or say the set is done.
@@ -242,7 +245,7 @@
   (let [total (count (:questions (first (:approvals s))))
         next-i (count answers)]
     [(assoc s :question-answers (vec answers) :question-cursor (min next-i (dec total))
-            :question-selected #{} :reply nil)
+            :question-selected #{} :question-option 0 :reply nil)
      (>= next-i total)]))
 
 (defn apply-turn-text
@@ -323,32 +326,89 @@
 (defn select-branch [s branch-id]
   (assoc s :branch-id branch-id :branch nil :turn-text {}))
 
+(defn current-question
+  "The question on screen: the head questionnaire's, at the cursor. nil with
+  none."
+  [s]
+  (let [qs (vec (:questions (first (:approvals s))))]
+    (when (seq qs)
+      (nth qs (min (or (:question-cursor s) 0) (dec (count qs)))))))
+
+(defn reply-kind
+  "What the compose box's next Enter is, while a dialog holds it: the deny
+  note, a typed answer, or nil — a directive. An open-ended question (no
+  options) takes its answer there without being asked: the box has the
+  focus, and a second text box inside the dialog had to be clicked first."
+  [s]
+  (or (:kind (:reply s))
+      (let [q (current-question s)]
+        (when (and q (empty? (:options q))) :custom-answer))))
+
+(defn- questionnaire-key
+  "A key over a questionnaire with options (dirge's `question`): the cursor
+  runs over the options and one more row, `type your own answer`."
+  [s a q {:keys [char key]}]
+  (let [opts (vec (:options q))
+        n (count opts)
+        at (min (or (:question-option s) 0) n)
+        so-far (vec (:question-answers s))
+        sel (set (:question-selected s))
+        digit (some-> char str parse-long dec)
+        pick (fn [i] [:answer (:id a) (conj so-far (str (nth opts i)))])]
+    (cond
+      (or (= :arrow-up key) (= "k" char)) [:option (max 0 (dec at))]
+      (or (= :arrow-down key) (= "j" char)) [:option (min n (inc at))]
+      (and digit (<= 0 digit) (< digit n)) (if (:multi q) [:toggle digit] (pick digit))
+      (and (or (= :return key) (= " " char)) (= at n)) [:reply :custom-answer (:id a)]
+      (and (:multi q) (= " " char)) [:toggle at]
+      (and (:multi q) (= :return key))
+      (if (seq sel)
+        [:answer (:id a) (conj so-far (mapv #(str (nth opts %)) (sort sel)))]
+        [:notice "select at least one option"])
+      (or (= :return key) (= " " char)) (pick at)
+      :else nil)))
+
 (defn dialog-action
   "What a key means while a question is on screen, as an action for the loop:
-  [:decide id decision-map], [:reply kind id], [:cancel-reply], or nil when
-  the key is not the dialog's.
+  [:decide id decision-map], [:reply kind id], [:cancel-reply], [:option i]
+  (move the questionnaire's cursor), [:toggle i], [:answer id answers],
+  [:answer-partial id answers], [:notice text], or nil when the key is not
+  the dialog's.
 
   Permission: y allow once, a allow always (this session — only when the
   question names the pattern it would allow), n or Esc deny, d deny with a
-  note typed in the compose box. A questionnaire takes only Esc: reject it.
-  Letters count only with nothing typed — a y in the middle of a directive
-  is a letter, not a verdict."
-  [s {:keys [char key]}]
-  (let [a (first (:approvals s))]
+  note typed in the compose box. A questionnaire: Up/Down or k/j, Space,
+  Enter and digits (`questionnaire-key`); Esc rejects it, or — with some
+  questions answered — sends what was answered, as dirge does. Keys count
+  only with nothing typed — a y in the middle of a directive is a letter,
+  not a verdict."
+  [s {:keys [char key] :as k}]
+  (let [a (first (:approvals s))
+        q (current-question s)]
     (cond
       (nil? a) nil
       (:reply s) (when (= :escape key) [:cancel-reply])
-      (= :escape key) [:decide (:id a) (if (seq (:questions a))
-                                         {:decision :deny :note "rejected"}
-                                         {:decision :deny})]
-      (seq (:questions a)) nil
+      ;; Half an answer typed: Esc throws the words away, not the questions.
+      (and (= :escape key) (= :custom-answer (reply-kind s))
+           (not (str/blank? (str (:input s)))))
+      [:cancel-reply]
+      (= :escape key) (cond
+                        (seq (:question-answers s)) [:answer-partial (:id a) (vec (:question-answers s))]
+                        (seq (:questions a)) [:decide (:id a) {:decision :deny :note "rejected"}]
+                        :else [:decide (:id a) {:decision :deny}])
       (not (str/blank? (str (:input s)))) nil
+      (seq (:questions a)) (when (seq (:options q)) (questionnaire-key s a q k))
       :else (case (str char)
               "y" [:decide (:id a) {:decision :allow}]
               "a" (when (:always a) [:decide (:id a) {:decision :allow :always true}])
               "n" [:decide (:id a) {:decision :deny}]
               "d" [:reply :deny-note (:id a)]
               nil))))
+
+(defn move-option
+  "Put the questionnaire's cursor on row `i`."
+  [s i]
+  (assoc s :question-option i))
 
 (defn start-reply
   "Give the compose box to a dialog: its next Enter is the deny note or the
@@ -392,7 +452,189 @@
   (update s :input #(str % "\n")))
 
 (defn clear-input [s]
-  (assoc s :input ""))
+  (assoc s :input "" :pastes {}))
+
+;; --- Ctrl+F: searching what was sent (dirge) ---------------------------------
+;;
+;; While a search is open the box shows the match, and the keys belong to the
+;; search: letters grow the query, Backspace shrinks it, Ctrl+F steps to the
+;; next older match, Enter takes the match for editing, Esc puts back what was
+;; being typed.
+
+(defn- search-from
+  "The newest history index at or below `from` whose line holds `query`."
+  [history query from]
+  (some #(when (str/includes? (nth history %) query) %)
+        (range (min from (dec (count history))) -1 -1)))
+
+(defn- search-show [s from]
+  (let [{:keys [query]} (:search s)
+        h (vec (:history s))
+        i (when (seq query) (search-from h query from))]
+    (cond
+      i (-> s (assoc :input (nth h i)) (update :search assoc :hit i :miss false))
+      (seq query) (assoc-in s [:search :miss] true)
+      :else (-> s (assoc :input (get-in s [:search :draft]))
+                (update :search assoc :hit nil :miss false)))))
+
+(defn search-start [s]
+  (assoc s :search {:query "" :draft (:input s) :hit nil :miss false}))
+
+(defn searching? [s] (some? (:search s)))
+
+(defn search-type [s ch]
+  (-> s (update-in [:search :query] str ch)
+      (search-show (count (:history s)))))
+
+(defn search-backspace [s]
+  (let [q (get-in s [:search :query])]
+    (-> s (assoc-in [:search :query] (subs q 0 (max 0 (dec (count q)))))
+        (search-show (count (:history s))))))
+
+(defn search-next
+  "The next older match, or the one shown when it is the oldest."
+  [s]
+  (let [{:keys [hit query]} (:search s)
+        older (when (and hit (pos? hit)) (search-from (vec (:history s)) query (dec hit)))]
+    (if older
+      (-> s (assoc :input (nth (:history s) older)) (assoc-in [:search :hit] older))
+      s)))
+
+(defn search-accept [s] (dissoc s :search))
+
+(defn search-cancel [s]
+  (-> s (assoc :input (str (get-in s [:search :draft]))) (dissoc :search)))
+
+;; --- @-mentions ------------------------------------------------------------------
+;;
+;; An @word at the end of the line opens a picker over the project's files —
+;; the server lists them (GET /v1/harness/files), being the one bound to the
+;; project. Tab/Down and Shift+Tab/Up move, Enter puts the path where the
+;; @word was, Esc takes the @word away.
+
+(defn mention-query
+  "The word being typed after an @ at the end of `input`, or nil."
+  [input]
+  (second (re-find #"(?:^|\s)@([^\s@]*)$" (str input))))
+
+(defn mention-open
+  "Start (or restart) the picker for `query`; nil closes it."
+  [s query]
+  (if (nil? query)
+    (dissoc s :mention)
+    (assoc s :mention {:query query :files [] :at 0 :fetched false})))
+
+(defn apply-mention-files
+  "The server's answer for `query` — dropped when the line has moved on."
+  [s query {:keys [ok body]}]
+  (if (and ok (= query (get-in s [:mention :query])))
+    (update s :mention assoc :files (vec (:files body)) :at 0 :fetched true)
+    s))
+
+(defn mention-active? [s] (boolean (seq (get-in s [:mention :files]))))
+
+(defn mention-selected [s]
+  (let [{:keys [files at]} (:mention s)] (nth files at nil)))
+
+(defn mention-move [s d]
+  (let [n (count (get-in s [:mention :files]))]
+    (update-in s [:mention :at] #(max 0 (min (dec n) (+ (or % 0) d))))))
+
+(defn- replace-mention [s with]
+  (let [input (str (:input s))
+        q (mention-query input)]
+    (-> s
+        (assoc :input (if q
+                        (str (subs input 0 (- (count input) (count q) 1)) with)
+                        input))
+        (dissoc :mention))))
+
+(defn mention-accept [s]
+  (if-let [p (mention-selected s)] (replace-mention s p) s))
+
+(defn mention-cancel [s] (replace-mention s ""))
+
+;; --- pasting -------------------------------------------------------------------
+;;
+;; The TUI turns on the terminal's bracketed paste, so a paste arrives between
+;; ESC[200~ and ESC[201~. Inside it Return is a line break, not a send — a
+;; pasted stack trace used to go out at its first newline. A paste of
+;; `paste-collapse-lines` lines or `paste-collapse-chars` characters is shown
+;; as one placeholder and expanded when the line is sent (dirge's).
+
+(def paste-collapse-lines 4)
+(def paste-collapse-chars 4096)
+
+(defn begin-paste [s] (assoc s :paste-buf ""))
+
+(defn paste-add
+  "Take `text` into the paste being received. The keys of a paste never
+  reach the box one by one: FTXUI hands several to it before a frame, and a
+  Return among them would be the box's Enter."
+  [s text]
+  (update s :paste-buf str text))
+
+(defn pasting? [s] (contains? s :paste-buf))
+
+(defn end-paste
+  "Close the paste. It is NOT joined to the box here: FTXUI runs the box's
+  on-change reports after the whole batch of keys a read delivered, so the
+  state may not yet hold what was typed before the paste, and a report still
+  to land would overwrite the join. `apply-paste` joins it at the next frame.
+  A big paste becomes a placeholder, kept in :pastes for `expand-pastes`."
+  [s]
+  (let [pasted (str (:paste-buf s))
+        lines (count (str/split-lines pasted))
+        s (dissoc s :paste-buf)]
+    (cond
+      (= "" pasted) s
+      (or (>= lines paste-collapse-lines) (>= (count pasted) paste-collapse-chars))
+      (let [tag (str "[" lines " lines pasted #" (inc (count (:pastes s))) "]")]
+        (-> s (assoc :paste-done tag) (assoc-in [:pastes tag] pasted)))
+      :else (assoc s :paste-done pasted))))
+
+(defn apply-paste
+  "Join a closed paste to the end of the box. The box's cursor is the
+  toolkit's, not the state's, so a paste lands after what is there."
+  [s]
+  (if-let [p (:paste-done s)]
+    (-> s (update :input str p) (dissoc :paste-done))
+    s))
+
+(defn expand-pastes
+  "`text` with every paste placeholder back to what was pasted."
+  [s text]
+  (reduce (fn [t [tag body]] (str/replace t tag body)) (str text) (:pastes s)))
+
+(defn newline-key?
+  "Whether a key event means a line break in the compose box: Ctrl+J, Alt+Enter
+  (ESC then CR, as most terminals send it) or Shift+Enter where the terminal
+  reports it (the kitty keyboard protocol's CSI 13;2u). Enter itself sends."
+  [{:keys [type key input]}]
+  (or (and (= :key type) (= :ctrl-j key))
+      (and (= :unknown type)
+           (contains? #{"\u001b\r" "\u001b\n" "\u001b[13;2u" "\u001b[27;2;13~"} (str input)))))
+
+(def ctrl-c-window-ms
+  "How long a first Ctrl+C, with a run going, waits for the second that quits."
+  2000)
+
+(defn- run-going? [s]
+  (= "running" (str (get-in s [:detail :run :status]))))
+
+(defn ctrl-c-action
+  "What Ctrl+C means now, after dirge: [:clear] a draft, [:cancel-reply] a
+  deny note or answer being written, [:quit] on an empty line — but with a
+  run going, [:arm state'] first, and [:quit] only for a second press inside
+  `ctrl-c-window-ms`. In the one-process binary quitting stops the server,
+  and the run with it."
+  [s now-ms]
+  (cond
+    (not (str/blank? (str (:input s)))) [:clear]
+    (:reply s) [:cancel-reply]
+    (not (run-going? s)) [:quit]
+    (when-let [t (:ctrl-c-at s)] (< (- now-ms t) ctrl-c-window-ms)) [:quit]
+    :else [:arm (assoc s :ctrl-c-at now-ms)]))
 
 (defn note-error
   "Say what went wrong, and drop any notice it supersedes — a strip claiming
@@ -403,9 +645,12 @@
     (not-empty (str msg)) (assoc :notice nil)))
 
 (defn note-notice
-  "Say what is happening. Not an error, and not a place for one."
+  "Say what is happening. Not an error, and not a place for one — but news
+  newer than an earlier action's refusal, which would otherwise outrank it in
+  the strip for as long as nothing else was done. An outage stays."
   [s msg]
-  (assoc s :notice (when (not-empty (str msg)) (str msg))))
+  (cond-> (assoc s :notice (when (not-empty (str msg)) (str msg)))
+    (and (not-empty (str msg)) (not (:error-outage? s))) (assoc :error nil)))
 
 (defn steer-payload
   "What the compose box sends. Blank is not a directive."
@@ -494,9 +739,15 @@
   [s {:keys [branch_id text reasoning] :as d}]
   (update-in s [:live branch_id]
              (fn [l]
-               (cond-> (or l {:text "" :reasoning ""})
-                 text (update :text splice text (:text-at d))
-                 reasoning (update :reasoning splice reasoning (:reasoning-at d))))))
+               (let [l (or l {:text "" :reasoning ""})]
+                 (cond-> l
+                   ;; The start was missed (attached or reconnected mid-reply):
+                   ;; what follows may be the inside of a tool call, and with
+                   ;; its opening fence gone nothing can tell it from prose.
+                   (and text (> (or (:text-at d) 0) (count (str (:text l)))))
+                   (assoc :text-gap true)
+                   text (update :text splice text (:text-at d))
+                   reasoning (update :reasoning splice reasoning (:reasoning-at d)))))))
 
 (defn apply-event
   "Fold one pushed event into the state. Returns [state wants]: `wants` is

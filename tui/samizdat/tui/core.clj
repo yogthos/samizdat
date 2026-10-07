@@ -38,6 +38,7 @@
   is parsed once, when it arrives."
   (:require [clojure.string :as str]
             [ftxui.core :as ui]
+            [ftxui.render :as ftxui-render]
             [samizdat.api.client :as client]
             [samizdat.api.sse :as sse]
             [samizdat.tui.commands :as cmd]
@@ -143,6 +144,14 @@
     ;; point of this dialog is that somebody is watching it.
     (future (poll-once!))))
 
+(defn- submit-answers!
+  "Send a questionnaire's answers — all of them, or (Esc half way) the ones
+  given, the rest coming back to the model as unanswered."
+  [id answers]
+  (let [r (client/decide! (:base @state) id {:decision :answer :answers answers})]
+    (swap! state st/note-error (when-not (:ok r) (:error r)))
+    (future (poll-once!))))
+
 (defn- answer!
   "Record an answer to a questionnaire, and submit once the last one is in.
 
@@ -154,10 +163,10 @@
     (swap! state (fn [s] (let [[next d] (st/answer-question s answers)]
                            (vreset! done? d)
                            next)))
+    ;; The fold above is synchronous so the next key lands on the next
+    ;; question; only the HTTP leaves the UI thread.
     (when @done?
-      (let [r (client/decide! (:base @state) id {:decision :answer :answers answers})]
-        (swap! state st/note-error (when-not (:ok r) (:error r)))
-        (future (poll-once!))))))
+      (future (submit-answers! id answers)))))
 
 ;; --- slash commands ------------------------------------------------------------
 
@@ -204,7 +213,9 @@
     (if error
       (say! error)
       (case (:do c)
-        :help (apply say! "commands:" (cmd/help-lines cs))
+        :help (apply say! (concat ["commands:"] (cmd/help-lines cs)
+                                  (when-let [ks (seq (:keys (layout/current)))]
+                                    (cons "keys:" (map #(str "  " %) ks)))))
         :quit (ui/exit!)
         :clear (swap! state st/clear-local)
         :follow (swap! state st/follow :conversation)
@@ -242,7 +253,7 @@
                           (swap! state st/apply-project (client/project base)))
                       (say! (str "mode not set: " (:error r))))))
                 (say! (str "approval mode: " (or (get-in @state [:project :approval_mode]) "unknown")
-                           " — /mode refuse, /mode block, or /mode yolo (every ask allowed)")))
+                           " — /mode attended (ask while a TUI watches), refuse, block, or yolo (every ask allowed)")))
         :intervene
         (cond
           (not run-id) (say! "no run on screen to direct")
@@ -265,21 +276,49 @@
   note or the custom answer; a slash line is a command; anything else starts
   a run (none on screen) or steers the one that is."
   [action text]
-  (let [{:keys [reply question-answers approvals question-cursor]} @state]
+  (let [{:keys [reply question-answers approvals question-cursor] :as s} @state
+        kind (st/reply-kind s)
+        id (or (:id reply) (:id (first approvals)))]
     (cond
-      (= :deny-note (:kind reply))
-      (do (decide! (:id reply) {:decision :deny :note (str/trim (str text))})
+      (= :deny-note kind)
+      (do (decide! id {:decision :deny :note (str/trim (str text))})
           (swap! state st/clear-input))
 
-      (= :custom-answer (:kind reply))
-      (do (swap! state #(-> % st/cancel-reply st/clear-input))
-          (answer! (:id reply) question-cursor (conj (vec question-answers) (str/trim (str text)))))
+      ;; A slash line is still a command while a question waits: /abort must
+      ;; not become somebody's answer.
+      (and (= :custom-answer kind) (not (cmd/parse text {})))
+      (if (str/blank? (str text))
+        (say! "type the answer, or Esc to go back")
+        (do (swap! state #(-> % st/cancel-reply st/clear-input))
+            (answer! id question-cursor (conj (vec question-answers) (str/trim (str text))))))
 
       (cmd/parse text {}) (command! text)
 
       ;; Sending is looking at the bottom again, as in dirge.
       :else (do (swap! state #(-> % (st/remember-input text) (st/follow :conversation)))
                 (action text)))))
+
+(defn- sync-mention!
+  "Open, follow or close the @-picker for what the box holds now, fetching
+  the files for a new query off the UI thread."
+  []
+  (let [q (st/mention-query (:input @state))]
+    (when (not= q (get-in @state [:mention :query]))
+      (swap! state st/mention-open q)
+      (when q
+        (let [{:keys [base]} @state
+              limit (or (get-in (layout/current) [:file-picker :max]) 8)]
+          (future (swap! state st/apply-mention-files q (client/project-files base q limit))))))))
+
+(defn- held
+  "What the compose box holds NOW, over what a widget handed up. A widget's
+  handler closes over the state of the frame it was drawn in, and FTXUI reads
+  the terminal 128 bytes at a time with a frame between reads, so a line
+  typed or pasted in one go reached Enter as its first 128 characters — every
+  run started from here had its problem cut there. The state is current: each
+  key's on-change has folded into it by the time Enter is handled."
+  [text]
+  (or (not-empty (:input @state)) (str text)))
 
 (def ^:private handlers
   "What the widgets can do, handed to them in the state. Widgets stay pure
@@ -289,13 +328,14 @@
    :toggle        #(swap! state st/toggle-fold %)
    :select-run    #(swap! state st/select-run %)
    :select-branch #(swap! state st/select-branch %)
-   :input         #(swap! state st/set-input %)
-   :submit        #(send! steer! %)
-   :start         #(send! start! %)
+   :input         #(do (swap! state st/set-input %) (sync-mention!))
+   :submit        #(send! steer! (st/expand-pastes @state (held %)))
+   :start         #(send! start! (st/expand-pastes @state (held %)))
    :abort         abort!
    :resume        resume!
    :reply         (fn [kind id] (swap! state st/start-reply kind id))
    :toggle-option #(swap! state st/toggle-option %)
+   :option        #(swap! state st/move-option %)
    :scroll        (fn [pane view] (swap! state st/scrolled pane view))
    :history-back    #(swap! state st/history-back)
    :history-forward #(swap! state st/history-forward)})
@@ -451,6 +491,21 @@
 
 ;; --- the frame ---------------------------------------------------------------
 
+(defonce ^:private set-up-app (atom nil))
+
+(def ^:private bracketed-paste-on "\u001b[?2004h")
+(def ^:private bracketed-paste-off "\u001b[?2004l")
+
+(defn- set-up-terminal!
+  "Bracketed paste on, once per app from its first frame: the terminal marks
+  a paste, so its newlines are line breaks rather than Enter (see
+  `on-event`). FTXUI does not ask for it."
+  []
+  (when-let [app @ftxui-render/active-app]
+    (when-not (identical? app @set-up-app)
+      (ui/write-raw! bracketed-paste-on)
+      (reset! set-up-app app))))
+
 (defn root
   "One frame: read the layout, expand its widgets against the state, draw.
 
@@ -459,6 +514,10 @@
   a broken edit falls back to the shipped layout and reports itself in the
   status line rather than taking the screen."
   []
+  (set-up-terminal!)
+  ;; A paste closed since the last frame joins the box now, when every
+  ;; on-change the box reported has landed (state/end-paste).
+  (when (:paste-done @state) (swap! state st/apply-paste))
   (let [{:keys [layout error] th :theme :as spec} (layout/current)
         s (assoc @state :on handlers :layout-error error
                  ;; The settings a widget reads beyond the layout itself —
@@ -478,20 +537,86 @@
   "Global keys. Everything else — clicks, arrows, text — belongs to whichever
   widget has the focus, so this consumes as little as it can.
 
-  `y`/`n` are the exception, and only while a permission dialog is up: the
-  buttons are labelled `allow (y)` and `deny (n)`, and a label that names a
-  key has to mean it. `state/pending-decision` decides whether there is such
-  a dialog — over a questionnaire's answer box a `y` is a letter being
-  typed, and it goes through untouched."
-  [{:keys [type key char control]}]
-  (let [page! (fn [dir] (swap! state st/page :conversation dir) true)]
+  The dialog keys are the exception, and only while a dialog is up and
+  nothing is typed: y/a/n/d over a permission (the buttons name them, and a
+  label that names a key has to mean it), and the arrows, j/k, Space, Enter
+  and digits over a questionnaire, which is answered without the focus ever
+  leaving the compose box. `state/dialog-action` decides — over an
+  open-ended question a `y` is a letter of the answer, and goes through."
+  [{:keys [type key char control input] :as event}]
+  (let [page! (fn [dir] (swap! state st/page :conversation dir) true)
+        s @state]
     (cond
-      (and (= :key type) (= :ctrl-c key)) (do (ui/exit!) true)
+      ;; A paste, between the terminal's brackets: every key of it goes into
+      ;; the paste and none to the box, a Return as a line break.
+      (and (= :unknown type) (= "\u001b[200~" input))
+      (do (swap! state st/begin-paste) true)
+      (and (= :unknown type) (= "\u001b[201~" input))
+      (do (swap! state st/end-paste) true)
+      (st/pasting? s)
+      (do (cond
+            (= :character type) (swap! state st/paste-add char)
+            (= :return key) (swap! state st/paste-add "\n")
+            (= :tab key) (swap! state st/paste-add "\t"))
+          true)
+
+      ;; Ctrl+F: search what was sent. While it is open the keys are its.
+      (st/searching? s)
+      (do (cond
+            (and (= :character type) (not control)) (swap! state st/search-type char)
+            (= :backspace key) (swap! state st/search-backspace)
+            (= :ctrl-f key) (swap! state st/search-next)
+            (= :return key) (swap! state st/search-accept)
+            (#{:escape :ctrl-c} key) (swap! state st/search-cancel))
+          (not= :mouse type))
+      (and (= :key type) (= :ctrl-f key) (nil? (:reply s)))
+      (do (swap! state st/search-start) true)
+
+      ;; The @-picker, while it has files to offer.
+      (and (st/mention-active? s) (= :key type)
+           (#{:tab :arrow-down :tab-reverse :arrow-up :return :escape} key))
+      (do (swap! state (case key
+                         (:tab :arrow-down) #(st/mention-move % 1)
+                         (:tab-reverse :arrow-up) #(st/mention-move % -1)
+                         :return st/mention-accept
+                         :escape st/mention-cancel))
+          true)
+
+      ;; dirge's order: clear the draft, drop the reply, then quit — and with
+      ;; a run going, only on a second press (state/ctrl-c-action).
+      (and (= :key type) (= :ctrl-c key))
+      (let [[act s'] (st/ctrl-c-action @state (System/currentTimeMillis))]
+        (case act
+          :clear (swap! state st/clear-input)
+          :cancel-reply (swap! state #(-> % st/cancel-reply st/clear-input))
+          :arm (swap! state (fn [s] (-> s (assoc :ctrl-c-at (:ctrl-c-at s'))
+                                        (st/note-notice "a run is going — Ctrl+C again to quit"))))
+          :quit (ui/exit!))
+        true)
       ;; ftxui delivers Ctrl+Q as a :key, never as a :character with a
       ;; control flag — the old test for that could not match, and the quit
       ;; key the docs named did nothing.
       (and (= :key type) (= :ctrl-q key)) (do (ui/exit!) true)
       (and (= :key type) (= :f5 key)) (do (future (poll-once!)) true)
+
+      ;; The dialog on screen, if any (state/dialog-action): y a n d over a
+      ;; permission; arrows, j/k, Space, Enter and digits over a question;
+      ;; Esc over either. Before the scroll keys, so Down over a question
+      ;; moves its cursor rather than the conversation.
+      (and (or (#{:escape :return :arrow-up :arrow-down} key)
+               (and (= :character type) (not control)))
+           (st/dialog-action @state {:char char :key key}))
+      (let [[act a b] (st/dialog-action @state {:char char :key key})]
+        (case act
+          :decide (future (decide! a b))
+          :reply (swap! state st/start-reply a b)
+          :cancel-reply (swap! state #(-> % st/cancel-reply st/clear-input))
+          :option (swap! state st/move-option a)
+          :toggle (swap! state #(-> % (st/move-option a) (st/toggle-option a)))
+          :answer (answer! a nil b)
+          :answer-partial (future (submit-answers! a b))
+          :notice (swap! state st/note-notice a))
+        true)
 
       ;; The conversation: page through it, and back to following the bottom.
       ;; The wheel is not handled here: each pane scrolls under the mouse.
@@ -505,8 +630,8 @@
       (and (= :key type) (= :tab key) (str/starts-with? (str (:input @state)) "/"))
       (do (swap! state #(st/set-input % (cmd/complete (:input %) (:commands (layout/current)))))
           true)
-      ;; Ctrl+J breaks the line: Enter sends.
-      (and (= :key type) (= :ctrl-j key)) (do (swap! state st/newline) true)
+      ;; Ctrl+J, Alt+Enter or Shift+Enter breaks the line: Enter sends.
+      (st/newline-key? event) (do (swap! state st/newline) true)
       ;; Ctrl+P / Ctrl+N walk back and forth through what was sent.
       (and (= :key type) (= :ctrl-p key)) (do (swap! state st/history-back) true)
       (and (= :key type) (= :ctrl-n key)) (do (swap! state st/history-forward) true)
@@ -516,15 +641,6 @@
                          % (tl/fold-ids (conversation-entries %) (:conversation (layout/current)))))
           true)
 
-      ;; The dialog on screen, if any: y a n d, Esc (state/dialog-action).
-      (and (or (= :escape key) (and (= :character type) (not control)))
-           (st/dialog-action @state {:char char :key key}))
-      (let [[act a b] (st/dialog-action @state {:char char :key key})]
-        (case act
-          :decide (future (decide! a b))
-          :reply (swap! state st/start-reply a b)
-          :cancel-reply (swap! state st/cancel-reply))
-        true)
 
       :else false)))
 
@@ -546,10 +662,27 @@
   (try
     ;; Mouse on: the folds in the conversation are ftxui collapsibles and
     ;; clicking one is how they open.
-    (ui/run root :mode :fullscreen :mouse true :on-event on-event :on-select on-select)
-    (finally (stop-polling!))))
+    ;; :force-ctrl-c false — Ctrl+C is ours. FTXUI otherwise quits on it even
+    ;; when on-event consumed it, so `state/ctrl-c-action` (clear the draft,
+    ;; quit only on a second press while a run is going) never got a say, and
+    ;; in the one-process binary one Ctrl+C meant to clear a line stopped the
+    ;; server and the run with it.
+    (ui/run root :mode :fullscreen :mouse true :on-event on-event :on-select on-select
+            :force-ctrl-c false)
+    (finally
+      (stop-polling!)
+      ;; The terminal is FTXUI's again and then the shell's: hand bracketed
+      ;; paste back off, or the next program's pastes arrive bracketed.
+      (print bracketed-paste-off)
+      (flush))))
 
 (defn -main [& args]
   (let [base (or (first (remove str/blank? args)) (default-base-url))]
     (println "samizdat tui →" base)
-    (run-ui! base)))
+    (run-ui! base)
+    ;; Out, not merely returned: a request still in flight on a future kept
+    ;; the process alive after the loop ended, the last frame on screen over
+    ;; a terminal handed back to line mode — a TUI that looked open and
+    ;; echoed every key instead of reading it.
+    (shutdown-agents)
+    (System/exit 0)))

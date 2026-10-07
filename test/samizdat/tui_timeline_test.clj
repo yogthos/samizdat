@@ -173,6 +173,14 @@
                                                          :text "later"}])
                                                 settings)))))))
     (testing "the reply being streamed is folded in on top of the cached history"
+      (let [gap (assoc state :live {"B1" {:text "negative.\\\"}}\n" :text-gap true}})]
+        (is (not (str/includes? (str (:text (last (tl/entries gap settings)))) "negative"))
+            "a reply missing its start is not drawn as prose: it may be a call's tail"))
+      (let [opening (assoc state :live {"B1" {:text "Fixing it.\n\n```tool-ca"}})]
+        (is (= "Fixing it." (str/trim (:text (last (tl/entries opening settings)))))
+            "a fence still being opened is not drawn")
+        (is (= "use `x`" (:text (last (tl/entries (assoc state :live {"B1" {:text "use `x`"}}) settings))))
+            "but a backtick closing a word is the word's"))
       (let [live (assoc state :live {"B1" {:text "Writing"}})]
         (is (= "Writing" (:text (last (tl/entries live settings)))))
         (is (= (count es) (dec (count (tl/entries live settings)))))))))

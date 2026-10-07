@@ -540,7 +540,13 @@
                                                 :context {:turn 3 :prompt-tokens 12800}}]))
                                 {}))]
         (is (re-find #"/ *128k" said))
-        (is (not (re-find #"/ *32k" said)))))))
+        (is (not (re-find #"/ *32k" said)))))
+    (testing "an alias named after its model is said once"
+      (let [said (texts (render :widget/status
+                                {:project {:provider "deepseek" :provider_name "deepseek-flash"
+                                           :model "deepseek-flash"}} {}))]
+        (is (str/includes? said "deepseek-flash"))
+        (is (not (str/includes? said "deepseek-flash:deepseek-flash")))))))
 
 (deftest the-footer-draws-before-anything-has-answered
   ;; The first frame: no project, no run, offline. Every segment is optional
@@ -725,26 +731,45 @@
 (deftest a-question-with-no-options-is-answered-in-words
   ;; ask_human's `normalize` accepts a bare string and gives it no options —
   ;; and an open-ended question is the ordinary use of a tool by that name.
-  ;; Rendered as a menu that has nothing in it, that question could not be
-  ;; answered at all: the branch sat parked for the whole :wait-ms and came
-  ;; back "unanswered".
-  (let [answered (atom nil)
-        free {:id "q9" :kind "question"
+  ;; Its answer is typed in the compose box, which holds the focus: a text
+  ;; box inside the dialog had to be clicked before it took a key.
+  (let [free {:id "q9" :kind "question"
               :questions [{:question "what should I name the module?" :options []}]}
-        out (render :widget/approvals
-                    {:approvals [free] :on {:answer #(reset! answered %&)}} {})]
+        out (render :widget/approvals {:approvals [free]} {})]
     (is (str/includes? (texts out) "what should I name the module?"))
     (is (empty? (nodes-of :menu out)) "no menu, because there is nothing to pick from")
-    (let [box (first (nodes-of :input out))]
-      (is (some? box) "an editor instead")
-      ((:on-enter (props-of box)) "mycelium")
-      (is (= ["q9" 0 ["mycelium"]] (vec @answered))
-          "and what was typed is the answer"))))
+    (is (re-find #"type it below" (texts out)) "the dialog says where the answer goes")
+    (let [box (first (nodes-of :input (render :widget/input {:approvals [free]} {})))]
+      (is (re-find #"your answer" (str (:placeholder (props-of box))))
+          "and the compose box says what it is taking"))))
 
 (deftest a-question-with-options-still-gets-a-menu-not-a-text-box
   (let [out (render :widget/approvals {:approvals [question]} {})]
     (is (seq (nodes-of :menu out)))
     (is (empty? (nodes-of :input out)))))
+
+(deftest the-questionnaire-shows-the-cursor-descriptions-and-keys
+  (let [q {:id "q1" :questions [{:question "which?" :header "Storage"
+                                 :options ["sqlite" "postgres"]
+                                 :descriptions ["one file" ""]}]}
+        moved (atom nil)
+        out (render :widget/approvals {:approvals [q] :question-option 1
+                                       :on {:option #(reset! moved %)}} {})
+        menu (props-of (first (nodes-of :menu out)))]
+    (is (= ["sqlite" "postgres" "type your own answer…"] (:entries menu))
+        "the labels, and a last row to type your own")
+    (is (= 1 (:selected menu)))
+    (is (str/includes? (texts (render :widget/approvals {:approvals [q] :question-option 0} {}))
+                       "one file")
+        "the option under the cursor is explained in full, wrapped below")
+    (is (str/includes? (texts out) "Storage"))
+    (is (str/includes? (texts out) "type your own answer"))
+    (is (re-find #"↑↓ move" (texts out)) "the keys are on screen")
+    ((:on-change menu) 0)
+    (is (= 0 @moved) "a click puts the cursor on the option")
+    (testing "the cursor past the options is on the own-answer row"
+      (let [out (render :widget/approvals {:approvals [q] :question-option 2} {})]
+        (is (= 2 (:selected (props-of (first (nodes-of :menu out))))))))))
 
 (deftest the-questionnaire-advances-and-answers
   (let [answered (atom nil)
@@ -859,3 +884,21 @@
     ((:on-up-edge (props-of inp)))
     ((:on-down-edge (props-of inp)))
     (is (= [:back :forward] @hit))))
+
+(deftest a-history-search-says-what-it-is-looking-for
+  (let [s (-> (st/initial "b") (st/remember-input "run the tests") st/search-start
+              (st/search-type "tes"))]
+    (is (re-find #"search: tes" (texts (render :widget/input s {}))))
+    (is (re-find #"no match" (texts (render :widget/input (st/search-type s "zz") {}))))
+    (is (not (re-find #"search:" (texts (render :widget/input (st/initial "b") {})))))))
+
+(deftest an-at-mention-lists-the-matching-files
+  (let [s (-> (st/initial "b") (st/set-input "fix @co") (st/mention-open "co")
+              (st/apply-mention-files "co" {:ok true :body {:files ["src/core.clj" "test/core_test.clj"]}}))
+        said (texts (render :widget/command-hints s {}))]
+    (is (str/includes? said "▶ src/core.clj"))
+    (is (str/includes? said "test/core_test.clj"))
+    (is (re-find #"no file matches @zz"
+                 (texts (render :widget/command-hints
+                                (-> s (st/mention-open "zz")
+                                    (st/apply-mention-files "zz" {:ok true :body {:files []}})) {}))))))

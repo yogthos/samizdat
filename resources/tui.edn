@@ -201,8 +201,8 @@
                :doc "list the models, or switch: `/model glm-5.3` for every role, `/model critic glm:glm-5.3` for one, `/model critic flash` for a provider config.edn declares — live for the run on screen, else the next run"}
   "/effort"   {:do :effort :args "[role] <low|medium|high|max>"
                :doc "how hard the model thinks, for every role or one — live for the run on screen, else the next run"}
-  "/mode"     {:do :mode :args "[refuse|block|yolo]"
-               :doc "when a run needs you: refuse, block and ask, or yolo (allow every ask)"}
+  "/mode"     {:do :mode :args "[attended|refuse|block|yolo]"
+               :doc "when a run needs you: attended (ask while a TUI watches), refuse, block and ask, or yolo (allow every ask)"}
   "/run"      {:do :start :args "<problem>" :doc "start a run on a problem"}
   "/abort"    {:do :abort :doc "abort the run on screen"}
   "/resume"   {:do :resume :doc "resume the run on screen"}
@@ -236,6 +236,18 @@
  ;; :command, when set, is the program to run, with {title} and {body}
  ;; filled in, e.g. ["terminal-notifier" "-title" "{title}" "-message" "{body}"];
  ;; unset, osascript on macOS and notify-send elsewhere.
+ ;; What /help says about the keys, after the commands. Prose, so it lives
+ ;; here with the commands it sits beside; the bindings are the core's.
+ :keys ["Enter sends · Ctrl+J, Alt+Enter or Shift+Enter breaks the line · Up/Down or Ctrl+P/N walk what was sent · Ctrl+F searches it"
+        "a paste keeps its line breaks; one of 4+ lines shows as [N lines pasted] and is sent whole"
+        "Tab completes a command · @ names a project file (Tab/↑↓ pick, Enter puts it in, Esc drops it) · PgUp/PgDn scroll · End or Down follows the bottom · Ctrl+O opens the newest fold"
+        "permission: y allow · a allow always · n deny · d deny with a note · Esc deny"
+        "question: ↑↓ or j/k move · Space ticks or picks · Enter picks or confirms · 1-9 jump · Esc rejects (or sends what is answered)"
+        "Ctrl+C clears the line, then quits (twice while a run is going) · Ctrl+Q quits · F5 refreshes"]
+
+ ;; The @-picker: how many matching files it asks the server for and shows.
+ :file-picker {:max 8}
+
  :notifications {:on #{"question" "run-finished"}}
 
  ;; The avatar's faces, by mood, and the tools that set one. A mood no tool

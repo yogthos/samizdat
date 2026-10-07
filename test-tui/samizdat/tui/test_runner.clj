@@ -24,9 +24,10 @@
   everything about the TUI that can be checked as data is over there."
   (:require [clojure.test :as t]
             [samizdat.tui.input-test]
+            [samizdat.tui.keys-test]
             [samizdat.tui.mouse-test]))
 
-(def namespaces '[samizdat.tui.input-test samizdat.tui.mouse-test])
+(def namespaces '[samizdat.tui.input-test samizdat.tui.keys-test samizdat.tui.mouse-test])
 
 (defn run []
   (apply t/run-tests namespaces))

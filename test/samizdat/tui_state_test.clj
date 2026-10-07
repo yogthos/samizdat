@@ -22,7 +22,8 @@
   Pure, so the TUI's whole policy — cursors, what a disconnect does, what
   changing run resets — is testable with no terminal and no server. The run
   loop is then only wiring."
-  (:require [clojure.test :refer [deftest testing is]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest testing is]]
             [samizdat.tui.state :as st]))
 
 (deftest the-initial-state-names-the-server-and-nothing-else
@@ -252,10 +253,81 @@
       (is (= [:cancel-reply] (st/dialog-action (st/start-reply s :deny-note "a1") {:key :escape})))))
   (testing "they do nothing when no dialog is up"
     (is (nil? (st/dialog-action (st/initial "b") {:char "y"}))))
-  (testing "over a questionnaire only Esc means something: reject it"
+  (testing "over an open-ended question the letters are the answer being typed; Esc rejects"
     (let [s (assoc (st/initial "b") :approvals [{:id "q1" :questions [{:question "name?"}]}])]
       (is (nil? (st/dialog-action s {:char "y"})))
+      (is (nil? (st/dialog-action s {:key :return})) "Enter is the compose box's: it sends the answer")
       (is (= [:decide "q1" {:decision :deny :note "rejected"}] (st/dialog-action s {:key :escape}))))))
+
+;; --- the questionnaire from the keyboard (dirge's `question`) -----------------
+;;
+;; The compose box holds the focus from the first frame, so a questionnaire
+;; drawn as a menu could be answered only with the mouse. dirge's keys: Up/Down
+;; or k/j move, Space ticks (or picks), Enter picks or confirms, Esc rejects —
+;; and a last row to type your own answer. Digits jump straight to an option.
+
+(def ^:private two-qs
+  {:id "q1" :questions [{:question "which store?" :options ["sqlite" "postgres"]}
+                        {:question "which?" :multi true :options ["a" "b" "c"]}]})
+
+(defn- asking [& {:as over}]
+  (merge (assoc (st/initial "b") :approvals [two-qs]) over))
+
+(deftest arrows-and-jk-move-through-the-options-and-the-own-answer-row
+  (let [s (asking)]
+    (is (= [:option 1] (st/dialog-action s {:key :arrow-down})))
+    (is (= [:option 1] (st/dialog-action s {:char "j"})))
+    (is (= [:option 0] (st/dialog-action (assoc s :question-option 1) {:char "k"})))
+    (is (= [:option 2] (st/dialog-action (assoc s :question-option 1) {:key :arrow-down}))
+        "the row after the options is `type your own answer`")
+    (is (= [:option 2] (st/dialog-action (assoc s :question-option 2) {:key :arrow-down}))
+        "clamped at the end, as dirge does")
+    (is (= [:option 0] (st/dialog-action s {:key :arrow-up})))))
+
+(deftest enter-picks-the-option-under-the-cursor
+  (is (= [:answer "q1" ["postgres"]]
+         (st/dialog-action (asking :question-option 1) {:key :return})))
+  (is (= [:answer "q1" ["sqlite"]] (st/dialog-action (asking) {:char " "})) "Space picks too")
+  (is (= [:answer "q1" ["postgres"]] (st/dialog-action (asking) {:char "2"})) "and a digit")
+  (is (nil? (st/dialog-action (asking) {:char "7"})) "a digit with no option is nobody's")
+  (testing "on the own-answer row it hands the compose box over"
+    (is (= [:reply :custom-answer "q1"]
+           (st/dialog-action (asking :question-option 2) {:key :return}))))
+  (testing "carrying the earlier answers"
+    (let [s (asking :question-cursor 1 :question-answers ["sqlite"] :question-selected #{0 2})]
+      (is (= [:answer "q1" ["sqlite" ["a" "c"]]] (st/dialog-action s {:key :return}))
+          "a multi-select confirms the ticked set, as one answer"))))
+
+(deftest a-multi-select-question-ticks-with-space
+  (let [s (asking :question-cursor 1 :question-answers ["sqlite"])]
+    (is (= [:toggle 0] (st/dialog-action s {:char " "})))
+    (is (= [:toggle 1] (st/dialog-action s {:char "2"})))
+    (is (= [:notice "select at least one option"] (st/dialog-action s {:key :return}))
+        "confirming nothing is refused, out loud")))
+
+(deftest esc-rejects-or-submits-what-was-answered
+  (is (= [:decide "q1" {:decision :deny :note "rejected"}] (st/dialog-action (asking) {:key :escape})))
+  (is (= [:answer-partial "q1" ["sqlite"]]
+         (st/dialog-action (asking :question-cursor 1 :question-answers ["sqlite"]) {:key :escape}))
+      "half answered: the answers given go back, the rest as unanswered (dirge)"))
+
+(deftest the-keys-step-aside-while-something-is-typed
+  (is (nil? (st/dialog-action (asking :input "x") {:char "j"})))
+  (is (nil? (st/dialog-action (asking :input "x") {:key :return})))
+  (is (nil? (st/dialog-action (st/start-reply (asking) :custom-answer "q1") {:key :return}))))
+
+(deftest an-open-ended-question-is-answered-in-the-compose-box
+  (let [s (assoc (st/initial "b") :approvals [{:id "q9" :questions [{:question "name?" :options []}]}])]
+    (is (= :custom-answer (st/reply-kind s)) "no options: what is typed is the answer")
+    (is (nil? (st/reply-kind (asking))) "with options it is not, until asked for")
+    (is (= [:cancel-reply] (st/dialog-action (assoc s :input "half") {:key :escape}))
+        "Esc over half an answer throws the words away, not the question")
+    (is (= :custom-answer (st/reply-kind (st/start-reply (asking) :custom-answer "q1"))))
+    (is (= :deny-note (st/reply-kind (st/start-reply (asking) :deny-note "q1"))))))
+
+(deftest a-new-question-starts-at-the-top
+  (let [[s _] (st/answer-question (asking :question-option 2) ["sqlite"])]
+    (is (zero? (:question-option s)) "the next question's cursor is not the last one's")))
 
 (deftest a-reply-takes-the-compose-box-until-it-is-sent-or-cancelled
   (let [s (st/start-reply (st/initial "b") :custom-answer "q1")]
@@ -408,7 +480,12 @@
     (testing "a piece already held is not doubled"
       (is (= "Hello" (get-in (fold s (ev {:text "lo" :text-at 3})) [:live "B1" :text]))))
     (testing "the branch's next turn row takes over from it"
-      (is (nil? (get-in (fold s {:id "9" :event "turn" :data {:branch_id "B1"}}) [:live "B1"]))))))
+      (is (nil? (get-in (fold s {:id "9" :event "turn" :data {:branch_id "B1"}}) [:live "B1"]))))
+    (testing "a piece after a gap marks the text as missing its start"
+      ;; Attached mid-reply, the tail of a tool call arrived without the
+      ;; fence that opens it, and was drawn as the agent's prose — raw JSON.
+      (let [g (fold (st/initial "b") (ev {:text "\"}}\n```" :text-at 900}))]
+        (is (true? (get-in g [:live "B1" :text-gap])))))))
 
 (deftest a-pushed-event-is-read-as-it-comes-off-the-wire
   ;; The stream hands over each event's data as the JSON TEXT it was sent
@@ -474,3 +551,123 @@
         (is (nil? (:branch done)) "the old branch's turns are not shown under the winner's name")
         (is (= "B1" (:branch-id (st/apply-detail (st/select-branch done "B1") finished)))
             "a person who goes back to read B1 stays on B1")))))
+
+;; --- Ctrl+C, after dirge --------------------------------------------------------
+;;
+;; It quit on the spot. In the one-process binary that stops the server, and
+;; with it the run on screen — one stray Ctrl+C meant to clear a line ended an
+;; hour of work. dirge's order: a draft is cleared, a reply is dropped, and
+;; only an empty line quits — and here, with a run going, only a second press.
+
+(deftest ctrl-c-clears-before-it-quits
+  (let [running (assoc (st/initial "b") :run-id "r1" :detail {:run {:status "running"}})]
+    (is (= [:clear] (st/ctrl-c-action (assoc running :input "half a thought") 1000)))
+    (is (= [:cancel-reply] (st/ctrl-c-action (st/start-reply running :deny-note "a1") 1000)))
+    (is (= [:quit] (st/ctrl-c-action (st/initial "b") 1000)) "idle and empty: quit")
+    (let [[act s] (st/ctrl-c-action running 1000)]
+      (is (= :arm act) "a run going: the first press only warns")
+      (is (= [:quit] (st/ctrl-c-action s 2500)) "a second within the window quits")
+      (is (= :arm (first (st/ctrl-c-action s 9000))) "one long after is a first press again"))))
+
+(deftest alt-enter-and-shift-enter-break-the-line
+  (is (st/newline-key? {:type :unknown :input "\u001b\r"}) "Alt+Enter, as most terminals send it")
+  (is (st/newline-key? {:type :unknown :input "\u001b[13;2u"}) "Shift+Enter under the kitty protocol")
+  (is (st/newline-key? {:type :key :key :ctrl-j}))
+  (is (not (st/newline-key? {:type :key :key :return}))))
+
+(deftest a-newer-notice-replaces-an-older-actions-error
+  ;; "HTTP 409: approval not open" from a click long past sat in the strip
+  ;; and hid "a run is going — Ctrl+C again to quit", the one notice that
+  ;; must be read before the next key.
+  (let [s (-> (st/initial "b") (st/note-error "HTTP 409: approval not open")
+              (st/note-notice "a run is going"))]
+    (is (nil? (:error s)))
+    (is (= "a run is going" (:notice s))))
+  (testing "but an outage stays: it is the poll's to clear, not a notice's"
+    (let [s (-> (st/initial "b")
+                (st/apply-runs {:ok false :error "no server"})
+                (st/note-notice "starting…"))]
+      (is (= "no server" (:error s))))))
+
+;; --- Ctrl+F: search what was sent (dirge) ------------------------------------------
+
+(deftest ctrl-f-searches-history-newest-first
+  (let [s (-> (st/initial "b")
+              (st/remember-input "run the tests")
+              (st/remember-input "fix the parser")
+              (st/remember-input "rerun the tests please")
+              (st/set-input "draft"))
+        s1 (-> s st/search-start (st/search-type "t") (st/search-type "e"))]
+    (is (= "rerun the tests please" (:input s1)) "the newest line holding the query")
+    (is (= "te" (get-in s1 [:search :query])))
+    (let [s2 (st/search-next s1)]
+      (is (= "run the tests" (:input s2)) "Ctrl+F again: the next older match")
+      (is (= "run the tests" (:input (st/search-next s2))) "and it stays on the oldest"))
+    (testing "no match keeps what is shown and says so"
+      (let [s3 (st/search-type s1 "z")]
+        (is (= "rerun the tests please" (:input s3)))
+        (is (true? (get-in s3 [:search :miss])))))
+    (testing "backspace widens the query again"
+      (is (= "t" (get-in (st/search-backspace s1) [:search :query]))))
+    (testing "Enter takes the match; Esc puts the draft back"
+      (let [taken (st/search-accept s1)]
+        (is (nil? (:search taken)))
+        (is (= "rerun the tests please" (:input taken))))
+      (let [back (st/search-cancel s1)]
+        (is (nil? (:search back)))
+        (is (= "draft" (:input back)))))))
+
+;; --- pasting (bracketed paste) ------------------------------------------------------
+
+(deftest a-large-paste-collapses-to-a-placeholder-and-expands-on-send
+  ;; The paste is taken key by key into a buffer, closed, and only joined to
+  ;; the box at the next frame: until then the box's own on-change reports
+  ;; (which FTXUI runs after the whole batch of keys) may still be landing,
+  ;; and a join made earlier was overwritten by them.
+  (let [body (str/join "\n" (map #(str "line " %) (range 6)))
+        paste (fn [s text] (-> s st/begin-paste (st/paste-add text) st/end-paste))
+        s (paste (st/set-input (st/initial "b") "look at: ") body)]
+    (is (= "look at: " (:input s)) "nothing joined yet")
+    (let [s (st/set-input s "look at: typed")]
+      (is (= "look at: typed[6 lines pasted #1]" (:input (st/apply-paste s)))
+          "joined at the frame, after what the box reported last")
+      (is (= (str "look at: typed" body) (st/expand-pastes (st/apply-paste s) "look at: typed[6 lines pasted #1]"))
+          "and sent whole")
+      (is (nil? (:paste-done (st/apply-paste s)))))
+    (testing "a short paste goes in as it is"
+      (is (= "a two\nlines" (:input (st/apply-paste (paste (st/set-input (st/initial "b") "a") " two\nlines"))))))
+    (testing "a second big paste gets its own placeholder"
+      (let [s (-> s st/apply-paste (paste body) st/apply-paste)]
+        (is (re-find #"#2\]$" (:input s)))
+        (is (= 2 (count (:pastes s))))))
+    (testing "no paste, nothing to join"
+      (is (= "x" (:input (st/apply-paste (st/set-input (st/initial "b") "x"))))))))
+
+(deftest return-inside-a-paste-is-a-line-break-not-a-send
+  (is (st/pasting? (st/begin-paste (st/initial "b"))))
+  (is (not (st/pasting? (st/end-paste (st/begin-paste (st/initial "b")))))))
+
+;; --- @-mentions: naming a file from the project (dirge's picker) ------------------
+
+(deftest an-at-word-at-the-end-of-the-line-is-a-mention
+  (is (= "src/co" (st/mention-query "look at @src/co")))
+  (is (= "" (st/mention-query "@")))
+  (is (nil? (st/mention-query "mail me at a@b.com")) "an @ inside a word is not one")
+  (is (nil? (st/mention-query "look at @src/core.clj now")) "only the word being typed"))
+
+(deftest the-mention-picker-moves-takes-and-drops
+  (let [s (-> (st/initial "b") (st/set-input "fix @co") (st/mention-open "co")
+              (st/apply-mention-files "co" {:ok true :body {:files ["src/core.clj" "test/core_test.clj"]}}))]
+    (is (st/mention-active? s))
+    (is (= "test/core_test.clj" (st/mention-selected (st/mention-move s 1))))
+    (is (= "test/core_test.clj" (st/mention-selected (st/mention-move s 5))) "clamped")
+    (is (= "src/core.clj" (st/mention-selected (st/mention-move s -1))))
+    (is (= "fix src/core.clj" (:input (st/mention-accept s))) "the @word becomes the path")
+    (is (nil? (:mention (st/mention-accept s))))
+    (is (= "fix " (:input (st/mention-cancel s))) "Esc drops the @word")
+    (testing "an answer for a query no longer being typed is dropped"
+      (is (= ["src/core.clj" "test/core_test.clj"]
+             (get-in (st/apply-mention-files s "c" {:ok true :body {:files ["x"]}}) [:mention :files]))))
+    (testing "no files, nothing to pick"
+      (is (not (st/mention-active? (st/apply-mention-files (st/mention-open s "zz") "zz"
+                                                           {:ok true :body {:files []}})))))))

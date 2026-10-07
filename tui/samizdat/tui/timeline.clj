@@ -144,8 +144,14 @@
 (defn- live-entries
   "The reply the branch is writing right now, as it streams in: after
   everything else, marked :live?, and gone when its turn row lands."
-  [{:keys [text reasoning]}]
-  (let [{:keys [say thinking]} (words text reasoning)]
+  [{:keys [text reasoning text-gap]}]
+  (let [{:keys [say thinking]} (words text reasoning)
+        ;; Missing its start, the text may be a tool call's tail: say only
+        ;; that something is being written, until the turn row lands.
+        say (if (and text-gap (not (str/blank? say))) "(writing…)" say)
+        ;; A fence still arriving: "```" or "```tool-ca" at the very end is
+        ;; a call being opened, not something said.
+        say (str/replace (str say) #"(?:^|\n)`{1,3}[A-Za-z-]*\s*$" "")]
     (cond-> []
       (not (str/blank? thinking))
       (conj {:key "live/thinking" :role :agent :kind :thinking :text thinking :live? true})

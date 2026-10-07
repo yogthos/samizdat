@@ -132,6 +132,22 @@
   [base]
   (GET base "/v1/harness/project"))
 
+(defn- url-encode
+  "`s` safe inside a query string: unreserved characters and `/` as they are,
+  every other byte percent-encoded."
+  [s]
+  (apply str (map (fn [b]
+                    (let [c (char (bit-and b 0xff))]
+                      (if (or (Character/isLetterOrDigit c) (#{\- \_ \. \~ \/} c))
+                        (str c)
+                        (format "%%%02X" (bit-and b 0xff)))))
+                  (.getBytes (str s) "UTF-8"))))
+
+(defn project-files
+  "The project's files matching `q`, for an @-mention — GET /v1/harness/files."
+  [base q limit]
+  (GET base (str "/v1/harness/files?q=" (url-encode q) "&limit=" limit)))
+
 (defn approvals
   "Questions this run is waiting on a person to answer — the permission gate
   and ask_human, which share one queue."

@@ -255,6 +255,40 @@
 (defn- project-table [_req]
   (json-response (project-body)))
 
+;; {:at ms :root path :files v} — the same window as the git snapshot: a
+;; person typing an @-mention asks on every key.
+(defonce ^:private files-cache (atom nil))
+
+(defn cached-files
+  "`gitdiff/project-files` for `root`, at most once per :git-snapshot-ttl-ms."
+  [root]
+  (let [ttl (or (gates/threshold :git-snapshot-ttl-ms) 0)
+        now (System/currentTimeMillis)
+        c @files-cache]
+    (if (and c (= root (:root c)) (< (- now (:at c)) ttl))
+      (:files c)
+      (let [fs (gitdiff/project-files root)]
+        (reset! files-cache {:at now :root root :files fs})
+        fs))))
+
+(defn files-body
+  "The project's files whose path holds `q` (any case), for an @-mention:
+  a match in the file's own name before one only in its directories, then
+  shorter paths first. At most `limit`, capped by gates.edn
+  :project-files-shown; :total says how many matched."
+  [q limit]
+  (let [q (str/lower-case (str q))
+        fs (or (cached-files (get-in (system/config) [:run :root])) [])
+        base #(str/lower-case (last (str/split % #"/")))
+        hits (->> fs
+                  (filter #(str/includes? (str/lower-case %) q))
+                  (sort-by (juxt #(if (str/includes? (base %) q) 0 1) count identity)))
+        cap (min (or limit Long/MAX_VALUE) (or (gates/threshold :project-files-shown) 50))]
+    {:files (vec (take cap hits)) :total (count hits)}))
+
+(defn- files-table [req]
+  (json-response (files-body (query-param req "q") (long-param req "limit"))))
+
 ;; --- routing ----------------------------------------------------------------
 ;;
 ;; ruuter route maps: {:method :path :response}. A path segment starting with
@@ -304,6 +338,8 @@
    ;; Which project, which branch, how dirty, which model — the footer and the
    ;; GIT panel. Served because only this process is bound to the project.
    {:method :get :path "/v1/harness/project" :response #(project-table %)}
+   ;; The files an @-mention in the compose box can name (?q=, ?limit=).
+   {:method :get :path "/v1/harness/files" :response #(files-table %)}
    ;; The approval mode for this server session: {"mode": "block"} to have
    ;; the runs ask a person, "refuse" to not, null for the project's own.
    {:method :post :path "/v1/harness/approval-mode" :response

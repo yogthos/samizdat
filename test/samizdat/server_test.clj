@@ -169,6 +169,24 @@
         (is (nil? (:branch b)))
         (is (nil? (:staged b)) "absent, not zero — 'no repo' is not 'clean'")))))
 
+(deftest the-harness-serves-the-files-an-at-mention-can-name
+  ;; The TUI's @-picker: the server is the one bound to the project, so it
+  ;; lists the files and ranks what matches; a front end only draws them.
+  (with-redefs [system/config (fn [] {:run {:root "/tmp/p"}})
+                server/cached-files (fn [_] ["README.md" "src/shelf/core.clj"
+                                             "test/shelf/core_test.clj" "src/shelf/loans.clj"])]
+    (let [b (server/files-body "core" 10)]
+      (is (= ["src/shelf/core.clj" "test/shelf/core_test.clj"] (:files b))
+          "a match on the file's own name first, then shorter paths")
+      (is (= 2 (:total b))))
+    (is (= ["README.md"] (:files (server/files-body "readme" 10))) "case does not matter")
+    (is (= 1 (count (:files (server/files-body "" 1)))) "the limit holds")
+    (is (= 4 (:total (server/files-body "" 1)))))
+  (testing "no tree, no files — and no failure"
+    (with-redefs [system/config (fn [] {:run {:root "/tmp/p"}})
+                  server/cached-files (fn [_] nil)]
+      (is (= {:files [] :total 0} (server/files-body "x" 10))))))
+
 (deftest the-git-snapshot-is-cached-so-git-is-off-the-poll-path
   ;; Three shell-outs per request and a poller asking every 1.5s per front
   ;; end. dirge read .git/HEAD once per painted frame and froze its UI on

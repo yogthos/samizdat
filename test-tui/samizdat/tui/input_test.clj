@@ -62,3 +62,24 @@
         (is (false? (ui/send-mouse! s {:x (+ x 2) :y y}))
             "a press in the box is left for the selection to start from")
         (is (= "select me" (ui/selection-text s 80 3 [x y (+ x 8) y])))))))
+
+(deftest a-long-line-is-sent-whole
+  ;; Every run started from the TUI had its problem cut to 128 characters —
+  ;; FTXUI's read size — and the rest of what was typed or pasted was lost.
+  (let [line (apply str (map #(format "%03d " %) (range 75)))
+        sent (atom nil)
+        state (atom (st/initial "b"))
+        app (fn [] (w/input (assoc @state :run-id "r1" :detail {:run {:status "running"}}
+                                   :on {:input #(swap! state st/set-input %)
+                                        :submit #(reset! sent %)})
+                            {}))]
+    (ui/with-screen [s app]
+      (ui/render-text s 120 6)
+      ;; One event a character, as a terminal delivers them, and a frame
+      ;; after every 128 — FTXUI's read size.
+      (doseq [chunk (partition-all 128 line)]
+        (doseq [c chunk] (ui/send-char! s (str c)))
+        (ui/render-text s 120 6))
+      (is (= line (:input @state)) "the state holds all of it")
+      (ui/send-key! s :return)
+      (is (= line @sent) "and Enter sends all of it"))))
